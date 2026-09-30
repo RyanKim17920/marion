@@ -1,0 +1,480 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --available-tools=marion-report
+  --allow-tool=marion(report)
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_HOME=/state/x/config/home
+  COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8099/v1
+  COPILOT_PROVIDER_TYPE=openai
+  COPILOT_PROVIDER_WIRE_API=completions
+  COPILOT_PROVIDER_API_KEY=sk-fake
+  COPILOT_OFFLINE=true
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## live headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --available-tools=marion-report
+  --allow-tool=marion(report)
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## endpoint headless
+program: copilot
+cwd: /wt
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  vendor/model-1
+  --available-tools=marion-report
+  --allow-tool=marion(report)
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_HOME=/state/x/config/home
+  COPILOT_PROVIDER_BASE_URL=https://provider.example/v1
+  COPILOT_PROVIDER_TYPE=openai
+  COPILOT_PROVIDER_WIRE_API=completions
+  COPILOT_PROVIDER_API_KEY=sk-endpoint-test
+  COPILOT_OFFLINE=true
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "endpoint",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[read] headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --available-tools=marion-report,view
+  --allow-tool=marion(report)
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_HOME=/state/x/config/home
+  COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8099/v1
+  COPILOT_PROVIDER_TYPE=openai
+  COPILOT_PROVIDER_WIRE_API=completions
+  COPILOT_PROVIDER_API_KEY=sk-fake
+  COPILOT_OFFLINE=true
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[write] headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --available-tools=marion-report,create,edit,apply_patch
+  --allow-tool=marion(report)
+  --allow-tool=write
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_HOME=/state/x/config/home
+  COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8099/v1
+  COPILOT_PROVIDER_TYPE=openai
+  COPILOT_PROVIDER_WIRE_API=completions
+  COPILOT_PROVIDER_API_KEY=sk-fake
+  COPILOT_OFFLINE=true
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[edit] headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --available-tools=marion-report,edit,apply_patch
+  --allow-tool=marion(report)
+  --allow-tool=write
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_HOME=/state/x/config/home
+  COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8099/v1
+  COPILOT_PROVIDER_TYPE=openai
+  COPILOT_PROVIDER_WIRE_API=completions
+  COPILOT_PROVIDER_API_KEY=sk-fake
+  COPILOT_OFFLINE=true
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[bash] headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --available-tools=marion-report,bash
+  --allow-tool=marion(report)
+  --allow-tool=shell
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_HOME=/state/x/config/home
+  COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8099/v1
+  COPILOT_PROVIDER_TYPE=openai
+  COPILOT_PROVIDER_WIRE_API=completions
+  COPILOT_PROVIDER_API_KEY=sk-fake
+  COPILOT_OFFLINE=true
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[all] headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --available-tools=marion-report,view,create,edit,apply_patch,bash
+  --allow-tool=marion(report)
+  --allow-tool=write
+  --allow-tool=shell
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_HOME=/state/x/config/home
+  COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8099/v1
+  COPILOT_PROVIDER_TYPE=openai
+  COPILOT_PROVIDER_WIRE_API=completions
+  COPILOT_PROVIDER_API_KEY=sk-fake
+  COPILOT_OFFLINE=true
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+
+## live resume headless
+program: copilot
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  -p
+  do the task
+  --output-format
+  json
+  -C
+  /wt
+  --disable-builtin-mcps
+  --no-custom-instructions
+  --model
+  canned-1
+  --resume=session-1
+  --available-tools=marion-report
+  --allow-tool=marion(report)
+  --additional-mcp-config
+  @/state/x/config/mcp.json
+env:
+  COPILOT_AUTO_UPDATE=false
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "tools": [
+        "*"
+      ],
+      "type": "stdio"
+    }
+  }
+}

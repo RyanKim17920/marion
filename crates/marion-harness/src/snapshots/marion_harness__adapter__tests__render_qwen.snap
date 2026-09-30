@@ -1,0 +1,493 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  QWEN_HOME=/state/x/config/home
+  OPENAI_BASE_URL=http://127.0.0.1:8099/v1
+  OPENAI_API_KEY=sk-fake
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+file /state/x/config/home/settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  }
+}
+
+## live headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  --mcp-config
+  {"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+
+## endpoint headless
+program: qwen
+cwd: /wt
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  QWEN_HOME=/state/x/config/home
+  OPENAI_BASE_URL=https://provider.example/v1
+  OPENAI_API_KEY=sk-endpoint-test
+  OPENAI_MODEL=vendor/model-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+file /state/x/config/home/settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "endpoint",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  }
+}
+
+## canned tools=[read] headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  read_file
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  QWEN_HOME=/state/x/config/home
+  OPENAI_BASE_URL=http://127.0.0.1:8099/v1
+  OPENAI_API_KEY=sk-fake
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+file /state/x/config/home/settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  }
+}
+
+## canned tools=[write] headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  write_file
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  QWEN_HOME=/state/x/config/home
+  OPENAI_BASE_URL=http://127.0.0.1:8099/v1
+  OPENAI_API_KEY=sk-fake
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+file /state/x/config/home/settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  }
+}
+
+## canned tools=[edit] headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  edit
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  QWEN_HOME=/state/x/config/home
+  OPENAI_BASE_URL=http://127.0.0.1:8099/v1
+  OPENAI_API_KEY=sk-fake
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+file /state/x/config/home/settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  }
+}
+
+## canned tools=[bash] headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  run_shell_command
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  QWEN_HOME=/state/x/config/home
+  OPENAI_BASE_URL=http://127.0.0.1:8099/v1
+  OPENAI_API_KEY=sk-fake
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+file /state/x/config/home/settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  }
+}
+
+## canned tools=[all] headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --yolo
+  --core-tools
+  mcp__marion__report
+  read_file
+  write_file
+  edit
+  run_shell_command
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  QWEN_HOME=/state/x/config/home
+  OPENAI_BASE_URL=http://127.0.0.1:8099/v1
+  OPENAI_API_KEY=sk-fake
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true
+file /state/x/config/home/settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  }
+}
+
+## live resume headless
+program: qwen
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --resume
+  session-1
+  --yolo
+  --core-tools
+  mcp__marion__report
+  --exclude-tools
+  agent
+  enter_worktree
+  exit_worktree
+  get_goal
+  list_agents
+  record_artifact
+  report_findings
+  send_message
+  skill
+  task_stop
+  tool_search
+  update_goal
+  --mcp-config
+  {"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+  -p
+  do the task
+  --output-format
+  stream-json
+env:
+  OPENAI_MODEL=canned-1
+  QWEN_CODE_LEGACY_MCP_BLOCKING=1
+  QWEN_CODE_SUPPRESS_YOLO_WARNING=1
+  QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true

@@ -1,0 +1,72 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: opencode
+cwd: /wt
+model: Some("marion/canned-1")
+session_mode: None
+args:
+  acp
+env:
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_CONFIG_CONTENT={"experimental":{"mcp_timeout":86400000}}
+  OPENCODE_DISABLE_AUTOUPDATE=1
+
+## live headless
+program: opencode
+cwd: /wt
+model: Some("marion/canned-1")
+session_mode: None
+args:
+  acp
+env:
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_CONFIG_CONTENT={"experimental":{"mcp_timeout":86400000}}
+  OPENCODE_DISABLE_AUTOUPDATE=1
+
+## canned tools=[read] headless
+refused: acp: no mapping for marion tool `read`; this harness's adapter provides none
+
+## canned tools=[write] headless
+refused: acp: no mapping for marion tool `write`; this harness's adapter provides none
+
+## canned tools=[edit] headless
+refused: acp: no mapping for marion tool `edit`; this harness's adapter provides none
+
+## canned tools=[bash] headless
+refused: acp: no mapping for marion tool `bash`; this harness's adapter provides none
+
+## canned tools=[all] headless
+refused: acp: no mapping for marion tool `read`; this harness's adapter provides none
+
+## live resume headless
+program: opencode
+cwd: /wt
+model: Some("marion/canned-1")
+session_mode: None
+args:
+  acp
+env:
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_CONFIG_CONTENT={"experimental":{"mcp_timeout":86400000}}
+  OPENCODE_DISABLE_AUTOUPDATE=1

@@ -1,0 +1,600 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: opencode
+cwd: /wt
+model: Some("canned/canned-1")
+session_mode: None
+args:
+  run
+  --pure
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  canned/canned-1
+  do the task
+env:
+  HOME=/state/x/config
+  XDG_CONFIG_HOME=/state/x/config/config
+  XDG_DATA_HOME=/state/x/config/data
+  XDG_CACHE_HOME=/state/x/config/cache
+  XDG_STATE_HOME=/state/x/config/state
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_PROJECT_CONFIG=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_DISABLE_AUTOUPDATE=1
+file /state/x/config/config/opencode/opencode.json:
+{
+  "mcp": {
+    "marion": {
+      "command": [
+        "/bin/marion-supervisor",
+        "mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "timeout": 86400000,
+      "type": "local"
+    }
+  },
+  "model": "canned/canned-1",
+  "permission": {
+    "marion_*": "allow"
+  },
+  "provider": {
+    "canned": {
+      "models": {
+        "canned-1": {
+          "name": "canned-1",
+          "tool_call": true
+        }
+      },
+      "name": "canned",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sk-fake",
+        "baseURL": "http://127.0.0.1:8099/v1",
+        "headerTimeout": 30000,
+        "timeout": 120000
+      }
+    }
+  },
+  "small_model": "canned/canned-1"
+}
+
+## live headless
+program: opencode
+cwd: /wt
+model: Some("anthropic/claude-sonnet-4-5")
+session_mode: None
+args:
+  run
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  anthropic/claude-sonnet-4-5
+  do the task
+env:
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_CONFIG_CONTENT={"mcp":{"marion":{"command":["/bin/marion-supervisor","mcp"],"enabled":true,"environment":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"},"timeout":86400000,"type":"local"}},"permission":{"marion_*":"allow"}}
+  OPENCODE_DISABLE_AUTOUPDATE=1
+
+## endpoint headless
+program: opencode
+cwd: /wt
+model: Some("marion/vendor/model-1")
+session_mode: None
+args:
+  run
+  --pure
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  marion/vendor/model-1
+  do the task
+env:
+  HOME=/state/x/config
+  XDG_CONFIG_HOME=/state/x/config/config
+  XDG_DATA_HOME=/state/x/config/data
+  XDG_CACHE_HOME=/state/x/config/cache
+  XDG_STATE_HOME=/state/x/config/state
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_PROJECT_CONFIG=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_DISABLE_AUTOUPDATE=1
+file /state/x/config/config/opencode/opencode.json:
+{
+  "mcp": {
+    "marion": {
+      "command": [
+        "/bin/marion-supervisor",
+        "mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "endpoint",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "timeout": 86400000,
+      "type": "local"
+    }
+  },
+  "model": "marion/vendor/model-1",
+  "permission": {
+    "marion_*": "allow"
+  },
+  "provider": {
+    "marion": {
+      "models": {
+        "vendor/model-1": {
+          "name": "vendor/model-1",
+          "tool_call": true
+        }
+      },
+      "name": "marion",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sk-endpoint-test",
+        "baseURL": "https://provider.example/v1",
+        "headerTimeout": 30000,
+        "timeout": 120000
+      }
+    }
+  },
+  "small_model": "marion/vendor/model-1"
+}
+
+## canned tools=[read] headless
+program: opencode
+cwd: /wt
+model: Some("canned/canned-1")
+session_mode: None
+args:
+  run
+  --pure
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  canned/canned-1
+  do the task
+env:
+  HOME=/state/x/config
+  XDG_CONFIG_HOME=/state/x/config/config
+  XDG_DATA_HOME=/state/x/config/data
+  XDG_CACHE_HOME=/state/x/config/cache
+  XDG_STATE_HOME=/state/x/config/state
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_PROJECT_CONFIG=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_DISABLE_AUTOUPDATE=1
+file /state/x/config/config/opencode/opencode.json:
+{
+  "mcp": {
+    "marion": {
+      "command": [
+        "/bin/marion-supervisor",
+        "mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "timeout": 86400000,
+      "type": "local"
+    }
+  },
+  "model": "canned/canned-1",
+  "permission": {
+    "marion_*": "allow"
+  },
+  "provider": {
+    "canned": {
+      "models": {
+        "canned-1": {
+          "name": "canned-1",
+          "tool_call": true
+        }
+      },
+      "name": "canned",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sk-fake",
+        "baseURL": "http://127.0.0.1:8099/v1",
+        "headerTimeout": 30000,
+        "timeout": 120000
+      }
+    }
+  },
+  "small_model": "canned/canned-1"
+}
+
+## canned tools=[write] headless
+program: opencode
+cwd: /wt
+model: Some("canned/canned-1")
+session_mode: None
+args:
+  run
+  --pure
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  canned/canned-1
+  do the task
+env:
+  HOME=/state/x/config
+  XDG_CONFIG_HOME=/state/x/config/config
+  XDG_DATA_HOME=/state/x/config/data
+  XDG_CACHE_HOME=/state/x/config/cache
+  XDG_STATE_HOME=/state/x/config/state
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_PROJECT_CONFIG=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_DISABLE_AUTOUPDATE=1
+file /state/x/config/config/opencode/opencode.json:
+{
+  "mcp": {
+    "marion": {
+      "command": [
+        "/bin/marion-supervisor",
+        "mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "timeout": 86400000,
+      "type": "local"
+    }
+  },
+  "model": "canned/canned-1",
+  "permission": {
+    "marion_*": "allow"
+  },
+  "provider": {
+    "canned": {
+      "models": {
+        "canned-1": {
+          "name": "canned-1",
+          "tool_call": true
+        }
+      },
+      "name": "canned",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sk-fake",
+        "baseURL": "http://127.0.0.1:8099/v1",
+        "headerTimeout": 30000,
+        "timeout": 120000
+      }
+    }
+  },
+  "small_model": "canned/canned-1"
+}
+
+## canned tools=[edit] headless
+program: opencode
+cwd: /wt
+model: Some("canned/canned-1")
+session_mode: None
+args:
+  run
+  --pure
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  canned/canned-1
+  do the task
+env:
+  HOME=/state/x/config
+  XDG_CONFIG_HOME=/state/x/config/config
+  XDG_DATA_HOME=/state/x/config/data
+  XDG_CACHE_HOME=/state/x/config/cache
+  XDG_STATE_HOME=/state/x/config/state
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_PROJECT_CONFIG=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_DISABLE_AUTOUPDATE=1
+file /state/x/config/config/opencode/opencode.json:
+{
+  "mcp": {
+    "marion": {
+      "command": [
+        "/bin/marion-supervisor",
+        "mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "timeout": 86400000,
+      "type": "local"
+    }
+  },
+  "model": "canned/canned-1",
+  "permission": {
+    "marion_*": "allow"
+  },
+  "provider": {
+    "canned": {
+      "models": {
+        "canned-1": {
+          "name": "canned-1",
+          "tool_call": true
+        }
+      },
+      "name": "canned",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sk-fake",
+        "baseURL": "http://127.0.0.1:8099/v1",
+        "headerTimeout": 30000,
+        "timeout": 120000
+      }
+    }
+  },
+  "small_model": "canned/canned-1"
+}
+
+## canned tools=[bash] headless
+program: opencode
+cwd: /wt
+model: Some("canned/canned-1")
+session_mode: None
+args:
+  run
+  --pure
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  canned/canned-1
+  do the task
+env:
+  HOME=/state/x/config
+  XDG_CONFIG_HOME=/state/x/config/config
+  XDG_DATA_HOME=/state/x/config/data
+  XDG_CACHE_HOME=/state/x/config/cache
+  XDG_STATE_HOME=/state/x/config/state
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_PROJECT_CONFIG=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_DISABLE_AUTOUPDATE=1
+file /state/x/config/config/opencode/opencode.json:
+{
+  "mcp": {
+    "marion": {
+      "command": [
+        "/bin/marion-supervisor",
+        "mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "timeout": 86400000,
+      "type": "local"
+    }
+  },
+  "model": "canned/canned-1",
+  "permission": {
+    "marion_*": "allow"
+  },
+  "provider": {
+    "canned": {
+      "models": {
+        "canned-1": {
+          "name": "canned-1",
+          "tool_call": true
+        }
+      },
+      "name": "canned",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sk-fake",
+        "baseURL": "http://127.0.0.1:8099/v1",
+        "headerTimeout": 30000,
+        "timeout": 120000
+      }
+    }
+  },
+  "small_model": "canned/canned-1"
+}
+
+## canned tools=[all] headless
+program: opencode
+cwd: /wt
+model: Some("canned/canned-1")
+session_mode: None
+args:
+  run
+  --pure
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  canned/canned-1
+  do the task
+env:
+  HOME=/state/x/config
+  XDG_CONFIG_HOME=/state/x/config/config
+  XDG_DATA_HOME=/state/x/config/data
+  XDG_CACHE_HOME=/state/x/config/cache
+  XDG_STATE_HOME=/state/x/config/state
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_PROJECT_CONFIG=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_DISABLE_AUTOUPDATE=1
+file /state/x/config/config/opencode/opencode.json:
+{
+  "mcp": {
+    "marion": {
+      "command": [
+        "/bin/marion-supervisor",
+        "mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "timeout": 86400000,
+      "type": "local"
+    }
+  },
+  "model": "canned/canned-1",
+  "permission": {
+    "marion_*": "allow"
+  },
+  "provider": {
+    "canned": {
+      "models": {
+        "canned-1": {
+          "name": "canned-1",
+          "tool_call": true
+        }
+      },
+      "name": "canned",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sk-fake",
+        "baseURL": "http://127.0.0.1:8099/v1",
+        "headerTimeout": 30000,
+        "timeout": 120000
+      }
+    }
+  },
+  "small_model": "canned/canned-1"
+}
+
+## live resume headless
+program: opencode
+cwd: /wt
+model: Some("anthropic/claude-sonnet-4-5")
+session_mode: None
+args:
+  run
+  --session
+  session-1
+  --format
+  json
+  --title
+  marion-019f-root
+  -m
+  anthropic/claude-sonnet-4-5
+  do the task
+env:
+  OPENCODE_DISABLE_CLAUDE_CODE=1
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_SHARE=1
+  OPENCODE_DB=/state/x/config/opencode.db
+  PWD=/wt
+  OPENCODE_CONFIG_CONTENT={"mcp":{"marion":{"command":["/bin/marion-supervisor","mcp"],"enabled":true,"environment":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"},"timeout":86400000,"type":"local"}},"permission":{"marion_*":"allow"}}
+  OPENCODE_DISABLE_AUTOUPDATE=1

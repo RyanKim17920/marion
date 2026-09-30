@@ -21,3 +21,6 @@ thiserror.workspace = true
 # Test-only: the version gate's table, read by `tests/pinned_probe_env.rs` so the env its probe runs
 # with cannot drift from the no-self-update env these rows give every node.
 marion-testsupport = { path = "../marion-testsupport" }
+# The row-render sweep (`adapter::tests::every_row_renders_byte_for_byte`) pins every launch each
+# row compiles as one snapshot per harness. Already in the lock through marion-tui and marion-term.
+insta = "1"

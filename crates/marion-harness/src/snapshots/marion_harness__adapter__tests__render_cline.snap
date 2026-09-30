@@ -1,0 +1,538 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: cline
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --config
+  /state/x/config/cfg
+  --data-dir
+  /state/x/config/data
+  --auto-approve
+  true
+  -m
+  canned-1
+  do the task
+env:
+  HOME=/state/x/config/home
+  CLINE_DIR=/state/x/config/cfg
+  CLINE_DATA_DIR=/state/x/config/data
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "canned",
+          "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+file /state/x/config/data/settings/providers.json:
+{
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "apiKey": "sk-fake",
+        "baseUrl": "http://127.0.0.1:8099/v1",
+        "model": "canned-1",
+        "provider": "openai-compatible"
+      },
+      "tokenSource": "manual",
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "version": 1
+}
+
+## live headless
+program: cline
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --auto-approve
+  true
+  -m
+  canned-1
+  do the task
+env:
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "inherited",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+
+## endpoint headless
+program: cline
+cwd: /wt
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --config
+  /state/x/config/cfg
+  --data-dir
+  /state/x/config/data
+  --auto-approve
+  true
+  -m
+  vendor/model-1
+  do the task
+env:
+  HOME=/state/x/config/home
+  CLINE_DIR=/state/x/config/cfg
+  CLINE_DATA_DIR=/state/x/config/data
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "endpoint",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+file /state/x/config/data/settings/providers.json:
+{
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "apiKey": "sk-endpoint-test",
+        "baseUrl": "https://provider.example/v1",
+        "model": "vendor/model-1",
+        "provider": "openai-compatible"
+      },
+      "tokenSource": "manual",
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "version": 1
+}
+
+## canned tools=[read] headless
+program: cline
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --config
+  /state/x/config/cfg
+  --data-dir
+  /state/x/config/data
+  --auto-approve
+  true
+  -m
+  canned-1
+  do the task
+env:
+  HOME=/state/x/config/home
+  CLINE_DIR=/state/x/config/cfg
+  CLINE_DATA_DIR=/state/x/config/data
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "canned",
+          "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+file /state/x/config/data/settings/providers.json:
+{
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "apiKey": "sk-fake",
+        "baseUrl": "http://127.0.0.1:8099/v1",
+        "model": "canned-1",
+        "provider": "openai-compatible"
+      },
+      "tokenSource": "manual",
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "version": 1
+}
+
+## canned tools=[write] headless
+program: cline
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --config
+  /state/x/config/cfg
+  --data-dir
+  /state/x/config/data
+  --auto-approve
+  true
+  -m
+  canned-1
+  do the task
+env:
+  HOME=/state/x/config/home
+  CLINE_DIR=/state/x/config/cfg
+  CLINE_DATA_DIR=/state/x/config/data
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "canned",
+          "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+file /state/x/config/data/settings/providers.json:
+{
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "apiKey": "sk-fake",
+        "baseUrl": "http://127.0.0.1:8099/v1",
+        "model": "canned-1",
+        "provider": "openai-compatible"
+      },
+      "tokenSource": "manual",
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "version": 1
+}
+
+## canned tools=[edit] headless
+program: cline
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --config
+  /state/x/config/cfg
+  --data-dir
+  /state/x/config/data
+  --auto-approve
+  true
+  -m
+  canned-1
+  do the task
+env:
+  HOME=/state/x/config/home
+  CLINE_DIR=/state/x/config/cfg
+  CLINE_DATA_DIR=/state/x/config/data
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "canned",
+          "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+file /state/x/config/data/settings/providers.json:
+{
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "apiKey": "sk-fake",
+        "baseUrl": "http://127.0.0.1:8099/v1",
+        "model": "canned-1",
+        "provider": "openai-compatible"
+      },
+      "tokenSource": "manual",
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "version": 1
+}
+
+## canned tools=[bash] headless
+program: cline
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --config
+  /state/x/config/cfg
+  --data-dir
+  /state/x/config/data
+  --auto-approve
+  true
+  -m
+  canned-1
+  do the task
+env:
+  HOME=/state/x/config/home
+  CLINE_DIR=/state/x/config/cfg
+  CLINE_DATA_DIR=/state/x/config/data
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "canned",
+          "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+file /state/x/config/data/settings/providers.json:
+{
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "apiKey": "sk-fake",
+        "baseUrl": "http://127.0.0.1:8099/v1",
+        "model": "canned-1",
+        "provider": "openai-compatible"
+      },
+      "tokenSource": "manual",
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "version": 1
+}
+
+## canned tools=[all] headless
+program: cline
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  --json
+  -c
+  /wt
+  --config
+  /state/x/config/cfg
+  --data-dir
+  /state/x/config/data
+  --auto-approve
+  true
+  -m
+  canned-1
+  do the task
+env:
+  HOME=/state/x/config/home
+  CLINE_DIR=/state/x/config/cfg
+  CLINE_DATA_DIR=/state/x/config/data
+  CLINE_MCP_SETTINGS_PATH=/state/x/config/cline_mcp_settings.json
+  CLINE_NO_AUTO_UPDATE=1
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "canned",
+          "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}
+file /state/x/config/data/settings/providers.json:
+{
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "apiKey": "sk-fake",
+        "baseUrl": "http://127.0.0.1:8099/v1",
+        "model": "canned-1",
+        "provider": "openai-compatible"
+      },
+      "tokenSource": "manual",
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "version": 1
+}
+
+## live resume headless
+refused: cline: this harness has no measured way to name a session to resume on this shape's command line; starting it fresh under a resumed session's id would be a launch the contract misdescribes
+file /state/x/config/cline_mcp_settings.json:
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "args": [
+          "mcp"
+        ],
+        "command": "/bin/marion-supervisor",
+        "env": {
+          "MARION_AGENT_ID": "019f-root",
+          "MARION_AGENT_TYPE": "claude",
+          "MARION_AUTH": "inherited",
+          "MARION_DEPTH": "0",
+          "MARION_READY_FILE": "/state/x/mcp-ready",
+          "MARION_REPO": "/repo",
+          "MARION_STATE_DIR": "/state"
+        },
+        "type": "stdio"
+      }
+    }
+  }
+}

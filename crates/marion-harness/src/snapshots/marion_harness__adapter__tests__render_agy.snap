@@ -1,0 +1,137 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: agy
+cwd: /wt
+model: Some("gemini-3.6-flash-low")
+session_mode: None
+args:
+  -p
+  Your working directory is /wt; every relative path below is relative to it. /state/x/config/agy-root is marion's configuration directory, not a place for your work.
+
+do the task
+  --output-format
+  stream-json
+  --model
+  gemini-3.6-flash-low
+  --add-dir
+  /wt
+  --add-dir
+  /state/x/config/agy-root
+env:
+  AGY_CLI_DISABLE_AUTO_UPDATE=true
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+
+## live headless
+program: agy
+cwd: /wt
+model: Some("gemini-3.6-flash-low")
+session_mode: None
+args:
+  -p
+  Your working directory is /wt; every relative path below is relative to it. /state/x/config/agy-root is marion's configuration directory, not a place for your work.
+
+do the task
+  --output-format
+  stream-json
+  --model
+  gemini-3.6-flash-low
+  --add-dir
+  /wt
+  --add-dir
+  /state/x/config/agy-root
+env:
+  AGY_CLI_DISABLE_AUTO_UPDATE=true
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+
+## canned tools=[read] headless
+program: agy
+cwd: /wt
+model: Some("gemini-3.6-flash-low")
+session_mode: None
+args:
+  -p
+  Your working directory is /wt; every relative path below is relative to it. /state/x/config/agy-root is marion's configuration directory, not a place for your work.
+
+do the task
+  --output-format
+  stream-json
+  --model
+  gemini-3.6-flash-low
+  --add-dir
+  /wt
+  --add-dir
+  /state/x/config/agy-root
+env:
+  AGY_CLI_DISABLE_AUTO_UPDATE=true
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+
+## canned tools=[write] headless
+program: agy
+cwd: /wt
+model: Some("gemini-3.6-flash-low")
+session_mode: None
+args:
+  -p
+  Your working directory is /wt; every relative path below is relative to it. /state/x/config/agy-root is marion's configuration directory, not a place for your work.
+
+do the task
+  --output-format
+  stream-json
+  --model
+  gemini-3.6-flash-low
+  --mode
+  accept-edits
+  --add-dir
+  /wt
+  --add-dir
+  /state/x/config/agy-root
+env:
+  AGY_CLI_DISABLE_AUTO_UPDATE=true
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+
+## canned tools=[edit] headless
+refused: agy: no mapping for marion tool `edit`; this harness's adapter provides none
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+
+## canned tools=[bash] headless
+refused: agy: no mapping for marion tool `bash`; this harness's adapter provides none
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+
+## canned tools=[all] headless
+refused: agy: no mapping for marion tool `edit`; this harness's adapter provides none
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}
+
+## live resume headless
+program: agy
+cwd: /wt
+model: Some("gemini-3.6-flash-low")
+session_mode: None
+args:
+  --conversation
+  session-1
+  -p
+  Your working directory is /wt; every relative path below is relative to it. /state/x/config/agy-root is marion's configuration directory, not a place for your work.
+
+do the task
+  --output-format
+  stream-json
+  --model
+  gemini-3.6-flash-low
+  --add-dir
+  /wt
+  --add-dir
+  /state/x/config/agy-root
+env:
+  AGY_CLI_DISABLE_AUTO_UPDATE=true
+file /state/x/config/agy-root/.agents/mcp_config.json:
+{"mcpServers":{"marion":{"args":["mcp"],"command":"/bin/marion-supervisor","env":{"MARION_AGENT_ID":"019f-root","MARION_AGENT_TYPE":"claude","MARION_AUTH":"inherited","MARION_DEPTH":"0","MARION_READY_FILE":"/state/x/mcp-ready","MARION_REPO":"/repo","MARION_STATE_DIR":"/state"}}}}

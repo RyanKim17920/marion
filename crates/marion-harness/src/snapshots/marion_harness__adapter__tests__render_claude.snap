@@ -1,0 +1,716 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## canned pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+
+## live headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## live pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  DISABLE_AUTOUPDATER=1
+
+## endpoint headless
+program: claude
+cwd: /repo
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  vendor/model-1
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=https://provider.example
+  ANTHROPIC_AUTH_TOKEN=sk-endpoint-test
+  ANTHROPIC_API_KEY=
+  ANTHROPIC_SMALL_FAST_MODEL=vendor/model-1
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=vendor/model-1
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "endpoint",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## endpoint pane
+program: claude
+cwd: /repo
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  vendor/model-1
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=https://provider.example
+  ANTHROPIC_AUTH_TOKEN=sk-endpoint-test
+  ANTHROPIC_API_KEY=
+  ANTHROPIC_SMALL_FAST_MODEL=vendor/model-1
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=vendor/model-1
+  DISABLE_AUTOUPDATER=1
+
+## canned tools=[read] headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  Read
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Read
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[read] pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  Read
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Read
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+
+## canned tools=[write] headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  Write
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Write
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[write] pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  Write
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Write
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+
+## canned tools=[edit] headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  Edit
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Edit
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[edit] pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  Edit
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Edit
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+
+## canned tools=[bash] headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  Bash
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Bash
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[bash] pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  Bash
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Bash
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+
+## canned tools=[all] headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  Read,Write,Edit,Bash
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Read,Write,Edit,Bash
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## canned tools=[all] pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  Read,Write,Edit,Bash
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status,Read,Write,Edit,Bash
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --setting-sources
+  
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+env:
+  CLAUDE_CONFIG_DIR=/state/x/config/claude-config
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8099
+  DISABLE_AUTOUPDATER=1
+
+## live resume headless
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  -p
+  --output-format
+  stream-json
+  --input-format
+  stream-json
+  --verbose
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --permission-prompt-tool
+  stdio
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+  --resume
+  session-1
+env:
+  DISABLE_AUTOUPDATER=1
+file /state/x/config/mcp.json:
+{
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "type": "stdio"
+    }
+  }
+}
+
+## live resume pane
+program: claude
+cwd: /repo
+model: Some("haiku")
+session_mode: None
+args:
+  --dangerously-load-development-channels
+  server:marion
+  --tools
+  
+  --allowedTools
+  mcp__marion__spawn,mcp__marion__status
+  --strict-mcp-config
+  --mcp-config
+  /state/x/config/mcp.json
+  --settings
+  {"disableAllHooks":true}
+  --model
+  haiku
+  --resume
+  session-1
+env:
+  DISABLE_AUTOUPDATER=1

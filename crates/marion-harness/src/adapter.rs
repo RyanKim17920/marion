@@ -10096,6 +10096,108 @@ mod tests {
         }
     }
 
+    /// One launch as the render sweep records it: every field of the invocation and every
+    /// document, or the refusal, byte for byte.
+    fn render_case(
+        out: &mut String,
+        name: &str,
+        compiled: Result<Invocation, HarnessError>,
+        files: Result<Vec<(PathBuf, String)>, HarnessError>,
+    ) {
+        use std::fmt::Write as _;
+        let _ = writeln!(out, "## {name}");
+        match compiled {
+            Err(e) => {
+                let _ = writeln!(out, "refused: {e}");
+            }
+            Ok(inv) => {
+                let _ = writeln!(out, "program: {}", inv.program);
+                let _ = writeln!(out, "cwd: {}", inv.cwd.display());
+                let _ = writeln!(out, "model: {:?}", inv.model);
+                let _ = writeln!(out, "session_mode: {:?}", inv.session_mode);
+                let _ = writeln!(out, "args:");
+                for a in &inv.args {
+                    let _ = writeln!(out, "  {a}");
+                }
+                let _ = writeln!(out, "env:");
+                for (k, v) in &inv.env {
+                    let _ = writeln!(out, "  {k}={v}");
+                }
+                if !inv.env_remove.is_empty() {
+                    let _ = writeln!(out, "env_remove: {:?}", inv.env_remove);
+                }
+            }
+        }
+        match files {
+            Err(e) => {
+                let _ = writeln!(out, "files refused: {e}");
+            }
+            Ok(files) => {
+                for (path, body) in files {
+                    let _ = writeln!(out, "file {}:\n{body}", path.display());
+                }
+            }
+        }
+        out.push('\n');
+    }
+
+    /// **Every launch each row compiles, byte for byte, in one table** — canned and live, headless
+    /// and pane, an endpoint node, each of marion's tool words declared alone and all together, and
+    /// a resume — as one snapshot per harness. Any change to an argv, a variable, a document or a
+    /// refusal's words shows here as a diff to review, which is what the per-harness exact-render
+    /// tests this replaced each did for one launch.
+    #[test]
+    fn every_row_renders_byte_for_byte() {
+        for h in Harness::ALL {
+            let a = launch_adapter(h).unwrap();
+            let row = harness_spec(h);
+            let mut out = String::new();
+            let case = |out: &mut String, name: &str, spec: &LaunchSpec| {
+                render_case(
+                    out,
+                    &format!("{name} headless"),
+                    a.compile(spec, &ctx()),
+                    a.config_files(spec, &ctx()),
+                );
+                if row.pane.is_some() {
+                    render_case(
+                        out,
+                        &format!("{name} pane"),
+                        a.compile_pane(spec, &ctx()),
+                        Ok(vec![]),
+                    );
+                }
+            };
+            case(&mut out, "canned", &spec_for(h));
+            case(&mut out, "live", &escape_spec(h, Auth::Inherited));
+            if !a.endpoint_wires().is_empty() {
+                case(
+                    &mut out,
+                    "endpoint",
+                    &endpoint(spec_for(h), "vendor/model-1", h),
+                );
+            }
+            for tool in agent_type::TOOL_VOCABULARY {
+                let spec = LaunchSpec {
+                    tools: vec![tool.to_string()],
+                    ..spec_for(h)
+                };
+                case(&mut out, &format!("canned tools=[{tool}]"), &spec);
+            }
+            let all = LaunchSpec {
+                tools: agent_type::TOOL_VOCABULARY.map(String::from).to_vec(),
+                ..spec_for(h)
+            };
+            case(&mut out, "canned tools=[all]", &all);
+            let resumed = LaunchSpec {
+                resume: Some("session-1".into()),
+                ..escape_spec(h, Auth::Inherited)
+            };
+            case(&mut out, "live resume", &resumed);
+            insta::assert_snapshot!(format!("render_{}", h.cli_name().replace('-', "_")), out);
+        }
+    }
+
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to
     /// answer in six hand-written impls, stated as data and checked once.
     ///

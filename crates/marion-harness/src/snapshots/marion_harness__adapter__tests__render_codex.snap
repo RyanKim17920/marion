@@ -1,0 +1,469 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  app-server
+  -c
+  check_for_update_on_startup=false
+env:
+  CODEX_HOME=/state/x/config
+file /state/x/config/config.toml:
+model_provider = "canned"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
+[model_providers.canned]
+name = "canned"
+base_url = "http://127.0.0.1:8099/v1"
+wire_api = "responses"
+env_key = "MARION_PROVIDER_KEY"
+
+[mcp_servers.marion]
+command = "/bin/marion-supervisor"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
+env = { MARION_REPO = "/repo", MARION_STATE_DIR = "/state", MARION_AUTH = "canned", MARION_AGENT_ID = "019f-root", MARION_AGENT_TYPE = "claude", MARION_DEPTH = "0", MARION_BASE_URL = "http://127.0.0.1:8099/v1", MARION_READY_FILE = "/state/x/mcp-ready" }
+
+
+## canned pane
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  -c
+  check_for_update_on_startup=false
+  -C
+  /wt
+  do the task
+env:
+  CODEX_HOME=/state/x/config
+
+## live headless
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  app-server
+  -c
+  check_for_update_on_startup=false
+  -c
+  sandbox_mode="workspace-write"
+  -c
+  mcp_servers.marion.command="/bin/marion-supervisor"
+  -c
+  mcp_servers.marion.args=["mcp"]
+  -c
+  mcp_servers.marion.default_tools_approval_mode="approve"
+  -c
+  mcp_servers.marion.omit_tools_from=["deferred"]
+  -c
+  mcp_servers.marion.env.MARION_REPO="/repo"
+  -c
+  mcp_servers.marion.env.MARION_STATE_DIR="/state"
+  -c
+  mcp_servers.marion.env.MARION_AUTH="inherited"
+  -c
+  mcp_servers.marion.env.MARION_AGENT_ID="019f-root"
+  -c
+  mcp_servers.marion.env.MARION_AGENT_TYPE="claude"
+  -c
+  mcp_servers.marion.env.MARION_DEPTH="0"
+  -c
+  mcp_servers.marion.env.MARION_READY_FILE="/state/x/mcp-ready"
+  -c
+  mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
+  -c
+  features.plugins=false
+env:
+
+## live pane
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  -c
+  check_for_update_on_startup=false
+  -c
+  sandbox_mode="workspace-write"
+  -c
+  mcp_servers.marion.command="/bin/marion-supervisor"
+  -c
+  mcp_servers.marion.args=["mcp"]
+  -c
+  mcp_servers.marion.default_tools_approval_mode="approve"
+  -c
+  mcp_servers.marion.omit_tools_from=["deferred"]
+  -c
+  mcp_servers.marion.env.MARION_REPO="/repo"
+  -c
+  mcp_servers.marion.env.MARION_STATE_DIR="/state"
+  -c
+  mcp_servers.marion.env.MARION_AUTH="inherited"
+  -c
+  mcp_servers.marion.env.MARION_AGENT_ID="019f-root"
+  -c
+  mcp_servers.marion.env.MARION_AGENT_TYPE="claude"
+  -c
+  mcp_servers.marion.env.MARION_DEPTH="0"
+  -c
+  mcp_servers.marion.env.MARION_READY_FILE="/state/x/mcp-ready"
+  -c
+  mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
+  -c
+  features.plugins=false
+  -C
+  /wt
+  do the task
+env:
+
+## endpoint headless
+program: codex
+cwd: /wt
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  app-server
+  -c
+  check_for_update_on_startup=false
+  -c
+  model="vendor/model-1"
+env:
+  CODEX_HOME=/state/x/config
+  MARION_PROVIDER_KEY=sk-endpoint-test
+file /state/x/config/config.toml:
+model_provider = "canned"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
+[model_providers.canned]
+name = "canned"
+base_url = "https://provider.example/v1"
+wire_api = "responses"
+env_key = "MARION_PROVIDER_KEY"
+
+[mcp_servers.marion]
+command = "/bin/marion-supervisor"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
+env = { MARION_REPO = "/repo", MARION_STATE_DIR = "/state", MARION_AUTH = "endpoint", MARION_AGENT_ID = "019f-root", MARION_AGENT_TYPE = "claude", MARION_DEPTH = "0", MARION_READY_FILE = "/state/x/mcp-ready" }
+
+
+## endpoint pane
+program: codex
+cwd: /wt
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  -c
+  check_for_update_on_startup=false
+  -m
+  vendor/model-1
+  -C
+  /wt
+  do the task
+env:
+  CODEX_HOME=/state/x/config
+  MARION_PROVIDER_KEY=sk-endpoint-test
+
+## canned tools=[read] headless
+refused: codex: no mapping for marion tool `read`; this harness's adapter provides none
+file /state/x/config/config.toml:
+model_provider = "canned"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
+[model_providers.canned]
+name = "canned"
+base_url = "http://127.0.0.1:8099/v1"
+wire_api = "responses"
+env_key = "MARION_PROVIDER_KEY"
+
+[mcp_servers.marion]
+command = "/bin/marion-supervisor"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
+env = { MARION_REPO = "/repo", MARION_STATE_DIR = "/state", MARION_AUTH = "canned", MARION_AGENT_ID = "019f-root", MARION_AGENT_TYPE = "claude", MARION_DEPTH = "0", MARION_BASE_URL = "http://127.0.0.1:8099/v1", MARION_READY_FILE = "/state/x/mcp-ready" }
+
+
+## canned tools=[read] pane
+refused: codex: no mapping for marion tool `read`; this harness's adapter provides none
+
+## canned tools=[write] headless
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  app-server
+  -c
+  check_for_update_on_startup=false
+env:
+  CODEX_HOME=/state/x/config
+file /state/x/config/config.toml:
+model_provider = "canned"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
+[model_providers.canned]
+name = "canned"
+base_url = "http://127.0.0.1:8099/v1"
+wire_api = "responses"
+env_key = "MARION_PROVIDER_KEY"
+
+[mcp_servers.marion]
+command = "/bin/marion-supervisor"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
+env = { MARION_REPO = "/repo", MARION_STATE_DIR = "/state", MARION_AUTH = "canned", MARION_AGENT_ID = "019f-root", MARION_AGENT_TYPE = "claude", MARION_DEPTH = "0", MARION_BASE_URL = "http://127.0.0.1:8099/v1", MARION_READY_FILE = "/state/x/mcp-ready" }
+
+
+## canned tools=[write] pane
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  -c
+  check_for_update_on_startup=false
+  -C
+  /wt
+  do the task
+env:
+  CODEX_HOME=/state/x/config
+
+## canned tools=[edit] headless
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  app-server
+  -c
+  check_for_update_on_startup=false
+env:
+  CODEX_HOME=/state/x/config
+file /state/x/config/config.toml:
+model_provider = "canned"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
+[model_providers.canned]
+name = "canned"
+base_url = "http://127.0.0.1:8099/v1"
+wire_api = "responses"
+env_key = "MARION_PROVIDER_KEY"
+
+[mcp_servers.marion]
+command = "/bin/marion-supervisor"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
+env = { MARION_REPO = "/repo", MARION_STATE_DIR = "/state", MARION_AUTH = "canned", MARION_AGENT_ID = "019f-root", MARION_AGENT_TYPE = "claude", MARION_DEPTH = "0", MARION_BASE_URL = "http://127.0.0.1:8099/v1", MARION_READY_FILE = "/state/x/mcp-ready" }
+
+
+## canned tools=[edit] pane
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  -c
+  check_for_update_on_startup=false
+  -C
+  /wt
+  do the task
+env:
+  CODEX_HOME=/state/x/config
+
+## canned tools=[bash] headless
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  app-server
+  -c
+  check_for_update_on_startup=false
+env:
+  CODEX_HOME=/state/x/config
+file /state/x/config/config.toml:
+model_provider = "canned"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
+[model_providers.canned]
+name = "canned"
+base_url = "http://127.0.0.1:8099/v1"
+wire_api = "responses"
+env_key = "MARION_PROVIDER_KEY"
+
+[mcp_servers.marion]
+command = "/bin/marion-supervisor"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
+env = { MARION_REPO = "/repo", MARION_STATE_DIR = "/state", MARION_AUTH = "canned", MARION_AGENT_ID = "019f-root", MARION_AGENT_TYPE = "claude", MARION_DEPTH = "0", MARION_BASE_URL = "http://127.0.0.1:8099/v1", MARION_READY_FILE = "/state/x/mcp-ready" }
+
+
+## canned tools=[bash] pane
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  -c
+  check_for_update_on_startup=false
+  -C
+  /wt
+  do the task
+env:
+  CODEX_HOME=/state/x/config
+
+## canned tools=[all] headless
+refused: codex: no mapping for marion tool `read`; this harness's adapter provides none
+file /state/x/config/config.toml:
+model_provider = "canned"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
+[model_providers.canned]
+name = "canned"
+base_url = "http://127.0.0.1:8099/v1"
+wire_api = "responses"
+env_key = "MARION_PROVIDER_KEY"
+
+[mcp_servers.marion]
+command = "/bin/marion-supervisor"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
+env = { MARION_REPO = "/repo", MARION_STATE_DIR = "/state", MARION_AUTH = "canned", MARION_AGENT_ID = "019f-root", MARION_AGENT_TYPE = "claude", MARION_DEPTH = "0", MARION_BASE_URL = "http://127.0.0.1:8099/v1", MARION_READY_FILE = "/state/x/mcp-ready" }
+
+
+## canned tools=[all] pane
+refused: codex: no mapping for marion tool `read`; this harness's adapter provides none
+
+## live resume headless
+program: codex
+cwd: /wt
+model: None
+session_mode: None
+args:
+  app-server
+  -c
+  check_for_update_on_startup=false
+  -c
+  sandbox_mode="workspace-write"
+  -c
+  mcp_servers.marion.command="/bin/marion-supervisor"
+  -c
+  mcp_servers.marion.args=["mcp"]
+  -c
+  mcp_servers.marion.default_tools_approval_mode="approve"
+  -c
+  mcp_servers.marion.omit_tools_from=["deferred"]
+  -c
+  mcp_servers.marion.env.MARION_REPO="/repo"
+  -c
+  mcp_servers.marion.env.MARION_STATE_DIR="/state"
+  -c
+  mcp_servers.marion.env.MARION_AUTH="inherited"
+  -c
+  mcp_servers.marion.env.MARION_AGENT_ID="019f-root"
+  -c
+  mcp_servers.marion.env.MARION_AGENT_TYPE="claude"
+  -c
+  mcp_servers.marion.env.MARION_DEPTH="0"
+  -c
+  mcp_servers.marion.env.MARION_READY_FILE="/state/x/mcp-ready"
+  -c
+  mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
+  -c
+  features.plugins=false
+env:
+
+## live resume pane
+refused: codex: this harness has no measured way to name a session to resume on this shape's command line; starting it fresh under a resumed session's id would be a launch the contract misdescribes

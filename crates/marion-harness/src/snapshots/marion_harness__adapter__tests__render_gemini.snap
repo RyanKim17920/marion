@@ -1,0 +1,465 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: gemini
+cwd: /wt
+model: Some("gemini-2.5-flash")
+session_mode: None
+args:
+  -m
+  gemini-2.5-flash
+  --output-format
+  stream-json
+  -p
+  do the task
+env:
+  GEMINI_CLI_HOME=/state/x/config
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+  GEMINI_FORCE_FILE_STORAGE=true
+  GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8099
+  GEMINI_API_KEY=sk-fake
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  }
+}
+
+## live headless
+program: gemini
+cwd: /wt
+model: Some("gemini-2.5-flash")
+session_mode: None
+args:
+  -m
+  gemini-2.5-flash
+  --output-format
+  stream-json
+  -p
+  do the task
+env:
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  }
+}
+
+## endpoint headless
+program: gemini
+cwd: /wt
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  -m
+  vendor/model-1
+  --output-format
+  stream-json
+  -p
+  do the task
+env:
+  GEMINI_CLI_HOME=/state/x/config
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+  GEMINI_FORCE_FILE_STORAGE=true
+  GOOGLE_GEMINI_BASE_URL=https://provider.example
+  GEMINI_API_KEY=sk-endpoint-test
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "endpoint",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  }
+}
+
+## canned tools=[read] headless
+program: gemini
+cwd: /wt
+model: Some("gemini-2.5-flash")
+session_mode: None
+args:
+  -m
+  gemini-2.5-flash
+  --output-format
+  stream-json
+  -p
+  do the task
+env:
+  GEMINI_CLI_HOME=/state/x/config
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+  GEMINI_FORCE_FILE_STORAGE=true
+  GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8099
+  GEMINI_API_KEY=sk-fake
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  }
+}
+
+## canned tools=[write] headless
+program: gemini
+cwd: /wt
+model: Some("gemini-2.5-flash")
+session_mode: None
+args:
+  -m
+  gemini-2.5-flash
+  --output-format
+  stream-json
+  --approval-mode
+  auto_edit
+  -p
+  do the task
+env:
+  GEMINI_CLI_HOME=/state/x/config
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+  GEMINI_FORCE_FILE_STORAGE=true
+  GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8099
+  GEMINI_API_KEY=sk-fake
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  }
+}
+
+## canned tools=[edit] headless
+program: gemini
+cwd: /wt
+model: Some("gemini-2.5-flash")
+session_mode: None
+args:
+  -m
+  gemini-2.5-flash
+  --output-format
+  stream-json
+  --approval-mode
+  auto_edit
+  -p
+  do the task
+env:
+  GEMINI_CLI_HOME=/state/x/config
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+  GEMINI_FORCE_FILE_STORAGE=true
+  GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8099
+  GEMINI_API_KEY=sk-fake
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  }
+}
+
+## canned tools=[bash] headless
+program: gemini
+cwd: /wt
+model: Some("gemini-2.5-flash")
+session_mode: None
+args:
+  -m
+  gemini-2.5-flash
+  --output-format
+  stream-json
+  --allowed-tools
+  run_shell_command
+  -p
+  do the task
+env:
+  GEMINI_CLI_HOME=/state/x/config
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+  GEMINI_FORCE_FILE_STORAGE=true
+  GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8099
+  GEMINI_API_KEY=sk-fake
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  }
+}
+
+## canned tools=[all] headless
+program: gemini
+cwd: /wt
+model: Some("gemini-2.5-flash")
+session_mode: None
+args:
+  -m
+  gemini-2.5-flash
+  --output-format
+  stream-json
+  --approval-mode
+  auto_edit
+  --allowed-tools
+  run_shell_command
+  -p
+  do the task
+env:
+  GEMINI_CLI_HOME=/state/x/config
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH=/state/x/config/marion-settings.json
+  GEMINI_CLI_TRUST_WORKSPACE=true
+  GEMINI_FORCE_FILE_STORAGE=true
+  GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8099
+  GEMINI_API_KEY=sk-fake
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "canned",
+        "MARION_BASE_URL": "http://127.0.0.1:8099/v1",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  }
+}
+
+## live resume headless
+refused: gemini: this harness has no measured way to name a session to resume on this shape's command line; starting it fresh under a resumed session's id would be a launch the contract misdescribes
+file /state/x/config/marion-settings.json:
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "mcpServers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      },
+      "trust": true
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  }
+}

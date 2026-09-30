@@ -1,0 +1,163 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: goose
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  run
+  -t
+  do the task
+  --output-format
+  stream-json
+  -q
+  --no-session
+  --no-profile
+  --with-extension
+  marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
+env:
+  HOME=/state/x/config/home
+  GOOSE_PROVIDER=openai
+  GOOSE_MODEL=canned-1
+  OPENAI_HOST=http://127.0.0.1:8099/v1
+  OPENAI_BASE_PATH=chat/completions
+  OPENAI_API_KEY=sk-fake
+  GOOSE_MODE=auto
+
+## live headless
+program: goose
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  run
+  -t
+  do the task
+  --output-format
+  stream-json
+  -q
+  --no-session
+  --no-profile
+  --with-extension
+  marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=inherited MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
+env:
+  GOOSE_MODEL=canned-1
+  GOOSE_MODE=auto
+
+## endpoint headless
+program: goose
+cwd: /wt
+model: Some("vendor/model-1")
+session_mode: None
+args:
+  run
+  -t
+  do the task
+  --output-format
+  stream-json
+  -q
+  --no-session
+  --no-profile
+  --with-extension
+  marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=endpoint MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
+env:
+  HOME=/state/x/config/home
+  GOOSE_PROVIDER=openai
+  GOOSE_MODEL=vendor/model-1
+  OPENAI_HOST=https://provider.example/v1
+  OPENAI_BASE_PATH=chat/completions
+  OPENAI_API_KEY=sk-endpoint-test
+  GOOSE_MODE=auto
+
+## canned tools=[read] headless
+refused: goose: no mapping for marion tool `read`; this harness's adapter provides none
+
+## canned tools=[write] headless
+program: goose
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  run
+  -t
+  do the task
+  --output-format
+  stream-json
+  -q
+  --no-session
+  --no-profile
+  --with-builtin
+  developer
+  --with-extension
+  marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
+env:
+  HOME=/state/x/config/home
+  GOOSE_PROVIDER=openai
+  GOOSE_MODEL=canned-1
+  OPENAI_HOST=http://127.0.0.1:8099/v1
+  OPENAI_BASE_PATH=chat/completions
+  OPENAI_API_KEY=sk-fake
+  GOOSE_MODE=auto
+
+## canned tools=[edit] headless
+program: goose
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  run
+  -t
+  do the task
+  --output-format
+  stream-json
+  -q
+  --no-session
+  --no-profile
+  --with-builtin
+  developer
+  --with-extension
+  marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
+env:
+  HOME=/state/x/config/home
+  GOOSE_PROVIDER=openai
+  GOOSE_MODEL=canned-1
+  OPENAI_HOST=http://127.0.0.1:8099/v1
+  OPENAI_BASE_PATH=chat/completions
+  OPENAI_API_KEY=sk-fake
+  GOOSE_MODE=auto
+
+## canned tools=[bash] headless
+program: goose
+cwd: /wt
+model: Some("canned-1")
+session_mode: None
+args:
+  run
+  -t
+  do the task
+  --output-format
+  stream-json
+  -q
+  --no-session
+  --no-profile
+  --with-builtin
+  developer
+  --with-extension
+  marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
+env:
+  HOME=/state/x/config/home
+  GOOSE_PROVIDER=openai
+  GOOSE_MODEL=canned-1
+  OPENAI_HOST=http://127.0.0.1:8099/v1
+  OPENAI_BASE_PATH=chat/completions
+  OPENAI_API_KEY=sk-fake
+  GOOSE_MODE=auto
+
+## canned tools=[all] headless
+refused: goose: no mapping for marion tool `read`; this harness's adapter provides none
+
+## live resume headless
+refused: goose: this harness has no measured way to name a session to resume on this shape's command line; starting it fresh under a resumed session's id would be a launch the contract misdescribes
