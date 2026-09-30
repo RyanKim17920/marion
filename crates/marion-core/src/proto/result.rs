@@ -454,6 +454,13 @@ pub struct WorkflowRunResult {
     pub steps: u8,
 }
 
+/// `workflow/cancel`'s answer: each node of the run it ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCancelResult {
+    pub wf_id: crate::workflow::WorkflowId,
+    pub nodes: Vec<CancelledNode>,
+}
+
 /// `notify/claim`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotifyClaimResult {

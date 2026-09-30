@@ -6471,6 +6471,9 @@ impl Handle for RegistryHandle {
             Call::WorkflowRun(p) => self
                 .workflow_run(p, out.peer())
                 .map(MethodResult::WorkflowRun),
+            Call::WorkflowCancel(p) => self
+                .workflow_cancel(p, out.peer())
+                .map(MethodResult::WorkflowCancel),
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),

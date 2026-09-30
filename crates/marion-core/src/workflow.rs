@@ -1109,6 +1109,37 @@ impl WorkflowResult {
     }
 }
 
+/// **What a step's next nodes may spend together**: the least of the step's own cap and its share
+/// of the run's `total`, less what the step has already `step_committed`, and of what the run has
+/// left once everything it has `run_committed` is counted. Committed is spent by nodes that ended
+/// plus held by nodes still running, each holding its whole allowance, so two steps can never be
+/// promised the same tokens. `None` where nothing limits the step; `Some(0)` is a step that cannot
+/// run.
+pub fn step_allowance(
+    total: Option<u64>,
+    step: &Step,
+    step_committed: u64,
+    run_committed: u64,
+) -> Option<u64> {
+    let shared = step
+        .share
+        .zip(total)
+        // A share is at most 1, so the product fits where the total does.
+        .map(|(share, total)| (total as f64 * share) as u64);
+    let own = [step.tokens, shared]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|cap| cap.saturating_sub(step_committed));
+    let left = total.map(|t| t.saturating_sub(run_committed));
+    [own, left].into_iter().flatten().min()
+}
+
+/// An allowance split evenly across a step's `nodes`, each getting the floor.
+pub fn per_node(allowance: Option<u64>, nodes: usize) -> Option<u64> {
+    allowance.map(|a| a / u64::try_from(nodes.max(1)).unwrap_or(u64::MAX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1440,5 +1471,56 @@ mode = "ff"
         assert_eq!(next(&wf, &s), Next::Wait);
         s.steps[0] = Decided(StepVerdict::Cancelled);
         assert_eq!(next(&wf, &s), Next::Close(Outcome::Cancelled));
+    }
+
+    /// **A step gets the least of its cap, its share, and what the run has left**, less what it
+    /// has already committed; an unbudgeted run limits only a capped step, and a spent run gives
+    /// nothing.
+    #[test]
+    fn a_steps_allowance_is_the_least_of_its_cap_its_share_and_what_is_left() {
+        let step = |tokens, share| Step {
+            id: "s".into(),
+            kind: StepKind::Land {
+                of: 0,
+                mode: LandMode::Branch,
+            },
+            when: None,
+            tokens,
+            share,
+            timeout_secs: None,
+        };
+        let total = Some(100_000);
+        assert_eq!(
+            step_allowance(total, &step(None, None), 0, 30_000),
+            Some(70_000)
+        );
+        assert_eq!(
+            step_allowance(total, &step(None, Some(0.3)), 0, 0),
+            Some(30_000)
+        );
+        assert_eq!(
+            step_allowance(total, &step(Some(20_000), Some(0.3)), 0, 0),
+            Some(20_000),
+            "the cap is below the share"
+        );
+        assert_eq!(
+            step_allowance(total, &step(None, Some(0.3)), 10_000, 10_000),
+            Some(20_000),
+            "a later round has what the step has not committed"
+        );
+        assert_eq!(
+            step_allowance(total, &step(None, Some(0.5)), 0, 80_000),
+            Some(20_000),
+            "the run's remainder binds"
+        );
+        assert_eq!(
+            step_allowance(total, &step(None, None), 0, 150_000),
+            Some(0)
+        );
+        assert_eq!(step_allowance(None, &step(None, Some(0.5)), 0, 0), None);
+        assert_eq!(step_allowance(None, &step(Some(5), None), 9, 9), Some(0));
+        assert_eq!(per_node(Some(1001), 2), Some(500));
+        assert_eq!(per_node(None, 3), None);
+        assert_eq!(per_node(Some(7), 0), Some(7));
     }
 }

@@ -725,6 +725,28 @@ pub fn workflow_run(
     }
 }
 
+/// **Stop a workflow run** — `workflow/cancel`. Answers once each of its running nodes has ended
+/// (or, with `force`, been killed); a refusal is the supervisor's sentence, carried verbatim.
+pub fn workflow_cancel(
+    sock: &SocketPaths,
+    params: marion_core::proto::params::WorkflowCancelParams,
+) -> Result<marion_core::proto::result::WorkflowCancelResult, SpawnError> {
+    match Conn::dial(sock)?.ask(
+        Call::WorkflowCancel(params),
+        CANCEL_ANSWER_BOUND,
+        &format!(
+            "it did not answer `workflow/cancel` within {} s; the journal says what it ended",
+            CANCEL_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::WorkflowCancel(r) => Ok(r),
+        _ => Err(unreachable(
+            sock.socket(),
+            "it answered `workflow/cancel` with a result marion cannot read",
+        )),
+    }
+}
+
 /// What [`await_workflow`] found.
 pub enum WorkflowDelivered {
     /// The run closed and this is its scoreboard, read from `workflows/<id>/result.json`.

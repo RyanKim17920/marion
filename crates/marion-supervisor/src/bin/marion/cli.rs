@@ -63,7 +63,7 @@ pub const VERBS: &[Verb] = &[
     Verb {
         name: "workflow",
         aliases: &[],
-        summary: Some("list, show or check the workflows this project defines"),
+        summary: Some("list, check, run or cancel the workflows this project defines"),
         help: workflow_help,
         main: super::workflow::main,
     },
@@ -476,7 +476,8 @@ fn race_help() -> String {
 
 fn workflow_help() -> String {
     format!(
-        "usage: marion workflow list | show <name> | check <file> | run <name> [options]\n\
+        "usage: marion workflow list | show <name> | check <file> | run <name> [options] |\n\
+         \x20                      cancel <run id> [--force]\n\
          \n\
          A workflow is a sequence of steps, each run on the agents it names: an agent, several at\n\
          once, a race, a review with fixes, and landing the result. It lives in the repository\n\
@@ -488,9 +489,16 @@ fn workflow_help() -> String {
          \x20 run <name>    run it and print how each step ended; --input name=text gives an\n\
          \x20               input (--task <text> is --input task=<text>), --detach returns once\n\
          \x20               it has started. It exits 1 unless the run succeeds.\n\
+         \x20 cancel <id>   stop a run: it starts nothing more, its running agents are\n\
+         \x20               cancelled keeping their work, and it closes cancelled; --force\n\
+         \x20               kills them now.\n\
          \n\
          A repository's workflow runs only after `marion trust allow <file>`, and any edit to\n\
          the file revokes that. Your own need no trust.\n\
+         \n\
+         A workflow's budget splits across its steps: each gets its own cap, its share of the\n\
+         total, or what is left, whichever is least, divided among the agents it starts at once;\n\
+         and no step outlives the workflow's wall clock.\n\
          \n\
          {PLACE_HELP}"
     )

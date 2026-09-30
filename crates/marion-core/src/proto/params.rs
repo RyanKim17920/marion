@@ -640,6 +640,18 @@ pub struct WorkflowRunParams {
     pub repo: PathBuf,
 }
 
+/// `workflow/cancel` — **stop a workflow run**: it launches nothing more, each of its running
+/// nodes is cancelled as `node/cancel` would (keeping the work each committed), and the run closes
+/// cancelled once they have ended. `force` kills them now instead, and escalates a cancel already
+/// under way. The operator's alone, authorized by the socket's peer credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowCancelParams {
+    pub wf_id: crate::workflow::WorkflowId,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

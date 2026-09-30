@@ -367,17 +367,30 @@ impl RunValues<'_> {
 
     /// The run's state for [`marion_core::workflow::next`]: every step as it stands, the steps
     /// whose nodes have earned a verdict no decision records yet (for the driver to journal), and
-    /// the review nodes a running review step needs next (for the driver to launch).
+    /// the review nodes a running review step needs next (for the driver to launch). In a run the
+    /// operator cancelled, a step that ended without passing was cancelled, and a review launches
+    /// no further round.
     pub fn state(&self) -> Stepped {
         let wf = &self.spec.workflow;
+        let cancelled = self.run.cancel_requested;
         let mut state = WfState::new(wf);
+        state.cancelled = cancelled;
         let (mut earned, mut acts) = (Vec::new(), Vec::new());
         for i in 0..wf.steps.len() {
             state.steps[i] = match self.observe(i) {
                 Observed::State(s) => s,
                 Observed::Earned(v) => {
+                    let v = match v {
+                        StepVerdict::Succeeded | StepVerdict::Clean => v,
+                        _ if cancelled => StepVerdict::Cancelled,
+                        _ => v,
+                    };
                     earned.push((i, v));
                     StepState::Decided(v)
+                }
+                Observed::Act(_) if cancelled => {
+                    earned.push((i, StepVerdict::Cancelled));
+                    StepState::Decided(StepVerdict::Cancelled)
                 }
                 Observed::Act(a) => {
                     acts.push((i, a));
@@ -386,6 +399,26 @@ impl RunValues<'_> {
             };
         }
         (state, earned, acts)
+    }
+
+    /// **What the run has committed of its token budget**, or `step`'s part of it: what each node
+    /// that ended spent, and for each node still running the whole allowance it was given (or its
+    /// spend so far, if more, or with none).
+    pub fn committed(&self, step: Option<usize>) -> u64 {
+        self.run
+            .nodes
+            .iter()
+            .filter(|(seat, _)| step.is_none_or(|s| usize::from(seat.step) == s))
+            .filter_map(|(_, id)| self.node(id))
+            .map(|n| {
+                let spent = n.usage.map_or(0, |u| u.total());
+                let held = n.intent.as_ref().and_then(|i| i.budget?.tree_tokens);
+                match held {
+                    Some(held) if !ended(n) => held.max(spent),
+                    _ => spent,
+                }
+            })
+            .fold(0, u64::saturating_add)
     }
 
     /// **The commit a step builds on**: the work of the latest earlier step that left a branch and

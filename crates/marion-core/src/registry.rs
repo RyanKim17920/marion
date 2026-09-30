@@ -427,7 +427,8 @@ impl ReplayedNode {
             | RecordKind::RaceDecided(_)
             | RecordKind::WorkflowOpened(_)
             | RecordKind::WorkflowStepDecided(_)
-            | RecordKind::WorkflowClosed(_) => {
+            | RecordKind::WorkflowClosed(_)
+            | RecordKind::WorkflowCancelRequested(_) => {
                 unreachable!("a record about no one node returned before selecting a node")
             }
         }
@@ -641,6 +642,8 @@ pub struct ReplayedWorkflow {
     /// Every step decision, in journal order; a later one for a step (a review's later round)
     /// supersedes an earlier.
     pub decided: Vec<crate::journal::WorkflowStepDecided>,
+    /// The operator asked the run to stop: it launches nothing more.
+    pub cancel_requested: bool,
     pub closed: Option<crate::workflow::Outcome>,
 }
 
@@ -722,6 +725,7 @@ impl Replay {
                     opened: None,
                     nodes: Vec::new(),
                     decided: Vec::new(),
+                    cancel_requested: false,
                     closed: None,
                 });
                 self.workflows.len() - 1
@@ -751,6 +755,9 @@ impl Replay {
                         self.nodes[*i].workflow_closed = Some(c.outcome);
                     }
                 }
+            }
+            RecordKind::WorkflowCancelRequested(c) => {
+                self.workflow_mut(&c.wf_id).cancel_requested = true
             }
             RecordKind::SpawnIntent(i) => {
                 if let Some(seat) = &i.workflow {
@@ -2799,7 +2806,25 @@ mod tests {
             "the later round supersedes"
         );
         assert_eq!(fold.closed, Some(Outcome::Succeeded));
+        assert!(!fold.cancel_requested);
         assert_eq!(r.nodes().len(), 3, "the run's own records add no node");
         assert_eq!(r.workflows().len(), 1);
+
+        let mut cancelled = records;
+        cancelled.insert(
+            7,
+            record(
+                7,
+                RecordKind::WorkflowCancelRequested(crate::journal::WorkflowCancelRequested {
+                    wf_id: wf.clone(),
+                }),
+            ),
+        );
+        cancelled[8].seq = 8;
+        let r = replay(&bytes(&cancelled));
+        assert!(
+            r.workflow(&wf).unwrap().cancel_requested,
+            "a cancel request folds"
+        );
     }
 }

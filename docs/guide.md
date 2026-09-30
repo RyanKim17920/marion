@@ -256,10 +256,16 @@ last step before it that did. A `review` step (`of = "<step>"`, optionally `on` 
 work's own agent type, cut at its commit, and the fix is reviewed again, until a round is clean
 (`clean`) or the last one still blocks (`blocked`). `{gate.findings}` is the last review's list.
 
+`budget = { tokens = 2_000_000, wall = "45m" }` bounds the whole run. Each step's agents get the
+least of the step's own `tokens`, its `share` of the total, and what the run has left, split evenly
+among the agents it starts at once; an agent that spends its part is cancelled like any over-budget
+agent. No step's `timeout` outlives the run's wall clock.
+
 ```sh
 marion workflow list                      # every workflow, and whether it may run
 marion workflow check .marion/workflows/ship.toml   # what it would run
 marion workflow run ship --task "add rate limiting"  # watch it; exits 1 unless it succeeds
+marion workflow cancel <run id>           # start nothing more, cancel what runs, keep its work
 ```
 
 A repository's workflow runs only after `marion trust allow <file>`, which shows every step, agent

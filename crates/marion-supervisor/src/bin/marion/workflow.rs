@@ -1,5 +1,5 @@
 //! **`marion workflow`**: the workflows a project and its operator define — `list` them, `show` one,
-//! `check` a file before trusting it or running it.
+//! `check` a file before trusting it or running it, `run` one, `cancel` a run.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -16,6 +16,8 @@ pub struct WorkflowArgs {
     /// `run`'s `--input k=v` (and `--task` for `task`), in order.
     pub inputs: Vec<(String, String)>,
     pub detach: bool,
+    /// `cancel --force`: kill the run's nodes now.
+    pub force: bool,
     pub place: Place,
     pub backend: Backend,
 }
@@ -39,6 +41,7 @@ pub fn parse(argv: &[String]) -> Result<WorkflowArgs, Exit> {
                 args.inputs.push(("task".into(), task));
             }
             Word::Flag("--detach", v) => args.detach = cli::switch("--detach", v)?,
+            Word::Flag("--force", v) => args.force = cli::switch("--force", v)?,
             Word::Flag(f, _) => return Err(cli::unknown(f)),
             Word::Plain(w) if args.verb.is_empty() => args.verb = w.to_string(),
             Word::Plain(w) => args.rest.push(w.to_string()),
@@ -59,14 +62,15 @@ pub fn parse(argv: &[String]) -> Result<WorkflowArgs, Exit> {
             1,
             "usage: marion workflow run <name> [--input name=text]… [--detach]",
         )?,
+        "cancel" => want(1, "usage: marion workflow cancel <run id> [--force]")?,
         "" => {
             return Err(Exit::Usage(
-                "say list, show <name>, check <file> or run <name>".into(),
+                "say list, show <name>, check <file>, run <name> or cancel <run id>".into(),
             ));
         }
         other => {
             return Err(Exit::Usage(format!(
-                "`{other}` is not a workflow verb; try list, show, check or run"
+                "`{other}` is not a workflow verb; try list, show, check, run or cancel"
             )));
         }
     }
@@ -80,6 +84,9 @@ pub fn main(argv: &[String]) -> Result<ExitCode, Exit> {
     };
     if args.verb == "run" {
         return Ok(run_workflow(&args, &repo, &state).unwrap_or_else(|code| code));
+    }
+    if args.verb == "cancel" {
+        return Ok(cancel_workflow(&args, &repo, &state));
     }
     let user = workflow_file::user_dir();
     let mut out = std::io::stdout().lock();
@@ -220,6 +227,37 @@ fn run_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> Result<ExitCo
         Err(e) => {
             eprintln!("marion: {e}");
             Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// `marion workflow cancel`: ask this project's running supervisor to stop the run, and say which
+/// of its nodes that ended. Starts no supervisor: a run with none has nothing running.
+fn cancel_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> ExitCode {
+    use marion_supervisor::{courier, socket};
+    let sock = socket::socket_paths(state, &socket::project_root(repo), socket::own_uid());
+    let wf_id = marion_core::workflow::WorkflowId(args.rest[0].clone());
+    match courier::workflow_cancel(
+        &sock,
+        marion_core::proto::params::WorkflowCancelParams {
+            wf_id: wf_id.clone(),
+            force: args.force,
+        },
+    ) {
+        Ok(r) => {
+            for n in &r.nodes {
+                let how = if n.forced { "killed" } else { "cancelled" };
+                println!("{how} {}", n.agent_id.0);
+            }
+            eprintln!(
+                "marion: workflow {} is cancelled; it launches nothing more",
+                wf_id.0
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
         }
     }
 }

@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use marion_core::journal::RecordKind;
 use marion_core::paths::ProjectDir;
@@ -16,7 +18,7 @@ use marion_core::proto::notify::Event as Note;
 use marion_core::proto::params::WorkflowRunParams;
 use marion_core::proto::{Call, Method, MethodResult};
 use marion_core::workflow::{Outcome as RunOutcome, StepVerdict, WorkflowId};
-use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
+use marion_provider::{CannedServer, Config, Hold, NodeScript, Script, ScriptedCall};
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{fixture_repo, scratch};
 use serde_json::json;
@@ -74,6 +76,11 @@ impl Drop for Bed {
 }
 
 fn bed(tag: &str, script: Script) -> Option<Bed> {
+    bed_held(tag, script, None)
+}
+
+/// A bed whose provider consults `hold` before each answer.
+fn bed_held(tag: &str, script: Script, hold: Option<Arc<dyn Hold>>) -> Option<Bed> {
     if !marion_testsupport::harness_available("claude") {
         return None;
     }
@@ -87,11 +94,14 @@ fn bed(tag: &str, script: Script) -> Option<Bed> {
     }
     let key = project_root(&repo);
     let reqlog = dir.join("provider-requests.jsonl");
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: reqlog.clone(),
-        script,
-    })
+    let server = CannedServer::start_held(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: reqlog.clone(),
+            script,
+        },
+        hold,
+    )
     .expect("the canned provider binds");
     let sup = common::Supervisor::start_with(
         &state,
@@ -144,11 +154,26 @@ impl Bed {
         name: &str,
         inputs: &[(&str, &str)],
     ) -> marion_core::workflow::WorkflowResult {
-        let paths = paths_for(&self.state, &self.repo);
-        let mut watcher = Client::dial(&paths);
+        let mut watcher = self.watcher();
+        let wf = self.run(name, inputs).expect("the run opens");
+        self.await_close(&mut watcher, &wf)
+    }
+
+    /// A client subscribed to the tree, to watch for a run's close.
+    fn watcher(&self) -> Client {
+        let mut watcher = Client::dial(&paths_for(&self.state, &self.repo));
         watcher.read_bound(BOUND);
         watcher.tree();
-        let wf = self.run(name, inputs).expect("the run opens");
+        watcher
+    }
+
+    /// Wait for run `wf` to close: its result.
+    fn await_close(
+        &self,
+        watcher: &mut Client,
+        wf: &WorkflowId,
+    ) -> marion_core::workflow::WorkflowResult {
+        let wf = wf.clone();
         let closed = |n: &marion_core::proto::model::NodeSummary| {
             n.workflow
                 .as_ref()
@@ -169,6 +194,30 @@ impl Bed {
         }
         marion_supervisor::workflow::read_result(&self.project, &wf)
             .expect("the result is on disk once the close is announced")
+    }
+
+    /// `marion workflow <args>` against the bed: its exit code and stdout.
+    fn cli(&self, args: &[&str]) -> (Option<i32>, String) {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
+        cmd.arg("workflow")
+            .args(args)
+            .arg("--repo")
+            .arg(&self.repo)
+            .arg("--state-dir")
+            .arg(&self.state);
+        for (k, v) in [
+            ("XDG_CONFIG_HOME", &self.config),
+            ("XDG_DATA_HOME", &self.data),
+        ] {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().expect("marion runs");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text)
     }
 
     /// The provider requests whose body contains `marker`.
@@ -660,5 +709,211 @@ fn a_review_still_blocking_at_its_last_round_fails_the_run() {
     assert!(
         bed.requests_with("AFTERMARK").is_empty(),
         "nothing ran after the blocked review"
+    );
+}
+
+/// **A hold on every request that carries `marker`**, until released: the nodes it catches have
+/// asked their question and wait for an answer, so a test can act on them mid-turn.
+#[derive(Debug)]
+struct MarkerHold {
+    marker: String,
+    parked: AtomicU64,
+    released: Mutex<bool>,
+    wake: Condvar,
+}
+
+impl MarkerHold {
+    fn new(marker: &str) -> Arc<MarkerHold> {
+        Arc::new(MarkerHold {
+            marker: marker.into(),
+            parked: AtomicU64::new(0),
+            released: Mutex::new(false),
+            wake: Condvar::new(),
+        })
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+
+    /// Wait, bounded, until `n` requests are held.
+    fn await_parked(&self, n: u64) {
+        let until = Instant::now() + BOUND;
+        while self.parked.load(Ordering::SeqCst) < n {
+            assert!(Instant::now() < until, "{n} requests were never held");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Hold for MarkerHold {
+    fn wait_for(&self, wire: Option<&str>, body: &serde_json::Value) {
+        if wire != Some("anthropic") || !body.to_string().contains(&self.marker) {
+            return;
+        }
+        let mut released = self.released.lock().unwrap();
+        self.parked.fetch_add(1, Ordering::SeqCst);
+        while !*released {
+            released = self.wake.wait(released).unwrap();
+        }
+        self.parked.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// **(h) `marion workflow cancel` during a race** cancels every running seat, as the workflow's
+/// cancel, launches nothing more, and closes the run cancelled; a closed run cannot be cancelled
+/// again.
+#[test]
+fn cancelling_a_run_during_its_race_stops_the_seats_and_closes_it_cancelled() {
+    let script = Script {
+        nodes: vec![
+            node("wf-hold-one", &["one.txt"], "seat one"),
+            node("wf-hold-two", &["two.txt"], "seat two"),
+            node("AFTERMARK", &[], "after"),
+        ],
+        ..Script::default()
+    };
+    let hold = MarkerHold::new("wf-hold-");
+    let Some(bed) = bed_held("wf-cancel", script, Some(hold.clone())) else {
+        return;
+    };
+    bed.user_workflow(
+        "held",
+        r#"schema = 1
+name = "held"
+
+[[step]]
+id = "impl"
+kind = "race"
+on = ["claude:wf-hold-one", "claude:wf-hold-two"]
+prompt = "Write your file."
+verify = ["true"]
+
+[[step]]
+id = "after"
+kind = "agent"
+on = "claude"
+prompt = "AFTERMARK"
+"#,
+    );
+    let mut watcher = bed.watcher();
+    let wf = bed.run("held", &[]).expect("the run opens");
+    hold.await_parked(2);
+    let (code, out) = bed.cli(&["cancel", &wf.0]);
+    hold.release();
+    assert_eq!(code, Some(0), "{out}");
+    let result = bed.await_close(&mut watcher, &wf);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Cancelled,
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(result.steps[0].verdict, Some(StepVerdict::Cancelled));
+    assert!(
+        bed.requests_with("AFTERMARK").is_empty(),
+        "nothing ran after the cancel"
+    );
+
+    let journal = records(&bed.project.journal());
+    assert!(
+        journal
+            .iter()
+            .any(|k| matches!(k, RecordKind::WorkflowCancelRequested(c) if c.wf_id == wf))
+    );
+    let by_workflow = journal
+        .iter()
+        .filter(|k| {
+            matches!(k, RecordKind::CancelRequested(c)
+            if c.by == marion_core::journal::CancelBy::Workflow { wf_id: wf.clone() })
+        })
+        .count();
+    assert_eq!(
+        by_workflow, 2,
+        "each seat was cancelled as the workflow's cancel"
+    );
+
+    let (code, out) = bed.cli(&["cancel", &wf.0]);
+    assert_ne!(code, Some(0), "a closed run is not cancelled again: {out}");
+}
+
+/// **(i) Each step node carries its share of the run's budget and clock**: a step's `share` of the
+/// total, a parallel step's allowance split across its nodes, a step's own cap, and every step's
+/// timeout clamped under the run's wall.
+#[test]
+fn step_nodes_carry_their_share_of_the_runs_budget_and_wall() {
+    let script = Script {
+        nodes: vec![
+            node("SHAREMARK", &[], "a"),
+            node("SPLITMARK", &[], "b"),
+            node("CAPMARK", &[], "c"),
+        ],
+        ..Script::default()
+    };
+    let Some(bed) = bed("wf-budget", script) else {
+        return;
+    };
+    bed.user_workflow(
+        "budgeted",
+        r#"schema = 1
+name = "budgeted"
+budget = { tokens = 1000, wall = "10m" }
+
+[[step]]
+id = "a"
+kind = "agent"
+on = "claude"
+prompt = "SHAREMARK"
+share = 0.3
+timeout = "1h"
+
+[[step]]
+id = "b"
+kind = "parallel"
+on = ["claude", "claude"]
+prompt = "SPLITMARK"
+
+[[step]]
+id = "c"
+kind = "agent"
+on = "claude"
+prompt = "CAPMARK"
+tokens = 100
+"#,
+    );
+    let result = bed.run_to_close("budgeted", &[]);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Succeeded,
+        "{}",
+        result.scoreboard()
+    );
+    let journal = records(&bed.project.journal());
+    let mut caps: Vec<(u8, Option<u64>, Option<u64>)> = journal
+        .iter()
+        .filter_map(|k| match k {
+            RecordKind::SpawnIntent(i) => i
+                .workflow
+                .as_ref()
+                .map(|s| (s.step, i.budget.and_then(|b| b.tree_tokens), i.timeout_secs)),
+            _ => None,
+        })
+        .collect();
+    caps.sort();
+    let tokens: Vec<_> = caps.iter().map(|(s, t, _)| (*s, *t)).collect();
+    // The canned claude spends nothing, so each allowance is the whole of what is left.
+    assert_eq!(
+        tokens,
+        [
+            (0, Some(300)),
+            (1, Some(500)),
+            (1, Some(500)),
+            (2, Some(100))
+        ]
+    );
+    assert!(
+        caps.iter().all(|(_, _, t)| t.is_some_and(|t| t <= 600)),
+        "every timeout is under the ten-minute wall: {caps:?}"
     );
 }

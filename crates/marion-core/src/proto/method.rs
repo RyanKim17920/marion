@@ -20,13 +20,13 @@ use crate::proto::params::{
     NodeCollectedParams, NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams,
     NodeRenameParams, NodeResumeParams, NodeSteerParams, NotifyClaimParams, NotifyConfigureParams,
     POLICY_SET_UNSPECIFIED, PermissionReplyParams, SessionHelloParams, SessionQuitParams,
-    TreeSubscribeParams, UnspecifiedPolicy, WorkflowRunParams,
+    TreeSubscribeParams, UnspecifiedPolicy, WorkflowCancelParams, WorkflowRunParams,
 };
 use crate::proto::result::{
     AgentSpawnResult, DeliveryResult, DoctorRunResult, NodeAttachResult, NodeCancelResult,
     NodeCollectedResult, NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult,
     NodeResumeResult, NotifyClaimResult, NotifyConfigureResult, ReplyResult, SessionHelloResult,
-    SessionQuitResult, TreeSubscribeResult, WorkflowRunResult,
+    SessionQuitResult, TreeSubscribeResult, WorkflowCancelResult, WorkflowRunResult,
 };
 
 /// §2's client↔supervisor method list.
@@ -68,6 +68,8 @@ pub enum Method {
     NotifyConfigure,
     /// Start a workflow run (`marion workflow run`).
     WorkflowRun,
+    /// Stop a workflow run (`marion workflow cancel`).
+    WorkflowCancel,
 }
 
 impl Method {
@@ -96,10 +98,11 @@ impl Method {
             Method::SessionHello => "session/hello",
             Method::NotifyConfigure => "notify/configure",
             Method::WorkflowRun => "workflow/run",
+            Method::WorkflowCancel => "workflow/cancel",
         }
     }
 
-    pub const ALL: [Method; 21] = [
+    pub const ALL: [Method; 22] = [
         Method::TreeSubscribe,
         Method::NodeGet,
         Method::NodeAttach,
@@ -121,6 +124,7 @@ impl Method {
         Method::SessionHello,
         Method::NotifyConfigure,
         Method::WorkflowRun,
+        Method::WorkflowCancel,
     ];
 
     pub fn from_wire(s: &str) -> Option<Method> {
@@ -169,6 +173,7 @@ impl Method {
             Method::SessionHello => MethodResult::SessionHello(take(self, body)?),
             Method::NotifyConfigure => MethodResult::NotifyConfigure(take(self, body)?),
             Method::WorkflowRun => MethodResult::WorkflowRun(take(self, body)?),
+            Method::WorkflowCancel => MethodResult::WorkflowCancel(take(self, body)?),
         })
     }
 }
@@ -230,6 +235,8 @@ pub enum Call {
     NotifyConfigure(NotifyConfigureParams),
     #[serde(rename = "workflow/run")]
     WorkflowRun(WorkflowRunParams),
+    #[serde(rename = "workflow/cancel")]
+    WorkflowCancel(WorkflowCancelParams),
 }
 
 impl Call {
@@ -256,6 +263,7 @@ impl Call {
             Call::SessionHello(_) => Method::SessionHello,
             Call::NotifyConfigure(_) => Method::NotifyConfigure,
             Call::WorkflowRun(_) => Method::WorkflowRun,
+            Call::WorkflowCancel(_) => Method::WorkflowCancel,
         }
     }
 }
@@ -289,6 +297,7 @@ pub enum MethodResult {
     SessionHello(SessionHelloResult),
     NotifyConfigure(NotifyConfigureResult),
     WorkflowRun(WorkflowRunResult),
+    WorkflowCancel(WorkflowCancelResult),
 }
 
 impl MethodResult {
@@ -315,6 +324,7 @@ impl MethodResult {
             MethodResult::SessionHello(_) => Method::SessionHello,
             MethodResult::NotifyConfigure(_) => Method::NotifyConfigure,
             MethodResult::WorkflowRun(_) => Method::WorkflowRun,
+            MethodResult::WorkflowCancel(_) => Method::WorkflowCancel,
         }
     }
 
@@ -344,6 +354,7 @@ impl MethodResult {
             MethodResult::SessionHello(r) => v(r),
             MethodResult::NotifyConfigure(r) => v(r),
             MethodResult::WorkflowRun(r) => v(r),
+            MethodResult::WorkflowCancel(r) => v(r),
         }
     }
 }
@@ -658,6 +669,16 @@ mod tests {
                     steps: 3,
                 }),
             ),
+            (
+                Call::WorkflowCancel(crate::proto::params::WorkflowCancelParams {
+                    wf_id: crate::workflow::WorkflowId("w-1".into()),
+                    force: true,
+                }),
+                MethodResult::WorkflowCancel(crate::proto::result::WorkflowCancelResult {
+                    wf_id: crate::workflow::WorkflowId("w-1".into()),
+                    nodes: vec![],
+                }),
+            ),
         ]
     }
 
@@ -665,9 +686,9 @@ mod tests {
     fn the_method_list_is_fifteen() {
         assert_eq!(
             Method::ALL.len(),
-            21,
+            22,
             "§2's fifteen plus node/resume (plan step 6), node/collected, notify/claim, \
-             session/hello, notify/configure and workflow/run"
+             session/hello, notify/configure, workflow/run and workflow/cancel"
         );
         let mut names: Vec<&str> = Method::ALL.iter().map(|m| m.as_str()).collect();
         assert_eq!(
@@ -694,6 +715,7 @@ mod tests {
                 "session/hello",
                 "notify/configure",
                 "workflow/run",
+                "workflow/cancel",
             ],
             "the list, in §2's order"
         );

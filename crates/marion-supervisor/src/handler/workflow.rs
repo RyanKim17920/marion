@@ -6,9 +6,12 @@
 use std::sync::Arc;
 
 use marion_core::contract::{AgentId, Isolation};
-use marion_core::journal::{RecordKind, WorkflowClosed, WorkflowOpened, WorkflowStepDecided};
-use marion_core::proto::params::WorkflowRunParams;
-use marion_core::proto::result::WorkflowRunResult;
+use marion_core::journal::{
+    CancelBy, RecordKind, WorkflowCancelRequested, WorkflowClosed, WorkflowOpened,
+    WorkflowStepDecided,
+};
+use marion_core::proto::params::{NodeKillParams, WorkflowCancelParams, WorkflowRunParams};
+use marion_core::proto::result::{CancelledNode, WorkflowCancelResult, WorkflowRunResult};
 use marion_core::workflow::{Next, StepKind, StepVerdict, WorkflowId, WorkflowSeat};
 
 use super::{DEFAULT_SPAWN_TIMEOUT_SECS, RegistryHandle, RpcError, lock, mint_task_id};
@@ -104,6 +107,142 @@ impl RegistryHandle {
         Ok(WorkflowRunResult { wf_id, name, steps })
     }
 
+    /// `workflow/cancel`: journal the request, so the run launches nothing more (after a restart
+    /// too), then cancel each of its running nodes as `node/cancel` would, keeping the work each
+    /// committed — or, with `force`, kill them now, which also escalates a cancel under way. The
+    /// run closes cancelled once they have ended.
+    pub(super) fn workflow_cancel(
+        &self,
+        p: &WorkflowCancelParams,
+        peer: Peer,
+    ) -> Result<WorkflowCancelResult, RpcError> {
+        super::root_spawn_authorized(peer)?;
+        self.live.refresh();
+        let run = self
+            .live
+            .read(|r| r.tree().workflow(&p.wf_id).cloned())
+            .filter(|w| w.opened.is_some())
+            .ok_or_else(|| {
+                RpcError::not_found(
+                    &p.wf_id.0,
+                    format!(
+                        "this project's journal records no workflow run `{}`. Nothing was \
+                         cancelled.",
+                        p.wf_id.0
+                    ),
+                    "workflow",
+                )
+            })?;
+        if let Some(outcome) = run.closed {
+            return Err(RpcError::refused(
+                "wf_id",
+                format!(
+                    "workflow run `{}` has already closed ({}). Nothing was cancelled.",
+                    p.wf_id.0,
+                    outcome.word()
+                ),
+                "workflow",
+            ));
+        }
+        if run.cancel_requested && !p.force {
+            return Err(RpcError::conflict(
+                &p.wf_id.0,
+                "the run is already being cancelled; `marion workflow cancel --force` kills its \
+                 nodes now.",
+                "workflow",
+            ));
+        }
+        if !run.cancel_requested {
+            self.journal_append(RecordKind::WorkflowCancelRequested(
+                WorkflowCancelRequested {
+                    wf_id: p.wf_id.clone(),
+                },
+            ))
+            .map_err(|e| {
+                RpcError::internal(format!(
+                    "marion could not journal the cancel, so nothing was cancelled: {e}"
+                ))
+            })?;
+        }
+        // Listed under the spawn decision: a step launch either journaled its intent before this
+        // read, or reads the request under the same lock and starts nothing.
+        let running: Vec<AgentId> = {
+            let _decision = lock(&self.spawn_decision);
+            self.live.refresh();
+            self.live.read(|r| {
+                let tree = r.tree();
+                tree.workflow(&p.wf_id)
+                    .map(|w| {
+                        w.nodes
+                            .iter()
+                            .filter_map(|(_, id)| tree.get(id))
+                            .filter(|n| {
+                                !n.state.is_exited()
+                                    && n.reap_state == marion_core::node::ReapState::Live
+                            })
+                            .map(|n| n.agent_id.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        // At once rather than one grace after another: a race's seats end together.
+        let ended: Vec<CancelledNode> = std::thread::scope(|scope| {
+            let each: Vec<_> = running
+                .iter()
+                .map(|id| scope.spawn(move || self.end_step_node(id, &p.wf_id, p.force, peer)))
+                .collect();
+            each.into_iter()
+                .filter_map(|h| h.join().ok())
+                .flatten()
+                .collect()
+        });
+        self.drive_workflow(&p.wf_id);
+        Ok(WorkflowCancelResult {
+            wf_id: p.wf_id.clone(),
+            nodes: ended,
+        })
+    }
+
+    /// End one running node of a cancelled run: its subtree cancelled as the run's cancel, or
+    /// with `force` killed now. A node that ended on its own meanwhile is no failure.
+    fn end_step_node(
+        &self,
+        id: &AgentId,
+        wf_id: &WorkflowId,
+        force: bool,
+        peer: Peer,
+    ) -> Vec<CancelledNode> {
+        let ended = if force {
+            self.node_kill(
+                &NodeKillParams {
+                    agent_id: id.clone(),
+                },
+                peer,
+            )
+            .map(|_| {
+                vec![CancelledNode {
+                    agent_id: id.clone(),
+                    forced: true,
+                }]
+            })
+        } else {
+            self.cancel_tree(
+                id,
+                CancelBy::Workflow {
+                    wf_id: wf_id.clone(),
+                },
+            )
+        };
+        ended.unwrap_or_else(|e| {
+            eprintln!(
+                "marion: workflow {}'s cancel did not end {}: {}",
+                wf_id.0, id.0, e.message
+            );
+            Vec::new()
+        })
+    }
+
     /// **Step a run and do what the step says**, until it has to wait: journal the steps whose
     /// nodes have all ended, skip what an unmet `when` skips, launch the next step, or close the
     /// run. Reads the state afresh from the journal every time, so it is safe to call twice or
@@ -160,7 +299,7 @@ impl RegistryHandle {
                             .into_iter()
                             .map(|n| n.agent_id.clone())
                             .collect();
-                        self.decide_step(wf_id, step, StepVerdict::Failed, ids);
+                        self.decide_step(wf_id, step, self.unstarted(wf_id), ids);
                     }
                 }
                 continue;
@@ -173,7 +312,7 @@ impl RegistryHandle {
                 Next::Launch { step } => {
                     if !self.launch_step(wf_id, &env, &values, step) {
                         // Nothing started: the step failed where it stood.
-                        self.decide_step(wf_id, step, StepVerdict::Failed, Vec::new());
+                        self.decide_step(wf_id, step, self.unstarted(wf_id), Vec::new());
                         continue;
                     }
                     return;
@@ -209,6 +348,38 @@ impl RegistryHandle {
                 }
             }
         }
+    }
+
+    /// Whether the operator has asked run `wf_id` to stop, as the journal has it now. Read again
+    /// under the spawn decision before each launch, so a cancel journaled after the run was stepped
+    /// still stops it: `workflow/cancel` lists the run's nodes under that same lock.
+    fn cancel_requested(&self, wf_id: &WorkflowId) -> bool {
+        self.live.refresh();
+        self.live
+            .read(|r| r.tree().workflow(wf_id).is_some_and(|w| w.cancel_requested))
+    }
+
+    /// The verdict of a step whose node could not start: cancelled in a run being cancelled.
+    fn unstarted(&self, wf_id: &WorkflowId) -> StepVerdict {
+        if self.cancel_requested(wf_id) {
+            StepVerdict::Cancelled
+        } else {
+            StepVerdict::Failed
+        }
+    }
+
+    /// A step node's budget: its agent type's, with the tree limit narrowed to `allowance`.
+    fn step_budget(
+        &self,
+        repo: &std::path::Path,
+        agent_type: &str,
+        allowance: Option<u64>,
+    ) -> Option<marion_core::budget::Budget> {
+        marion_core::budget::resolve(
+            self.child_budget(repo, agent_type, None, None),
+            None,
+            allowance,
+        )
     }
 
     fn decide_step(
@@ -272,6 +443,21 @@ impl RegistryHandle {
             },
             base: base.clone(),
         };
+        // A race's seats share its allowance as a parallel step's nodes do.
+        let nodes = match &def.kind {
+            StepKind::Race { on, .. } => on.len(),
+            kind => crate::workflow::expected_nodes(kind),
+        };
+        let limits = match limits(values, step, nodes) {
+            Ok(l) => l,
+            Err(why) => {
+                eprintln!(
+                    "marion: workflow {}'s step `{}` did not start: {why}",
+                    wf_id.0, def.id
+                );
+                return false;
+            }
+        };
         if let StepKind::Race {
             on,
             prompt,
@@ -280,9 +466,12 @@ impl RegistryHandle {
             prune,
         } = &def.kind
         {
+            if self.cancel_requested(wf_id) {
+                return false;
+            }
             let p = marion_core::proto::params::AgentSpawnParams {
                 wider_children: None,
-                budget_tokens: None,
+                budget_tokens: limits.tokens,
                 review_of: None,
                 notify_parent: false,
                 agent_type: String::new(),
@@ -293,7 +482,7 @@ impl RegistryHandle {
                 acceptance_criteria: vec![],
                 verification: verify.clone(),
                 writable_scope: vec![],
-                timeout_secs: def.timeout_secs,
+                timeout_secs: Some(limits.timeout_secs),
                 model: None,
                 no_change_record: None,
                 pane: None,
@@ -340,7 +529,7 @@ impl RegistryHandle {
         let mut started = 0;
         for (part, agent) in agents.iter().enumerate() {
             let req = crate::run::SpawnRequest {
-                budget: None,
+                budget: self.step_budget(&spec.repo, &agent.agent_type, limits.tokens),
                 review: None,
                 agent_type: agent.agent_type.clone(),
                 prompt: text.clone(),
@@ -349,7 +538,7 @@ impl RegistryHandle {
                 verification: verify.clone(),
                 race: None,
                 writable_scope: vec![],
-                timeout_secs: def.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+                timeout_secs: limits.timeout_secs,
                 model: agent.model.clone(),
                 isolation: Isolation::Worktree,
                 allow_concurrent_writes: false,
@@ -359,6 +548,9 @@ impl RegistryHandle {
                 workflow: Some(launch(part)),
             };
             let decision = lock(&self.spawn_decision);
+            if self.cancel_requested(wf_id) {
+                break;
+            }
             let launched = mint_task_id().and_then(|task_id| {
                 self.launch_child(
                     me.clone(),
@@ -416,7 +608,17 @@ impl RegistryHandle {
                 base,
             }
         };
-        let timeout_secs = def.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS);
+        let limits = match limits(values, step, 1) {
+            Ok(l) => l,
+            Err(why) => {
+                eprintln!(
+                    "marion: workflow {}'s review `{}` did not start its next node: {why}",
+                    wf_id.0, def.id
+                );
+                return false;
+            }
+        };
+        let timeout_secs = limits.timeout_secs;
         let req = match act {
             crate::workflow::Act::Review { round, target } => {
                 let reviewed = match self.reviewed(env, target) {
@@ -441,7 +643,7 @@ impl RegistryHandle {
                     ),
                 };
                 crate::run::SpawnRequest {
-                    budget: None,
+                    budget: self.step_budget(&spec.repo, &agent_type, limits.tokens),
                     prompt: crate::review::prompt(&reviewed.review, &reviewed.contract),
                     review: Some(reviewed.review),
                     agent_type,
@@ -483,7 +685,7 @@ impl RegistryHandle {
                 };
                 let findings = crate::workflow::findings_text(&rev_contract).unwrap_or_default();
                 crate::run::SpawnRequest {
-                    budget: None,
+                    budget: self.step_budget(&spec.repo, &intent.agent_type, limits.tokens),
                     review: None,
                     agent_type: intent.agent_type.clone(),
                     prompt: fix_prompt(&findings, &work_contract.instructions.value),
@@ -512,6 +714,9 @@ impl RegistryHandle {
             }
         };
         let decision = lock(&self.spawn_decision);
+        if self.cancel_requested(wf_id) {
+            return false;
+        }
         let launched = mint_task_id().and_then(|task_id| {
             self.launch_child(
                 me,
@@ -561,6 +766,54 @@ impl RegistryHandle {
             }
         }
     }
+}
+
+/// What each of a step's next nodes is given: its part of the step's token allowance, and its
+/// wall clock.
+struct Limits {
+    tokens: Option<u64>,
+    timeout_secs: u64,
+}
+
+/// **What step `step`'s next `nodes` nodes are given** ([`marion_core::workflow::step_allowance`]),
+/// each an even part of the step's allowance, with a wall clock that is the step's own clamped
+/// under what is left of the run's. `Err` saying why where the run's budget or clock is spent,
+/// which fails the step before anything starts.
+fn limits(
+    values: &crate::workflow::RunValues<'_>,
+    step: usize,
+    nodes: usize,
+) -> Result<Limits, String> {
+    let def = &values.spec.workflow.steps[step];
+    let opened = values.run.opened.as_ref();
+    let allowance = marion_core::workflow::step_allowance(
+        opened.and_then(|o| o.budget_tokens),
+        def,
+        values.committed(Some(step)),
+        values.committed(None),
+    );
+    let tokens = marion_core::workflow::per_node(allowance, nodes);
+    if tokens == Some(0) {
+        return Err("the run's token budget has nothing left for it".into());
+    }
+    let own = def.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS);
+    let timeout_secs = match opened.and_then(|o| o.deadline) {
+        None => own,
+        Some(deadline) => {
+            let left = deadline
+                .0
+                .duration_since(std::time::SystemTime::now())
+                .map_or(0, |d| d.as_secs());
+            if left == 0 {
+                return Err("the run's wall clock is spent".into());
+            }
+            own.min(left)
+        }
+    };
+    Ok(Limits {
+        tokens,
+        timeout_secs,
+    })
 }
 
 /// **The fixer's task**: the grounded findings, fenced as another agent's words, and the task the

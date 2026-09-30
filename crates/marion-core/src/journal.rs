@@ -229,6 +229,9 @@ pub enum RecordKind {
     WorkflowStepDecided(WorkflowStepDecided),
     /// A workflow run ended. Not a barrier, for the same reason.
     WorkflowClosed(WorkflowClosed),
+    /// The operator asked a workflow run to stop: durable before any of its nodes is cancelled,
+    /// so a restart launches nothing past it. About no one node.
+    WorkflowCancelRequested(WorkflowCancelRequested),
     /// A node's spend crossed a line of its budget ([`crate::budget`]): the warn line, which tells
     /// the owner once, or the limit, which the [`Self::CancelRequested`] it precedes acts on. Not a
     /// barrier: the cancel that follows a `Stop` is.
@@ -295,7 +298,8 @@ impl RecordKind {
             | RecordKind::RaceDecided(_)
             | RecordKind::WorkflowOpened(_)
             | RecordKind::WorkflowStepDecided(_)
-            | RecordKind::WorkflowClosed(_) => None,
+            | RecordKind::WorkflowClosed(_)
+            | RecordKind::WorkflowCancelRequested(_) => None,
         }
     }
 
@@ -308,6 +312,7 @@ impl RecordKind {
                 | RecordKind::WorkflowOpened(_)
                 | RecordKind::WorkflowStepDecided(_)
                 | RecordKind::WorkflowClosed(_)
+                | RecordKind::WorkflowCancelRequested(_)
         )
     }
 }
@@ -482,6 +487,12 @@ pub struct WorkflowClosed {
     pub outcome: crate::workflow::Outcome,
 }
 
+/// See [`RecordKind::WorkflowCancelRequested`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCancelRequested {
+    pub wf_id: crate::workflow::WorkflowId,
+}
+
 /// §6.1 step 7's confirmation: the process exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spawned {
@@ -601,6 +612,8 @@ pub enum CancelBy {
     Node { caller: AgentId },
     /// The cancel of an ancestor reached this node: `from` is the node the cancel was asked of.
     Cascade { from: AgentId },
+    /// The cancel of workflow run `wf_id`, whose step the node was running.
+    Workflow { wf_id: crate::workflow::WorkflowId },
     /// `owner`'s budget on `scope` was spent: `spent` tokens against a limit of `limit`.
     Budget {
         owner: AgentId,
@@ -617,6 +630,7 @@ impl CancelBy {
             CancelBy::Operator => "the operator".into(),
             CancelBy::Node { caller } => format!("its ancestor {}", caller.0),
             CancelBy::Cascade { from } => format!("the cancel of its ancestor {}", from.0),
+            CancelBy::Workflow { wf_id } => format!("the cancel of workflow run {}", wf_id.0),
             CancelBy::Budget {
                 owner,
                 scope,
