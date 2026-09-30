@@ -123,7 +123,8 @@ impl Bed {
             );
         }
         let key = project_root(&repo);
-        let supervisor = Supervisor::start(
+        // Unsandboxed: the shim records its pids beside the bed, outside any node's workspace.
+        let supervisor = Supervisor::start_unsandboxed(
             &state,
             &key,
             &format!("{}:/usr/bin:/bin", bin.to_string_lossy()),

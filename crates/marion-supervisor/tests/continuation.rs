@@ -372,8 +372,15 @@ impl Bed {
         );
         let key = project_root(&repo);
         let project = ProjectDir::new(&state, &key);
-        let sup =
-            common::Supervisor::start(&state, &key, &path_env, &server.base_url(), IDLE_GRACE);
+        // Unsandboxed: the wrapper shims record each launch's argv beside themselves, outside the
+        // node's workspace, which marion's sandbox refuses as it would for any harness.
+        let sup = common::Supervisor::start_unsandboxed(
+            &state,
+            &key,
+            &path_env,
+            &server.base_url(),
+            IDLE_GRACE,
+        );
         let root = spawn_over_socket(
             &sup,
             &state,

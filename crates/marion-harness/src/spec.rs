@@ -1668,6 +1668,7 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     env.extend(f.extra_env.iter().cloned());
     let env_remove = crate::profile::apply(spec.profile.as_ref(), f, &mut env);
     Ok(Invocation {
+        sandbox: None,
         program,
         args,
         env,

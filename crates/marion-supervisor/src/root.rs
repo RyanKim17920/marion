@@ -244,6 +244,9 @@ pub struct RootSpec {
     pub repo: PathBuf,
     /// Resolved state directory (`<state>` of §4.3), *not* the per-project subdirectory.
     pub state: PathBuf,
+    /// Whether the root runs under marion's own OS sandbox where its row and auth allow — the
+    /// supervisor's [`crate::run::Env::os_sandbox`].
+    pub os_sandbox: bool,
     /// The CannedProvider's base URL, in the `…/v1` form a Codex `model_providers` entry takes.
     ///
     /// `None` under [`Auth::Inherited`], where marion overrides no endpoint and the harness resolves
@@ -873,6 +876,8 @@ pub fn prepare_watched(
         adapter.as_ref(),
         &agent_dir,
         Extras {
+            // A node: marion's own sandbox applies wherever its row and auth allow.
+            os_sandbox: spec.os_sandbox,
             acp_agent: agent_type.acp_agent.clone(),
             approval_mode: agent_type.approval_mode.clone(),
             profile_dir: profiles.dir(0),
@@ -3892,6 +3897,7 @@ mod tests {
 
     fn root_spec(dir: &Path, agent_type: &str) -> RootSpec {
         RootSpec {
+            os_sandbox: true,
             wider_children: false,
             budget: None,
             agent_type: agent_type.into(),

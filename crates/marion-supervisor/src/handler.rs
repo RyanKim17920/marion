@@ -1956,6 +1956,7 @@ fn root_spec_from_spawn(
     agent_type: &marion_core::agent_type::AgentType,
 ) -> crate::root::RootSpec {
     crate::root::RootSpec {
+        os_sandbox: env.os_sandbox,
         wider_children: p.wider_children.unwrap_or(false),
         // A root has no ancestor to narrow it: its type's budget and the tree limit it was run with.
         budget: marion_core::budget::resolve(agent_type.budget, p.budget_tokens, None),
@@ -5418,6 +5419,7 @@ impl RegistryHandle {
             .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         let spec = crate::root::RootSpec {
+            os_sandbox: env.os_sandbox,
             wider_children: false,
             // A second life runs under the budget its first was spawned with.
             budget: node.intent.as_ref().and_then(|i| i.budget),
@@ -13179,6 +13181,7 @@ mod tests {
             let handle = RegistryHandle::owning(
                 live,
                 crate::run::Env {
+                    os_sandbox: true,
                     project_dir: project.clone(),
                     state: state.clone(),
                     project_root: root.clone(),
@@ -13222,6 +13225,7 @@ mod tests {
             let handle = RegistryHandle::owning(
                 live,
                 crate::run::Env {
+                    os_sandbox: true,
                     project_dir: project.clone(),
                     state: state.clone(),
                     project_root: crate::socket::project_root(&repo),
@@ -13353,6 +13357,7 @@ mod tests {
             let handle = RegistryHandle::owning_notified(
                 live,
                 crate::run::Env {
+                    os_sandbox: true,
                     project_dir: project.clone(),
                     state,
                     project_root: crate::socket::project_root(&repo),
@@ -15069,6 +15074,7 @@ mod tests {
             let handle = RegistryHandle::owning(
                 live,
                 crate::run::Env {
+                    os_sandbox: true,
                     project_dir: project.clone(),
                     state: state.clone(),
                     project_root: crate::socket::project_root(&main),
@@ -15320,6 +15326,7 @@ mod tests {
             let handle = RegistryHandle::owning(
                 live,
                 crate::run::Env {
+                    os_sandbox: true,
                     project_dir: project.clone(),
                     state: state.clone(),
                     project_root: crate::socket::project_root(&repo),

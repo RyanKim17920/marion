@@ -348,6 +348,7 @@ mod enabled_launch {
                 Registry::boot(&project_dir).expect("an absent journal is an empty tree"),
             ));
             let env = marion_supervisor::run::Env {
+                os_sandbox: true,
                 project_dir: project_dir.clone(),
                 state: state.clone(),
                 project_root: paths.canonical_project().to_path_buf(),

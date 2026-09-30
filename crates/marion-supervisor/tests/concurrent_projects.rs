@@ -337,6 +337,8 @@ fn spawn_run_with(
         std::env::var("PATH").unwrap_or_default()
     );
     Command::new(env!("CARGO_BIN_EXE_marion"))
+        // Unsandboxed: its shim harness writes its started marker in the scratch dir, which marion's sandbox refuses.
+        .env(marion_harness::os_sandbox::SANDBOX_ENV, "off")
         .args([
             "run",
             "codex",

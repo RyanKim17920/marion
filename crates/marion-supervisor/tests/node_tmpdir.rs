@@ -101,6 +101,7 @@ fn the_inner_run_spawns_one_opencode_child() {
     })
     .expect("the canned provider binds");
     let env = Env {
+        os_sandbox: true,
         project_dir: project.clone(),
         project_root: repo.clone(),
         state: state.clone(),

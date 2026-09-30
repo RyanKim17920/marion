@@ -171,6 +171,8 @@ impl Bed {
 
     fn marion(&self, args: &[&str], stderr: &str) -> Child {
         Command::new(env!("CARGO_BIN_EXE_marion"))
+            // Unsandboxed: its wrapped codex records its runaway pids in the scratch dir, which marion's sandbox refuses.
+            .env(marion_harness::os_sandbox::SANDBOX_ENV, "off")
             .args(args)
             .args([
                 "--repo",
@@ -459,6 +461,9 @@ fn a_timed_out_codex_child_is_interrupted_and_leaves_no_process_of_its_turn() {
     .expect("the canned provider binds");
     let project = ProjectDir::new(&state, &repo);
     let env = Env {
+        // Unsandboxed: the tool call records its runaway pids in the scratch dir, outside the
+        // node's workspace, which marion's sandbox refuses.
+        os_sandbox: false,
         project_dir: project.clone(),
         project_root: repo.clone(),
         state: state.clone(),

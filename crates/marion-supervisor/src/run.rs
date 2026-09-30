@@ -422,6 +422,12 @@ pub struct Env {
     pub base_url: Option<String>,
     /// Whether children present a credential marion minted or the operator's own login.
     pub auth: Auth,
+    /// **Whether this supervisor puts its nodes under marion's own OS sandbox**, wherever a
+    /// node's row, its auth and the host allow ([`marion_harness::os_sandbox`]). `true` unless the
+    /// operator started marion with `MARION_SANDBOX=off`
+    /// ([`marion_harness::os_sandbox::enabled_by_operator`]); a node's containment is judged by
+    /// the same flag, so turning it off loosens no label.
+    pub os_sandbox: bool,
 }
 
 pub struct CommandOutput {
@@ -3445,6 +3451,8 @@ pub fn child_launch_spec(
         provider: None,
         extra: Extras {
             read_only: req.is_read_only(),
+            // A node: marion's own sandbox applies wherever its row and auth allow.
+            os_sandbox: env.os_sandbox,
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
             approval_mode: agent_type.approval_mode.clone(),
@@ -4584,6 +4592,7 @@ mod tests {
         std::fs::create_dir_all(project.path()).unwrap();
         let id = AgentId(format!("n-{tag}"));
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "sh".into(),
             args: vec![
@@ -4641,6 +4650,7 @@ mod tests {
         std::fs::create_dir_all(project.path()).unwrap();
         let id = AgentId("n-limit".into());
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "sh".into(),
             args: vec![
@@ -4764,6 +4774,7 @@ mod tests {
         .scrubbing(Some("sk-endpoint-9f2c1e7a"));
         let key = "sk-endpoint-9f2c1e7a";
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "sh".into(),
             args: vec![
@@ -5194,6 +5205,7 @@ mod tests {
         let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
         std::fs::create_dir_all(project.journal()).unwrap();
         let env = Env {
+            os_sandbox: true,
             project_dir: project.clone(),
             state: state.clone(),
             project_root: repo.clone(),
@@ -5360,6 +5372,7 @@ mod tests {
         let state = root.join("state");
         let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
         let env = Env {
+            os_sandbox: true,
             project_dir: project.clone(),
             state: state.clone(),
             project_root: repo.clone(),
@@ -5586,6 +5599,7 @@ mod tests {
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let env = Env {
+            os_sandbox: true,
             project_dir: ProjectDir::new(&state, &repo),
             state: state.clone(),
             project_root: repo.clone(),
@@ -5726,6 +5740,7 @@ mod tests {
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let env = Env {
+            os_sandbox: true,
             project_dir: ProjectDir::new(&state, &repo),
             state: state.clone(),
             project_root: repo.clone(),
@@ -6489,6 +6504,7 @@ mod tests {
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let env = Env {
+            os_sandbox: true,
             project_dir: ProjectDir::new(&state, &repo),
             state: state.clone(),
             project_root: repo.clone(),

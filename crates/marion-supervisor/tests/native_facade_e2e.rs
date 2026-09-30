@@ -118,6 +118,7 @@ impl Bed {
             Registry::boot(&project_dir).expect("an absent journal is an empty tree"),
         ));
         let env = marion_supervisor::run::Env {
+            os_sandbox: true,
             project_dir: project_dir.clone(),
             state: state.clone(),
             project_root: key.clone(),

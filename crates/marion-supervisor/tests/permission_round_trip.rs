@@ -192,6 +192,7 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
     .expect("the canned provider binds");
 
     let mut node = root::prepare(&RootSpec {
+        os_sandbox: true,
         wider_children: false,
         budget: None,
         agent_type: setup.agent_type.into(),

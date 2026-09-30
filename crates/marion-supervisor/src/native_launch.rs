@@ -940,6 +940,7 @@ mod tests {
 
     fn factory_env(work: &std::path::Path) -> crate::run::Env {
         crate::run::Env {
+            os_sandbox: true,
             project_dir: marion_core::paths::ProjectDir::new(
                 &work.join("state"),
                 &work.join("project"),

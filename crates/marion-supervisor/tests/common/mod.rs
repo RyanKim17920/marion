@@ -61,7 +61,7 @@ impl Supervisor {
         base_url: &str,
         idle_grace: Duration,
     ) -> Self {
-        Self::start_with(state, key, path_env, base_url, idle_grace, &[])
+        Self::launch(state, key, path_env, base_url, idle_grace, &[], true)
     }
 
     /// [`Self::start`] with more environment for the supervisor: a bed's own
@@ -74,6 +74,31 @@ impl Supervisor {
         base_url: &str,
         idle_grace: Duration,
         extra: &[(&str, &Path)],
+    ) -> Self {
+        Self::launch(state, key, path_env, base_url, idle_grace, extra, true)
+    }
+
+    /// [`Self::start`] with marion's own sandbox off (`MARION_SANDBOX=off`), for a bed whose shim
+    /// harness writes its witnesses outside the node's workspace — which the sandbox refuses, as
+    /// it should for any real harness.
+    pub fn start_unsandboxed(
+        state: &Path,
+        key: &Path,
+        path_env: &str,
+        base_url: &str,
+        idle_grace: Duration,
+    ) -> Self {
+        Self::launch(state, key, path_env, base_url, idle_grace, &[], false)
+    }
+
+    fn launch(
+        state: &Path,
+        key: &Path,
+        path_env: &str,
+        base_url: &str,
+        idle_grace: Duration,
+        extra: &[(&str, &Path)],
+        sandbox: bool,
     ) -> Self {
         let paths = socket_paths(state, key, own_uid());
         assert!(
@@ -102,6 +127,10 @@ impl Supervisor {
             ])
             .env("PATH", path_env)
             .envs(extra.iter().map(|(k, v)| (*k, *v)))
+            .env(
+                marion_harness::os_sandbox::SANDBOX_ENV,
+                if sandbox { "on" } else { "off" },
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())

@@ -37,7 +37,7 @@ use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskId};
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::kill::last_kill_sweep;
-use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
+use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{
     alive, fixture_repo, kill_hard, on_path, pinned_version, scratch, write_executable,
 };
@@ -241,7 +241,12 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     })
     .expect("the canned provider binds");
 
-    let env = canned_env(&state, &repo, Some(server.base_url()));
+    // Unsandboxed: the tool call records its runaway pids in the scratch dir, outside the node's
+    // workspace, which marion's sandbox refuses.
+    let env = Env {
+        os_sandbox: false,
+        ..canned_env(&state, &repo, Some(server.base_url()))
+    };
     let req = SpawnRequest {
         budget: None,
         review: None,

@@ -2017,6 +2017,7 @@ mod tests {
         let line = "Error authenticating: IneligibleTierError: This client is no longer supported \
                     for Gemini Code Assist for individuals.";
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "/bin/sh".into(),
             args: vec![
@@ -2058,6 +2059,7 @@ mod tests {
         let dir = marion_testsupport::scratch("doctor-probe-tmp");
         let seen = dir.join("tmpdir");
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "/bin/sh".into(),
             args: vec![
@@ -2545,6 +2547,7 @@ mod tests {
             unsafe { kill(pid, 0) == 0 }
         }
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "/bin/sh".into(),
             // It prints once the trap is installed, and the test waits for that line — without

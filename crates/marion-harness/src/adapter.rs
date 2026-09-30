@@ -162,6 +162,10 @@ pub struct Extras {
     /// The profile directory the launch selected, exactly as `profiles.toml` stores it. Read by
     /// every row through its [`crate::profile::ProfileCarrier`], under live auth only.
     pub profile_dir: Option<PathBuf>,
+    /// **This launch is a node the supervisor runs**, so marion's own OS sandbox applies to it
+    /// wherever its row, its auth and the host allow ([`crate::os_sandbox::applies`]). `false` on
+    /// a probe, which is no node.
+    pub os_sandbox: bool,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -276,6 +280,13 @@ pub struct SpawnCtx {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HarnessError {
+    /// marion's sandbox applies to this launch and could not be prepared: refused, never run
+    /// looser than the containment marion labels it with.
+    #[error(
+        "{harness}: marion's sandbox could not be prepared for this node, so it was not started: \
+         {why}"
+    )]
+    Sandbox { harness: Harness, why: String },
     /// **No [`Harness`] variant returns this today** — every harness marion can name now has an
     /// adapter. It stays because §3.1's enum is open to a fifth harness, and the alternative to a
     /// typed refusal is the fallback this seam exists to end: naming a harness and running another.
@@ -372,6 +383,7 @@ pub trait HarnessAdapter {
         }
         let mut inv = render_row(self.spec(), spec::Shape::Headless, &f)?;
         inv.env.extend(bridge_process_env(self, spec, ctx));
+        attach_sandbox(self.spec(), self.harness(), spec, &mut inv)?;
         Ok(inv)
     }
 
@@ -516,6 +528,7 @@ pub trait HarnessAdapter {
         let f = self.fields(spec, ctx, spec::Shape::Pane)?;
         let mut inv = render_row(self.spec(), spec::Shape::Pane, &f)?;
         inv.env.extend(bridge_process_env(self, spec, ctx));
+        attach_sandbox(self.spec(), self.harness(), spec, &mut inv)?;
         Ok(inv)
     }
 
@@ -644,6 +657,7 @@ pub trait HarnessAdapter {
                 &spec.cwd.to_string_lossy(),
                 spec.resume.as_deref(),
                 spec.extra.read_only,
+                crate::os_sandbox::replaced_fields(self.spec().os_sandbox, spec),
             )
         }))
     }
@@ -1222,6 +1236,22 @@ pub fn runs_commands(t: &marion_core::agent_type::AgentType) -> bool {
 }
 
 /// The row's spec (`plan-harness-spec.md`).
+/// **marion's sandbox onto a node's invocation**, where it applies ([`crate::os_sandbox::applies`]):
+/// the plan [`Invocation::command`] runs the process under, or the refusal that stops the launch.
+fn attach_sandbox(
+    row: &spec::HarnessSpec,
+    harness: Harness,
+    spec: &LaunchSpec,
+    inv: &mut Invocation,
+) -> Result<(), HarnessError> {
+    if crate::os_sandbox::applies(row.os_sandbox, spec) {
+        let plan = crate::os_sandbox::SandboxPlan::for_launch(row.os_sandbox, spec, inv)
+            .map_err(|why| HarnessError::Sandbox { harness, why })?;
+        inv.sandbox = Some(plan);
+    }
+    Ok(())
+}
+
 pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
     row(h).spec
 }
@@ -1688,6 +1718,7 @@ mod tests {
     #[test]
     fn each_declaration_route_is_verified_against_the_thing_it_promised() {
         let blank = Invocation {
+            sandbox: None,
             inherit: None,
             program: "x".into(),
             args: vec![],
@@ -2036,6 +2067,7 @@ mod tests {
         assert_eq!(
             compile_codex_exec(&codex_spec()),
             Invocation {
+                sandbox: None,
                 inherit: Some(crate::env_filter::InheritFilter {
                     login: codex::EXEC.login_env,
                     auth: Auth::Canned,
@@ -2726,6 +2758,7 @@ mod tests {
         assert_eq!(
             inv,
             Invocation {
+                sandbox: None,
                 inherit: Some(crate::env_filter::InheritFilter {
                     login: crate::claude_code::SPEC.login_env,
                     auth: Auth::Canned,

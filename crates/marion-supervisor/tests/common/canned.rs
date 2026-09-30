@@ -15,6 +15,7 @@ use marion_supervisor::run::Env;
 /// against `base_url` (`None` where the test never lets a child dial out).
 pub fn canned_env(state: &Path, project_root: &Path, base_url: Option<String>) -> Env {
     Env {
+        os_sandbox: true,
         project_dir: ProjectDir::new(state, project_root),
         project_root: project_root.to_path_buf(),
         state: state.to_path_buf(),

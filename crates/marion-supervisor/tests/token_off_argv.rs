@@ -162,6 +162,7 @@ fn live_env(root: &Path) -> (PathBuf, Env) {
     let state = root.join("state");
     std::fs::create_dir_all(&state).unwrap();
     let env = Env {
+        os_sandbox: true,
         project_dir: ProjectDir::new(&state, &repo),
         project_root: repo.clone(),
         state,

@@ -42,6 +42,10 @@ pub struct Invocation {
     /// set by every row's render; `None` inherits everything, for a hand-built invocation (a
     /// test's, an ACP probe's) that states its own.
     pub inherit: Option<crate::env_filter::InheritFilter>,
+    /// **marion's own OS sandbox for this process** ([`crate::os_sandbox`]), set by `compile` on
+    /// a node it applies to; [`Self::command`] then runs the process under it. `None` runs it as
+    /// before.
+    pub sandbox: Option<crate::os_sandbox::SandboxPlan>,
 }
 
 impl Invocation {
@@ -59,10 +63,15 @@ impl Invocation {
     /// marion's own plumbing — a parent node's token, the supervisor's state dir, a test's gate —
     /// and the only ones a launch carries are the ones it set itself.
     pub fn command(&self, tmpdir: &Path) -> std::process::Command {
-        let mut cmd = std::process::Command::new(&self.program);
-        cmd.args(&self.args)
-            .envs(self.env.iter().cloned())
-            .current_dir(&self.cwd);
+        let mut cmd = match &self.sandbox {
+            Some(plan) => plan.command(&self.program, &self.args, tmpdir),
+            None => {
+                let mut cmd = std::process::Command::new(&self.program);
+                cmd.args(&self.args);
+                cmd
+            }
+        };
+        cmd.envs(self.env.iter().cloned()).current_dir(&self.cwd);
         for key in &self.env_remove {
             cmd.env_remove(key);
         }
@@ -145,6 +154,7 @@ impl std::fmt::Debug for Invocation {
             session_mode,
             env_remove,
             inherit,
+            sandbox,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -163,6 +173,7 @@ impl std::fmt::Debug for Invocation {
             .field("session_mode", session_mode)
             .field("env_remove", env_remove)
             .field("inherit", inherit)
+            .field("sandbox", sandbox)
             .finish()
     }
 }
@@ -174,6 +185,7 @@ mod tests {
     #[test]
     fn the_spawn_sites_temp_dir_wins_over_the_env_and_the_removals() {
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "opencode".into(),
             args: vec![],
@@ -221,6 +233,7 @@ mod tests {
     #[test]
     fn credential_values_name_what_the_launch_sets_that_is_a_secret() {
         let inv = Invocation {
+            sandbox: None,
             program: "claude".into(),
             args: vec![],
             env: vec![
@@ -251,6 +264,7 @@ mod tests {
     #[test]
     fn debug_names_every_variable_and_prints_no_value() {
         let inv = Invocation {
+            sandbox: None,
             inherit: None,
             program: "claude".into(),
             args: vec!["-p".into()],

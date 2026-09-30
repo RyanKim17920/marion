@@ -189,6 +189,9 @@ struct Server {
 impl Server {
     fn start(fx: &Fixture, extra: &[&str]) -> Self {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
+        // Unsandboxed: its shim harness writes its started marker in the scratch dir, which
+        // marion's sandbox refuses.
+        cmd.env(marion_harness::os_sandbox::SANDBOX_ENV, "off");
         cmd.arg("mcp")
             .arg("--repo")
             .arg(&fx.repo)

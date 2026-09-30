@@ -456,6 +456,8 @@ fn marion_run(dir: &Path, node: &Node, bin: &Path, prompt: &str, timeout_secs: &
     let started = Instant::now();
     let out = run_bounded(
         Command::new(env!("CARGO_BIN_EXE_marion"))
+            // Unsandboxed: its stub harness records its argv, environment and pids in the scratch dir, which marion's sandbox refuses.
+            .env(marion_harness::os_sandbox::SANDBOX_ENV, "off")
             .args(&args)
             .env("PATH", path)
             // The operator's shell holds credentials no harness needs, and a stale node token of
@@ -1224,6 +1226,8 @@ fn an_opencode_roots_stream_is_recorded_while_it_is_still_running() {
         std::env::var("PATH").unwrap_or_default()
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
+        // Unsandboxed: its stub harness records its argv, environment and pids in the scratch dir, which marion's sandbox refuses.
+        .env(marion_harness::os_sandbox::SANDBOX_ENV, "off")
         .args(["run", node.agent_type, "--prompt", "Delegate the task."])
         .arg("--repo")
         .arg(&repo)

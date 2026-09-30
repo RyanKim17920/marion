@@ -57,6 +57,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
     let state = root.join("state");
     std::fs::create_dir_all(&state).unwrap();
     let env = Env {
+        os_sandbox: true,
         project_dir: ProjectDir::new(&state, &repo),
         project_root: repo.clone(),
         state: state.clone(),

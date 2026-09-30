@@ -538,7 +538,9 @@ fn fixture(tag: &str) -> Fixture {
     }
     let path_env = format!("{}:/usr/bin:/bin", shim_dir.to_string_lossy());
     let key = project_root(&repo);
-    let supervisor = Supervisor::start(
+    // Unsandboxed: the shim's started/done markers and gates live in this test's scratch dir,
+    // outside every node's workspace, which marion's sandbox refuses as it would for any harness.
+    let supervisor = Supervisor::start_unsandboxed(
         &state,
         &key,
         &path_env,

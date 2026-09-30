@@ -702,6 +702,8 @@ pub fn run_stage_three(launch: &Launch, ready: bool) -> Result<(), DetachError> 
     // `repo` would branch a feature worktree's children off the main tree's HEAD. The tree is a
     // per-spawn input — `run::SpawnRequest::repo`, resolved from the caller's own node entry.
     let env = crate::run::Env {
+        // On unless the operator started marion with `MARION_SANDBOX=off`.
+        os_sandbox: marion_harness::os_sandbox::enabled_by_operator(),
         project_dir: project.clone(),
         state: launch.state_dir.clone(),
         // §2's key, so a `node/resume` can rebuild a lost root's launch in the repository this

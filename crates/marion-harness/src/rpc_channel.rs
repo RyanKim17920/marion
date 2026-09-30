@@ -166,7 +166,12 @@ impl RpcChannel {
         self.initialized.map(|m| json!({"method": m}))
     }
 
-    fn open_params(&self, cwd: &str, read_only: bool) -> Map<String, Value> {
+    fn open_params(
+        &self,
+        cwd: &str,
+        read_only: bool,
+        replaced: &[(&str, &str)],
+    ) -> Map<String, Value> {
         let mut p = Map::new();
         p.insert(self.cwd.into(), Value::String(cwd.into()));
         let over: &[(&str, &str)] = if read_only {
@@ -174,7 +179,7 @@ impl RpcChannel {
         } else {
             &[]
         };
-        for (k, v) in self.open_fields.iter().chain(over) {
+        for (k, v) in self.open_fields.iter().chain(over).chain(replaced) {
             let v = serde_json::from_str(v).expect("open_fields are JSON text");
             p.insert((*k).into(), v);
         }
@@ -182,9 +187,18 @@ impl RpcChannel {
     }
 
     /// The request that opens this launch's thread: [`Self::open`], or [`Self::resume`] of
-    /// `resume`'s thread — with [`Self::read_only_fields`] on a read-only launch.
-    pub fn opening(&self, id: u64, cwd: &str, resume: Option<&str>, read_only: bool) -> Value {
-        let mut p = self.open_params(cwd, read_only);
+    /// `resume`'s thread — with [`Self::read_only_fields`] on a read-only launch, and `replaced`
+    /// last, over both: the fields that switch the harness's own sandbox off where marion's
+    /// replaces it ([`crate::os_sandbox::replaced_fields`]).
+    pub fn opening(
+        &self,
+        id: u64,
+        cwd: &str,
+        resume: Option<&str>,
+        read_only: bool,
+        replaced: &[(&str, &str)],
+    ) -> Value {
+        let mut p = self.open_params(cwd, read_only, replaced);
         let method = match resume {
             Some(thread) => {
                 p.insert(self.resume_id.into(), Value::String(thread.into()));

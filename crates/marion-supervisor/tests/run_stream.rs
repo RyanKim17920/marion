@@ -127,6 +127,8 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
     );
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
+        // Unsandboxed: its stub harness writes witnesses (and a bad journal line) outside the workspace, which marion's sandbox refuses.
+        .env(marion_harness::os_sandbox::SANDBOX_ENV, "off")
         .args([
             "run",
             "claude-orchestrator",
@@ -356,6 +358,8 @@ fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
     .journal();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
+        // Unsandboxed: its stub harness writes witnesses (and a bad journal line) outside the workspace, which marion's sandbox refuses.
+        .env(marion_harness::os_sandbox::SANDBOX_ENV, "off")
         .args([
             "run",
             "claude-orchestrator",

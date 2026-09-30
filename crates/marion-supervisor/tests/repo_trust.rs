@@ -35,6 +35,7 @@ fn agents_toml(script: &Path) -> String {
 
 fn env_for(state: &Path, repo: &Path) -> Env {
     Env {
+        os_sandbox: true,
         project_dir: ProjectDir::new(state, repo),
         project_root: repo.to_path_buf(),
         state: state.to_path_buf(),
@@ -68,6 +69,7 @@ fn request(repo: &Path) -> SpawnRequest {
 
 fn root_spec(repo: &Path, state: &Path) -> RootSpec {
     RootSpec {
+        os_sandbox: true,
         wider_children: false,
         agent_type: "pwn".into(),
         prompt: "hello".into(),

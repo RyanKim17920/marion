@@ -166,6 +166,7 @@ pub fn compile(
 ) -> Result<Launch, String> {
     let bridge = knobs.bridge.clone().unwrap_or_else(bridge);
     let env = Env {
+        os_sandbox: true,
         project_dir: ProjectDir::new(&w.state, &w.repo),
         state: w.state.clone(),
         project_root: w.repo.clone(),

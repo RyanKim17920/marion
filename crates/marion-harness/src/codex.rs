@@ -1936,7 +1936,7 @@ mod tests {
     #[test]
     fn the_app_server_vocabulary_is_well_formed_and_its_sandbox_is_the_one_marion_records() {
         crate::rpc_channel::tests::assert_well_formed(&APP);
-        let open = APP.opening(1, "/wt", None, false);
+        let open = APP.opening(1, "/wt", None, false, &[]);
         assert_eq!(open["method"], "thread/start");
         assert_eq!(open["params"]["cwd"], "/wt");
         assert_eq!(open["params"]["sandbox"], SANDBOX_MODE);
@@ -1945,7 +1945,7 @@ mod tests {
             "a thread marion may resume must be persisted (P8: an ephemeral one is gone)"
         );
         assert!(open.get("jsonrpc").is_none(), "P2: no jsonrpc member");
-        let resume = APP.opening(1, "/wt", Some("t-9"), false);
+        let resume = APP.opening(1, "/wt", Some("t-9"), false, &[]);
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "t-9");
         assert_eq!(
@@ -1956,7 +1956,7 @@ mod tests {
         assert_eq!(APP.opened_by(&resume), Some(Some("t-9".into())));
         // A reviewer's thread is read-only on both requests: the request's sandbox beats argv.
         for thread in [None, Some("t-9")] {
-            let ro = APP.opening(1, "/wt", thread, true);
+            let ro = APP.opening(1, "/wt", thread, true, &[]);
             assert_eq!(ro["params"]["sandbox"], "read-only", "{thread:?}");
             assert_eq!(ro["params"]["ephemeral"], false, "{thread:?}");
         }

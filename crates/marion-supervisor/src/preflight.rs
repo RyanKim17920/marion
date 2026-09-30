@@ -83,6 +83,8 @@ pub struct Facts {
     /// stored by the `security` tool, so readable by any of the operator's processes. Empty where
     /// the file store is in use.
     pub keychain_unowned: Vec<String>,
+    /// What this host offers marion's own sandbox ([`marion_harness::os_sandbox::support`]).
+    pub sandbox: marion_harness::os_sandbox::Support,
 }
 
 /// Read the facts from this process and machine.
@@ -128,6 +130,7 @@ pub fn gather() -> Facts {
         socket,
         git,
         keychain_unowned: keychain_unowned(),
+        sandbox: marion_harness::os_sandbox::support().clone(),
     }
 }
 
@@ -165,6 +168,7 @@ pub fn checks(f: &Facts) -> Vec<Check> {
                  branch marion/<id>), and a root with file tools needs a git repository",
             ),
         },
+        sandbox(&f.sandbox),
     ];
     if !f.keychain_unowned.is_empty() {
         let commands: Vec<String> = f
@@ -239,6 +243,26 @@ fn binaries(f: &Facts) -> Check {
     } else {
         Check::new(Level::Ok, text)
     }
+}
+
+/// Whether marion can sandbox its nodes here, and what that leaves uncontained when it cannot.
+fn sandbox(s: &marion_harness::os_sandbox::Support) -> Check {
+    if s.available() {
+        return Check::new(
+            Level::Ok,
+            format!(
+                "node sandbox: {}; canned and endpoint nodes of the rows measured under it write                  only their workspace, TMPDIR and agent dir",
+                s.describe()
+            ),
+        );
+    }
+    Check::new(
+        Level::Warn,
+        format!(
+            "node sandbox {}. Nodes run as before: a node on a harness with no sandbox of its own              writes as you, and a sandboxed node still cannot start one",
+            s.describe()
+        ),
+    )
 }
 
 fn os(os: &str) -> Check {
@@ -374,14 +398,31 @@ mod tests {
             )),
             git: Some("git version 2.50.0".into()),
             keychain_unowned: vec![],
+            sandbox: marion_harness::os_sandbox::Support::Seatbelt,
         }
+    }
+
+    /// **A host that cannot sandbox nodes says so and why**, as a warning: nodes still run, under
+    /// the containment their rows had without it.
+    #[test]
+    fn a_host_without_the_node_sandbox_is_a_warning_naming_why() {
+        let f = Facts {
+            sandbox: marion_harness::os_sandbox::Support::Unavailable("inside a sandbox".into()),
+            ..facts()
+        };
+        let line = checks(&f)
+            .into_iter()
+            .find(|c| c.text.contains("node sandbox"))
+            .expect("a sandbox line");
+        assert_eq!(line.level, Level::Warn);
+        assert!(line.text.contains("inside a sandbox"), "{}", line.text);
     }
 
     /// A Keychain key the `security` tool stored is a warning naming the command that re-stores
     /// it; none is no line at all.
     #[test]
     fn a_key_the_security_tool_stored_is_a_warning_with_its_restore_command() {
-        assert_eq!(checks(&facts()).len(), 5);
+        assert_eq!(checks(&facts()).len(), 6);
         let f = Facts {
             keychain_unowned: vec!["openrouter".into()],
             ..facts()

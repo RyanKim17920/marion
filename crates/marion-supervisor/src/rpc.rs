@@ -604,6 +604,7 @@ mod tests {
             cwd: cwd.to_path_buf(),
             model: None,
             session_mode: None,
+            sandbox: None,
         }
     }
 
