@@ -864,7 +864,10 @@ fn watch_blocked_node_says_what_it_needs() {
         live: true,
         task: Some(task_view("Wire the limiter into CI")),
         stream: stream(4),
-        needs: Some(s("permission to write .github/workflows/ci.yml")),
+        needs: Some(s(
+            "blocked: permission to write .github/workflows/ci.yml · s steers it, x cancels it; \
+             marion answers a headless agent's asks from its grant",
+        )),
         tokens: Some(TokenView {
             input: 38_000,
             output: 3_100,
@@ -876,7 +879,7 @@ fn watch_blocked_node_says_what_it_needs() {
         ..Default::default()
     };
     let v = watch_view(2, Some(e));
-    let input = command("marion attach 01a093dc-91cd", "answer it there");
+    let input = command("", "");
     insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
 }
 

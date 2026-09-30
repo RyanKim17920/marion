@@ -478,6 +478,40 @@ fn enter_streams_a_headless_agent_and_attaches_only_to_a_pane_one() {
     );
 }
 
+/// **A blocked agent says what the operator can do about it here**: a pane agent's dialog is
+/// answered by attaching, a headless one has no terminal to attach to and is pointed at the keys
+/// that act on it, and one waiting on its own agents points at them.
+#[test]
+fn a_blocked_agent_says_what_the_operator_can_do_about_it() {
+    use marion_core::node::BlockReason;
+    let needs = |n: NodeSummary| {
+        let mut h = home();
+        h.tab = Tab::Watch;
+        h.set_nodes(vec![n]);
+        view::frame(&h, &view::Places::default())
+            .watch
+            .expanded
+            .and_then(|e| e.needs)
+            .unwrap_or_default()
+    };
+    let headless = needs(node(
+        "root",
+        None,
+        NodeState::Blocked(BlockReason::Permission),
+    ));
+    assert!(headless.contains("s steers it, x cancels it"), "{headless}");
+    assert!(!headless.contains("attach"), "{headless}");
+    let mut paned = node("root", None, NodeState::Blocked(BlockReason::BootDialog));
+    paned.pane = true;
+    assert!(needs(paned).contains("enter attaches"));
+    let waiting = needs(node(
+        "root",
+        None,
+        NodeState::Blocked(BlockReason::Descendants),
+    ));
+    assert!(waiting.contains("its own agents"), "{waiting}");
+}
+
 #[test]
 fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
     let id = AgentId("0199-abc".into());

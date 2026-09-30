@@ -487,7 +487,16 @@ fn expanded_rows<'a>(
     }
 
     if let Some(n) = &e.needs {
-        push_block(&mut rows, "Needs you", vec![vec![span(n.clone(), warn())]]);
+        // What it needs, then (after the last ` · `) what the operator can do: a row each, so the
+        // direction is not the part a narrow screen clips.
+        let block = match n.rsplit_once(" · ") {
+            Some((what, then)) => vec![
+                vec![span(what.to_string(), warn())],
+                vec![span(then.to_string(), dim())],
+            ],
+            None => vec![vec![span(n.clone(), warn())]],
+        };
+        push_block(&mut rows, "Needs you", block);
     }
 
     if let Some(m) = &e.endpoint {

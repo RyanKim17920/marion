@@ -503,11 +503,30 @@ fn endpoint_of(n: &NodeSummary) -> Option<String> {
     })
 }
 
+/// What the operator can do about a blocked agent, in plain words and keys this screen has. A pane
+/// agent's dialog is answered in its terminal; a headless agent has no terminal and no question
+/// waiting on anyone: marion answers a headless agent's permission asks itself, from its grant.
+fn direction(n: &NodeSummary) -> &'static str {
+    use marion_core::node::{BlockReason, NodeState};
+    match n.state {
+        NodeState::Blocked(BlockReason::Descendants) => {
+            "it waits for its own agents to end; select one below to see it"
+        }
+        NodeState::Blocked(_) if n.pane => "enter attaches: answer it in its terminal",
+        NodeState::Blocked(BlockReason::Permission) => {
+            "s steers it, x cancels it; marion answers a headless agent's asks from its grant"
+        }
+        NodeState::Blocked(_) => "s steers it with what it needs, x cancels it",
+        _ => "",
+    }
+}
+
 fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
     let live = !n.state.is_exited();
     let needs = matches!(n.state, marion_core::node::NodeState::Blocked(_))
         .then(|| attention_of(n))
-        .flatten();
+        .flatten()
+        .map(|what| format!("{what} · {}", direction(n)));
     let caps = home_caps(n);
     let Some(d) = (match &home.watch.detail {
         Some((id, d)) if *id == n.agent_id => Some(d),

@@ -13,7 +13,8 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 ❯ ├─ ◐ codex impl 91cd               3m02s   asks to write .github/workflows/…
   │    └ TASK             Wire the limiter into CI
   │                       ✓ 2 criteria · $ 1 check
-  │      NEEDS YOU        permission to write .github/workflows/ci.yml
+  │      NEEDS YOU        blocked: permission to write .github/workflows/ci.y…
+  │                       s steers it, x cancels it; marion answers a headles…
   │      RUNNING          14:24:14  “I'll add a token bucket keyed by API key…
   │                       14:24:21  ~ src/limits/bucket.rs
   │                       ↑ 2 earlier   K scrolls back
@@ -22,21 +23,20 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   └─ ✓ codex impl 3c33               6m41s   landed marion/t-3c33
   ✓ claude review 88f2              1h ago   landed marion/t-88f2
 
-
  ╭────────────────────────────────────────────────────────────────────────────╮
- │ ❯ marion attach 01a093dc-91cd                              answer it there │
+ │ ❯                                                                          │
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter attach · s steer · x cancel · c copy merge      ? shortcuts
 --- styles ---
    88  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    42  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKNEEDSYOURUNNING"
-  638  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  644  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯K❯"
     2  Style::new().green().bg(Color::Reset)  "●●"
    21  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed"
-   74  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+   81  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
 
 --- 100x30 ---
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
@@ -52,7 +52,8 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   │                       ✓ cargo test passes
   │                       ✓ 100 req/min per key, 429 after
   │                       $ cargo test -q limits
-  │      NEEDS YOU        permission to write .github/workflows/ci.yml
+  │      NEEDS YOU        blocked: permission to write .github/workflows/ci.yml
+  │                       s steers it, x cancels it; marion answers a headless agent's asks from …
   │      RUNNING          14:24:00  read_file src/limits/mod.rs
   │                       14:24:07  read_file Cargo.toml
   │                       14:24:14  “I'll add a token bucket keyed by API key.”
@@ -64,21 +65,20 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 
 
 
-
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ marion attach 01a093dc-91cd                                                  answer it there │
+ │ ❯                                                                                              │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention       ? shortcuts
 --- styles ---
   190  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    43  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKNEEDSYOURUNNING"
-  786  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  808  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     2  Style::new().green().bg(Color::Reset)  "●●"
    21  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed"
-   76  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+   84  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
 
 --- 160x50 ---
  ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
@@ -94,7 +94,8 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   │                       ✓ cargo test passes
   │                       ✓ 100 req/min per key, 429 after
   │                       $ cargo test -q limits
-  │      NEEDS YOU        permission to write .github/workflows/ci.yml
+  │      NEEDS YOU        blocked: permission to write .github/workflows/ci.yml
+  │                       s steers it, x cancels it; marion answers a headless agent's asks from its grant
   │      RUNNING          14:24:00  read_file src/limits/mod.rs
   │                       14:24:07  read_file Cargo.toml
   │                       14:24:14  “I'll add a token bucket keyed by API key.”
@@ -126,18 +127,17 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 
 
 
-
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ marion attach 01a093dc-91cd                                                                                                              answer it there │
+ │ ❯                                                                                                                                                          │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention                                                                   ? shortcuts
 --- styles ---
   211  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    51  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKNEEDSYOURUNNING"
- 1311  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+ 1340  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"
    22  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed✗"
-   80  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+   88  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
