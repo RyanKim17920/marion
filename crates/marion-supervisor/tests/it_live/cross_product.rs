@@ -78,10 +78,11 @@
 //! was **untouched** — which is precisely what an escaped write also produces, so the half of the
 //! matrix that could not write also could not tell the two apart.
 //!
-//! §3.1's availability axis closed it. `claude-impl` and `gemini-impl` declare `tools: [read, write]`,
-//! which the adapters compile to `Write` and `write_file`, so every child now takes a real edit
-//! through its own wire's tool-call shape — codex's `tools.apply_patch`, opencode's `write`, and
-//! those two. All sixteen cells exercise placement, and criterion 9 is asserted unconditionally.
+//! §3.1's availability axis closed it. `claude-impl` declares `tools: [read, write]`, which the
+//! adapter compiles to `Write` (as `gemini-impl` did to `write_file`, until the gemini CLI was
+//! retired), so every child takes a real edit through its own wire's tool-call shape — codex's
+//! `tools.apply_patch`, opencode's `write`, claude's `Write`. Every cell exercises placement, and
+//! criterion 9 is asserted unconditionally.
 //!
 //! **One thing these sixteen cells do NOT cover, measured rather than assumed.** The Anthropic
 //! wire's child script is ordered by `marion_provider::script::anthropic_called`, a name-based
