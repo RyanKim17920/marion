@@ -1392,7 +1392,16 @@ pub struct ChildOutcome {
 
 impl ChildOutcome {
     /// Join what the harness's stream said with what marion observed of the process.
+    ///
+    /// `stderr` is kept printable ([`crate::printable::printable`]): it reaches the contract, the
+    /// parent's `spawn` answer and the console, and an operator's pi extensions end their stderr
+    /// with a screen's worth of terminal escapes (live s5, 2026-09-30), which a parent's model
+    /// then read verbatim.
     pub fn from_stream(stream: StreamOutcome, exit: ChildExit, stderr: String) -> Self {
+        let stderr = match crate::printable::printable(&stderr) {
+            std::borrow::Cow::Borrowed(_) => stderr,
+            std::borrow::Cow::Owned(clean) => clean,
+        };
         Self {
             narrative: stream.narrative,
             file_change_paths: stream.file_change_paths,
@@ -1928,6 +1937,28 @@ mod tests {
             vec![Oid("not-an-oid".into()), Oid("d".repeat(40))],
             "wrapping is not validating: §6.7 gives the child this field outright, and a silent \
              filter would be marion asserting a check it did not run"
+        );
+    }
+
+    /// **A child's stderr reaches its contract printable**: pi 0.80.2 under an operator's own
+    /// extensions ends its stderr with terminal escapes (`ESC[?2026h`, OSC 777), which went into the
+    /// contract and a parent's context verbatim (live s5, 2026-09-30).
+    #[test]
+    fn a_childs_stderr_is_kept_printable() {
+        let out = ChildOutcome::from_stream(
+            marion_harness::StreamOutcome::default(),
+            ChildExit::default(),
+            "[pi-reflex] loaded\n\x1b]777;notify;oh-pi;Done\x07\x1b[?2026h\x1b[r".into(),
+        );
+        assert!(
+            !out.stderr.contains('\x1b') && !out.stderr.contains('\x07'),
+            "{:?}",
+            out.stderr
+        );
+        assert!(
+            out.stderr.starts_with("[pi-reflex] loaded\n"),
+            "{:?}",
+            out.stderr
         );
     }
 
