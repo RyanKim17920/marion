@@ -32,6 +32,15 @@
 //! test that notices. `O_APPEND` is kept for the same reason it costs nothing: it makes that case
 //! confusing rather than *torn*.
 //!
+//! # Bounded on disk: one rotation
+//!
+//! A node that runs for days would otherwise grow its stream without limit. Past
+//! [`MAX_EVENTS_FILE_BYTES`] the writer renames the file to `events.jsonl.1` (replacing an older
+//! one) and continues in a fresh `events.jsonl`, the ordinals running on; so a node holds at most
+//! two caps on disk. A replay reads the rotated half and then the current file; a follower that
+//! sees a new inode at the path finishes the old file from its rotated name and moves on, and one
+//! that fell two rotations behind reports the ordinals it skipped as a gap.
+//!
 //! # §7.3.3's seam is a cursor, not a lock
 //!
 //! `handler.rs` splices `tree/subscribe`'s snapshot to its notifications by taking **one** registry
@@ -473,10 +482,24 @@ fn frame_key(json: &serde_json::Value) -> &str {
         .unwrap_or_default()
 }
 
+/// **The most one `events.jsonl` holds before it rotates** into `events.jsonl.1`, replacing an
+/// older one: a node's stream is at most two of these on disk, however long it runs.
+pub const MAX_EVENTS_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Where `path`'s rotated half lives: `events.jsonl.1` beside `events.jsonl`.
+pub fn rotated_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".1");
+    PathBuf::from(name)
+}
+
 /// An open `events.jsonl` for one node, with the next ordinal it will use.
 pub struct EventWriter {
     path: PathBuf,
     file: File,
+    /// Bytes in the current file, and the most it may hold ([`MAX_EVENTS_FILE_BYTES`]).
+    len: u64,
+    cap: u64,
     agent_id: AgentId,
     seq: u64,
     /// Bytes are in the page cache and not yet on disk.
@@ -508,14 +531,24 @@ impl EventWriter {
         if let Some(dir) = path.parent() {
             crate::private_fs::create_dir_all(dir)?;
         }
-        let seq = match std::fs::read(path) {
-            Ok(bytes) => marion_core::event::read(&bytes).0.next_seq().unwrap_or(0),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(e) => return Err(e.into()),
+        // The fresh file after a rotation may hold nothing yet; the ordinals then run on from
+        // the rotated one.
+        let next_in = |p: &Path| -> Result<Option<u64>, EventError> {
+            match std::fs::read(p) {
+                Ok(bytes) => Ok(marion_core::event::read(&bytes).0.next_seq()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        };
+        let seq = match next_in(path)? {
+            Some(seq) => seq,
+            None => next_in(&rotated_path(path))?.unwrap_or(0),
         };
         let file = crate::private_fs::open_append(path)?;
         Ok(Self {
             path: path.to_path_buf(),
+            len: file.metadata()?.len(),
+            cap: MAX_EVENTS_FILE_BYTES,
             file,
             agent_id: agent_id.clone(),
             seq,
@@ -527,6 +560,13 @@ impl EventWriter {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// This writer with a cap other than [`MAX_EVENTS_FILE_BYTES`], so a test can reach it.
+    #[cfg(test)]
+    fn capped_at(mut self, cap: u64) -> Self {
+        self.cap = cap;
+        self
     }
 
     /// The ordinal the next appended event will carry.
@@ -564,13 +604,28 @@ impl EventWriter {
         });
         let barrier = event.is_barrier();
         let line = encode(&event)?;
+        if self.len > 0 && self.len + line.len() as u64 > self.cap {
+            self.rotate()?;
+        }
         self.file.write_all(&line)?;
+        self.len += line.len() as u64;
         self.seq += 1;
         self.dirty = true;
         if barrier || self.last_sync.elapsed() >= GROUP_COMMIT_INTERVAL {
             self.sync()?;
         }
         Ok(event)
+    }
+
+    /// **Close the full file as `events.jsonl.1` and continue in a fresh one**, replacing an older
+    /// rotated half. Synced first, so the rotated half is whole on disk; a reader following the
+    /// old file finishes it from the new name ([`EventReader::poll`]).
+    fn rotate(&mut self) -> Result<(), EventError> {
+        self.sync()?;
+        std::fs::rename(&self.path, rotated_path(&self.path))?;
+        self.file = crate::private_fs::open_append(&self.path)?;
+        self.len = 0;
+        Ok(())
     }
 
     /// Best-effort append for a call site that must not change its behaviour on an I/O fault.
@@ -628,6 +683,9 @@ pub struct EventReader {
     log: EventLog,
     /// Bytes folded in. Always a record boundary — the intact prefix and no further.
     offset: u64,
+    /// The inode `offset` is into. A different one at the path is a rotation
+    /// ([`EventWriter::rotate`]), and the old file is finished from its rotated name.
+    ino: Option<u64>,
     status: crate::registry::Status,
     polls: u64,
     /// Whether the file has ever been opened. See [`Self::ever_written`].
@@ -649,21 +707,46 @@ impl EventReader {
     /// than a failure, because a client attaching to a tree must not be refused the whole tree by
     /// one node's permissions fault.
     pub fn open_path(path: &Path) -> Result<(Self, Vec<Event>), EventError> {
-        let bytes = match std::fs::read(path) {
-            Ok(b) => Some(b),
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+        // The current file is opened first and the rotated half read only if it is another file:
+        // a rotation between the two opens would otherwise replay one file twice.
+        let current = match File::open(path) {
+            Ok(f) => Some(f),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
-        let seen_file = bytes.is_some();
-        let bytes = bytes.unwrap_or_default();
+        let ino = match &current {
+            Some(f) => Some(f.metadata()?.ino()),
+            None => None,
+        };
+        let older = match File::open(rotated_path(path)) {
+            Ok(mut f) if Some(f.metadata()?.ino()) != ino => {
+                let mut bytes = Vec::new();
+                f.read_to_end(&mut bytes)?;
+                Some(bytes)
+            }
+            Ok(_) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        let seen_file = current.is_some() || older.is_some();
+        let mut bytes = Vec::new();
+        if let Some(mut f) = current {
+            f.read_to_end(&mut bytes)?;
+        }
         let mut log = EventLog::default();
         let mut events = Vec::new();
+        if let Some(older) = older {
+            log.extend(&older, &mut events);
+        }
         let consumed = log.extend(&bytes, &mut events);
         let status = status_for(&log, path, consumed as u64);
         Ok((
             Self {
                 path: path.to_path_buf(),
                 offset: consumed as u64,
+                ino,
                 log,
                 status,
                 polls: 0,
@@ -736,24 +819,48 @@ impl EventReader {
         if matches!(self.status, crate::registry::Status::Stopped { .. }) {
             return 0;
         }
-        let fresh = match self.read_new() {
+        let before = self.log.records;
+        if let Some(tail) = self.rotated_tail() {
+            self.log.extend(&tail, out);
+            self.offset = 0;
+        }
+        match self.read_new() {
             Ok(None) => {
                 // A read that succeeded and found nothing **clears** a previous `Unreadable`: that
                 // status is a claim the stream may be stale, and leaving it set after marion has
                 // looked and found the file intact would keep asserting a staleness that is over.
                 self.status = crate::registry::Status::Following;
-                return 0;
             }
-            Ok(Some(bytes)) => bytes,
-            Err(status) => {
-                self.status = status;
-                return 0;
+            Ok(Some(fresh)) => {
+                self.offset += self.log.extend(&fresh, out) as u64;
+                self.status = status_for(&self.log, &self.path, self.offset);
             }
-        };
-        let before = self.log.records;
-        self.offset += self.log.extend(&fresh, out) as u64;
-        self.status = status_for(&self.log, &self.path, self.offset);
+            Err(status) => self.status = status,
+        }
         (self.log.records - before) as usize
+    }
+
+    /// **The rest of a file the writer rotated away**, when the path now names another one: the
+    /// bytes past the cursor, read from the rotated name while it is still the same file. `Some`
+    /// moves the cursor to the new file; an empty `Some` is a file rotated away twice since the
+    /// last poll, whose loss the ordinals then show. `None` is no rotation.
+    fn rotated_tail(&mut self) -> Option<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        use std::os::unix::fs::MetadataExt;
+        let was = self.ino?;
+        let now = std::fs::metadata(&self.path).ok()?.ino();
+        if now == was {
+            return None;
+        }
+        self.ino = Some(now);
+        let mut tail = Vec::new();
+        if let Ok(mut f) = File::open(rotated_path(&self.path))
+            && f.metadata().is_ok_and(|m| m.ino() == was)
+            && f.seek(SeekFrom::Start(self.offset)).is_ok()
+        {
+            let _ = f.read_to_end(&mut tail);
+        }
+        Some(tail)
     }
 
     /// The bytes past the cursor. `Ok(None)` is "nothing new".
@@ -774,12 +881,16 @@ impl EventReader {
             }
         };
         self.seen_file = true;
-        let len = f
+        let meta = f
             .metadata()
             .map_err(|e| crate::registry::Status::Unreadable {
                 reason: format!("stat {}: {e}", self.path.display()),
-            })?
-            .len();
+            })?;
+        let len = meta.len();
+        if self.ino.is_none() {
+            use std::os::unix::fs::MetadataExt;
+            self.ino = Some(meta.ino());
+        }
         if len < self.offset {
             // Append-only means bytes already read never change. A shorter file is a different
             // file, and continuing would narrate one stream's bytes as another's.
@@ -918,6 +1029,118 @@ mod tests {
             "a harness frame is not marion's own observation"
         );
         assert_eq!(events[0].provenance.source, Source::Marion);
+    }
+
+    fn seqs(events: &[marion_core::event::Event]) -> Vec<u64> {
+        events.iter().map(|e| e.agent_seq).collect()
+    }
+
+    /// **A stream past its cap rotates once, into `events.jsonl.1`**: the node's files stay at
+    /// most two caps, the ordinals run on across the two, and a resume after a rotation continues
+    /// them rather than restarting at 0 on the fresh file.
+    #[test]
+    fn a_stream_past_its_cap_rotates_and_its_ordinals_run_on() {
+        let dir = scratch("events-rotate");
+        let path = dir.join("events.jsonl");
+        let rotated = rotated_path(&path);
+        let cap = 2_000;
+        let mut w = EventWriter::open_path(&path, &node())
+            .unwrap()
+            .capped_at(cap);
+        for i in 0..60 {
+            w.append(frame(&format!("frame-{i}"))).unwrap();
+        }
+        drop(w);
+        let len = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        assert!(len(&rotated) > 0, "the stream rotated");
+        assert!(
+            len(&path) <= cap && len(&rotated) <= cap,
+            "neither file passes the cap"
+        );
+        let (_, older) = read(&rotated);
+        let (_, newer) = read(&path);
+        let last = newer.last().unwrap().agent_seq;
+        assert_eq!(last, 59, "every ordinal is accounted for up to the last");
+        assert_eq!(
+            seqs(&older).last().unwrap() + 1,
+            newer[0].agent_seq,
+            "the fresh file continues the rotated one"
+        );
+
+        std::fs::write(&path, b"").unwrap();
+        let resumed = EventWriter::open_path(&path, &node()).unwrap();
+        assert_eq!(
+            resumed.next_seq(),
+            seqs(&older).last().unwrap() + 1,
+            "an empty fresh file seeds from the rotated one"
+        );
+    }
+
+    /// **A reader follows a rotation without losing or repeating an event**, and a reader that
+    /// opens after one replays both files.
+    #[test]
+    fn a_reader_follows_a_rotation_and_a_late_reader_replays_both_files() {
+        let dir = scratch("events-rotate-read");
+        let path = dir.join("events.jsonl");
+        let mut w = EventWriter::open_path(&path, &node())
+            .unwrap()
+            .capped_at(2_000);
+        w.append(frame("first")).unwrap();
+        let (mut reader, replayed) = EventReader::open_path(&path).unwrap();
+        let mut seen = seqs(&replayed);
+        for i in 0..60 {
+            w.append(frame(&format!("frame-{i}"))).unwrap();
+            if i % 3 == 0 {
+                let mut out = Vec::new();
+                reader.poll(&mut out);
+                seen.extend(seqs(&out));
+            }
+        }
+        let mut out = Vec::new();
+        reader.poll(&mut out);
+        seen.extend(seqs(&out));
+        assert_eq!(
+            seen,
+            (0..=60).collect::<Vec<u64>>(),
+            "{:?}",
+            reader.status()
+        );
+        assert!(matches!(
+            reader.status(),
+            crate::registry::Status::Following
+        ));
+
+        let (_, late) = EventReader::open_path(&path).unwrap();
+        let late = seqs(&late);
+        assert_eq!(late.last(), Some(&60));
+        assert!(
+            late.windows(2).all(|w| w[1] == w[0] + 1),
+            "the rotated file then the fresh one, in order: {late:?}"
+        );
+    }
+
+    /// **A file rotated away twice between two polls is a reported gap**, never a silent one: the
+    /// reader moves on to the current file and the ordinals it skipped are named.
+    #[test]
+    fn a_reader_that_falls_two_rotations_behind_reports_the_gap() {
+        let dir = scratch("events-rotate-gap");
+        let path = dir.join("events.jsonl");
+        let mut w = EventWriter::open_path(&path, &node())
+            .unwrap()
+            .capped_at(1_000);
+        w.append(frame("first")).unwrap();
+        let (mut reader, _) = EventReader::open_path(&path).unwrap();
+        for i in 0..60 {
+            w.append(frame(&format!("frame-{i}"))).unwrap();
+        }
+        let mut out = Vec::new();
+        reader.poll(&mut out);
+        assert_eq!(out.last().map(|e| e.agent_seq), Some(60));
+        assert!(!reader.gaps().is_empty(), "the skipped ordinals are named");
+        assert!(matches!(
+            reader.status(),
+            crate::registry::Status::Following
+        ));
     }
 
     /// A resume opens the file again. Restarting at 0 would put two events with one ordinal in one
