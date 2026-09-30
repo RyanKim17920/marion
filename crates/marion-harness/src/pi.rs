@@ -175,7 +175,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     boot: BOOT,
     push: Push::None,
     // pi has no approval surface: `--tools` is both what the model is offered and all it may run.
-    approval: Approval::None {
+    approval: Approval::ApproveAll {
         note: "S34 on 0.80.2: pi asks nothing headless; a tool named in --tools runs, and marion's \
                verb reaches the bridge with no prompt",
     },

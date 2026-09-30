@@ -295,6 +295,7 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
     };
     let surfaces = adapter.surfaces();
     notes.push(approval_note(
+        h.as_str(),
         adapter.spec().approval,
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     ));
@@ -454,7 +455,7 @@ fn abort_note(row: &marion_harness::spec::HarnessSpec) -> String {
 /// missing grant is reported with the exact line to add. A file that is absent, or holds no such
 /// entry, is `MISSING`; one doctor cannot read or parse, or no `HOME` at all, is "cannot tell",
 /// because guessing either way would be a finding about a file nobody read.
-fn approval_note(approval: Approval, home: Option<&Path>) -> String {
+fn approval_note(row: &str, approval: Approval, home: Option<&Path>) -> String {
     let kind = approval.kind();
     match approval {
         Approval::AllowedToolsArg { flag, .. } => {
@@ -473,9 +474,10 @@ fn approval_note(approval: Approval, home: Option<&Path>) -> String {
             "approval: {kind} — marion's client answers the protocol's permission requests; an \
              agent type's `approval_mode` sets the session's `{category}` select"
         ),
-        Approval::None { .. } => {
-            format!("approval: {kind} — the harness asks nothing for an MCP tool")
-        }
+        Approval::ApproveAll { .. } => format!(
+            "approval: {kind} — WARNING: {row} runs every tool without asking (approval: \
+             approve-all); only its sandbox/containment bounds it"
+        ),
         Approval::OperatorAllowlist {
             file,
             pointer,
@@ -2134,10 +2136,25 @@ mod tests {
     fn every_row_reports_its_approval_grant_and_a_missing_operator_grant_names_the_line() {
         for h in Harness::ALL {
             let row = marion_harness::adapter::harness_spec(h);
-            let note = approval_note(row.approval, None);
+            let note = approval_note(h.as_str(), row.approval, None);
             assert!(
                 note.starts_with(&format!("approval: {}", row.approval.kind())),
                 "{h}: {note}"
+            );
+        }
+        // A row that approves everything is warned of plainly, by name.
+        for h in [Harness::Goose, Harness::Pi] {
+            let note = approval_note(
+                h.as_str(),
+                marion_harness::adapter::harness_spec(h).approval,
+                None,
+            );
+            assert!(
+                note.contains(&format!(
+                    "WARNING: {h} runs every tool without asking (approval: approve-all); only its \
+                     sandbox/containment bounds it"
+                )),
+                "{note}"
             );
         }
 
@@ -2151,7 +2168,7 @@ mod tests {
         let line = r#""permissions": {"allow": ["mcp(marion/*)"]}"#;
         let settings = home.join(".tool/settings.json");
 
-        let absent = approval_note(grant, Some(&*home));
+        let absent = approval_note("agy", grant, Some(&*home));
         assert!(
             absent.contains("MISSING") && absent.contains(line) && absent.contains("~/.tool"),
             "no file is a missing grant, and the note names the line: {absent}"
@@ -2167,7 +2184,7 @@ mod tests {
             r#"{"trustedWorkspaces":["/w"],"permissions":{"allow":["command(ls)"]}}"#,
         )
         .unwrap();
-        let other = approval_note(grant, Some(&*home));
+        let other = approval_note("agy", grant, Some(&*home));
         assert!(other.contains("MISSING") && other.contains(line), "{other}");
 
         std::fs::write(
@@ -2175,17 +2192,17 @@ mod tests {
             r#"{"permissions":{"allow":["command(ls)","mcp(marion/*)"]}}"#,
         )
         .unwrap();
-        let granted = approval_note(grant, Some(&*home));
+        let granted = approval_note("agy", grant, Some(&*home));
         assert!(
             granted.contains("granted") && !granted.contains("MISSING"),
             "{granted}"
         );
 
         std::fs::write(&settings, "not json").unwrap();
-        let unreadable = approval_note(grant, Some(&*home));
+        let unreadable = approval_note("agy", grant, Some(&*home));
         assert!(unreadable.contains("cannot tell"), "{unreadable}");
 
-        let no_home = approval_note(grant, None);
+        let no_home = approval_note("agy", grant, None);
         assert!(no_home.contains("cannot tell"), "{no_home}");
     }
 

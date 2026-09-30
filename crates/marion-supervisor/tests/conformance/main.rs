@@ -221,7 +221,7 @@ fn record_admission(out: &Path, r: &report::TargetResult, t: &target::Target) {
         .iter()
         .map(|o| (o.probe.to_string(), o.status.word().to_string()))
         .collect();
-    let verdict = row_file::admits(&probes);
+    let verdict = row_file::admits(t.spec, &probes);
     let h = t.agent_type.harness;
     let record = json!({
         "row": r.selector,

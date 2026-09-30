@@ -9204,7 +9204,7 @@ mod tests {
                             "{h} ({name}): marion must never grant the operator's rule itself"
                         );
                     }
-                    Approval::None { .. } => {}
+                    Approval::ApproveAll { .. } => {}
                 }
             }
         }
@@ -9219,11 +9219,11 @@ mod tests {
                 ("codex", "declaration-key"),
                 ("opencode", "declaration-key"),
                 ("copilot", "allowed-tools-arg"),
-                ("goose", "env-var"),
+                ("goose", "approve-all"),
                 ("cline", "cli-flag"),
                 ("qwen", "cli-flag"),
                 ("agy", "operator-allowlist"),
-                ("pi", "none"),
+                ("pi", "approve-all"),
                 ("acp", "session-mode"),
             ],
             "each row's measured grant, named one at a time so a new row cannot copy a neighbour"

@@ -668,6 +668,14 @@ fn p_approval(c: &mut Ctx<'_>) -> Outcome {
         "granted ({}), `report` is answered; ungranted, the harness asks or refuses",
         approval.kind()
     );
+    // A row that declares approve-all has no grant to strip: there is nothing to measure, as for
+    // any strategy a row declares none of, and doctor warns instead.
+    if let Approval::ApproveAll { note } = approval {
+        return Outcome::unsupported(
+            P,
+            format!("the row declares approve-all: every tool runs without asking ({note})"),
+        );
+    }
     let Some(granted) = granted else {
         return Outcome::unsupported(P, "P-activity did not run, so the granted case is unknown");
     };
@@ -703,14 +711,7 @@ fn p_approval(c: &mut Ctx<'_>) -> Outcome {
                 format!("the grant is the operator's own `{rule}` in ~/{file}; marion writes none"),
             );
         }
-        Approval::None { note } => {
-            return Outcome::judged(
-                P,
-                granted,
-                "the harness asks nothing headless for an MCP tool (row: approval none)",
-                format!("`report` answered with no grant: {granted} ({note})"),
-            );
-        }
+        Approval::ApproveAll { .. } => unreachable!("answered above"),
     };
     let s = c.session(P, "ungranted");
     let marker = "CONFAPPROVAL";

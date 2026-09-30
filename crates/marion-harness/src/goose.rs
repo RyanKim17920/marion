@@ -213,17 +213,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 5 nodes: 0.12 s.",
     },
     push: Push::McpLog,
-    // `approve` aborts a headless run and `chat` withholds every call, so `auto` is stated (S26).
-    approval: Approval::EnvVar {
-        key: MODE_ENV,
-        value: AUTO_MODE,
-        scope: "every tool the node is offered, which under --no-profile is marion's and the \
-                declared builtins",
-        note: "S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest; chat \
-               withholds every call; auto runs them. S37 on 1.52.0 (s37-goose-mode): unset, a \
-               fresh config runs marion's tool and a granted write unasked, so the grant is not \
-               load-bearing on a canned node; `GOOSE_MODE: approve` in the operator's config.yaml \
-               aborts a headless run at exit 1 and the env overrides it, so it is on a live one",
+    // `approve` aborts a headless run and `chat` withholds every call, so `auto` is stated (S26)
+    // in the env — and `auto` approves everything, so the row declares that rather than a grant.
+    approval: Approval::ApproveAll {
+        note: "auto runs every tool the node is offered, which under --no-profile is marion's \
+               and the declared builtins, unasked. S26 on 1.49.0: GOOSE_MODE=approve aborts at exit \
+               1 after the toolRequest and chat withholds every call. S37 on 1.52.0 \
+               (s37-goose-mode): unset, a fresh config runs marion's tool and a granted write \
+               unasked, and conformance's P-approval ran `report` with the variable stripped, so \
+               no grant of marion's is load-bearing. The row's env states GOOSE_MODE=auto because \
+               `GOOSE_MODE: approve` in the operator's config.yaml aborts a headless run at exit 1 \
+               and the env overrides it",
     },
     // s38 (1.52.0): no `write` declared compiles no `--with-builtin developer`, and the developer
     // extension carries every tool that writes. `GOOSE_MODE=chat` would withhold marion's

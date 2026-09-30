@@ -530,10 +530,13 @@ scripts/conformance.sh --harness mytool     # loads ~/.config/marion/harnesses/ 
 
 It records `<state>/conformance/mytool-<version>.json`. The row is *admitted* when P-version,
 P-launch, P-tools and P-approval pass and every other probe passes or is unsupported by the row's
-own declaration. `marion doctor --harness mytool` shows the file the row came from and whether it
-has changed since, each strategy the row declares none of, and that result. Admission is advice: a
-launch never waits on it. (The `goose` row's TOML twin runs the battery to the same verdicts as the
-built-in, P-approval's FAIL included, because `GOOSE_MODE=auto` approves without marion's grant.)
+own declaration. A row that runs every tool unasked says so instead of naming a grant
+(`[approval] approve-all = "<what was measured>"`, as goose and pi do): P-approval is then
+unsupported rather than failed, the row can still be admitted, and doctor warns that only the
+node's sandbox and containment bound it. A row that names a grant which does not hold fails.
+`marion doctor --harness mytool` shows the file the row came from and whether it has changed since,
+each strategy the row declares none of, and that result. Admission is advice: a launch never waits
+on it. (The `goose` row's TOML twin runs the battery to the built-in's verdicts, cell for cell.)
 
 ### ACP agents
 

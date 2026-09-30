@@ -950,8 +950,12 @@ pub enum Approval {
         rule: &'static str,
         note: &'static str,
     },
-    /// The harness asks nothing headless for an MCP tool: its default is allow.
-    None { note: &'static str },
+    /// **Every tool the node is offered runs without asking**: the harness's headless default
+    /// (pi), or a launch-wide mode the row's env states so an operator's config cannot change it
+    /// (goose's `GOOSE_MODE=auto`) — no grant of marion's is load-bearing. Declared, not a
+    /// mechanism: conformance's P-approval is unsupported for it, and `marion doctor` warns that
+    /// only the node's sandbox and containment bound it.
+    ApproveAll { note: &'static str },
 }
 
 impl Approval {
@@ -964,7 +968,7 @@ impl Approval {
             | Approval::EnvVar { note, .. }
             | Approval::SessionMode { note, .. }
             | Approval::OperatorAllowlist { note, .. }
-            | Approval::None { note } => note,
+            | Approval::ApproveAll { note } => note,
         }
     }
 
@@ -977,7 +981,7 @@ impl Approval {
             Approval::EnvVar { .. } => "env-var",
             Approval::SessionMode { .. } => "session-mode",
             Approval::OperatorAllowlist { .. } => "operator-allowlist",
-            Approval::None { .. } => "none",
+            Approval::ApproveAll { .. } => "approve-all",
         }
     }
 }

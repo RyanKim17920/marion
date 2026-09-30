@@ -343,9 +343,6 @@ pub fn declared_none(spec: &HarnessSpec) -> Vec<(&'static str, &'static str)> {
     if let UpdatePolicy::None { note } = spec.updates {
         out.push(("updates", note));
     }
-    if let Approval::None { note } = spec.approval {
-        out.push(("approval", note));
-    }
     if let TurnDelivery::None { note } = spec.delivery.headless {
         out.push(("headless delivery", note));
     }
@@ -356,9 +353,10 @@ pub fn declared_none(spec: &HarnessSpec) -> Vec<(&'static str, &'static str)> {
 }
 
 /// **The probes a row loaded from a file must pass** before marion calls it admitted: it answers
-/// its version, launches, calls marion's tools, and is approved headless. Every other probe must
-/// pass or be unsupported by the row's own declaration. Admission is advice: a launch never waits
-/// on it.
+/// its version, launches, calls marion's tools, and is approved headless — or, for a row that
+/// declares [`Approval::ApproveAll`], P-approval is unsupported by that declaration. Every other
+/// probe must pass or be unsupported by the row's own declaration. Admission is advice: a launch
+/// never waits on it.
 pub const ADMISSION: &[&str] = &["P-version", "P-launch", "P-tools", "P-approval"];
 
 /// Where a row's last conformance result is kept: `<state>/conformance/<name>-<version>.json`.
@@ -368,9 +366,11 @@ pub fn admission_path(state: &Path, name: &str, version: &str) -> PathBuf {
         .join(format!("{name}-{version}.json"))
 }
 
-/// **Whether `probes` (each probe's name and its verdict's word) admit a row**: every
-/// [`ADMISSION`] probe `PASS`, every other `PASS` or `UNSUPPORTED`. The reasons it does not, else.
-pub fn admits(probes: &[(String, String)]) -> Result<(), Vec<String>> {
+/// **Whether `probes` (each probe's name and its verdict's word) admit `spec`'s row**: every
+/// [`ADMISSION`] probe `PASS` (P-approval `UNSUPPORTED` too where the row declares approve-all),
+/// every other `PASS` or `UNSUPPORTED`. The reasons it does not, else.
+pub fn admits(spec: &HarnessSpec, probes: &[(String, String)]) -> Result<(), Vec<String>> {
+    let approve_all = matches!(spec.approval, Approval::ApproveAll { .. });
     let word = |p: &str| {
         probes
             .iter()
@@ -379,7 +379,10 @@ pub fn admits(probes: &[(String, String)]) -> Result<(), Vec<String>> {
     };
     let mut why: Vec<String> = ADMISSION
         .iter()
-        .filter(|p| word(p) != "PASS")
+        .filter(|p| {
+            let w = word(p);
+            w != "PASS" && !(approve_all && **p == "P-approval" && w == "UNSUPPORTED")
+        })
         .map(|p| format!("{p} {} (must PASS)", word(p)))
         .collect();
     why.extend(
@@ -1008,7 +1011,7 @@ pub enum ApprovalDto {
         rule: String,
         note: String,
     },
-    None(String),
+    ApproveAll(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -1452,7 +1455,7 @@ impl RowDto {
                     rule: leak(rule),
                     note: leak(note),
                 },
-                ApprovalDto::None(note) => Approval::None { note: leak(note) },
+                ApprovalDto::ApproveAll(note) => Approval::ApproveAll { note: leak(note) },
             },
             read_only: match self.read_only {
                 ReadOnlyDto::ToolsAxis { verified, note } => ReadOnly::ToolsAxis {
@@ -1885,28 +1888,36 @@ mod tests {
                 .map(|(p, w)| (p.to_string(), w.to_string()))
                 .collect()
         };
+        let granting = crate::adapter::harness_spec(Harness::Qwen);
         let all_pass: Vec<(&str, &str)> = ADMISSION.iter().map(|p| (*p, "PASS")).collect();
-        assert_eq!(admits(&run(&all_pass)), Ok(()));
+        assert_eq!(admits(granting, &run(&all_pass)), Ok(()));
         let mut extra = all_pass.clone();
         extra.extend([("P-interrupt", "UNSUPPORTED"), ("P-resume", "PASS")]);
-        assert_eq!(admits(&run(&extra)), Ok(()));
+        assert_eq!(admits(granting, &run(&extra)), Ok(()));
 
         let mut unsupported_core = all_pass.clone();
         unsupported_core[3] = ("P-approval", "UNSUPPORTED");
         assert_eq!(
-            admits(&run(&unsupported_core)),
+            admits(granting, &run(&unsupported_core)),
             Err(vec!["P-approval UNSUPPORTED (must PASS)".into()])
         );
         let mut failed_other = all_pass.clone();
         failed_other.push(("P-errors", "FAIL"));
         assert_eq!(
-            admits(&run(&failed_other)),
+            admits(granting, &run(&failed_other)),
             Err(vec!["P-errors FAIL".into()])
         );
         assert_eq!(
-            admits(&run(&all_pass[..3])),
+            admits(granting, &run(&all_pass[..3])),
             Err(vec!["P-approval NOT RUN (must PASS)".into()])
         );
+        // A row that declares approve-all has no grant to test: P-approval unsupported admits it.
+        let mut approve_all = *granting;
+        approve_all.approval = Approval::ApproveAll {
+            note: "asks nothing",
+        };
+        assert_eq!(admits(&approve_all, &run(&unsupported_core)), Ok(()));
+        assert!(admits(&approve_all, &run(&failed_other)).is_err());
     }
 
     #[test]
