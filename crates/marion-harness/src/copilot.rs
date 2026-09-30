@@ -36,6 +36,7 @@ use marion_core::harness::Harness;
 use serde_json::Value;
 
 use crate::adapter::{HarnessAdapter, HarnessError, LaunchSpec, Row};
+use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, Verdict, Where,
@@ -177,6 +178,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         body: Body::McpServers(MCP_SERVERS),
         always: false,
     }),
+    // Its GitHub login, in the three variables copilot reads, and a BYOK provider's.
+    login_env: LoginEnv {
+        login: &[
+            EnvGrant::always("COPILOT_GITHUB_TOKEN"),
+            EnvGrant::always("GH_TOKEN"),
+            EnvGrant::always("GITHUB_TOKEN"),
+            EnvGrant::always("COPILOT_PROVIDER_*"),
+        ],
+        any_provider: false,
+    },
     token: TokenCarriers::DECLARATION,
     // The `--allow-tool` patterns are what `-p` mode checks a call against — not the
     // `--available-tools` list, which only decides what the model sees. The prefix is load-bearing:

@@ -872,6 +872,8 @@ pub fn prepare_watched(
             acp_agent: agent_type.acp_agent.clone(),
             approval_mode: agent_type.approval_mode.clone(),
             profile_dir: profiles.dir(0),
+            env_passthrough: crate::child_env::passthrough(&agent_type.name)
+                .map_err(|e| RootError::Run(SpawnError::EnvFile(e)))?,
             ..Extras::default()
         },
     );

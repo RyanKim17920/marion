@@ -41,6 +41,7 @@ use marion_core::provider::Wire;
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
 };
+use crate::env_filter::LoginEnv;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -154,6 +155,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // goose persists every `ENV=v` pair of the `--with-extension` token in its session store, so
     // the token rides the process environment in both modes; the extension child inherits it.
     // [`extension_declaration`] says why the declaration cannot carry it.
+    // Any provider goose is configured for, by its key.
+    login_env: LoginEnv {
+        login: &[],
+        any_provider: true,
+    },
     token: TokenCarriers::both(TokenCarrier::InheritedEnv {
         note: "s26 on 1.49.0: the `--with-extension` child inherits the process environment \
                (`goose-env-inherit.mcp.jsonl`)",

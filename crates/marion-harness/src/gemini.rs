@@ -16,6 +16,7 @@ use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
 };
 use crate::auth::Auth;
+use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -139,6 +140,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // states (trust, the auth selection it must leave alone).
         body: Body::Code(live_settings_document),
     }),
+    // Its Gemini or Google key, and the Vertex login its switch selects.
+    login_env: LoginEnv {
+        login: &[
+            EnvGrant::always("GEMINI_API_KEY"),
+            EnvGrant::always("GOOGLE_API_KEY"),
+            EnvGrant::always("GOOGLE_GEMINI_BASE_URL"),
+            EnvGrant::always("GOOGLE_GENAI_USE_VERTEXAI"),
+            EnvGrant::always("GOOGLE_CLOUD_PROJECT"),
+            EnvGrant::always("GOOGLE_CLOUD_LOCATION"),
+            EnvGrant::always("GOOGLE_APPLICATION_CREDENTIALS"),
+        ],
+        any_provider: false,
+    },
     token: TokenCarriers::DECLARATION,
     // On this harness the mode **is** the constraint: under `default` the mutating tools are
     // withheld from `functionDeclarations` entirely. Recorded in both states.

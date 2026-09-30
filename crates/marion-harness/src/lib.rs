@@ -19,6 +19,7 @@ pub mod cline;
 pub mod codex;
 pub mod containment;
 pub mod copilot;
+pub mod env_filter;
 pub mod gemini;
 pub mod goose;
 pub mod grammar;

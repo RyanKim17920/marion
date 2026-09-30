@@ -252,11 +252,20 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
                     .map_err(native_command_error)?,
             })
             .map_err(native_command_error)?;
+        // The session runs on the operator's own login, so that login's variables pass; no other
+        // credential of theirs reaches the harness or the shell commands its model runs, unless
+        // the lane's agent type passes it through.
+        let filter = marion_harness::env_filter::InheritFilter {
+            login: marion_harness::adapter::harness_spec(agent_type.harness).login_env,
+            auth: marion_harness::Auth::Inherited,
+            passthrough: crate::child_env::passthrough(&agent_type.name)
+                .map_err(native_command_error)?,
+        };
         let mut prepared = assemble_native(
             NativeProcessBase {
                 program,
                 user_argv: context.opaque_tail().to_vec(),
-                env: environment.to_vec(),
+                env: filter.filter(environment.to_vec()),
                 cwd,
                 geometry,
             },

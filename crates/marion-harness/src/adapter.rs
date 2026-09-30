@@ -156,6 +156,9 @@ pub struct Extras {
     /// [`spec::ReadOnly`] switch; the supervisor also drops `write` from [`LaunchSpec::tools`]
     /// and gives the node an empty writable scope, so no row is the only guard.
     pub read_only: bool,
+    /// Variables the operator passes through to this agent type's nodes (`env_passthrough`, from
+    /// user-level config or a trusted row), past the inherit filter ([`crate::env_filter`]).
+    pub env_passthrough: Vec<String>,
     /// The profile directory the launch selected, exactly as `profiles.toml` stores it. Read by
     /// every row through its [`crate::profile::ProfileCarrier`], under live auth only.
     pub profile_dir: Option<PathBuf>,
@@ -1003,6 +1006,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         resume: spec.resume.clone(),
         profile_dir: spec.extra.profile_dir.clone(),
         read_only: spec.extra.read_only,
+        env_passthrough: spec.extra.env_passthrough.clone(),
         ..spec::Fields::default()
     }
 }
@@ -1674,6 +1678,7 @@ mod tests {
     #[test]
     fn each_declaration_route_is_verified_against_the_thing_it_promised() {
         let blank = Invocation {
+            inherit: None,
             program: "x".into(),
             args: vec![],
             env: vec![],
@@ -2021,6 +2026,11 @@ mod tests {
         assert_eq!(
             compile_codex_exec(&codex_spec()),
             Invocation {
+                inherit: Some(crate::env_filter::InheritFilter {
+                    login: codex::EXEC.login_env,
+                    auth: Auth::Canned,
+                    passthrough: vec![],
+                }),
                 program: "codex".into(),
                 args: [
                     "exec",
@@ -2969,6 +2979,11 @@ mod tests {
         assert_eq!(
             inv,
             Invocation {
+                inherit: Some(crate::env_filter::InheritFilter {
+                    login: crate::claude_code::SPEC.login_env,
+                    auth: Auth::Canned,
+                    passthrough: vec![],
+                }),
                 program: "claude".into(),
                 args: [
                     "-p",
@@ -10061,6 +10076,57 @@ mod tests {
                 None,
                 "{h}: only the measured frame names it"
             );
+        }
+    }
+
+    /// **Every row states what its own login reads from the environment** (`login_env`), and every
+    /// launch it compiles carries the inherit filter for its auth mode: without the row, the one
+    /// exception to "no operator credential reaches a harness" would be guessed, and a launch with
+    /// no filter would inherit every credential the operator's shell holds.
+    #[test]
+    fn every_row_states_its_login_env_and_every_launch_filters_what_it_inherits() {
+        use crate::env_filter::is_credential;
+        for h in Harness::ALL {
+            let row = harness_spec(h).login_env;
+            assert!(
+                row.any_provider || !row.login.is_empty(),
+                "{h}: states no login variable and reaches no provider"
+            );
+            for g in row.login {
+                let body = g.pattern.trim_end_matches('*');
+                assert!(
+                    !body.is_empty() && !body.contains('*') && body == body.to_uppercase(),
+                    "{h}: {:?} is not a variable name or a prefix",
+                    g.pattern
+                );
+                if let Some(switch) = g.when_set {
+                    assert!(
+                        row.login.iter().any(|o| o.pattern == switch),
+                        "{h}: {:?} waits on {switch}, which the row does not keep itself",
+                        g.pattern
+                    );
+                }
+            }
+            for auth in [Auth::Canned, Auth::Inherited] {
+                let spec = LaunchSpec {
+                    auth,
+                    ..spec_for(h)
+                };
+                let Ok(inv) = launch_adapter(h).unwrap().compile(&spec, &ctx()) else {
+                    continue;
+                };
+                let filter = inv
+                    .inherit
+                    .unwrap_or_else(|| panic!("{h} {auth:?}: a launch with no inherit filter"));
+                assert_eq!((filter.login, filter.auth), (row, auth), "{h}");
+                assert!(
+                    filter.withholds("SSH_AUTH_SOCK", &|_| false)
+                        && filter.withholds("NPM_TOKEN", &|_| false),
+                    "{h} {auth:?}: an operator credential would be inherited"
+                );
+                assert!(!filter.withholds("PATH", &|_| false), "{h}");
+                assert!(is_credential("SSH_AUTH_SOCK"));
+            }
         }
     }
 

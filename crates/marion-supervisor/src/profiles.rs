@@ -478,6 +478,17 @@ pub fn login_state(profile: &Profile) -> LoginState {
     for key in carrier.clear {
         cmd.env_remove(key);
     }
+    // The operator's own login is what is asked about, so their login's variables are kept and
+    // no other credential is handed to the probe.
+    let filter = marion_harness::env_filter::InheritFilter {
+        login: harness_spec(profile.harness).login_env,
+        auth: marion_harness::Auth::Inherited,
+        passthrough: vec![],
+    };
+    let set = [(carrier.env.to_string(), profile.dir.clone())];
+    for key in marion_harness::invocation::removals_for(Some(&filter), &set) {
+        cmd.env_remove(key);
+    }
     let out = match crate::run::run_bounded(&mut cmd, STATUS_BOUND) {
         Ok(out) if out.timed_out => {
             return LoginState::Unknown(format!(

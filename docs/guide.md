@@ -209,6 +209,20 @@ By default every node runs on the login you already set up for its harness: its 
 its API key variable, its keychain entry or its config file. marion writes no auth selection,
 hides no credential source, and never runs a harness's login command.
 
+A node inherits its harness's own login variables and nothing else credential-shaped from your
+shell: each harness row names the variables its login reads (claude's `ANTHROPIC_API_KEY` or its
+Bedrock `AWS_*` when `CLAUDE_CODE_USE_BEDROCK` is set, copilot's `GH_TOKEN`, and so on), and every
+other key, token or secret (`AWS_*`, `GH_TOKEN`, `NPM_TOKEN`, `SSH_AUTH_SOCK`, `KUBECONFIG`,
+another vendor's `*_API_KEY`) is withheld. opencode, goose, cline, pi and ACP agents keep every
+provider key. A canned or endpoint node inherits no credential at all. To hand an agent type a
+variable anyway, list it in your own `$XDG_CONFIG_HOME/marion/env.toml`:
+
+```toml
+[passthrough]
+codex-impl = ["MY_PROVIDER_KEY"]   # say, a codex model_providers env_key
+"*" = ["CORP_*"]                  # every agent type
+```
+
 `marion login` is only for keys and endpoints you give it:
 
 ```sh

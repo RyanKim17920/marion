@@ -263,6 +263,19 @@ fn recorded_argv(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Credentials an operator's shell commonly holds, set on every run here.
+const OPERATOR_SECRETS: &[&str] = &[
+    "GH_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "NPM_TOKEN",
+    "SSH_AUTH_SOCK",
+    "KUBECONFIG",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "MARION_NODE_TOKEN",
+];
+const SECRET_SENTINEL: &str = "operator-secret-SENTINEL";
+
 /// The value of `key` in the environment marion launched the harness with.
 ///
 /// A missing key is the caller's assertion to make, not an empty string: every use below is a
@@ -445,6 +458,9 @@ fn marion_run(dir: &Path, node: &Node, bin: &Path, prompt: &str, timeout_secs: &
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args(&args)
             .env("PATH", path)
+            // The operator's shell holds credentials no harness needs, and a stale node token of
+            // marion's own: none of them may reach the harness (`env_filter`, `inherited_marion_names`).
+            .envs(OPERATOR_SECRETS.iter().map(|k| (k, SECRET_SENTINEL)))
             .current_dir(dir),
         RUN_BOUND,
     )
@@ -518,6 +534,20 @@ fn a_silent_root_is_refused(node: &Node, name: &str) {
         node.harness
     );
     assert!(recorded_env(&dir, "MARION_DUMMY_KEY").is_none());
+    // A canned root: marion supplies the route, so no credential of the operator's — not even
+    // the harness's own key — and no inherited node token reaches it; the runtime does.
+    let env = std::fs::read_to_string(dir.join("env.txt")).unwrap();
+    assert!(
+        !env.contains(SECRET_SENTINEL),
+        "{}: an operator credential reached the harness:\n{}",
+        node.harness,
+        env.lines()
+            .filter(|l| l.contains(SECRET_SENTINEL))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(recorded_env(&dir, "PATH").is_some(), "{}", node.harness);
+    assert!(recorded_env(&dir, "HOME").is_some(), "{}", node.harness);
 }
 
 #[test]

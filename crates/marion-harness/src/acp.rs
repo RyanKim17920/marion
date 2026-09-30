@@ -54,6 +54,7 @@ use crate::adapter::{
 };
 use crate::auth::Auth;
 use crate::caps::Capabilities;
+use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, Cond, Reasoning, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
 };
@@ -99,6 +100,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // facade could inject, and no native adapter for this row.
     live_declaration: None,
     // Marion's own pipe: the `session/new` request carries the token beside the node's identity.
+    // An ACP agent is any vendor's: every provider key, and the logins the refinement rows'
+    // agents read (copilot's GitHub token, claude-agent-acp's token, a Vertex credential).
+    login_env: LoginEnv {
+        login: &[
+            EnvGrant::always("COPILOT_GITHUB_TOKEN"),
+            EnvGrant::always("GH_TOKEN"),
+            EnvGrant::always("GITHUB_TOKEN"),
+            EnvGrant::always("CLAUDE_CODE_OAUTH_TOKEN"),
+            EnvGrant::always("ANTHROPIC_AUTH_TOKEN"),
+            EnvGrant::always("GOOGLE_APPLICATION_CREDENTIALS"),
+        ],
+        any_provider: true,
+    },
     token: TokenCarriers::DECLARATION,
     constraint: Constraint::Fixed {
         prefix: "",

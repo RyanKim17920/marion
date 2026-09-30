@@ -173,6 +173,15 @@ pub fn version_probe(
     let switch = ProbeSwitch::for_row(spec)?;
     let mut command = Command::new(program);
     command.arg("--version");
+    // A version needs no login: no credential of the operator's reaches the probe.
+    let filter = crate::env_filter::InheritFilter {
+        login: spec.login_env,
+        auth: crate::auth::Auth::Canned,
+        passthrough: Vec::new(),
+    };
+    for key in crate::invocation::removals_for(Some(&filter), &[]) {
+        command.env_remove(key);
+    }
     let mut document = None;
     match switch {
         ProbeSwitch::Env { key, value } => {

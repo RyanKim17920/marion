@@ -34,6 +34,7 @@ use crate::adapter::{
 };
 use crate::auth::Auth;
 use crate::caps::Capabilities;
+use crate::env_filter::LoginEnv;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -124,6 +125,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         body: Body::Code(extension_source),
         always: false,
     }),
+    // Any provider pi is configured for, by its key.
+    login_env: LoginEnv {
+        login: &[],
+        any_provider: true,
+    },
     token: TokenCarriers::DECLARATION,
     // The `--tools` list itself, prefixed with its axis.
     constraint: Constraint::Allowed { prefix: "tools:" },

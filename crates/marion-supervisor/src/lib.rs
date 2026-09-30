@@ -24,6 +24,9 @@ pub mod app_server;
 pub mod attach;
 pub mod background;
 pub mod bridge;
+/// The operator's `env_passthrough`: variables they hand one agent type's nodes past the inherit
+/// filter, from their own user-level config.
+pub mod child_env;
 /// Wall-clock and entropy for minting ids: a leaf both `run` and `journal` stand on.
 pub(crate) mod clock;
 /// Turn delivery's continuation lane: a `LaunchOnly` node's next turn is a relaunch of the same

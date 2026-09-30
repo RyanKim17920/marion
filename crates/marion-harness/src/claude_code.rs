@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::adapter::{HarnessAdapter, Row};
 use crate::caps::Capabilities;
+use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, InFlight, ModelName, Name, OnRefusedReport,
     Pairing, RateLimitRule, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule,
@@ -178,6 +179,23 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         body: Body::McpServers(MCP_SERVERS),
         always: true,
     }),
+    // Its own key and token, and the Bedrock or Vertex login its switches select.
+    login_env: LoginEnv {
+        login: &[
+            EnvGrant::always("ANTHROPIC_API_KEY"),
+            EnvGrant::always("ANTHROPIC_AUTH_TOKEN"),
+            EnvGrant::always("ANTHROPIC_BASE_URL"),
+            EnvGrant::always("CLAUDE_CODE_OAUTH_TOKEN"),
+            EnvGrant::always("CLAUDE_CODE_USE_BEDROCK"),
+            EnvGrant::always("CLAUDE_CODE_USE_VERTEX"),
+            EnvGrant::always("ANTHROPIC_BEDROCK_BASE_URL"),
+            EnvGrant::always("ANTHROPIC_VERTEX_PROJECT_ID"),
+            EnvGrant::always("CLOUD_ML_REGION"),
+            EnvGrant::when("AWS_*", "CLAUDE_CODE_USE_BEDROCK"),
+            EnvGrant::when("GOOGLE_APPLICATION_CREDENTIALS", "CLAUDE_CODE_USE_VERTEX"),
+        ],
+        any_provider: false,
+    },
     token: TokenCarriers::DECLARATION,
     // The one harness with a real per-tool allowlist: the record is the literal contents of
     // `--allowedTools`, which is the flag the CLI checks a call against.

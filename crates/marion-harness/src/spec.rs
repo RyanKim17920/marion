@@ -50,6 +50,9 @@ pub const MCP_ALIAS: &str = "marion";
 /// One harness, as a row: what its launch looks like, stated as data.
 #[derive(Debug)]
 pub struct HarnessSpec {
+    /// What the harness's own login reads from the operator's environment — the one exception to
+    /// the credentials every launch withholds ([`crate::env_filter`]).
+    pub login_env: crate::env_filter::LoginEnv,
     pub harness: Harness,
     /// §3.4's point in the cross-product this harness runs at.
     pub surfaces: Surfaces,
@@ -1279,6 +1282,9 @@ pub struct Axes {
 /// `Debug` is hand-written: see the impl below.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Fields {
+    /// Variables the operator passes through to this agent type's nodes past the inherit filter
+    /// (`env_passthrough`).
+    pub env_passthrough: Vec<String>,
     pub cwd: PathBuf,
     pub config_dir: PathBuf,
     pub auth: Auth,
@@ -1349,6 +1355,7 @@ impl std::fmt::Debug for Fields {
             profile_dir,
             extra_env,
             read_only,
+            env_passthrough,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -1360,6 +1367,7 @@ impl std::fmt::Debug for Fields {
         }
         let bytes = |s: &Option<String>| s.as_ref().map(|s| format!("<{} bytes>", s.len()));
         f.debug_struct("Fields")
+            .field("env_passthrough", env_passthrough)
             .field("cwd", cwd)
             .field("config_dir", config_dir)
             .field("auth", auth)
@@ -1704,6 +1712,11 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
         // hook placed in `Fields::model`, and nothing else is recorded.
         model: f.model.clone(),
         session_mode: f.session_mode.clone(),
+        inherit: Some(crate::env_filter::InheritFilter {
+            login: spec.login_env,
+            auth: f.auth,
+            passthrough: f.env_passthrough.clone(),
+        }),
     })
 }
 

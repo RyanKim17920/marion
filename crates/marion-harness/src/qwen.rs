@@ -49,6 +49,7 @@ use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
 };
 use crate::auth::Auth;
+use crate::env_filter::{EnvGrant, LoginEnv};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
@@ -181,6 +182,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     }),
     // A canned node's token sits in its 0600 `settings.json`. A live node's declaration is argv,
     // so the token rides qwen's environment, which its MCP launcher hands the bridge.
+    // The OpenAI-compatible key and endpoint qwen reads, and DashScope's.
+    login_env: LoginEnv {
+        login: &[
+            EnvGrant::always("OPENAI_API_KEY"),
+            EnvGrant::always("OPENAI_BASE_URL"),
+            EnvGrant::always("DASHSCOPE_API_KEY"),
+        ],
+        any_provider: false,
+    },
     token: TokenCarriers {
         canned: TokenCarrier::Declaration,
         live: TokenCarrier::InheritedEnv {

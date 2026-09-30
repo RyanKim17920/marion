@@ -23,6 +23,7 @@ use crate::adapter::{
 };
 use crate::auth::Auth;
 use crate::caps::Capabilities;
+use crate::env_filter::LoginEnv;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, Reasoning,
     SessionId, StreamGrammar, TextUnit, TitleLookup, ToolUnit, UsageFold, UsageRule, Verdict,
@@ -221,6 +222,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     }),
     // Canned: inside the 0600 document. Live: the declaration is `OPENCODE_CONFIG_CONTENT`, a
     // variable every shell command the model runs inherits, so it names the token's file instead.
+    // Any provider opencode is configured for, by its key.
+    login_env: LoginEnv {
+        login: &[],
+        any_provider: true,
+    },
     token: TokenCarriers {
         canned: TokenCarrier::Declaration,
         live: TokenCarrier::DeclaredFile {

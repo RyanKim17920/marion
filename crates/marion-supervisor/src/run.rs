@@ -1757,6 +1757,10 @@ pub fn run_spawn_watched(
         &caller.agent_type.name,
     )?;
     let agent_type = snapshot.launch_type(&req.agent_type)?;
+    // What the operator passes this type's nodes past the inherit filter, read now so a broken
+    // file refuses before any side effect.
+    let passthrough =
+        crate::child_env::passthrough(&agent_type.name).map_err(SpawnError::EnvFile)?;
     // The type's standing instruction and marion's report instruction, once, here — and `req` is
     // the child's full request from this line on, so the four places that read its prompt read
     // one value.
@@ -2253,6 +2257,7 @@ pub fn run_spawn_watched(
             &wt,
             &ch,
         );
+        launch.extra.env_passthrough = passthrough.clone();
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep, gateway.as_ref());
         }
@@ -4337,6 +4342,7 @@ mod tests {
         std::fs::create_dir_all(project.path()).unwrap();
         let id = AgentId(format!("n-{tag}"));
         let inv = Invocation {
+            inherit: None,
             program: "sh".into(),
             args: vec![
                 "-c".into(),
@@ -4393,6 +4399,7 @@ mod tests {
         std::fs::create_dir_all(project.path()).unwrap();
         let id = AgentId("n-limit".into());
         let inv = Invocation {
+            inherit: None,
             program: "sh".into(),
             args: vec![
                 "-c".into(),
@@ -4515,6 +4522,7 @@ mod tests {
         .scrubbing(Some("sk-endpoint-9f2c1e7a"));
         let key = "sk-endpoint-9f2c1e7a";
         let inv = Invocation {
+            inherit: None,
             program: "sh".into(),
             args: vec![
                 "-c".into(),

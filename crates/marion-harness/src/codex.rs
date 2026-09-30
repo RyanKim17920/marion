@@ -21,6 +21,7 @@ use crate::adapter::{
 };
 use crate::auth::Auth;
 use crate::caps::Capabilities;
+use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, CallEnd, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList,
     Reasoning, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -159,6 +160,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // A canned node's token sits in its 0600 `config.toml`. A live node's declaration is argv,
     // so its token rides codex's environment and the `-c` pairs name it in `env_vars`
     // ([`live_config_overrides`]).
+    // Its OpenAI key; a custom `model_providers.*.env_key` is the operator's `env_passthrough`.
+    login_env: LoginEnv {
+        login: &[
+            EnvGrant::always("OPENAI_API_KEY"),
+            EnvGrant::always("CODEX_API_KEY"),
+            EnvGrant::always("OPENAI_BASE_URL"),
+        ],
+        any_provider: false,
+    },
     token: TokenCarriers {
         canned: TokenCarrier::Declaration,
         live: TokenCarrier::ForwardedEnv {

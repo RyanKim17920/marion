@@ -868,6 +868,14 @@ fn live_turn(
     for (k, v) in &inv.env {
         cmd.env(k, v);
     }
+    for k in inv
+        .env_remove
+        .iter()
+        .map(Into::into)
+        .chain(inv.inherited_removals())
+    {
+        cmd.env_remove::<std::ffi::OsString>(k);
+    }
     cmd.env(marion_harness::TMPDIR_ENV, tmp.path());
     let mut child = match crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd) {
         Ok(c) => c,
@@ -1110,6 +1118,14 @@ impl AcpChild {
             .stderr(Stdio::piped());
         for (k, v) in &inv.env {
             cmd.env(k, v);
+        }
+        for k in inv
+            .env_remove
+            .iter()
+            .map(Into::into)
+            .chain(inv.inherited_removals())
+        {
+            cmd.env_remove::<std::ffi::OsString>(k);
         }
         cmd.env(marion_harness::TMPDIR_ENV, tmp.path());
         let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd)?;
@@ -2065,6 +2081,7 @@ mod tests {
         let line = "Error authenticating: IneligibleTierError: This client is no longer supported \
                     for Gemini Code Assist for individuals.";
         let inv = Invocation {
+            inherit: None,
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
@@ -2105,6 +2122,7 @@ mod tests {
         let dir = marion_testsupport::scratch("doctor-probe-tmp");
         let seen = dir.join("tmpdir");
         let inv = Invocation {
+            inherit: None,
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
@@ -2591,6 +2609,7 @@ mod tests {
             unsafe { kill(pid, 0) == 0 }
         }
         let inv = Invocation {
+            inherit: None,
             program: "/bin/sh".into(),
             // It prints once the trap is installed, and the test waits for that line — without
             // it the SIGINT races the shell's own startup and lands on a process still running

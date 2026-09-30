@@ -4846,14 +4846,25 @@ impl RegistryHandle {
             auth: env.auth,
             ..Default::default()
         };
+        let set: Vec<(String, String)> = marion_harness::spec::render_env(spec.env, &fields)
+            .into_iter()
+            .chain(vars)
+            .collect();
+        let filter = marion_harness::env_filter::InheritFilter {
+            login: spec.login_env,
+            auth: env.auth,
+            passthrough: vec![],
+        };
         let mut listing = std::process::Command::new(spec.program?);
         listing
             .args(args)
             .args(lookup.argv)
-            .envs(marion_harness::spec::render_env(spec.env, &fields))
-            .envs(vars)
+            .envs(set.iter().cloned())
             .current_dir(&cwd)
             .stdin(std::process::Stdio::null());
+        for key in marion_harness::invocation::removals_for(Some(&filter), &set) {
+            listing.env_remove(key);
+        }
         let out = crate::run::run_bounded(&mut listing, SESSION_LISTING_BOUND).ok()?;
         if out.timed_out || out.code != Some(0) {
             return None;

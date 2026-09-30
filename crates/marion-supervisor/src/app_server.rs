@@ -665,6 +665,7 @@ for line in sys.stdin:
             let script = dir.join("fake.py");
             std::fs::write(&script, FAKE).unwrap();
             let inv = Invocation {
+                inherit: None,
                 program: "python3".into(),
                 args: vec![script.to_string_lossy().into_owned()],
                 env: vec![

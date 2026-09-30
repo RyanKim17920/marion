@@ -38,6 +38,10 @@ pub struct Invocation {
     /// offer it — or `None`, the agent's own default. Always `None` off ACP, whose other harnesses
     /// have no session to set one in.
     pub session_mode: Option<String>,
+    /// What this launch withholds from the environment it inherits ([`crate::env_filter`]):
+    /// set by every row's render; `None` inherits everything, for a hand-built invocation (a
+    /// test's, an ACP probe's) that states its own.
+    pub inherit: Option<crate::env_filter::InheritFilter>,
 }
 
 impl Invocation {
@@ -62,12 +66,37 @@ impl Invocation {
         for key in &self.env_remove {
             cmd.env_remove(key);
         }
-        for key in inherited_marion_names(std::env::vars_os().map(|(k, _)| k), &self.env) {
+        for key in self.inherited_removals() {
             cmd.env_remove(key);
         }
         cmd.env(TMPDIR_ENV, tmpdir);
         cmd
     }
+}
+
+impl Invocation {
+    /// What this launch removes from the environment this process would hand it: every inherited
+    /// `MARION_` name it did not set, and every variable its [`Self::inherit`] filter withholds.
+    /// [`Self::command`] applies it; a spawn site that builds its own `Command` (a probe) applies
+    /// it too.
+    pub fn inherited_removals(&self) -> Vec<OsString> {
+        removals_for(self.inherit.as_ref(), &self.env)
+    }
+}
+
+/// What a process launched from this one removes from what it would inherit, `set` being what the
+/// launch sets itself: every `MARION_` name it does not set, and what `filter` withholds. For a
+/// spawn site with no [`Invocation`] (a status probe, a session listing).
+pub fn removals_for(
+    filter: Option<&crate::env_filter::InheritFilter>,
+    set: &[(String, String)],
+) -> Vec<OsString> {
+    let inherited: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    let mut gone = inherited_marion_names(inherited.iter().map(|(k, _)| k.clone()), set);
+    if let Some(filter) = filter {
+        gone.extend(filter.removals(&inherited, set));
+    }
+    gone
 }
 
 /// Whether `name` is one of marion's own: every `MARION_` variable is marion's, never a harness's.
@@ -104,6 +133,7 @@ impl std::fmt::Debug for Invocation {
             model,
             session_mode,
             env_remove,
+            inherit,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -121,6 +151,7 @@ impl std::fmt::Debug for Invocation {
             .field("model", model)
             .field("session_mode", session_mode)
             .field("env_remove", env_remove)
+            .field("inherit", inherit)
             .finish()
     }
 }
@@ -132,6 +163,7 @@ mod tests {
     #[test]
     fn the_spawn_sites_temp_dir_wins_over_the_env_and_the_removals() {
         let inv = Invocation {
+            inherit: None,
             program: "opencode".into(),
             args: vec![],
             env: vec![(TMPDIR_ENV.into(), "/var/folders/operator/T/".into())],
@@ -176,6 +208,7 @@ mod tests {
     #[test]
     fn debug_names_every_variable_and_prints_no_value() {
         let inv = Invocation {
+            inherit: None,
             program: "claude".into(),
             args: vec!["-p".into()],
             env: vec![

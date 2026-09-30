@@ -1640,6 +1640,7 @@ mod tests {
         .unwrap();
         let mut l = Launch {
             inv: marion_harness::invocation::Invocation {
+                inherit: None,
                 program: "h".into(),
                 args: args(&["exec", "-c", "mcp_servers.marion.trust=true", "-c", "x=1"]),
                 env: vec![],

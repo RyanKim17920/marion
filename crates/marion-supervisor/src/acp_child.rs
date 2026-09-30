@@ -1008,6 +1008,7 @@ mod tests {
     /// not have, and without it the agent answers at once instead of holding its turn.
     fn agent(cwd: &Path, script: &str) -> Invocation {
         Invocation {
+            inherit: None,
             program: "bash".into(),
             args: vec!["-c".into(), format!("( sleep 20; kill -9 $$ ) &\n{script}")],
             env: vec![],
@@ -1591,6 +1592,7 @@ sleep 15"#,
         let dir = scratch("acp-decl");
         // A program that does not exist: reaching the spawn at all is the failure being excluded.
         let inv = Invocation {
+            inherit: None,
             program: "/nonexistent/acp-agent".into(),
             args: vec![],
             env: vec![],
@@ -1655,6 +1657,7 @@ sleep 15"#,
             return None;
         }
         Some(Invocation {
+            inherit: None,
             program: "python3".into(),
             args: vec![
                 concat!(

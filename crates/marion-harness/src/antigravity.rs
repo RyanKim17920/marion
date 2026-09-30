@@ -30,6 +30,7 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 
 use crate::adapter::{HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx};
+use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, Failure, ModelName, Name, OnRefusedReport, Pairing, Reasoning,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -111,6 +112,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         file: MCP_CONFIG_FILE,
         body: Body::McpServers(MCP_SERVERS),
     }),
+    // Its Google login.
+    login_env: LoginEnv {
+        login: &[
+            EnvGrant::always("GEMINI_API_KEY"),
+            EnvGrant::always("GOOGLE_API_KEY"),
+            EnvGrant::always("GOOGLE_APPLICATION_CREDENTIALS"),
+        ],
+        any_provider: false,
+    },
     token: TokenCarriers::DECLARATION,
     constraint: Constraint::Mode {
         prefix: "mode:",

@@ -48,6 +48,7 @@ use serde_json::{Value, json};
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
 };
+use crate::env_filter::LoginEnv;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -151,6 +152,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         file: MCP_SETTINGS_FILE,
         body: Body::McpServers(MCP_SERVERS),
     }),
+    // Any provider cline is configured for, by its key.
+    login_env: LoginEnv {
+        login: &[],
+        any_provider: true,
+    },
     token: TokenCarriers::DECLARATION,
     // marion compiles no constraint at all, and says so (opencode's record, for the same reason).
     constraint: Constraint::Fixed {

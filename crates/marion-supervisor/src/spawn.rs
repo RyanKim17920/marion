@@ -53,6 +53,10 @@ pub enum SpawnError {
     /// a default).
     #[error("{path}: {error}")]
     AgentTypesFile { path: PathBuf, error: String },
+    /// The operator's `env.toml` (`crate::child_env`) cannot be used, so which variables this
+    /// type's nodes may be handed is unknown. Refused before the node exists.
+    #[error("{0}")]
+    EnvFile(String),
     /// The type runs a command its tree's `.marion/agents.toml` names, and the operator has not
     /// allowed that file's current bytes (`marion trust allow`). Refused before the node exists.
     #[error(transparent)]
