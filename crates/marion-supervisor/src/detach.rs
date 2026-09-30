@@ -72,8 +72,9 @@
 //! the winner rather than erroring or starting a second."*
 //!
 //! [`ensure_supervisor`] is the client half and it is deliberately **not** a second race. It dials;
-//! if that succeeds nothing is spawned at all. If it does not, it spawns one stage 1 and then goes
-//! back to dialing. The exclusion happens one process later, inside stage 3, in
+//! if that succeeds nothing is spawned at all. If it does not, it spawns one stage 1 and blocks on
+//! the chain's **ready pipe** until stage 3 says a supervisor is serving or the chain has ended,
+//! then dials again. The exclusion happens one process later, inside stage 3, in
 //! [`socket::acquire`](crate::socket::acquire) — the flock the module next door already implements
 //! and already tests under sixteen-way contention. A stage 3 that gets [`Acquired::Dialed`] learns
 //! that somebody beat it, **drops the connection and exits 0 without journaling anything**, because
@@ -92,6 +93,7 @@ use crate::socket::{SocketError, SocketPaths, SupervisorIdentity};
 
 unsafe extern "C" {
     fn setsid() -> i32;
+    fn dup2(from: i32, to: i32) -> i32;
 }
 
 /// The subcommand. One word, on `marion-supervisor` and not on `marion`: §10's table already names
@@ -105,6 +107,11 @@ pub const SESSION_LEADER_FLAG: &str = "--session-leader";
 /// Stage 3's marker.
 pub const DETACHED_FLAG: &str = "--detached";
 
+/// The client's marker, carried by every stage: stdout is the client's **ready pipe**, and stage 3
+/// writes one byte to it once a supervisor is serving. Without it every stage's stdout is
+/// `/dev/null`, so a stage started by hand never writes into a stream it was not given for this.
+pub const READY_FLAG: &str = "--ready-on-stdout";
+
 /// [`Launch::auth`]'s flag. **Mandatory** — see that field.
 pub const AUTH_FLAG: &str = "--auth";
 
@@ -112,15 +119,13 @@ pub const AUTH_FLAG: &str = "--auth";
 /// [`marion_harness::Auth::Canned`] is always and under `Inherited` is never.
 pub const BASE_URL_FLAG: &str = "--base-url";
 
-/// How long [`ensure_supervisor`] keeps dialing before reporting that it could not reach one.
+/// How long [`ensure_supervisor`] waits on the supervisors it starts before reporting that it could
+/// not reach one.
 ///
 /// **A bound, not a measurement.** It covers two `fork`+`exec` pairs and one `bind`, which is
 /// milliseconds, and it is generous enough that a loaded machine never decides the answer. Nothing
 /// asserts on how long the call takes; the tests assert on *how many* supervisors ended up serving.
 pub const READY_DEADLINE: Duration = Duration::from_secs(10);
-
-/// How often [`ensure_supervisor`] re-dials while waiting.
-const DIAL_POLL: Duration = Duration::from_millis(5);
 
 /// Everything stage 3 needs to be told, because it will not be in a position to look any of it up.
 #[derive(Debug, Clone)]
@@ -232,13 +237,68 @@ pub struct Ensured {
 }
 
 /// §5.7's start: dial, and start one **only** if nothing answers.
+///
+/// Each start blocks on its chain's ready pipe ([`start_and_wait`]) rather than re-dialing on a
+/// timer: one byte means a supervisor is serving, and the pipe's end means the chain is over
+/// without one. Either way the dial that follows is the authority, and another start is made only
+/// on the lock's proof that nobody holds it.
 pub fn ensure_supervisor(paths: &SocketPaths, launch: &Launch) -> Result<Ensured, DetachError> {
-    ensure_supervisor_within(paths, launch, READY_DEADLINE)
+    crate::socket::check_fallback_dir(paths)?;
+    if let Some(stream) = dial_supervisor(paths)? {
+        return Ok(Ensured {
+            stream,
+            started: false,
+        });
+    }
+    let started = Instant::now();
+    let deadline = started + READY_DEADLINE;
+    let mut last_spawn: Option<DetachError> = None;
+    for _ in 0..MAX_START_ATTEMPTS {
+        // **A failed launcher stage is remembered, not returned.** Three of this start's kill
+        // windows leave a stage reporting failure *after* the supervisor is already on its way:
+        // kill stage 1 once it has spawned stage 2, or stage 2 once it has spawned stage 3, and
+        // the `wait` inside comes back non-zero over a socket that is about to answer. Returning
+        // that status would tell the operator nothing started while leaving a supervisor running
+        // to contradict them — and nothing outside can settle which report was true, because the
+        // *next* invocation simply finds the socket answering. The dial is the authority on
+        // whether a supervisor exists; an exit status is evidence about how one attempt went, and
+        // it is reported at the end only if no supervisor ever appeared.
+        if let Err(e) = start_and_wait(launch, deadline) {
+            last_spawn = Some(e);
+        }
+        if let Some(stream) = dial_supervisor(paths)? {
+            return Ok(Ensured {
+                stream,
+                started: true,
+            });
+        }
+        if Instant::now() >= deadline || !crate::socket::nobody_is_serving(paths) {
+            break;
+        }
+    }
+    Err(last_spawn.unwrap_or(DetachError::NotReachable {
+        path: paths.socket().to_path_buf(),
+        waited_ms: started.elapsed().as_millis(),
+    }))
 }
 
-/// [`ensure_supervisor`] with the bound named, so a test can observe the *failure* without waiting
-/// out a bound written for a machine under load. The bound never decides a verdict: a supervisor
-/// that is serving answers the first dial, and one that never binds is unreachable at any bound.
+/// **A live supervisor's connection, past its `session/hello`** — or `None` while none answers.
+fn dial_supervisor(
+    paths: &SocketPaths,
+) -> Result<Option<std::os::unix::net::UnixStream>, DetachError> {
+    let Some(mut stream) = dial_live_supervisor(paths)? else {
+        return Ok(None);
+    };
+    let who = crate::client_auth::identity_for(paths).map_err(DetachError::Hello)?;
+    match crate::client_auth::hello(&mut stream, &who) {
+        Ok(()) => Ok(Some(stream)),
+        // The lock is held but the socket is still an older listener nobody answers on — a
+        // supervisor starting now has not yet bound its own.
+        Err(crate::client_auth::HelloError::Unanswered(_)) => Ok(None),
+        Err(e) => Err(DetachError::Hello(e.to_string())),
+    }
+}
+
 /// A stream to a supervisor that actually exists, or `None` when none does yet.
 ///
 /// **A connection is not proof of a supervisor.** `socket.rs` measured on darwin 25.5.0 that
@@ -263,103 +323,20 @@ fn dial_live_supervisor(
     }
 }
 
-/// Whether this call may bring another supervisor into existence on this pass.
-///
-/// The first pass always may. A later one must wait out `RETRY_QUIET` *and* find the lock still
-/// free, so a supervisor that is two syscalls from binding is not raced by a second start. See
-/// [`MAX_START_ATTEMPTS`] for why the count is neither one nor unbounded.
-fn may_start_another(attempts: usize, last_attempt: Instant, paths: &SocketPaths) -> bool {
-    attempts < MAX_START_ATTEMPTS
-        && (attempts == 0
-            || (last_attempt.elapsed() >= RETRY_QUIET && crate::socket::nobody_is_serving(paths)))
-}
-
-pub fn ensure_supervisor_within(
-    paths: &SocketPaths,
-    launch: &Launch,
-    within: Duration,
-) -> Result<Ensured, DetachError> {
-    crate::socket::check_fallback_dir(paths)?;
-    let deadline = Instant::now() + within;
-    let mut started = false;
-    let mut attempts = 0usize;
-    let mut last_attempt = Instant::now();
-    let mut last_spawn: Option<DetachError> = None;
-    loop {
-        if let Some(mut stream) = dial_live_supervisor(paths)? {
-            let who = crate::client_auth::identity_for(paths).map_err(DetachError::Hello)?;
-            match crate::client_auth::hello(&mut stream, &who) {
-                Ok(()) => return Ok(Ensured { stream, started }),
-                // The lock is held but the socket is still an older listener nobody answers on —
-                // a supervisor starting now has not yet bound its own. Dial again.
-                Err(crate::client_auth::HelloError::Unanswered(_)) if Instant::now() < deadline => {
-                }
-                Err(e) => return Err(DetachError::Hello(e.to_string())),
-            }
-        }
-        if may_start_another(attempts, last_attempt, paths) {
-            attempts += 1;
-            last_attempt = Instant::now();
-            started = true;
-            // **A failed launcher stage is remembered, not returned.** Three of this start's kill
-            // windows leave a stage reporting failure *after* the supervisor is already on its way:
-            // kill stage 1 once it has spawned stage 2, or stage 2 once it has spawned stage 3, and
-            // the `wait` inside comes back non-zero over a socket that is about to answer.
-            // Returning that status would tell the operator nothing started while leaving a
-            // supervisor running to contradict them — and nothing outside can settle which report
-            // was true, because the *next* invocation simply finds the socket answering. The dial
-            // is the authority on whether a supervisor exists; an exit status is evidence about how
-            // one attempt went, and it is reported at the end only if no supervisor ever appeared.
-            if let Err(e) = spawn_stage_one(launch) {
-                last_spawn = Some(e);
-            }
-            continue;
-        }
-        if Instant::now() >= deadline {
-            return Err(last_spawn.unwrap_or(DetachError::NotReachable {
-                path: paths.socket().to_path_buf(),
-                waited_ms: within.as_millis(),
-            }));
-        }
-        std::thread::sleep(DIAL_POLL);
-    }
-}
-
-/// How many supervisors one call will try to bring into existence before it only waits.
+/// How many supervisors one call will try to bring into existence.
 ///
 /// **Not "once", and not "on every failed dial".** Once was wrong in the direction the review
 /// found: a stage 3 that dies before it binds — a failed `exec`, an OOM kill, a stage-2 refusal —
-/// leaves `started` true, nothing listening and the lock free, so the client sits out its whole
-/// bound to report [`DetachError::NotReachable`] about a project it could have started a supervisor
-/// in at any moment. Re-spawning on every failed dial is the failure the original comment named and
-/// is still refused: it aims a fork bomb at the project whose supervisor is two syscalls from
-/// binding.
+/// leaves nothing listening and the lock free, and a client that only waited would report
+/// [`DetachError::NotReachable`] about a project it could have started a supervisor in at any
+/// moment. Re-spawning on every failed dial is the failure the original comment named and is still
+/// refused: it aims a fork bomb at the project whose supervisor is two syscalls from binding.
 ///
-/// So a retry needs *evidence*, and it uses the evidence this system already trusts for exactly
-/// this question — [`crate::socket::nobody_is_serving`], the same `flock` that decides who serves.
-/// A lock that can be taken is proof that no supervisor holds it, which is precisely what a
-/// stillborn stage 3 leaves behind. The cap covers the one case the lock cannot see: a stage 3 that
-/// has `exec`ed but not yet reached its `flock` is indistinguishable from one that never will, so a
-/// few extra stage 3s may be created — which §5.7's design already absorbs, *"N racing clients may
-/// transiently create N stage-3 processes and exactly one survives"*. Three is where a bound stops
-/// being a retry and starts being a loop.
+/// So a retry needs *evidence*, and it has two kinds. The chain's ready pipe has ended, so the
+/// attempt is over, not slow. And [`crate::socket::nobody_is_serving`] — the same `flock` that
+/// decides who serves — proves no supervisor holds the lock, which is precisely what a stillborn
+/// stage 3 leaves behind. Three is where a bound stops being a retry and starts being a loop.
 const MAX_START_ATTEMPTS: usize = 3;
-
-/// How long an attempt is left alone before a free lock is read as *"it is not coming"*.
-///
-/// A free lock is proof that nobody is serving **now**, and during an ordinary start it is true for
-/// the whole time the three stages are `exec`ing — so retrying on that evidence alone starts a
-/// second chain during every normal start. That is not a correctness failure, since `socket::acquire`
-/// makes the redundant stage 3 stand down, but it is work nobody asked for, and it was measured
-/// here: without this interval a mutation that broke stage 2's log redirect still passed, because
-/// the *second* chain found the directory the first one's supervisor had created.
-///
-/// So the lock's evidence is combined with the one thing that separates "starting" from "stillborn":
-/// how long it has been that way. 250 ms is four orders of magnitude above the syscalls it covers
-/// and far below anything an operator perceives, and it decides no verdict — a supervisor that binds
-/// is dialed on the next poll whatever this is, and one that never binds is unreachable at any
-/// value.
-const RETRY_QUIET: Duration = Duration::from_millis(250);
 
 /// The same three readings `socket::acquire` treats as "nobody answered", and for the same reason:
 /// none of them is conclusive on its own, which is why the lock and not the dial decides.
@@ -370,18 +347,25 @@ fn nobody_answered(e: &std::io::Error) -> bool {
     )
 }
 
-/// Start stage 1 and **wait for it**, so nothing is left unreaped in the launcher.
+/// Start stage 1 and **wait for it**, so nothing is left unreaped in the launcher, then wait on the
+/// chain's ready pipe until `deadline`.
 ///
-/// Waiting costs one process lifetime — stage 1 exits as soon as stage 2 does, and stage 2 exits as
-/// soon as it has spawned stage 3 — and buys the property that `marion run` never accumulates
-/// zombies. It does *not* wait for the supervisor: stage 3 outlives all of this by construction,
-/// which is the point, and readiness is established by dialing rather than by a parent's `wait`.
-fn spawn_stage_one(launch: &Launch) -> Result<(), DetachError> {
+/// Waiting on stage 1 costs one process lifetime — stage 1 exits as soon as stage 2 does, and stage
+/// 2 exits as soon as it has spawned stage 3 — and buys the property that `marion run` never
+/// accumulates zombies. It does *not* wait for the supervisor, which outlives all of this by
+/// construction: the ready pipe does. It is stage 1's stdout, handed down every stage under
+/// [`READY_FLAG`], so it is readable once stage 3 writes its byte ([`tell_ready`]) or once every
+/// stage holding it has exited without one. `poll(2)` blocks on it; nothing re-asks on a timer.
+///
+/// The pipe is `Stdio::piped()`, so it is made inside the spawn and no other thread's child can
+/// inherit a copy that would hold its end open.
+fn start_and_wait(launch: &Launch, deadline: Instant) -> Result<(), DetachError> {
     let mut command = Command::new(&launch.program);
     command
         .args(launch.argv())
+        .arg(READY_FLAG)
         .stdin(Stdio::null())
-        .stdout(Stdio::null());
+        .stdout(Stdio::piped());
     // stderr is inherited on stages 1 and 2 **only**: a supervisor that could not start must
     // say so where the operator who asked for it is looking. Stage 3 redirects it to a file
     // before it becomes long-lived — see [`spawn_stage_three`].
@@ -391,10 +375,13 @@ fn spawn_stage_one(launch: &Launch) -> Result<(), DetachError> {
             program: launch.program.clone(),
             source,
         })?;
+    let ready = child.stdout.take().expect("stdout was piped");
     let status = child.wait().map_err(|source| DetachError::Spawn {
         program: launch.program.clone(),
         source,
     })?;
+    // Whatever stage 1 said: a stage killed after spawning the next leaves a supervisor on its way.
+    wait_readable_until(&ready, deadline);
     if status.success() {
         return Ok(());
     }
@@ -406,15 +393,50 @@ fn spawn_stage_one(launch: &Launch) -> Result<(), DetachError> {
     })
 }
 
-/// Stage 1: spawn stage 2 and wait. See the module doc for why this hop exists at all.
-pub fn run_stage_one(launch: &Launch) -> Result<(), DetachError> {
+/// Block until `pipe` is readable — a byte, or its end — or `deadline` passes. A `poll` cut short by
+/// a signal is resumed, so only the pipe or the deadline ends the wait.
+fn wait_readable_until(pipe: &impl std::os::fd::AsFd, deadline: Instant) {
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero()
+            || crate::wake::wait_readable(&[pipe.as_fd()], Some(left))
+                .first()
+                .copied()
+                .unwrap_or(true)
+        {
+            return;
+        }
+    }
+}
+
+/// Where a stage's child's stdout goes: the ready pipe it was itself given under [`READY_FLAG`], or
+/// `/dev/null`.
+fn ready_stdout(ready: bool) -> Stdio {
+    if ready {
+        Stdio::inherit()
+    } else {
+        Stdio::null()
+    }
+}
+
+/// The argv a stage hands its child: [`Launch::argv`], the child's own marker, and [`READY_FLAG`]
+/// when this stage was given the pipe.
+fn stage_argv(launch: &Launch, marker: &str, ready: bool) -> Vec<String> {
     let mut argv = launch.argv();
-    argv.push(SESSION_LEADER_FLAG.to_string());
+    argv.push(marker.to_string());
+    if ready {
+        argv.push(READY_FLAG.to_string());
+    }
+    argv
+}
+
+/// Stage 1: spawn stage 2 and wait. See the module doc for why this hop exists at all.
+pub fn run_stage_one(launch: &Launch, ready: bool) -> Result<(), DetachError> {
     let mut command = Command::new(&launch.program);
     command
-        .args(argv)
+        .args(stage_argv(launch, SESSION_LEADER_FLAG, ready))
         .stdin(Stdio::null())
-        .stdout(Stdio::null());
+        .stdout(ready_stdout(ready));
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut command)
         .map_err(|source| DetachError::Spawn {
@@ -442,7 +464,7 @@ pub fn run_stage_one(launch: &Launch) -> Result<(), DetachError> {
 /// exists (S15's identity table, `setsid_double`), and that is the stated price of the mechanism,
 /// paid deliberately. It is also why nothing may ever `killpg` a marion supervisor by its pid — see
 /// [`SupervisorIdentity`].
-pub fn run_stage_two(launch: &Launch) -> Result<(), DetachError> {
+pub fn run_stage_two(launch: &Launch, ready: bool) -> Result<(), DetachError> {
     // SAFETY: `setsid` takes no arguments and touches nothing this process owns.
     if unsafe { setsid() } == -1 {
         let source = std::io::Error::last_os_error();
@@ -462,13 +484,12 @@ pub fn run_stage_two(launch: &Launch) -> Result<(), DetachError> {
         SupervisorIdentity::own().pid,
         "setsid returned success, so this process leads its own session"
     );
-    spawn_stage_three(launch)
+    spawn_stage_three(launch, ready)
 }
 
 /// Stage 2's fork: the supervisor itself, detached and not waited for.
-fn spawn_stage_three(launch: &Launch) -> Result<(), DetachError> {
-    let mut argv = launch.argv();
-    argv.push(DETACHED_FLAG.to_string());
+fn spawn_stage_three(launch: &Launch, ready: bool) -> Result<(), DetachError> {
+    let argv = stage_argv(launch, DETACHED_FLAG, ready);
     let paths = launch.paths();
     // **The directory first.** Stage 3 creates it — inside `socket::acquire`, several syscalls after
     // this — so on a project nothing has ever served, opening the log here found no directory,
@@ -490,7 +511,8 @@ fn spawn_stage_three(launch: &Launch) -> Result<(), DetachError> {
     command
         .args(argv)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        // The ready pipe, until stage 3 has said its word and let it go ([`tell_ready`]).
+        .stdout(ready_stdout(ready))
         .stderr(stderr)
         // `/` and not the launcher's cwd: see the module doc. A detached process holding a cwd pins
         // a directory that may be deleted, and marion's own path derivation reads `cwd`.
@@ -546,13 +568,14 @@ fn paired_base_url(auth: marion_harness::Auth, base_url: Option<String>) -> Opti
     }
 }
 
-pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage)> {
+pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage, bool)> {
     let mut state_dir: Option<PathBuf> = None;
     let mut project_root: Option<PathBuf> = None;
     let mut idle_grace: Option<Duration> = None;
     let mut auth: Option<marion_harness::Auth> = None;
     let mut base_url: Option<String> = None;
     let mut stage = Stage::One;
+    let mut ready = false;
     let mut rest = argv.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -568,6 +591,7 @@ pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage)>
             BASE_URL_FLAG => base_url = Some(rest.next()?.clone()),
             SESSION_LEADER_FLAG => stage = Stage::SessionLeader,
             DETACHED_FLAG => stage = Stage::Detached,
+            READY_FLAG => ready = true,
             _ => return None,
         }
     }
@@ -588,12 +612,13 @@ pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage)>
             base_url,
         },
         stage,
+        ready,
     ))
 }
 
 /// `marion-supervisor serve …`, whichever stage it is.
 pub fn run_serve(program: PathBuf, argv: &[String]) -> Result<(), DetachError> {
-    let Some((launch, stage)) = parse_serve(program.clone(), argv) else {
+    let Some((launch, stage, ready)) = parse_serve(program.clone(), argv) else {
         return Err(DetachError::Spawn {
             program,
             source: std::io::Error::other(format!(
@@ -607,9 +632,9 @@ pub fn run_serve(program: PathBuf, argv: &[String]) -> Result<(), DetachError> {
         });
     };
     match stage {
-        Stage::One => run_stage_one(&launch),
-        Stage::SessionLeader => run_stage_two(&launch),
-        Stage::Detached => run_stage_three(&launch),
+        Stage::One => run_stage_one(&launch, ready),
+        Stage::SessionLeader => run_stage_two(&launch, ready),
+        Stage::Detached => run_stage_three(&launch, ready),
     }
 }
 
@@ -620,11 +645,11 @@ pub fn run_serve(program: PathBuf, argv: &[String]) -> Result<(), DetachError> {
 /// the lock — so this process never was one, has no clients, no nodes and no exit to record, and
 /// §5.7's *"exit MUST be journaled"* does not apply to it. Writing a `SupervisorExited` here would
 /// put a second supervisor's departure in a journal whose supervisor is still running.
-pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
+pub fn run_stage_three(launch: &Launch, ready: bool) -> Result<(), DetachError> {
     use crate::handler::RegistryHandle;
     use crate::registry::{LiveRegistry, Registry};
     use crate::serve::{NativeLaunchConfig, Server};
-    use crate::socket::{Acquired, acquire, socket_paths};
+    use crate::socket::{Acquired, acquire_notifying, socket_paths};
     use marion_core::paths::ProjectDir;
 
     ensure_detached(SupervisorIdentity::own()).map_err(|source| DetachError::Spawn {
@@ -636,7 +661,15 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         &launch.project_root,
         crate::socket::own_uid(),
     );
-    let Acquired::Serving(serving) = acquire(&paths)? else {
+    // Bound, or dialed: either way a supervisor is serving, and the chain's client may dial. A
+    // failure says so by the pipe's end instead.
+    let say_ready = || {
+        if ready {
+            tell_ready();
+        }
+    };
+    let Acquired::Serving(serving) = acquire_notifying(&paths, say_ready)? else {
+        say_ready();
         return Ok(());
     };
     let project = ProjectDir::new(&launch.state_dir, &launch.project_root);
@@ -706,6 +739,20 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
     // accept loop's own idle exit, which has already journaled the record by the time it returns.
     server.wait();
     Ok(())
+}
+
+/// Tell the client that started this chain that a supervisor is serving: one byte on the ready pipe
+/// ([`READY_FLAG`]), then the pipe let go — `/dev/null` in its place — so the client's wait is not
+/// held open for this process's life and nothing later writes into a pipe nobody reads.
+fn tell_ready() {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    let mut out = std::io::stdout();
+    let _ = out.write_all(b"R").and_then(|()| out.flush());
+    if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+        // SAFETY: both descriptors are valid; `dup2` replaces fd 1 atomically.
+        unsafe { dup2(null.as_raw_fd(), 1) };
+    }
 }
 
 /// **Stand down if this process stops being the supervisor of the project it is serving.**
@@ -848,7 +895,7 @@ mod tests {
             auth: marion_harness::Auth::Canned,
             base_url: None,
         };
-        let e = ensure_supervisor_within(&paths, &launch, Duration::from_secs(1))
+        let e = ensure_supervisor(&paths, &launch)
             .expect_err("nothing may start into that directory");
         let _ = std::fs::remove_dir_all(&squatted);
         assert!(

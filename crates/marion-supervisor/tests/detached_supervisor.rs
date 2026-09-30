@@ -16,7 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use marion_supervisor::detach::{Launch, ensure_supervisor, ensure_supervisor_within};
+use marion_supervisor::detach::{Launch, ensure_supervisor};
 use marion_supervisor::socket::{
     SocketPaths, SupervisorIdentity, own_uid, read_identity, socket_paths,
 };
@@ -484,8 +484,8 @@ fn a_supervisor_that_started_is_reported_as_started_even_if_its_launcher_stage_f
 ///
 /// Determinism without a race: the stand-in exits **0 having started nothing** the first time it is
 /// asked, which is precisely what the launcher observes when stage 3 dies immediately, and does the
-/// real thing every time after. The bound below never decides the verdict — with a retry the dial
-/// succeeds in milliseconds, and without one no bound whatsoever produces a supervisor.
+/// real thing every time after. No bound decides the verdict — with a retry the dial succeeds in
+/// milliseconds, and without one no bound whatsoever produces a supervisor.
 #[test]
 fn a_client_whose_first_supervisor_never_arrived_starts_another_one() {
     let bed = Bed::new("stillborn");
@@ -503,7 +503,7 @@ fn a_client_whose_first_supervisor_never_arrived_starts_another_one() {
         ..bed.launch()
     };
 
-    let ensured = ensure_supervisor_within(&bed.paths, &launch, Duration::from_secs(20))
+    let ensured = ensure_supervisor(&bed.paths, &launch)
         .expect("nothing was serving and the lock was free, so another supervisor was startable");
     assert!(ensured.started);
     assert!(marker.exists(), "the first attempt really did happen");
@@ -581,6 +581,76 @@ fn a_fresh_projects_stage_three_writes_its_failures_to_the_projects_log() {
         bed.supervisors()
     );
     std::fs::set_permissions(bed.paths.dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// **NC — the ready pipe: one byte once a supervisor serves, and then let go.**
+///
+/// Stage 1 run by hand under `--ready-on-stdout`, as `ensure_supervisor` runs it. Reading its
+/// stdout to the end must return while the supervisor is still alive — the byte arrived, and stage
+/// 3 stopped holding the pipe, so a client's wait is not held for the supervisor's life. Without the
+/// flag the same chain writes nothing at all into a stdout it was handed.
+#[test]
+fn stage_three_writes_one_ready_byte_and_lets_the_pipe_go() {
+    let bed = Bed::new("ready");
+    let launch = Launch {
+        // Outlives the read by far, so "still alive" is not a race with the idle exit.
+        idle_grace: Duration::from_secs(60),
+        ..bed.launch()
+    };
+    let chain = |ready: bool| {
+        let mut cmd = std::process::Command::new(&launch.program);
+        cmd.args(launch.argv());
+        if ready {
+            cmd.arg(marion_supervisor::detach::READY_FLAG);
+        }
+        cmd.stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .expect("stage 1 runs")
+    };
+    let out = chain(true);
+    assert!(out.status.success());
+    assert_eq!(out.stdout, b"R", "exactly one byte, and only once");
+    let id = published(&bed.paths);
+    assert!(
+        alive(id.pid),
+        "the pipe ended because stage 3 let it go, not because it died"
+    );
+
+    let again = chain(false);
+    assert!(again.status.success());
+    assert!(
+        again.stdout.is_empty(),
+        "no flag, no byte: {:?}",
+        again.stdout
+    );
+    assert_eq!(
+        bed.supervisors(),
+        vec![id.pid],
+        "the second chain stood down"
+    );
+}
+
+/// **NC — a launcher that cannot start at all is reported at once**, not after the whole bound: a
+/// chain that ends is evidence, so three failed attempts answer the call.
+#[test]
+fn a_launcher_that_cannot_run_is_reported_without_waiting_out_the_bound() {
+    let bed = Bed::new("noexec");
+    let launch = Launch {
+        program: bed.state.join("no-such-binary"),
+        ..bed.launch()
+    };
+    let started = std::time::Instant::now();
+    let e = ensure_supervisor(&bed.paths, &launch).expect_err("nothing can start");
+    assert!(
+        matches!(e, marion_supervisor::detach::DetachError::Spawn { .. }),
+        "the spawn failure is what is reported: {e}"
+    );
+    assert!(
+        started.elapsed() < marion_supervisor::detach::READY_DEADLINE / 2,
+        "waited {:?} on a chain that had already ended",
+        started.elapsed()
+    );
 }
 
 // ------------------------------------------------------------ §5.7's start, across processes
