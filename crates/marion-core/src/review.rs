@@ -15,8 +15,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::Harness;
-
 /// How severe a finding is. Ordered so that `Critical > High > Medium > Low`.
 ///
 /// The variants are declared lowest first so the derived `Ord` is the severity order; the wire
@@ -550,14 +548,6 @@ const PROVIDER_FAMILY: &[(&str, &str)] = &[
     ("qwen", "alibaba"),
 ];
 
-/// The family a harness serves when its model is unnamed or unrecognised: the harnesses that are a
-/// vendor's own CLI. Every other harness is model-agnostic and is known only by its model.
-const HARNESS_FAMILY: &[(Harness, &str)] = &[
-    (Harness::ClaudeCode, "anthropic"),
-    (Harness::Codex, "openai"),
-    (Harness::Gemini, "google"),
-];
-
 fn prefix_family(name: &str) -> Option<&'static str> {
     MODEL_PREFIX_FAMILY.iter().find_map(|(prefix, family)| {
         let rest = name.strip_prefix(prefix)?;
@@ -570,10 +560,10 @@ fn prefix_family(name: &str) -> Option<&'static str> {
 /// author's. `None` means unknown, which the caller must not treat as "different".
 ///
 /// A recognised model name wins over the harness, because a vendor CLI pointed at a gateway can
-/// run another vendor's model; the harness's own family is the fallback for an unnamed or
-/// unrecognised model (`claude-code` with no `--model` is still anthropic). Model-agnostic
-/// harnesses (opencode, copilot, goose, cline, qwen, acp) are known only by the model string.
-pub fn model_family(harness: Harness, model: Option<&str>) -> Option<&'static str> {
+/// run another vendor's model; `vendor` — the harness row's own vendor, where it is one vendor's
+/// CLI — is the fallback for an unnamed or unrecognised model (`claude-code` with no `--model` is
+/// still anthropic). A model-agnostic harness has no vendor and is known only by the model string.
+pub fn model_family(vendor: Option<&'static str>, model: Option<&str>) -> Option<&'static str> {
     let from_model = model.and_then(|m| {
         let m = m.trim().to_ascii_lowercase();
         let mut segments = m.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>();
@@ -587,12 +577,7 @@ pub fn model_family(harness: Harness, model: Option<&str>) -> Option<&'static st
             })
         })
     });
-    from_model.or_else(|| {
-        HARNESS_FAMILY
-            .iter()
-            .find(|(h, _)| *h == harness)
-            .map(|(_, f)| *f)
-    })
+    from_model.or(vendor)
 }
 
 #[cfg(test)]
@@ -1159,75 +1144,58 @@ mod tests {
 
     #[test]
     fn a_vendor_cli_with_no_model_is_its_vendors_family() {
-        assert_eq!(model_family(Harness::ClaudeCode, None), Some("anthropic"));
-        assert_eq!(model_family(Harness::Codex, None), Some("openai"));
-        assert_eq!(model_family(Harness::Gemini, None), Some("google"));
+        assert_eq!(model_family(Some("anthropic"), None), Some("anthropic"));
+        assert_eq!(model_family(Some("openai"), None), Some("openai"));
+        assert_eq!(model_family(Some("google"), None), Some("google"));
         // An alias the table does not know still falls back to the vendor.
         assert_eq!(
-            model_family(Harness::ClaudeCode, Some("best")),
+            model_family(Some("anthropic"), Some("best")),
             Some("anthropic")
         );
     }
 
     #[test]
     fn a_model_agnostic_harness_is_known_only_by_its_model() {
-        for h in [
-            Harness::OpenCode,
-            Harness::Copilot,
-            Harness::Goose,
-            Harness::Cline,
-            Harness::Qwen,
-            Harness::Acp,
-        ] {
-            assert_eq!(model_family(h, None), None, "{h}");
-            assert_eq!(model_family(h, Some("mystery-7b")), None, "{h}");
-        }
+        assert_eq!(model_family(None, None), None);
+        assert_eq!(model_family(None, Some("mystery-7b")), None);
         let cases = [
-            (
-                Harness::OpenCode,
-                "anthropic/claude-sonnet-4-5",
-                "anthropic",
-            ),
-            (Harness::Copilot, "gpt-5", "openai"),
-            (Harness::Copilot, "claude-sonnet-4.5", "anthropic"),
-            (Harness::Goose, "gemini-2.5-pro", "google"),
-            (Harness::Cline, "o3-mini", "openai"),
-            (Harness::Qwen, "qwen3-coder-plus", "alibaba"),
-            (
-                Harness::OpenCode,
-                "openrouter/google/gemini-2.5-flash",
-                "google",
-            ),
-            (Harness::OpenCode, "openai/some-new-name", "openai"),
-            (Harness::Acp, "Claude-Opus-4", "anthropic"),
+            ("anthropic/claude-sonnet-4-5", "anthropic"),
+            ("gpt-5", "openai"),
+            ("claude-sonnet-4.5", "anthropic"),
+            ("gemini-2.5-pro", "google"),
+            ("o3-mini", "openai"),
+            ("qwen3-coder-plus", "alibaba"),
+            ("openrouter/google/gemini-2.5-flash", "google"),
+            ("openai/some-new-name", "openai"),
+            ("Claude-Opus-4", "anthropic"),
         ];
-        for (h, m, want) in cases {
-            assert_eq!(model_family(h, Some(m)), Some(want), "{h} {m}");
+        for (m, want) in cases {
+            assert_eq!(model_family(None, Some(m)), Some(want), "{m}");
         }
     }
 
     #[test]
     fn a_recognised_model_wins_over_the_harness() {
         assert_eq!(
-            model_family(Harness::ClaudeCode, Some("gemini-2.5-pro")),
+            model_family(Some("anthropic"), Some("gemini-2.5-pro")),
             Some("google")
         );
         assert_eq!(
-            model_family(Harness::ClaudeCode, Some("haiku")),
+            model_family(Some("anthropic"), Some("haiku")),
             Some("anthropic")
         );
         assert_eq!(
-            model_family(Harness::Codex, Some("gpt-5-codex")),
+            model_family(Some("openai"), Some("gpt-5-codex")),
             Some("openai")
         );
     }
 
     #[test]
     fn a_prefix_matches_only_at_a_word_boundary() {
-        assert_eq!(model_family(Harness::Goose, Some("o3de")), None);
-        assert_eq!(model_family(Harness::Goose, Some("gptx")), None);
-        assert_eq!(model_family(Harness::Goose, Some("gpt4o")), Some("openai"));
-        assert_eq!(model_family(Harness::Goose, Some("o4")), Some("openai"));
+        assert_eq!(model_family(None, Some("o3de")), None);
+        assert_eq!(model_family(None, Some("gptx")), None);
+        assert_eq!(model_family(None, Some("gpt4o")), Some("openai"));
+        assert_eq!(model_family(None, Some("o4")), Some("openai"));
     }
 
     #[test]

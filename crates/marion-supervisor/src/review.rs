@@ -56,7 +56,8 @@ pub fn unguarded(harness: Harness) -> Option<&'static str> {
 /// opinion from the same model is the weakest one — else the first of them, where the node's
 /// family is unknown or every candidate shares it. Unknown is never taken for different.
 pub fn default_reviewer(harness: Harness, model: Option<&str>) -> &'static str {
-    let theirs = review::model_family(harness, model);
+    let vendor_of = |h: Harness| marion_harness::adapter::harness_spec(h).vendor;
+    let theirs = review::model_family(vendor_of(harness), model);
     let guarded = || {
         REVIEWERS.iter().copied().filter_map(|name| {
             marion_core::agent_type::builtin(name)
@@ -66,7 +67,7 @@ pub fn default_reviewer(harness: Harness, model: Option<&str>) -> &'static str {
     };
     guarded()
         .find(|(_, t)| {
-            let ours = review::model_family(t.harness, t.model.as_deref());
+            let ours = review::model_family(vendor_of(t.harness), t.model.as_deref());
             theirs.is_some() && ours.is_some() && ours != theirs
         })
         .or_else(|| guarded().next())
