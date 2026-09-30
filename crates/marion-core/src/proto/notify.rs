@@ -52,6 +52,16 @@ pub enum Event {
         ts: SystemTime,
     },
 
+    /// A desktop notice for the connection that claimed them (`notify/claim`) to show in its
+    /// terminal: its title and body — enumerated fields only — and how the operator asked the
+    /// terminal to ring (`bell`, `osc9`, `osc777`).
+    #[serde(rename = "notify/notice")]
+    NotifyNotice {
+        title: String,
+        body: String,
+        ring: String,
+    },
+
     /// §3.2's `state` moved. Carries `reap_state` alongside it because §7.6's gating rule is the
     /// *disjunction* of the two (`Exited(_)` **or** `reap_state ∈ {Orphaned, ReapedIdle}`), and a
     /// client that received them in separate messages could render a node as live between them.
@@ -194,12 +204,13 @@ impl Event {
             Event::PermissionRequest { .. } => "permission/request",
             Event::ElicitationRequest { .. } => "elicitation/request",
             Event::SupervisorExiting { .. } => "supervisor/exiting",
+            Event::NotifyNotice { .. } => "notify/notice",
         }
     }
 
     /// Every notification method name. Used by the frame reader to reject an unknown one by name
     /// rather than as an anonymous parse failure.
-    pub const METHODS: [&'static str; 8] = [
+    pub const METHODS: [&'static str; 9] = [
         "tree/node-added",
         "node/state",
         "node/event",
@@ -208,6 +219,7 @@ impl Event {
         "permission/request",
         "elicitation/request",
         "supervisor/exiting",
+        "notify/notice",
     ];
 }
 
@@ -304,6 +316,11 @@ mod tests {
             Event::SupervisorExiting {
                 ts: ts(),
                 held_by: None,
+            },
+            Event::NotifyNotice {
+                title: "marion · acme-api".into(),
+                body: "codex-impl 8ea3 (codex) failed — exited:failed".into(),
+                ring: "bell".into(),
             },
         ]
     }

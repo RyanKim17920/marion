@@ -591,6 +591,13 @@ pub struct SessionQuitParams {
     pub disposition: QuitDisposition,
 }
 
+/// `notify/claim` — **this connection shows the supervisor's desktop notices in its terminal**
+/// where no desktop notifier exists (`marion_supervisor::notify`). Claimers queue: the oldest
+/// connection still open is the one sent `notify/notice`, and its departure hands them on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyClaimParams {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

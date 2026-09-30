@@ -843,6 +843,9 @@ impl Panes {
 #[derive(Default)]
 struct Shared {
     subs: Vec<Outbound>,
+    /// Connections that asked to show desktop notices in their terminal (`notify/claim`), oldest
+    /// first: only the first is sent them, and its departure hands them to the next.
+    claimers: Vec<Outbound>,
     attached: Vec<Attachment>,
     clients: HashSet<ConnId>,
     told: HashMap<AgentId, Told>,
@@ -1781,6 +1784,9 @@ pub struct RegistryHandle {
     /// [`Self::spending`] as figures move; each line crossed is acted on by [`Self::budget_crossed`]
     /// on the one enforcer thread an owning handle starts.
     budgets: Arc<crate::budget::BudgetBook>,
+    /// **Desktop notifications** ([`crate::notify`]), observed on each flush. `None` — the
+    /// default — where the operator has not turned them on, and for a handle that runs no nodes.
+    notifier: Option<crate::notify::Notifier>,
     quit: Mutex<()>,
     /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
     ///
@@ -1922,7 +1928,7 @@ impl RegistryHandle {
     /// default rather than one a listener bound.
     pub fn new(live: Arc<LiveRegistry>) -> Arc<RegistryHandle> {
         let socket_path = Self::journal_adjacent_socket(&live);
-        Self::build(live, socket_path, Arc::new(SystemQuitRuntime), None)
+        Self::build(live, socket_path, Arc::new(SystemQuitRuntime), None, None)
     }
 
     /// A handle that **owns the nodes it spawns**: §2's `agent/spawn`, answered rather than refused.
@@ -1936,7 +1942,34 @@ impl RegistryHandle {
         env: crate::run::Env,
         socket_path: PathBuf,
     ) -> Arc<RegistryHandle> {
-        let handle = Self::build(live, socket_path, Arc::new(SystemQuitRuntime), Some(env));
+        let notifier = notifier_for(&env.project_root);
+        let handle = Self::build(
+            live,
+            socket_path,
+            Arc::new(SystemQuitRuntime),
+            Some(env),
+            notifier,
+        );
+        handle.redrive_open_races();
+        handle
+    }
+
+    /// [`Self::owning`] with the notifier given rather than read from the operator's config — the
+    /// tests' seam for a `Record` backend.
+    #[cfg(test)]
+    fn owning_notified(
+        live: Arc<LiveRegistry>,
+        env: crate::run::Env,
+        socket_path: PathBuf,
+        notifier: crate::notify::Notifier,
+    ) -> Arc<RegistryHandle> {
+        let handle = Self::build(
+            live,
+            socket_path,
+            Arc::new(SystemQuitRuntime),
+            Some(env),
+            Some(notifier),
+        );
         handle.redrive_open_races();
         handle
     }
@@ -1955,6 +1988,7 @@ impl RegistryHandle {
         socket_path: PathBuf,
         runtime: Arc<dyn QuitRuntime>,
         spawn_env: Option<crate::run::Env>,
+        notifier: Option<crate::notify::Notifier>,
     ) -> Arc<RegistryHandle> {
         // `new_cyclic` rather than a `Mutex<Option<Weak<_>>>` filled in afterwards: a node's thread
         // outlives the call that started it and has to hold the handle it reports to, so the
@@ -2007,6 +2041,7 @@ impl RegistryHandle {
                 sent: Mutex::new(HashMap::new()),
                 spending,
                 budgets,
+                notifier,
                 quit: Mutex::new(()),
                 quit_waived_grace: AtomicBool::new(false),
                 stopped_reported: AtomicBool::new(false),
@@ -2018,7 +2053,7 @@ impl RegistryHandle {
     #[cfg(test)]
     fn with_runtime(live: Arc<LiveRegistry>, runtime: Arc<dyn QuitRuntime>) -> Arc<RegistryHandle> {
         let socket_path = Self::journal_adjacent_socket(&live);
-        Self::build(live, socket_path, runtime, None)
+        Self::build(live, socket_path, runtime, None, None)
     }
 
     fn pane_now(&self) -> std::time::Instant {
@@ -2094,6 +2129,14 @@ impl RegistryHandle {
         // waits on, and taking them in the other order here would rebuild that coupling.
         let panes = self.pane_ids();
         let mut g = lock(&self.shared);
+        // **Before the subscriber check**: a notice is for the operator, who may have no client
+        // open at all. The notifier returns at once when the journal has not moved.
+        if let Some(n) = &self.notifier {
+            let shown = self.live.read(|r| n.observe(r.tree(), r.generation()));
+            if !shown.is_empty() && !n.deliver(shown.clone()) {
+                notify_claimer(&mut g, n.ring(), &shown);
+            }
+        }
         // **Nobody to tell, or nothing new to tell them: no walk.** `collect` visits every node the
         // journal has ever recorded, and the accept loop flushes on every pass, so at 100k records
         // an idle supervisor spent half a core re-deriving an empty diff. With no subscriber the
@@ -2185,6 +2228,23 @@ impl RegistryHandle {
     }
 
     /// §2's `tree/subscribe`: the snapshot, and the point live notifications begin from.
+    /// `notify/claim`: queue this connection to show desktop notices in its terminal, where
+    /// notices are on and reach a terminal at all.
+    fn notify_claim(&self, out: &Outbound) -> marion_core::proto::result::NotifyClaimResult {
+        let terminal = self
+            .notifier
+            .as_ref()
+            .is_some_and(|n| *n.backend() == crate::notify::Backend::Terminal);
+        let mut g = lock(&self.shared);
+        if terminal && !g.claimers.iter().any(|c| c.conn() == out.conn()) {
+            g.claimers.push(out.clone());
+        }
+        marion_core::proto::result::NotifyClaimResult {
+            terminal,
+            head: terminal && g.claimers.first().is_some_and(|c| c.conn() == out.conn()),
+        }
+    }
+
     fn subscribe(&self, out: &Outbound) -> TreeSubscribeResult {
         let panes = self.pane_ids();
         let mut g = lock(&self.shared);
@@ -6081,6 +6141,7 @@ impl Handle for RegistryHandle {
             Call::AgentSpawn(p) => self
                 .agent_spawn(p, out.peer())
                 .map(MethodResult::AgentSpawn),
+            Call::NotifyClaim(_) => Ok(MethodResult::NotifyClaim(self.notify_claim(out))),
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),
@@ -6150,6 +6211,8 @@ impl Handle for RegistryHandle {
         );
         let mut g = lock(&self.shared);
         g.subs.retain(|s| s.conn() != conn);
+        // The next claimer in line, if any, is the head now.
+        g.claimers.retain(|c| c.conn() != conn);
         // A node stream this connection was following. Dropping the cursor is the whole of it:
         // §7.3.1's invariant is about nodes, and a reader is not one. The node goes on running and
         // goes on writing its `events.jsonl`, which is what makes the *next* client's attach a
@@ -6395,6 +6458,54 @@ fn journal_ts(ts: Option<marion_core::encoding::SystemTime>) -> marion_core::enc
 ///
 /// [`Outbound::send`] never blocks, so this cannot be slowed by a client — see `serve.rs`: a full
 /// queue is a verdict about that client, and §5.7 is what makes it the right one.
+/// The notifier the operator's `notify.toml` and `MARION_NOTIFY` ask for, titled with the
+/// project's directory name, or `None` where notifications are off.
+fn notifier_for(project_root: &std::path::Path) -> Option<crate::notify::Notifier> {
+    let config = crate::notify::NotifyConfig::load(
+        crate::credentials::config_dir().ok().as_deref(),
+        std::env::var(crate::notify::NOTIFY_ENV).ok().as_deref(),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("marion: notifications are off: {e}");
+        crate::notify::NotifyConfig::default()
+    });
+    let backend =
+        crate::notify::Backend::resolve(std::env::var(crate::notify::BACKEND_ENV).ok().as_deref());
+    let shown = match project_root.file_name().and_then(|f| f.to_str()) {
+        Some(".git") => project_root.parent().unwrap_or(project_root),
+        _ => project_root,
+    };
+    let name = shown
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("project");
+    crate::notify::Notifier::new(config, backend, name)
+}
+
+/// Send `shown` to the first claimer still connected; a claimer whose send fails is gone, and the
+/// next is tried.
+fn notify_claimer(
+    g: &mut Shared,
+    ring: crate::notify::TerminalRing,
+    shown: &[crate::notify::Shown],
+) {
+    while let Some(head) = g.claimers.first() {
+        let sent = shown.iter().all(|s| {
+            head.send(&marion_core::proto::Frame::Notification(
+                marion_core::proto::Notification::new(Event::NotifyNotice {
+                    title: s.title.clone(),
+                    body: s.body.clone(),
+                    ring: ring.word().to_string(),
+                }),
+            ))
+        });
+        if sent {
+            return;
+        }
+        g.claimers.remove(0);
+    }
+}
+
 fn deliver(g: &mut Shared, events: &[Event]) {
     if events.is_empty() {
         return;
@@ -12891,6 +13002,180 @@ mod tests {
                 ),
                 "the warn line was never journaled"
             );
+        }
+
+        /// A handle over `project` whose notices go to `backend`, and the journal it follows.
+        fn notified(
+            dir: &std::path::Path,
+            backend: crate::notify::Backend,
+        ) -> (Arc<RegistryHandle>, PathBuf) {
+            // A restart reuses the repository the first handle made.
+            let repo = match dir.join("repo") {
+                r if r.exists() => r,
+                _ => fixture_repo(dir),
+            };
+            let state = dir.join("state");
+            let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
+            std::fs::create_dir_all(project.path()).unwrap();
+            let live = Arc::new(crate::registry::LiveRegistry::follow(
+                Registry::boot_path(&project.journal()).unwrap(),
+            ));
+            let notifier = crate::notify::Notifier::new(
+                crate::notify::NotifyConfig {
+                    enabled: true,
+                    finished: crate::notify::Finished::All,
+                    terminal: crate::notify::TerminalRing::Bell,
+                },
+                backend,
+                "repo",
+            )
+            .unwrap();
+            let handle = RegistryHandle::owning_notified(
+                live,
+                crate::run::Env {
+                    project_dir: project.clone(),
+                    state,
+                    project_root: crate::socket::project_root(&repo),
+                    bridge: PathBuf::from("/bin/marion-supervisor"),
+                    base_url: None,
+                    auth: marion_harness::Auth::Canned,
+                },
+                project.supervisor_sock(),
+                notifier,
+            );
+            (handle, project.journal())
+        }
+
+        fn state_record(agent: &str, state: NodeState) -> RecordKind {
+            RecordKind::StateChanged(marion_core::journal::StateChanged {
+                agent_id: id(agent),
+                state,
+                reason: None,
+            })
+        }
+
+        /// **A node that blocks and then fails is two notices, and a restart replays neither** —
+        /// through the real flush, on the `Record` backend, with no client connected.
+        #[test]
+        fn a_node_that_blocks_then_fails_is_two_notices_and_a_restart_replays_neither() {
+            let dir = scratch("owns-notify-record");
+            let record = dir.join("notices.jsonl");
+            let backend = crate::notify::Backend::Record(record.clone());
+            let (handle, journal) = notified(&dir, backend.clone());
+            let lines = || {
+                std::fs::read_to_string(&record)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            };
+            let step = |seq: u64, kind: RecordKind| {
+                append(&journal, &line(seq, 1_000 + seq, kind));
+                handle.live.refresh();
+                handle.flush();
+            };
+            step(0, intent("n-4242", None, "codex-impl", 0));
+            step(
+                1,
+                state_record(
+                    "n-4242",
+                    NodeState::Blocked(marion_core::node::BlockReason::Permission),
+                ),
+            );
+            step(
+                2,
+                RecordKind::Exited(marion_core::journal::Exited {
+                    agent_id: id("n-4242"),
+                    status: marion_core::contract::ExitStatus::Failed,
+                    exit: marion_core::contract::ProcessExit {
+                        code: Some(1),
+                        signal: None,
+                        description: "boom".into(),
+                    },
+                }),
+            );
+            assert!(
+                marion_testsupport::until_within(
+                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_millis(10),
+                    || lines().len() >= 2
+                ),
+                "{:?}",
+                lines()
+            );
+            let told = lines();
+            assert_eq!(told.len(), 2, "{told:?}");
+            assert!(
+                told[0].contains("needs you") && told[1].contains("failed"),
+                "{told:?}"
+            );
+            drop(handle);
+
+            let (restarted, _) = notified(&dir, backend);
+            restarted.live.refresh();
+            restarted.flush();
+            assert_eq!(
+                lines().len(),
+                2,
+                "a restart only learns what is already true"
+            );
+        }
+
+        /// **Only the first claimer is shown a terminal notice**, and when it goes the next in
+        /// line is shown the next one.
+        #[test]
+        fn only_the_head_claimer_is_sent_a_notice_and_its_departure_promotes_the_next() {
+            let dir = scratch("owns-notify-claim");
+            let (handle, journal) = notified(&dir, crate::notify::Backend::Terminal);
+            let (first, first_rx) = crate::serve::capture(ConnId(501));
+            let (second, second_rx) = crate::serve::capture(ConnId(502));
+            let claim = |out: &Outbound| match handle
+                .call(
+                    out.conn(),
+                    &Call::NotifyClaim(marion_core::proto::params::NotifyClaimParams {}),
+                    out,
+                )
+                .unwrap()
+            {
+                MethodResult::NotifyClaim(r) => r,
+                other => panic!("{}", other.method().as_str()),
+            };
+            assert!(claim(&first).head);
+            assert!(!claim(&second).head);
+            let notices = |rx: &crate::serve::Captured| {
+                rx.try_iter()
+                    .filter(|b| String::from_utf8_lossy(b).contains("notify/notice"))
+                    .count()
+            };
+            let step = |seq: u64, kind: RecordKind| {
+                append(&journal, &line(seq, 1_000 + seq, kind));
+                handle.live.refresh();
+                handle.flush();
+            };
+            step(0, intent("n-1", None, "codex-impl", 0));
+            step(1, intent("n-2", None, "codex-impl", 0));
+            step(
+                2,
+                state_record(
+                    "n-1",
+                    NodeState::Blocked(marion_core::node::BlockReason::Permission),
+                ),
+            );
+            assert_eq!((notices(&first_rx), notices(&second_rx)), (1, 0));
+
+            handle.gone(
+                ConnId(501),
+                &marion_core::proto::ClientGone::SocketClosed,
+                &crate::serve::Departure::Eof,
+            );
+            step(
+                3,
+                state_record(
+                    "n-2",
+                    NodeState::Blocked(marion_core::node::BlockReason::Permission),
+                ),
+            );
+            assert_eq!(notices(&second_rx), 1, "the next in line is the head now");
         }
 
         fn journal_len(fx: &Owning) -> usize {

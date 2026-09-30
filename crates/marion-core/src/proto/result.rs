@@ -438,6 +438,16 @@ pub struct SessionQuitResult {
     pub outcome: QuitOutcome,
 }
 
+/// `notify/claim`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyClaimResult {
+    /// Notices are on, and they reach a terminal: this claim can receive `notify/notice`. `false`
+    /// where notifications are off or a desktop notifier shows them.
+    pub terminal: bool,
+    /// This connection is first in line.
+    pub head: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

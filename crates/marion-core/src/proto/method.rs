@@ -18,13 +18,13 @@ use crate::proto::error::RpcError;
 use crate::proto::params::{
     AgentSpawnParams, DoctorRunParams, ElicitationReplyParams, NodeAttachParams, NodeCancelParams,
     NodeCollectedParams, NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams,
-    NodeRenameParams, NodeResumeParams, NodeSteerParams, POLICY_SET_UNSPECIFIED,
+    NodeRenameParams, NodeResumeParams, NodeSteerParams, NotifyClaimParams, POLICY_SET_UNSPECIFIED,
     PermissionReplyParams, SessionQuitParams, TreeSubscribeParams, UnspecifiedPolicy,
 };
 use crate::proto::result::{
     AgentSpawnResult, DeliveryResult, DoctorRunResult, NodeAttachResult, NodeCancelResult,
     NodeCollectedResult, NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult,
-    NodeResumeResult, ReplyResult, SessionQuitResult, TreeSubscribeResult,
+    NodeResumeResult, NotifyClaimResult, ReplyResult, SessionQuitResult, TreeSubscribeResult,
 };
 
 /// §2's client↔supervisor method list.
@@ -58,6 +58,8 @@ pub enum Method {
     DoctorRun,
     /// M2+. §2: *"the only method on this list that can end the supervisor"*.
     SessionQuit,
+    /// A client's terminal will show desktop notices where no notifier exists.
+    NotifyClaim,
 }
 
 impl Method {
@@ -82,10 +84,11 @@ impl Method {
             Method::AgentSpawn => "agent/spawn",
             Method::DoctorRun => "doctor/run",
             Method::SessionQuit => "session/quit",
+            Method::NotifyClaim => "notify/claim",
         }
     }
 
-    pub const ALL: [Method; 17] = [
+    pub const ALL: [Method; 18] = [
         Method::TreeSubscribe,
         Method::NodeGet,
         Method::NodeAttach,
@@ -103,6 +106,7 @@ impl Method {
         Method::AgentSpawn,
         Method::DoctorRun,
         Method::SessionQuit,
+        Method::NotifyClaim,
     ];
 
     pub fn from_wire(s: &str) -> Option<Method> {
@@ -147,6 +151,7 @@ impl Method {
             Method::AgentSpawn => MethodResult::AgentSpawn(take(self, body)?),
             Method::DoctorRun => MethodResult::DoctorRun(take(self, body)?),
             Method::SessionQuit => MethodResult::SessionQuit(take(self, body)?),
+            Method::NotifyClaim => MethodResult::NotifyClaim(take(self, body)?),
         })
     }
 }
@@ -200,6 +205,8 @@ pub enum Call {
     DoctorRun(DoctorRunParams),
     #[serde(rename = "session/quit")]
     SessionQuit(SessionQuitParams),
+    #[serde(rename = "notify/claim")]
+    NotifyClaim(NotifyClaimParams),
 }
 
 impl Call {
@@ -222,6 +229,7 @@ impl Call {
             Call::AgentSpawn(_) => Method::AgentSpawn,
             Call::DoctorRun(_) => Method::DoctorRun,
             Call::SessionQuit(_) => Method::SessionQuit,
+            Call::NotifyClaim(_) => Method::NotifyClaim,
         }
     }
 }
@@ -251,6 +259,7 @@ pub enum MethodResult {
     AgentSpawn(AgentSpawnResult),
     DoctorRun(DoctorRunResult),
     SessionQuit(SessionQuitResult),
+    NotifyClaim(NotifyClaimResult),
 }
 
 impl MethodResult {
@@ -273,6 +282,7 @@ impl MethodResult {
             MethodResult::AgentSpawn(_) => Method::AgentSpawn,
             MethodResult::DoctorRun(_) => Method::DoctorRun,
             MethodResult::SessionQuit(_) => Method::SessionQuit,
+            MethodResult::NotifyClaim(_) => Method::NotifyClaim,
         }
     }
 
@@ -298,6 +308,7 @@ impl MethodResult {
             MethodResult::AgentSpawn(r) => v(r),
             MethodResult::DoctorRun(r) => v(r),
             MethodResult::SessionQuit(r) => v(r),
+            MethodResult::NotifyClaim(r) => v(r),
         }
     }
 }
@@ -570,6 +581,13 @@ mod tests {
                     },
                 }),
             ),
+            (
+                Call::NotifyClaim(crate::proto::params::NotifyClaimParams {}),
+                MethodResult::NotifyClaim(crate::proto::result::NotifyClaimResult {
+                    terminal: true,
+                    head: true,
+                }),
+            ),
         ]
     }
 
@@ -577,8 +595,8 @@ mod tests {
     fn the_method_list_is_fifteen() {
         assert_eq!(
             Method::ALL.len(),
-            17,
-            "§2's fifteen plus node/resume (plan step 6) and node/collected"
+            18,
+            "§2's fifteen plus node/resume (plan step 6), node/collected and notify/claim"
         );
         let mut names: Vec<&str> = Method::ALL.iter().map(|m| m.as_str()).collect();
         assert_eq!(
@@ -601,6 +619,7 @@ mod tests {
                 "agent/spawn",
                 "doctor/run",
                 "session/quit",
+                "notify/claim",
             ],
             "the list, in §2's order"
         );
