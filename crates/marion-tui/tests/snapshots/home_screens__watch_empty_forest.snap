@@ -6,12 +6,12 @@ expression: "report(&sc, 80, 24)"
  ◆ marion  ~/code/acme-api                           Start   Watch   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────
 
-  NODES   0 · 0 running
+  AGENTS   0 · 0 running
 
 
 
 
-                                 No nodes yet.
+                                 No agents yet.
 
           Start a task on the Start tab, or run marion run in a shell.
 
@@ -28,8 +28,8 @@ expression: "report(&sc, 80, 24)"
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter attach · s steer · x cancel · m merge               F1 help
 --- styles ---
-   17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionNonodesyet."
-   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESj/kentersxmF1"
+   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionNoagentsyet."
+   19  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSj/kentersxmF1"
   373  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    15  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watchmarionrun❯"

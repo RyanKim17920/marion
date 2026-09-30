@@ -155,7 +155,7 @@ pub fn label_of(node: &NodeSummary) -> String {
 pub fn race_note(node: &NodeSummary) -> Option<String> {
     use marion_core::race::SeatVerdict;
     let badge = node.race.as_ref()?;
-    let seat = format!("seat {}", badge.seat);
+    let seat = format!("agent {}", badge.seat);
     Some(match badge.verdict {
         None => seat,
         Some(v) => {
@@ -233,7 +233,7 @@ impl RaceSummary {
 
     /// The header row's label: the race, its seat count, and how far it has got.
     pub fn label(&self) -> String {
-        let head = format!("race {} · {} seats", short_id(&self.race_id.0), self.seats);
+        let head = format!("race {} · {} agents", short_id(&self.race_id.0), self.seats);
         match &self.decided {
             Some(Some(winner)) => format!("{head} · {winner} won"),
             Some(None) => format!("{head} · no winner"),
@@ -426,7 +426,7 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
         Ok(node.agent_id.0.as_str())
     } else {
         Err(format!(
-            "{} {} is headless; Enter opens pane nodes only.",
+            "{} {} is headless; Enter opens pane agents only.",
             node.agent_type,
             short_id(&node.agent_id.0)
         ))

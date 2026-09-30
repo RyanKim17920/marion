@@ -6,7 +6,7 @@ expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 100, 30)"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · Σ2.1M · 2 need you
+  AGENTS   6 · 2 running · Σ2.1M · 2 need you
 
   ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
 ❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
@@ -36,7 +36,7 @@ expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 100, 30)"
 --- styles ---
   129  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    37  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexCancelcodexim"
-   38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGACTIVITY"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGACTIVIT"
   748  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
   212  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s╭─────────"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯y"

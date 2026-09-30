@@ -429,7 +429,7 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
 
     // Watch: the node appears, and its commands appear in the stream as the shim prints them.
     op.wait_for("the node on Watch", |s| {
-        s.contains("NODES") && s.lines().any(|l| l.contains("codex") && l.contains('❯'))
+        s.contains("AGENTS") && s.lines().any(|l| l.contains("codex") && l.contains('❯'))
     });
 
     // A child under it, spawned the way the root's own `spawn` would be (its node token): its
@@ -523,7 +523,7 @@ fn enter_attaches_to_a_pane_node_and_detaching_returns_home() {
     });
     op.type_in(b"\x1dd");
     op.wait_for("Watch again after detaching, repainted whole", |s| {
-        s.contains("NODES") && s.contains("F1 help") && !s.contains("HOMEE2E-PANE-READY")
+        s.contains("AGENTS") && s.contains("F1 help") && !s.contains("HOMEE2E-PANE-READY")
     });
     op.type_in(b"\x03");
 }

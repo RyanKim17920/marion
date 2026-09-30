@@ -11,7 +11,7 @@ expression: screen
   esc    back from the stream            F1     help, from anywhere
   s      steer                           ^c     quit
   x      cancel, asks first              q      quit, off Start
-  u      resume an ended node            START
+  u      resume an ended agent           START
   o      shell in its workspace          enter  run
   d      what its branch changed         ↑↓     harness
   m      merge its branch, asks first    ←→     model

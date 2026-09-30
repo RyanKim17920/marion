@@ -372,9 +372,9 @@ fn race_row(
         elapsed: String::new(),
         tokens: summary.tokens,
         doing: match &summary.decided {
-            Some(Some(winner)) => format!("{winner} won; every seat's branch is kept"),
-            Some(None) => "no seat won; every seat's branch is kept".into(),
-            None => format!("{} of {} seats finished", summary.ended, summary.seats),
+            Some(Some(winner)) => format!("{winner} won; every agent's branch is kept"),
+            Some(None) => "no agent won; every agent's branch is kept".into(),
+            None => format!("{} of {} agents finished", summary.ended, summary.seats),
         },
         // The header's figures are already its seats' sum; it heads no subtree of its own.
         subtree: None,
@@ -846,7 +846,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("esc", "back from the stream", ""),
             ("s", "steer", "marion steer <id> <text>"),
             ("x", "cancel, asks first", "marion cancel <id>"),
-            ("u", "resume an ended node", "marion resume <id>"),
+            ("u", "resume an ended agent", "marion resume <id>"),
             ("o", "shell in its workspace", ""),
             ("d", "what its branch changed", "git log -p HEAD..<branch>"),
             (

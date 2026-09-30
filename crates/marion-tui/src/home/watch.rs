@@ -238,10 +238,10 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         }
         return;
     }
-    buf.set_line(x, area.y, &section("Nodes", &note), w as u16);
+    buf.set_line(x, area.y, &section("Agents", &note), w as u16);
     if v.rows.is_empty() {
         let y = area.y + area.height / 3;
-        centred(buf, area, y, Line::from(span("No nodes yet.", bold())));
+        centred(buf, area, y, Line::from(span("No agents yet.", bold())));
         centred(
             buf,
             area,

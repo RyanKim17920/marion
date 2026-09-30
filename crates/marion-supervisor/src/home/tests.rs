@@ -1568,10 +1568,14 @@ fn a_race_is_one_header_row_over_its_seats() {
     assert_eq!(ids, ["root", header, "s1", "s2"]);
     let race = &f.watch.rows[1];
     assert_eq!(race.harness, "race");
-    assert!(race.kind.contains("2 seats · 1 of 2 done"), "{}", race.kind);
+    assert!(
+        race.kind.contains("2 agents · 1 of 2 done"),
+        "{}",
+        race.kind
+    );
     assert_eq!(race.tokens, Some(150), "the seats' tokens, summed");
     assert!(
-        f.watch.rows[2].kind.ends_with("· seat 1"),
+        f.watch.rows[2].kind.ends_with("· agent 1"),
         "{}",
         f.watch.rows[2].kind
     );
@@ -1588,12 +1592,12 @@ fn a_race_is_one_header_row_over_its_seats() {
         f.watch.rows[1].kind
     );
     assert!(
-        f.watch.rows[3].kind.ends_with("seat 2 ★ won"),
+        f.watch.rows[3].kind.ends_with("agent 2 ★ won"),
         "{}",
         f.watch.rows[3].kind
     );
     assert!(
-        f.watch.rows[2].kind.ends_with("seat 1 failed"),
+        f.watch.rows[2].kind.ends_with("agent 1 failed"),
         "{}",
         f.watch.rows[2].kind
     );

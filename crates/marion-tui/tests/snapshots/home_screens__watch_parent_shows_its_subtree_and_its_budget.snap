@@ -6,7 +6,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · Σ2.1M · 2 need you
+  AGENTS   6 · 2 running · Σ2.1M · 2 need you
 
 ❯ ● claude orchestrator 5e1a     ⠋  12m04s   waiting on 2 children
     └ TASK             Ship the rate limiter
@@ -30,7 +30,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 --- styles ---
   107  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   36  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEj"
+   37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
   588  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
@@ -42,7 +42,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · Σ2.1M · 2 need you
+  AGENTS   6 · 2 running · Σ2.1M · 2 need you
 
 ❯ ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
     └ TASK             Ship the rate limiter
@@ -72,7 +72,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 --- styles ---
   164  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEj"
+   38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
   738  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
@@ -84,7 +84,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · Σ2.1M · 2 need you
+  AGENTS   6 · 2 running · Σ2.1M · 2 need you
 
 ❯ ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
     └ TASK             Ship the rate limiter
@@ -134,7 +134,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 --- styles ---
   185  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEA"
+   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
  1260  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"

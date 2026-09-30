@@ -6,7 +6,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · Σ2.1M · 2 need you
+  AGENTS   6 · 2 running · Σ2.1M · 2 need you
 
   ● claude orchestrator 5e1a     ⠋  12m04s   waiting on 2 children
 ❯ ├─ ● codex impl a1f0           ⠸   2m17s   editing src/limits/bucket.rs
@@ -30,7 +30,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 --- styles ---
   146  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
-   29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGj/kenter"
+   30  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGj/kente"
   635  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯J❯"
@@ -42,7 +42,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · Σ2.1M · 2 need you
+  AGENTS   6 · 2 running · Σ2.1M · 2 need you
 
   ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
 ❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
@@ -72,7 +72,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 --- styles ---
   316  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
-   30  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGj/kenter"
+   31  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGj/kente"
   805  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯J❯"
@@ -84,7 +84,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · Σ2.1M · 2 need you
+  AGENTS   6 · 2 running · Σ2.1M · 2 need you
 
   ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
 ❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
@@ -134,7 +134,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 --- styles ---
   416  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
-   38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGACTIVITY"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGACTIVIT"
  1397  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯J❯"
