@@ -14,7 +14,6 @@ crates/marion-supervisor/src/acp_child.rs:prompt_session  bounded: the held-inbo
 
 crates/marion-supervisor/src/detach.rs:DIAL_POLL  bounded: ensure_supervisor re-dials every 5 ms, once per client start, until a supervisor answers or READY_DEADLINE; a stillborn stage 3 releases its flock, which no file watch reports, so this wait cannot be a watch alone
 crates/marion-supervisor/src/detach.rs:ensure_supervisor_within  bounded: the DIAL_POLL loop, one-shot at client start, ended by the dial or READY_DEADLINE (see DIAL_POLL for why it is not a watch)
-crates/marion-supervisor/src/socket.rs:acquire_within  bounded: a stage 3 that finds the lock held re-asks every 2 ms until the holder binds or START_DEADLINE; a holder dying before it binds only releases a flock, which no file watch reports
 crates/marion-supervisor/src/native_bootstrap.rs:exchange_native_claim  bounded: one claim exchange under LAUNCH_RESULT_TIMEOUT, then reset to blocking
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::request_detach_all  bounded: one request/response under SUPERVISOR_REPLY_WAIT
 crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads a killed process's state with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until it is gone or the kill deadline passes, so the kill confirmation is earned; never runs idle

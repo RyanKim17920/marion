@@ -54,21 +54,26 @@
 //! retries the dial. The distinction §5.7 needs — *nobody is listening* versus *someone is listening
 //! and wedged* — is the lock, never the dial.
 //!
-//! # Why [`acquire`] loops instead of asking once
+//! # Why [`acquire`] blocks instead of asking once
 //!
-//! **Measured on darwin 25.5.0 while writing this module's tests, and it is the reason the loop
-//! exists.** Closing a descriptor is not synchronous with respect to another descriptor's view of
-//! what it held. For a sub-millisecond window after a listener is closed, `connect` to its path
-//! still *succeeds*; for the same kind of window after an `flock` holder closes, `flock(LOCK_NB)`
-//! from a fresh descriptor still answers `EWOULDBLOCK` — the retry one millisecond later succeeded
-//! on the first attempt, every time.
+//! **Measured on darwin 25.5.0 while writing this module's tests.** Closing a descriptor is not
+//! synchronous with respect to another descriptor's view of what it held. For a sub-millisecond
+//! window after a listener is closed, `connect` to its path still *succeeds*; for the same kind of
+//! window after an `flock` holder closes, `flock(LOCK_NB)` from a fresh descriptor still answers
+//! `EWOULDBLOCK` — the retry one millisecond later succeeded on the first attempt, every time.
 //!
-//! A caller that asked once and believed the answer would therefore conclude that a supervisor
-//! which has just exited is alive, or that a lock nobody holds is held — and §5.7's rule is that the
-//! loser dials rather than *"erroring or starting a second"*. Neither reading is stable, so
-//! [`acquire`] treats a single negative as provisional and re-asks. This is also why nothing here
-//! and nothing in the tests asserts on elapsed time: the loop is what makes the window invisible,
-//! and the properties asserted are counts and outcomes.
+//! A caller that asked once and believed the answer would therefore conclude that a lock nobody
+//! holds is held — and §5.7's rule is that the loser dials rather than *"erroring or starting a
+//! second"*. So a negative is never final, and the wait for it to change is the kernel's, not a
+//! timer's: a lock that cannot be taken at once is waited for with a **blocking** `flock`, which
+//! returns the moment its holder lets go.
+//!
+//! That needs one more lock, because the supervisor lock alone cannot say *"it bound"*: a serving
+//! supervisor holds it for life. Whoever is starting holds the **start lock** ([`SocketPaths`]'
+//! `start_lock`) from before it takes the supervisor lock until its listener is bound, so a caller
+//! that gets the start lock next finds that start finished — serving, and dialed, or dead, and its
+//! lock free. Nothing in the tests asserts on elapsed time: the properties asserted are counts and
+//! outcomes.
 //!
 //! # Why the identity lives beside the socket and not in the journal
 //!
@@ -145,10 +150,10 @@ pub const SUN_PATH_MAX: usize = 104;
 /// time on every platform, it truncates, and a truncated path is a second socket nobody dials.
 pub const MAX_SOCKET_PATH_BYTES: usize = SUN_PATH_MAX - 1;
 
-/// How long [`acquire`] will keep trying before it reports that it could neither serve nor dial.
+/// How long [`acquire`] will wait on a lock before it reports that it could neither serve nor dial.
 ///
 /// **A bound, not a measurement.** The window it covers is the handful of syscalls between one
-/// process taking the lock and that process finishing its `bind` — microseconds — and this is
+/// process taking the start lock and that process finishing its `bind` — microseconds — and this is
 /// generous enough that a loaded machine never decides the answer. Nothing asserts on how long
 /// `acquire` takes; the tests assert on *how many* callers ended up serving.
 const START_DEADLINE: Duration = Duration::from_secs(5);
@@ -164,6 +169,10 @@ pub struct SocketPaths {
     socket: PathBuf,
     native_bootstrap: PathBuf,
     lock: PathBuf,
+    /// Held by a caller of [`acquire`] from before it takes [`Self::lock`] until its listener is
+    /// bound: see the module doc on why [`acquire`] blocks. Never unlinked, for [`take_lock`]'s
+    /// reason.
+    start_lock: PathBuf,
     identity: PathBuf,
     log: PathBuf,
     /// `Some(reason)` iff the `<state>` path did not fit [`MAX_SOCKET_PATH_BYTES`]. A sentence and
@@ -266,6 +275,7 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
             canonical_project: canonical_root.to_path_buf(),
             dir: project.path().to_path_buf(),
             lock: project.path().join("supervisor.lock"),
+            start_lock: project.path().join("supervisor.start.lock"),
             identity: project.path().join("supervisor.identity"),
             log: project.path().join("supervisor.log"),
             socket: primary,
@@ -281,6 +291,7 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
         socket: dir.join(format!("{hash}.sock")),
         native_bootstrap: dir.join(format!("{hash}.native.sock")),
         lock: dir.join(format!("{hash}.lock")),
+        start_lock: dir.join(format!("{hash}.start.lock")),
         identity: dir.join(format!("{hash}.identity")),
         log: dir.join(format!("{hash}.log")),
         dir,
@@ -516,8 +527,8 @@ pub fn nobody_is_serving(paths: &SocketPaths) -> bool {
 /// direction that matters — a caller that *wins* the probe proves nobody was serving and does not
 /// keep the win — and it cannot take a socket away from anybody, because nothing is unlinked here.
 /// It is visible to a concurrent [`acquire`] for the handful of syscalls it lasts, which that
-/// function already treats as provisional: a lock it cannot take sends it back to dialing, and its
-/// loop is written for exactly this kind of transient (see the module doc on why it re-asks).
+/// function already treats as provisional: a lock it cannot take at once it waits for, and this one
+/// is let go at once (see the module doc on why it blocks).
 fn someone_is_serving(lock: &Path) -> bool {
     let Ok(f) = std::fs::OpenOptions::new().read(true).open(lock) else {
         return false;
@@ -883,20 +894,69 @@ fn bind_configured_listeners(
 /// §5.7's start, made idempotent under contention: **exactly one caller serves and every other one
 /// is connected to it.**
 ///
-/// The loop is three steps and each failure is a different next move:
+/// Each step's failure is a different next move, and no step re-asks on a timer:
 ///
 /// 1. **Dial.** A connection means a supervisor is serving; done, and nothing was touched.
 /// 2. **`ECONNREFUSED` or no file** — nobody answered, which is *not yet* evidence that nobody is
-///    there (see the module doc on full backlogs). Try the lock.
-/// 3. **The lock is held** — a supervisor is serving or is a few syscalls from serving. Go back to
-///    step 1. **The lock is taken** — no supervisor exists, so the socket file, if any, is stale;
-///    unlink it and bind.
+///    there (see the module doc on full backlogs). Wait for the **start lock**: whoever holds it is
+///    a few syscalls from serving, and lets go once it has bound or once it has died.
+/// 3. **Dial again**, for the start that just finished.
+/// 4. **Take the supervisor lock** — no supervisor exists, so the socket file, if any, is stale;
+///    unlink it and bind. A lock that cannot be taken at once is waited for: a probe's instant,
+///    darwin's release lag, and a holder that has just died all let go at once.
 ///
 /// The only outcome this can fail with, short of a real filesystem error, is [`SocketError::Wedged`]
-/// — the lock held by something that never binds. marion reports that rather than unlinking, which
-/// is the one move that could take a socket away from a supervisor that is merely slow.
+/// — a lock held past [`START_DEADLINE`] by something that does not answer. marion reports that
+/// rather than unlinking, which is the one move that could take a socket away from a supervisor that
+/// is merely slow.
 pub fn acquire(paths: &SocketPaths) -> Result<Acquired, SocketError> {
-    acquire_within(paths, START_DEADLINE)
+    acquire_bounded(paths, START_DEADLINE, || {})
+}
+
+/// [`acquire`], calling `bound` the moment this caller's listeners are bound — before its identity
+/// is published — which is the earliest instant a client's dial can succeed. Not called when the
+/// answer is [`Acquired::Dialed`] or an error.
+pub fn acquire_notifying(
+    paths: &SocketPaths,
+    bound: impl FnOnce(),
+) -> Result<Acquired, SocketError> {
+    acquire_bounded(paths, START_DEADLINE, bound)
+}
+
+/// [`acquire`] with its bound named, so the test of the *refusal* need not wait out a bound written
+/// for a machine under load. The bound never decides a verdict: a lock held for the whole call
+/// answers [`SocketError::Wedged`] at any bound, and a lock that is free is taken at once.
+fn acquire_bounded(
+    paths: &SocketPaths,
+    within: Duration,
+    bound: impl FnOnce(),
+) -> Result<Acquired, SocketError> {
+    let uid = unsafe { getuid() };
+    ensure_dir(paths, uid)?;
+    if let Some(stream) = dial_serving(paths)? {
+        return Ok(Acquired::Dialed(stream));
+    }
+    let deadline = Instant::now() + within;
+    let wedged = || SocketError::Wedged {
+        path: paths.socket().to_path_buf(),
+        waited_ms: within.as_millis(),
+    };
+    // Held until this function returns, so the next caller's dial finds this one's listener bound.
+    let Some(_starting) = lock_within(&paths.start_lock, within)? else {
+        return Err(wedged());
+    };
+    if let Some(stream) = dial_serving(paths)? {
+        return Ok(Acquired::Dialed(stream));
+    }
+    let lock = match take_lock(paths.lock())? {
+        Some(lock) => lock,
+        None => lock_within(
+            paths.lock(),
+            deadline.saturating_duration_since(Instant::now()),
+        )?
+        .ok_or_else(wedged)?,
+    };
+    serve_over_corpse(paths, lock, bound).map(Acquired::Serving)
 }
 
 /// Create this project's socket directory, with the same mode and the same `/tmp` audit
@@ -909,33 +969,6 @@ pub fn acquire(paths: &SocketPaths) -> Result<Acquired, SocketError> {
 pub fn prepare_dir(paths: &SocketPaths) -> Result<(), SocketError> {
     // SAFETY: reads the calling process's real uid and cannot fail.
     ensure_dir(paths, unsafe { getuid() })
-}
-
-/// [`acquire`] with the bound named, so a test that wants to observe the *refusal* need not wait
-/// out a bound written for a machine under load. The bound never decides a verdict — a lock held
-/// for the whole call answers [`SocketError::Wedged`] at any bound, and a lock that is free is
-/// taken on the first pass — which is why exposing it cannot make a test measure the machine.
-pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired, SocketError> {
-    let uid = unsafe { getuid() };
-    ensure_dir(paths, uid)?;
-    let deadline = Instant::now() + within;
-    loop {
-        if let Some(stream) = dial_serving(paths)? {
-            return Ok(Acquired::Dialed(stream));
-        }
-        match take_lock(paths.lock())? {
-            Some(lock) => return serve_over_corpse(paths, lock).map(Acquired::Serving),
-            None => {
-                if Instant::now() >= deadline {
-                    return Err(SocketError::Wedged {
-                        path: paths.socket().to_path_buf(),
-                        waited_ms: within.as_millis(),
-                    });
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }
-    }
 }
 
 /// A connection to a supervisor that is actually serving, or `None` when nobody is.
@@ -962,7 +995,11 @@ fn dial_serving(paths: &SocketPaths) -> Result<Option<UnixStream>, SocketError> 
 ///
 /// The lock is the proof. See the module doc: a server holds it for its whole serving life, so
 /// nothing is listening on these paths and every file here is a corpse.
-fn serve_over_corpse(paths: &SocketPaths, lock: std::fs::File) -> Result<Serving, SocketError> {
+fn serve_over_corpse(
+    paths: &SocketPaths,
+    lock: std::fs::File,
+    bound: impl FnOnce(),
+) -> Result<Serving, SocketError> {
     // **The corpse's identity goes first, before anything can be dialed.** The same proof that
     // licenses unlinking the socket licenses this: nobody is serving, so any identity here was
     // published by a supervisor that is gone, and it names either nothing or — after a pid wrap —
@@ -989,6 +1026,7 @@ fn serve_over_corpse(paths: &SocketPaths, lock: std::fs::File) -> Result<Serving
     // without an identity beside it is the two syscalls between them and never a scheduling
     // decision. Best-effort on the write itself: a supervisor that could not publish its pgid is
     // still a supervisor, and refusing to serve over it would trade a fleet for a diagnostic.
+    bound();
     write_identity(paths.identity(), &SupervisorIdentity::own());
     Ok(Serving {
         canonical_project: paths.canonical_project().to_path_buf(),
@@ -1046,8 +1084,8 @@ fn nobody_answered(e: &std::io::Error) -> bool {
     )
 }
 
-fn take_lock(path: &Path) -> Result<Option<std::fs::File>, SocketError> {
-    let f = std::fs::OpenOptions::new()
+fn open_lock(path: &Path) -> Result<std::fs::File, SocketError> {
+    std::fs::OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
@@ -1057,7 +1095,46 @@ fn take_lock(path: &Path) -> Result<Option<std::fs::File>, SocketError> {
         .map_err(|e| SocketError::Lock {
             path: path.to_path_buf(),
             source: e,
-        })?;
+        })
+}
+
+/// `path`'s lock, **waited for** until its holder lets go or `within` runs out (`None`).
+///
+/// The wait is a blocking `flock`, so it is the kernel that wakes it, on a thread of its own so the
+/// bound holds. A thread still waiting at the bound takes the lock whenever it frees and lets it
+/// go at once, since nobody is left to hand it to.
+fn lock_within(path: &Path, within: Duration) -> Result<Option<std::fs::File>, SocketError> {
+    let f = open_lock(path)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let taken = loop {
+            // SAFETY: `f` owns a valid descriptor for the duration of the call.
+            if unsafe { flock(f.as_raw_fd(), LOCK_EX) } == 0 {
+                break Ok(f);
+            }
+            let e = std::io::Error::last_os_error();
+            if e.kind() != ErrorKind::Interrupted {
+                break Err(e);
+            }
+        };
+        let _ = tx.send(taken);
+    });
+    match rx.recv_timeout(within) {
+        Ok(Ok(f)) => Ok(Some(f)),
+        Ok(Err(source)) => Err(SocketError::Lock {
+            path: path.to_path_buf(),
+            source,
+        }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(SocketError::Lock {
+            path: path.to_path_buf(),
+            source: std::io::Error::other("the lock's waiting thread ended without an answer"),
+        }),
+    }
+}
+
+fn take_lock(path: &Path) -> Result<Option<std::fs::File>, SocketError> {
+    let f = open_lock(path)?;
     // SAFETY: `f` owns a valid descriptor for the duration of the call.
     if unsafe { flock(f.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
         return Ok(Some(f));
@@ -1505,6 +1582,7 @@ mod tests {
             socket: dir.join("supervisor.sock"),
             native_bootstrap: dir.join("native.sock"),
             lock: dir.join("supervisor.lock"),
+            start_lock: dir.join("supervisor.start.lock"),
             identity: dir.join("supervisor.identity"),
             log: dir.join("supervisor.log"),
             overflow: None,
@@ -1647,8 +1725,8 @@ mod tests {
     fn a_locked_path_is_reported_rather_than_stolen() {
         let dir = ShortDir::new("wedged");
         let p = paths_in(&dir);
-        // A supervisor that took the lock and has not bound yet — the window `acquire` polls
-        // across, held open for longer than it will wait.
+        // A holder that took the lock and never binds, held open for longer than `acquire` will
+        // wait for it.
         let held = take_lock(p.lock()).unwrap().expect("the lock is free");
         let inode_before = std::fs::symlink_metadata(p.lock()).unwrap().ino();
 
@@ -1656,7 +1734,7 @@ mod tests {
         // The bound is named only so the *refusal* need not be waited out. It cannot decide the
         // verdict: the lock is held for the whole call, so `Wedged` is the only reachable answer at
         // any bound whatsoever.
-        let e = acquire_within(&p, Duration::from_millis(20)).unwrap_err();
+        let e = acquire_bounded(&p, Duration::from_millis(20), || {}).unwrap_err();
         assert!(
             matches!(e, SocketError::Wedged { .. }),
             "a held lock must be reported, never overridden: {e}"
@@ -1669,6 +1747,65 @@ mod tests {
             std::fs::symlink_metadata(p.lock()).unwrap().ino(),
             inode_before,
             "the lock file was replaced, which would let two processes flock two inodes"
+        );
+        drop(held);
+    }
+
+    /// **A caller that finds a start in progress waits for it, and dials what it bound.** The start
+    /// lock is held here by a "starter" that has not bound yet; `acquire` must neither take the free
+    /// supervisor lock under it nor fail, and must return the moment the start finishes — dialed.
+    #[test]
+    fn a_start_in_progress_is_waited_for_and_then_dialed() {
+        let dir = ShortDir::new("starting");
+        let p = paths_in(&dir);
+        ensure_dir(&p, unsafe { getuid() }).unwrap();
+        let starting = take_lock(&p.start_lock)
+            .unwrap()
+            .expect("the start lock is free");
+        let waiter = {
+            let p = p.clone();
+            std::thread::spawn(move || acquire(&p))
+        };
+        // Long enough for a caller that did not wait to have taken the free supervisor lock.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !waiter.is_finished(),
+            "acquire went ahead under a start in progress"
+        );
+        let lock = take_lock(p.lock())
+            .unwrap()
+            .expect("the waiting caller took the supervisor lock under a start in progress");
+        let Ok(_server) = serve_over_corpse(&p, lock, || {}) else {
+            panic!("the starter binds")
+        };
+        drop(starting);
+        match waiter.join().unwrap() {
+            Ok(Acquired::Dialed(_)) => {}
+            Ok(Acquired::Serving(_)) => panic!("a second supervisor served"),
+            Err(e) => panic!("the waiter must dial the starter, not fail: {e}"),
+        }
+    }
+
+    /// **A start that never finishes is reported, not waited out forever**: the start lock held past
+    /// the bound is [`SocketError::Wedged`], and nothing was bound or unlinked meanwhile.
+    #[test]
+    fn a_start_lock_held_past_the_bound_is_reported_as_wedged() {
+        let dir = ShortDir::new("stuck");
+        let p = paths_in(&dir);
+        ensure_dir(&p, unsafe { getuid() }).unwrap();
+        let held = take_lock(&p.start_lock)
+            .unwrap()
+            .expect("the start lock is free");
+        leave_a_corpse(&p);
+        let e = acquire_bounded(&p, Duration::from_millis(20), || {}).unwrap_err();
+        assert!(matches!(e, SocketError::Wedged { .. }), "{e}");
+        assert!(
+            p.socket().exists(),
+            "marion unlinked a socket while a start was in progress"
+        );
+        assert!(
+            take_lock(p.lock()).unwrap().is_some(),
+            "the supervisor lock was taken although the start lock never came"
         );
         drop(held);
     }
@@ -2006,6 +2143,7 @@ mod tests {
             socket: target.join("a.sock"),
             native_bootstrap: target.join("a.native.sock"),
             lock: target.join("a.lock"),
+            start_lock: target.join("a.start.lock"),
             identity: target.join("a.identity"),
             log: target.join("a.log"),
             dir: target.clone(),
