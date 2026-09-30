@@ -16,6 +16,9 @@ serde_json.workspace = true
 # checkout (`codex::live_trust_override`); `toml` is already in the lock through marion-core.
 toml.workspace = true
 thiserror.workspace = true
+# `sha256_hex`: a row file is known by the digest of its bytes (doctor, the trust store), and the
+# journal's `MessageQueued` audits a queued message by its digest, never its text.
+sha2 = "0.11"
 
 [dev-dependencies]
 # Test-only: the version gate's table, read by `tests/pinned_probe_env.rs` so the env its probe runs

@@ -942,13 +942,7 @@ fn mint_message_id() -> MessageId {
 }
 
 /// The lowercase hex SHA-256 of `bytes` — what `MessageQueued` records in place of the text.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
+pub use marion_harness::sha256_hex;
 
 #[cfg(test)]
 pub(crate) mod tests {

@@ -75,3 +75,12 @@ pub use stream::{CallOutcome, ChildExit, FrameSplitter, MarionCall, StreamOutcom
 pub use surfaces::{
     ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, PtyWitness, TypedKind,
 };
+
+/// The lowercase hex SHA-256 of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}

@@ -536,6 +536,7 @@ dependencies = [
  "marion-testsupport",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "toml",
 ]
@@ -567,7 +568,6 @@ dependencies = [
  "security-framework",
  "serde",
  "serde_json",
- "sha2",
  "similar",
  "thiserror",
  "toml",

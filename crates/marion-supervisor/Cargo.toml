@@ -61,8 +61,6 @@ rustix = { version = "1", features = ["event", "fs", "net", "process", "termios"
 # the build (through `toml` and `insta`).
 similar = "2"
 toml_edit = "0.22"
-# `MessageQueued.sha256`: the journal audits a queued message by its digest, never its text.
-sha2 = "0.11"
 # `profiles::ProfilesFile` reads `$XDG_CONFIG_HOME/marion/profiles.toml`, with the parser
 # `.marion/agents.toml` is read with.
 toml.workspace = true
