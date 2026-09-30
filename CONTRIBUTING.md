@@ -211,6 +211,24 @@ published") on the run summary and succeeds; the formula and the npm tarball are
 to the GitHub Release. A tag with a pre-release suffix (`v0.3.0-rc.1`) makes a pre-release and
 skips both publish jobs.
 
+Every archive carries a signed SLSA build-provenance attestation (`github-attestations`), and the
+npm package is published with `--provenance`. To check a download came from this repository's
+release workflow:
+
+```sh
+gh attestation verify marion-supervisor-aarch64-apple-darwin.tar.xz --repo RyanKim17920/marion
+npm audit signatures        # in a project that installed @ryankim17920/marion
+```
+
+Every action a workflow uses is pinned to a full commit SHA. In `release.yml` the pins come from
+`[dist.github-action-commits]` in `dist-workspace.toml`, so `dist generate` keeps them; bump one
+by resolving the new tag (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, then
+`git/tags/<sha>` if that names an annotated tag) and regenerating. The one unpinned fetch left is
+dist's own: the generated workflow installs dist with `curl … | sh` from the pinned v0.33.0
+release URL and, in a container build, rustup the same way. dist has no option to check a hash
+there, and a hand edit would be overwritten by `dist generate` and fail `dist plan`'s check, so it
+stays as generated.
+
 If a release fails part-way, delete the GitHub Release and the tag (`git push --delete origin
 v0.2.0`), fix, and tag again; nothing outside GitHub was published unless a publish job ran.
 
@@ -227,6 +245,56 @@ Nothing here can do these. Until they are done, the Homebrew and npm jobs skip a
    name), create a **granular access token** with read and write on packages in the
    `@ryankim17920` scope, and add it as the Actions secret `NPM_TOKEN`. The first publish creates
    the public package `@ryankim17920/marion`.
+
+4. Protect `main` and the release tags. A pushed tag starts `release.yml`, whose publish jobs
+   hold `HOMEBREW_TAP_TOKEN` and `NPM_TOKEN`, and the release pattern matches any tag containing
+   a version, so the tag ruleset covers every tag. Repository admins bypass both, so the owner
+   keeps pushing and tagging as now; anyone or anything else (a collaborator, a workflow token,
+   the canary's `CANARY_TOKEN`) can neither create a tag nor push to `main` except through a pull
+   request whose CI passed. Run once, as the owner:
+
+   ```sh
+   gh api -X POST repos/RyanKim17920/marion/rulesets --input - <<'EOF'
+   {
+     "name": "main",
+     "target": "branch",
+     "enforcement": "active",
+     "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+     "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
+     "rules": [
+       {"type": "deletion"},
+       {"type": "non_fast_forward"},
+       {"type": "pull_request", "parameters": {
+         "required_approving_review_count": 0, "dismiss_stale_reviews_on_push": false,
+         "require_code_owner_review": false, "require_last_push_approval": false,
+         "required_review_thread_resolution": false}},
+       {"type": "required_status_checks", "parameters": {
+         "strict_required_status_checks_policy": false,
+         "required_status_checks": [
+           {"context": "fmt + clippy"},
+           {"context": "tests (ubuntu-latest)"},
+           {"context": "tests (macos-latest)"}]}}
+     ]
+   }
+   EOF
+
+   gh api -X POST repos/RyanKim17920/marion/rulesets --input - <<'EOF'
+   {
+     "name": "release tags",
+     "target": "tag",
+     "enforcement": "active",
+     "conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}},
+     "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
+     "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}]
+   }
+   EOF
+
+   gh api repos/RyanKim17920/marion/rulesets --jq '.[] | "\(.id) \(.name) \(.enforcement)"'
+   ```
+
+   `actor_id` 5 is the built-in Admin repository role. The check names are the `name:`s of
+   `ci.yml`'s jobs; rename one there and the ruleset must follow, or every pull request waits on
+   a check that never reports.
 
 No repository-wide Actions setting needs to change. The workflow asks for `contents: write`
 itself, which the repository's default of read-only workflow permissions allows, and no job opens
