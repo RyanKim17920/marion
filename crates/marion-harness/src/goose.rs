@@ -156,6 +156,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // the token rides the process environment in both modes; the extension child inherits it.
     // [`extension_declaration`] says why the declaration cannot carry it.
     // Any provider goose is configured for, by its key.
+    overlay_documents: &[],
     login_env: LoginEnv {
         login: &[],
         any_provider: true,

@@ -113,6 +113,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         body: Body::McpServers(MCP_SERVERS),
     }),
     // Its Google login.
+    overlay_documents: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("GEMINI_API_KEY"),

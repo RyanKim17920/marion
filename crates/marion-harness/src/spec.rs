@@ -50,6 +50,11 @@ pub const MCP_ALIAS: &str = "marion";
 /// One harness, as a row: what its launch looks like, stated as data.
 #[derive(Debug)]
 pub struct HarnessSpec {
+    /// Documents an overlaying launch (canned, endpoint) writes under its own config dir before
+    /// the harness starts, `(path relative to the config dir, body)`: what a harness home the row
+    /// relocates there needs so the harness opens as it would on the operator's own (claude's
+    /// `.claude.json` past onboarding). Never written under live auth, where the home is theirs.
+    pub overlay_documents: &'static [(&'static str, &'static str)],
     /// What the harness's own login reads from the operator's environment — the one exception to
     /// the credentials every launch withholds ([`crate::env_filter`]).
     pub login_env: crate::env_filter::LoginEnv,
@@ -611,173 +616,32 @@ pub struct BootDialogs {
 }
 
 /// **Where a TUI keeps the answer to one of its boot dialogs** — folder trust, above all, which a
-/// harness writes down keyed by the directory's path. A test that answers it must not leave that
-/// behind in the operator's own config, so the row says where it goes.
+/// harness writes down keyed by the directory's path (in a git worktree, the main checkout's).
+/// marion answers a dialog only where the answer cannot land in the operator's own config
+/// ([`Self::marion_may_answer`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Remembers {
     /// Nowhere past the session, or marion answers none of the row's dialogs.
     Nothing,
     /// Under the harness home an overlaying launch (canned or endpoint) relocates onto marion's
-    /// config dir (codex's `CODEX_HOME`): the answer lands in marion's scratch and goes with it.
-    /// Under live auth that home is the operator's own.
+    /// config dir (codex's `CODEX_HOME`, claude's `CLAUDE_CONFIG_DIR`): the answer lands in
+    /// marion's scratch and goes with it. Under live auth that home is the operator's own.
     CannedHome,
-    /// In the operator's own config, which a canned launch leaves in place because the login sits
-    /// beside it. A test moves the config with [`Relocation`] before it lets anything answer.
-    OperatorConfig(Relocation),
 }
 
 impl Remembers {
-    /// **What a test launch carries so an answer it gives stays out of the operator's config**:
-    /// under `OperatorConfig`, the relocation applied at `dir` ([`Relocation::apply`]); nothing
-    /// otherwise, since there the answer already lands in marion's scratch or nowhere.
-    pub fn test_env(
-        &self,
-        dir: &Path,
-        operator: impl Fn(&str) -> Option<String>,
-    ) -> std::io::Result<Vec<(String, String)>> {
-        match self {
-            Remembers::OperatorConfig(r) => r.apply(dir, operator),
-            Remembers::Nothing | Remembers::CannedHome => Ok(Vec::new()),
-        }
-    }
-
     /// **Whether marion may answer the row's boot dialog with its keys, under `auth`**: only where
     /// the answer cannot land in the operator's own config — nowhere past the session, or a home
     /// the overlay moved onto marion's directory (canned and endpoint alike). Under live auth that
-    /// home is the operator's; `OperatorConfig` is theirs under every auth. Measured 2026-09-27 on
-    /// claude 2.1.283 and codex 0.155.1: in a git worktree both key folder trust on the **main
-    /// repository**, so an answer marion gave there would trust the operator's repository for
-    /// good. Where they already trust it no dialog shows at all; where they do not, it is theirs.
+    /// home is the operator's. Measured 2026-09-27 on claude 2.1.283 and codex 0.155.1: in a git
+    /// worktree both key folder trust on the **main repository**, so an answer marion gave there
+    /// would trust the operator's repository for good. Where they already trust it no dialog
+    /// shows at all; where they do not, it is theirs.
     pub fn marion_may_answer(&self, auth: Auth) -> bool {
         match self {
             Remembers::Nothing => true,
             Remembers::CannedHome => auth.overlays(),
-            Remembers::OperatorConfig(_) => false,
         }
-    }
-}
-
-/// **How a test moves a harness's config off the operator's while keeping their login**: `config`
-/// names the directory the harness reads and writes its config in, `store` the one its login is
-/// looked up under. Setting `config` alone would log the harness out (claude keys its keychain
-/// entry on a hash of `CLAUDE_CONFIG_DIR`); `store` points the lookup back at the operator's own
-/// entry, which is only read. No credential is copied, and no login is started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Relocation {
-    pub config: &'static str,
-    pub store: &'static str,
-    /// Where the harness keeps the [`Self::seed`] files with `config` unset, relative to `$HOME`:
-    /// `""` is `$HOME` itself (claude's `~/.claude.json`, beside rather than inside `~/.claude`).
-    pub home: &'static str,
-    /// JSON documents written into a new config dir, `(name, object)`, so the TUI opens as it does
-    /// for the operator (past first-run onboarding) rather than on a screen they never see.
-    pub seed: &'static [(&'static str, &'static str)],
-    /// Top-level keys copied into each seed from the operator's own copy of that file, where they
-    /// have one: non-secret state the TUI's behaviour turns on. A value holding a field named like
-    /// a credential is refused rather than copied.
-    pub carry: &'static [&'static str],
-    pub note: &'static str,
-}
-
-/// **Whether a name is a credential's**, the check a relocation applies to everything it writes or
-/// copies: `token` itself, or a name holding one of the credential compounds, case, `_` and `-`
-/// aside. Compounds rather than the bare word, because a feature flag's `budgetTokens` or
-/// `token_refresh_buffer_ms` is a number, not a token.
-pub fn names_a_credential(name: &str) -> bool {
-    const COMPOUNDS: &[&str] = &[
-        "accesstoken",
-        "refreshtoken",
-        "idtoken",
-        "authtoken",
-        "bearer",
-        "apikey",
-        "secret",
-        "password",
-        "credential",
-        "privatekey",
-    ];
-    let n: String = name
-        .chars()
-        .filter(|c| *c != '_' && *c != '-')
-        .collect::<String>()
-        .to_ascii_lowercase();
-    n == "token" || COMPOUNDS.iter().any(|w| n.contains(w))
-}
-
-pub(crate) fn holds_a_credential(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::Object(m) => m
-            .iter()
-            .any(|(k, v)| names_a_credential(k) || holds_a_credential(v)),
-        serde_json::Value::Array(a) => a.iter().any(holds_a_credential),
-        _ => false,
-    }
-}
-
-impl Relocation {
-    /// The value `store` takes: the operator's own `store` when set, else their `config` (a login
-    /// made under a custom config dir is keyed on it), else empty — which names the default entry,
-    /// the one a harness with neither variable set uses.
-    pub fn operator_store(&self, operator: impl Fn(&str) -> Option<String>) -> String {
-        operator(self.store)
-            .or_else(|| operator(self.config))
-            .unwrap_or_default()
-    }
-
-    /// Where the operator's own copies of the seed files are: their `config`, else `$HOME/<home>`.
-    fn operator_dir(&self, operator: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
-        operator(self.config)
-            .map(PathBuf::from)
-            .or_else(|| operator("HOME").map(|h| Path::new(&h).join(self.home)))
-    }
-
-    /// **Move the config into `dir`**: create it, write each [`Self::seed`] not already there
-    /// (0600, like the config the harness writes) with the operator's [`Self::carry`] keys, and
-    /// return the variables a launch carries so the harness reads and writes there while still
-    /// finding the operator's login. The operator's files are only read.
-    pub fn apply(
-        &self,
-        dir: &Path,
-        operator: impl Fn(&str) -> Option<String>,
-    ) -> std::io::Result<Vec<(String, String)>> {
-        use std::io::{Error, ErrorKind, Write};
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::create_dir_all(dir)?;
-        let theirs = self.operator_dir(&operator);
-        for (name, body) in self.seed {
-            let path = dir.join(name);
-            if path.exists() {
-                continue;
-            }
-            let mut doc: serde_json::Map<String, serde_json::Value> = serde_json::from_str(body)
-                .map_err(|e| Error::new(ErrorKind::InvalidData, format!("seed {name}: {e}")))?;
-            let own: Option<serde_json::Value> = theirs
-                .as_ref()
-                .and_then(|d| std::fs::read(d.join(name)).ok())
-                .and_then(|b| serde_json::from_slice(&b).ok());
-            for key in self.carry {
-                let Some(v) = own.as_ref().and_then(|o| o.get(key)) else {
-                    continue;
-                };
-                if holds_a_credential(v) {
-                    return Err(Error::new(
-                        ErrorKind::InvalidData,
-                        format!("refusing to carry {key} from {name}: it names a credential"),
-                    ));
-                }
-                doc.insert((*key).to_string(), v.clone());
-            }
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)?;
-            f.write_all(serde_json::Value::Object(doc).to_string().as_bytes())?;
-        }
-        Ok(vec![
-            (self.config.to_string(), dir.display().to_string()),
-            (self.store.to_string(), self.operator_store(operator)),
-        ])
     }
 }
 

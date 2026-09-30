@@ -141,6 +141,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         body: Body::Code(live_settings_document),
     }),
     // Its Gemini or Google key, and the Vertex login its switch selects.
+    overlay_documents: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("GEMINI_API_KEY"),

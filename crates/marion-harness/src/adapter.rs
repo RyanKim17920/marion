@@ -572,6 +572,14 @@ pub trait HarnessAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
         let mut documents = self.config_files(spec, ctx)?;
+        if spec.auth.overlays() {
+            documents.extend(
+                self.spec()
+                    .overlay_documents
+                    .iter()
+                    .map(|(rel, body)| (spec.config_dir.join(rel), (*body).to_string())),
+            );
+        }
         if spec.mcp == McpDeclaration::Marion {
             documents.extend(
                 self.token_carrier(spec)
@@ -2187,6 +2195,8 @@ mod tests {
             (
                 "claude",
                 vec![
+                    // The overlay's own config dir (2026-09-30), ahead of the pre-axis block.
+                    ("CLAUDE_CONFIG_DIR", "/state/x/config/claude-config"),
                     ("ANTHROPIC_BASE_URL", "http://127.0.0.1:8099"),
                     ("DISABLE_AUTOUPDATER", "1"),
                 ],
@@ -2947,6 +2957,10 @@ mod tests {
             inv.env,
             vec![
                 (
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    "/state/x/config/claude-config".to_string()
+                ),
+                (
                     "ANTHROPIC_BASE_URL".to_string(),
                     "http://127.0.0.1:8099".to_string()
                 ),
@@ -3012,6 +3026,11 @@ mod tests {
                 .to_vec(),
                 // The supervisor used to derive the `/v1`-less form itself; the adapter does.
                 env: vec![
+                    // The overlay's own config dir, never the operator's `~/.claude`.
+                    (
+                        "CLAUDE_CONFIG_DIR".into(),
+                        "/state/x/config/claude-config".into()
+                    ),
                     ("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:8099".into()),
                     ("DISABLE_AUTOUPDATER".into(), "1".into()),
                 ],
@@ -9325,91 +9344,15 @@ mod tests {
         }
     }
 
-    /// **A row that answers a boot dialog says where the answer is kept, and the claim holds.**
-    /// `CannedHome`: the canned pane carries the row's profile variable at marion's config dir, so
-    /// the answer lands there. `OperatorConfig`: the canned pane does not (which is why a test must
-    /// relocate), and the relocation moves the very directory the profile carrier names and sets
-    /// a variable that carrier clears as an override of its login lookup — two measurements of one
-    /// fact that must agree. A row that answers nothing claims nothing.
-    ///
-    /// Mutation: mark claude `CannedHome`, or codex `OperatorConfig`, or rename the relocation's
-    /// `store`. Each fails.
-    #[test]
-    fn a_row_that_answers_a_boot_dialog_says_where_the_answer_is_kept() {
-        use crate::spec::{DialogAnswer, Remembers};
-        for h in Harness::ALL {
-            let row = harness_spec(h);
-            let answers = row
-                .boot_dialogs
-                .dialogs
-                .iter()
-                .any(|d| matches!(d.answer, DialogAnswer::Keys(_)));
-            let remembers = row.boot_dialogs.remembers;
-            if !answers {
-                assert_eq!(remembers, Remembers::Nothing, "{h}: answers no dialog");
-                continue;
-            }
-            let pane_env = || {
-                let spec = spec_for(h);
-                let inv = launch_adapter(h)
-                    .unwrap()
-                    .compile_pane(&spec, &ctx())
-                    .expect("a row that answers a boot dialog has a pane");
-                (inv.env, spec.config_dir)
-            };
-            match remembers {
-                Remembers::Nothing => {}
-                Remembers::CannedHome => {
-                    let carrier = row.profile.expect("a relocated home is a profile variable");
-                    let (env, config_dir) = pane_env();
-                    assert!(
-                        env.iter().any(|(k, v)| k == carrier.env
-                            && std::path::Path::new(v).starts_with(&config_dir)),
-                        "{h}: the canned pane leaves {} the operator's: {env:?}",
-                        carrier.env
-                    );
-                }
-                Remembers::OperatorConfig(r) => {
-                    let carrier = row
-                        .profile
-                        .expect("a relocated config is a profile variable");
-                    assert_eq!(r.config, carrier.env, "{h}");
-                    assert!(carrier.clear.contains(&r.store), "{h}: {}", r.store);
-                    let (env, _) = pane_env();
-                    assert!(
-                        !env.iter().any(|(k, _)| k == r.config),
-                        "{h}: the canned pane relocates {} already; say CannedHome",
-                        r.config
-                    );
-                    for (name, body) in r.seed {
-                        let doc: serde_json::Value = serde_json::from_str(body)
-                            .unwrap_or_else(|e| panic!("{h}: seed {name} is not JSON: {e}"));
-                        assert!(
-                            doc.is_object()
-                                && !crate::spec::names_a_credential(name)
-                                && !crate::spec::holds_a_credential(&doc),
-                            "{h}: seed {name} is not a credential-free JSON object"
-                        );
-                    }
-                    for key in r.carry {
-                        assert!(
-                            !crate::spec::names_a_credential(key),
-                            "{h}: carries {key}, which names a credential"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     /// **marion answers a boot dialog only where the answer stays out of the operator's config**,
     /// for every row under every auth: where [`Remembers::marion_may_answer`] says yes on a row
-    /// that answers, the pane compiled under that auth carries the row's home at marion's config
-    /// dir (or the answer lasts the session); `OperatorConfig` is never answered, and a
-    /// `CannedHome` is not answered under live auth, where the home is the operator's.
+    /// that answers, the pane compiled under that auth carries the row's profile variable at
+    /// marion's config dir (or the answer lasts the session), and a `CannedHome` is not answered
+    /// under live auth, where the home is the operator's. A row that answers nothing claims
+    /// nothing.
     ///
-    /// Mutation: return `true` for `CannedHome` regardless of auth, or for `OperatorConfig`. Each
-    /// fails.
+    /// Mutation: return `true` for `CannedHome` regardless of auth, or drop claude's
+    /// `CLAUDE_CONFIG_DIR` overlay row. Each fails.
     #[test]
     fn marion_answers_a_boot_dialog_only_where_the_answer_stays_out_of_operator_config() {
         use crate::spec::{DialogAnswer, Remembers};
@@ -9421,11 +9364,13 @@ mod tests {
                 .dialogs
                 .iter()
                 .any(|d| matches!(d.answer, DialogAnswer::Keys(_)));
+            if !answers {
+                assert_eq!(remembers, Remembers::Nothing, "{h}: answers no dialog");
+            }
             for auth in [Auth::Canned, Auth::Endpoint, Auth::Inherited] {
                 let may = remembers.marion_may_answer(auth);
                 match remembers {
                     Remembers::Nothing => assert!(may, "{h} {auth:?}"),
-                    Remembers::OperatorConfig(_) => assert!(!may, "{h} {auth:?}"),
                     Remembers::CannedHome => assert_eq!(may, auth.overlays(), "{h} {auth:?}"),
                 }
                 if !(may && answers && remembers == Remembers::CannedHome) {
@@ -9447,127 +9392,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// **A relocation keeps the operator's login**: `store` takes the operator's own value, then
-    /// their `config`'s (a login made under a custom config dir is keyed on it), then empty — the
-    /// default entry. Seeds are written 0600 with the operator's `carry` keys from their own copy
-    /// (in their `config`, else `$HOME/<home>`), an existing file is left as it is, a carried value
-    /// naming a credential is refused, and the operator's file is never written.
-    #[test]
-    fn a_relocation_points_its_store_at_the_operators_login_and_seeds_once() {
-        use std::os::unix::fs::PermissionsExt;
-        let r = crate::spec::Relocation {
-            config: "CFG",
-            store: "STORE",
-            home: "",
-            seed: &[("seed.json", r#"{"onboarded":true}"#)],
-            carry: &["account"],
-            note: "test",
-        };
-        let op = |pairs: Vec<(&'static str, String)>| {
-            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone())
-        };
-        let s = |v: &str| v.to_string();
-        assert_eq!(r.operator_store(op(vec![])), "");
-        assert_eq!(r.operator_store(op(vec![("CFG", s("/work"))])), "/work");
-        assert_eq!(
-            r.operator_store(op(vec![("CFG", s("/work")), ("STORE", s("/store"))])),
-            "/store"
-        );
-        assert_eq!(r.operator_store(op(vec![("STORE", s(""))])), "");
-        for name in [
-            "token",
-            "accessToken",
-            "refresh_token",
-            "apiKey",
-            "client-secret",
-        ] {
-            assert!(crate::spec::names_a_credential(name), "{name}");
-        }
-        for name in [
-            "budgetTokens",
-            "token_refresh_buffer_ms",
-            "maxTokens",
-            "oauthAccount",
-        ] {
-            assert!(!crate::spec::names_a_credential(name), "{name}");
-        }
-
-        let dir = std::env::temp_dir().join(format!("marion-relocation-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let home = dir.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        let theirs = home.join("seed.json");
-        let original = r#"{"account":{"email":"a@b"},"projects":{"/x":{}}}"#;
-        std::fs::write(&theirs, original).unwrap();
-        let home_env = || op(vec![("HOME", home.display().to_string())]);
-
-        let cfg = dir.join("cfg");
-        let env = r.apply(&cfg, home_env()).unwrap();
-        assert_eq!(
-            env,
-            [
-                ("CFG".to_string(), cfg.display().to_string()),
-                ("STORE".to_string(), String::new()),
-            ]
-        );
-        let seed = cfg.join("seed.json");
-        let doc: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
-        assert_eq!(
-            doc,
-            serde_json::json!({"onboarded": true, "account": {"email": "a@b"}}),
-            "the carried key only, never the operator's projects"
-        );
-        let mode = std::fs::metadata(&seed).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-        std::fs::write(&seed, "kept").unwrap();
-        r.apply(&cfg, home_env()).unwrap();
-        assert_eq!(std::fs::read_to_string(&seed).unwrap(), "kept");
-
-        // Their `config` is where their copy lives when they set one; nothing there is fine.
-        let elsewhere = dir.join("cfg2");
-        r.apply(
-            &elsewhere,
-            op(vec![("CFG", dir.join("none").display().to_string())]),
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(elsewhere.join("seed.json")).unwrap(),
-            r#"{"onboarded":true}"#
-        );
-
-        // A test launch carries exactly the relocation, and nothing for a row that needs none.
-        use crate::spec::Remembers;
-        assert_eq!(
-            Remembers::OperatorConfig(r)
-                .test_env(&dir.join("cfg4"), home_env())
-                .unwrap(),
-            r.apply(&dir.join("cfg4"), home_env()).unwrap()
-        );
-        for none in [Remembers::Nothing, Remembers::CannedHome] {
-            assert!(
-                none.test_env(&dir.join("cfg5"), home_env())
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-        assert!(
-            !dir.join("cfg5").exists(),
-            "a row that needs no move creates nothing"
-        );
-
-        std::fs::write(&theirs, r#"{"account":{"accessToken":"x"}}"#).unwrap();
-        let refused = r.apply(&dir.join("cfg3"), home_env()).unwrap_err();
-        assert!(
-            refused.to_string().contains("names a credential"),
-            "{refused}"
-        );
-        assert!(!dir.join("cfg3/seed.json").exists());
-        std::fs::write(&theirs, original).unwrap();
-        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), original);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **A claude node that took two turns spent both turns' tokens.** Measured on 2.1.280
@@ -10076,6 +9900,40 @@ mod tests {
                 None,
                 "{h}: only the measured frame names it"
             );
+        }
+    }
+
+    /// **An overlaying launch writes the documents its relocated home needs, and a live one never
+    /// does**: a canned or endpoint claude node gets its own `CLAUDE_CONFIG_DIR`, seeded past
+    /// onboarding, under its config dir; a live node writes nothing into a home that is the
+    /// operator's.
+    #[test]
+    fn an_overlaying_launch_seeds_its_relocated_home_and_a_live_one_writes_none() {
+        let seed = PathBuf::from("/state/x/config/claude-config/.claude.json");
+        let docs = |auth| {
+            ClaudeCodeAdapter
+                .launch_documents(
+                    &LaunchSpec {
+                        auth,
+                        ..claude_spec()
+                    },
+                    &ctx(),
+                )
+                .unwrap()
+        };
+        assert!(
+            docs(Auth::Canned).contains(&(seed.clone(), claude_code::CONFIG_SEED.1.to_string())),
+            "{:?}",
+            docs(Auth::Canned)
+        );
+        assert!(!docs(Auth::Inherited).iter().any(|(p, _)| *p == seed));
+        for h in Harness::ALL {
+            for (rel, _) in harness_spec(h).overlay_documents {
+                assert!(
+                    !rel.starts_with('/') && !rel.contains(".."),
+                    "{h}: {rel} must stay under the node's config dir"
+                );
+            }
         }
     }
 

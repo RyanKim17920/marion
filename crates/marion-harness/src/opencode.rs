@@ -223,6 +223,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Canned: inside the 0600 document. Live: the declaration is `OPENCODE_CONFIG_CONTENT`, a
     // variable every shell command the model runs inherits, so it names the token's file instead.
     // Any provider opencode is configured for, by its key.
+    overlay_documents: &[],
     login_env: LoginEnv {
         login: &[],
         any_provider: true,

@@ -102,6 +102,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Marion's own pipe: the `session/new` request carries the token beside the node's identity.
     // An ACP agent is any vendor's: every provider key, and the logins the refinement rows'
     // agents read (copilot's GitHub token, claude-agent-acp's token, a Vertex credential).
+    overlay_documents: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("COPILOT_GITHUB_TOKEN"),

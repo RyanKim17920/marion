@@ -241,25 +241,12 @@ pub fn compile(
         std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
         written.push(path);
     }
-    let mut inv = if knobs.pane {
+    let inv = if knobs.pane {
         t.adapter.compile_pane(&spec, &ctx)
     } else {
         t.adapter.compile(&spec, &ctx)
     }
     .map_err(|e| format!("compile: {e}"))?;
-    // A pane is where a boot dialog gets answered. A row whose TUI keeps that answer in the
-    // operator's own config (`Remembers::OperatorConfig`) runs on a config moved into this world,
-    // still on the operator's login, so the answer is left in the scratch and never in theirs.
-    if knobs.pane {
-        let moved = t
-            .spec
-            .boot_dialogs
-            .remembers
-            .test_env(&w.root.join("harness-config"), |k| std::env::var(k).ok())
-            .map_err(|e| format!("moving the harness config into the world: {e}"))?;
-        inv.env.retain(|(k, _)| !moved.iter().any(|(m, _)| m == k));
-        inv.env.extend(moved);
-    }
     let session = t
         .adapter
         .session_declaration(&spec, &ctx)

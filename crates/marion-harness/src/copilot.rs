@@ -179,6 +179,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         always: false,
     }),
     // Its GitHub login, in the three variables copilot reads, and a BYOK provider's.
+    overlay_documents: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("COPILOT_GITHUB_TOKEN"),

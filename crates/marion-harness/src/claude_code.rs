@@ -26,14 +26,27 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries,
     DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
-    MidTurn, ModelForm, Push, ReadOnly, Readiness, Relocation, Remembers, Resume, Spelling,
-    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
 /// The `--mcp-config` document's name under the node's own directory — one spelling for
 /// [`SPEC`]'s live declaration and `ClaudeCodeAdapter::config_files`.
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
+
+/// The `CLAUDE_CONFIG_DIR` an overlaying launch (canned, endpoint) runs on, under the node's own
+/// config dir: claude's `.claude.json`, session history, skills and plugins live here instead of
+/// the operator's `~/.claude.json` and `~/.claude`.
+pub const CONFIG_SUBDIR: &str = "claude-config";
+
+/// The `.claude.json` a fresh [`CONFIG_SUBDIR`] is seeded with, so a pane opens on its first real
+/// screen (folder trust) rather than the theme picker a fresh directory shows. Measured on
+/// 2.1.283 (2026-09-27): seeded, the first screen is folder trust; unseeded, the theme picker.
+pub const CONFIG_SEED: (&str, &str) = (
+    "claude-config/.claude.json",
+    r#"{"hasCompletedOnboarding":true}"#,
+);
 
 /// The `--settings` overlay every node marion launches carries: the operator's hooks off, their
 /// settings otherwise as they wrote them. Not on the native facade, where the operator drives
@@ -113,7 +126,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // NOT `CLAUDE_CONFIG_DIR`: isolating it breaks OAuth, because the Keychain entry is keyed to
     // the real config dir. The fileless path above is what keeps auth working, and live mode is
     // therefore *only* the removal of these three — which the neutral fields' live rule does.
+    // `CLAUDE_CONFIG_DIR` under an overlay only. Live mode must not set it: the login's keychain
+    // entry is keyed on it, so a live node on another directory is logged out. A canned or
+    // endpoint node needs no login (its credential is marion's), and on the operator's directory
+    // it wrote session history into `~/.claude/projects` and folder trust into `~/.claude.json`,
+    // and read `~/.claude`'s plugins (2.1.283, 2026-09-28: a canned `-p` run in a scratch dir
+    // created `~/.claude/projects/<dir>`; on a relocated dir it created nothing there).
     env: &[
+        Env {
+            key: "CLAUDE_CONFIG_DIR",
+            val: Val::Under(CONFIG_SUBDIR),
+            when: When::Overlay,
+        },
         Env {
             key: "ANTHROPIC_BASE_URL",
             val: Val::Field(Field::BaseUrlRoot),
@@ -180,6 +204,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         always: true,
     }),
     // Its own key and token, and the Bedrock or Vertex login its switches select.
+    // Its own `CLAUDE_CONFIG_DIR` under an overlay (the `env` row above), past onboarding.
+    overlay_documents: &[CONFIG_SEED],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("ANTHROPIC_API_KEY"),
@@ -306,16 +332,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // the file caches the feature flags (`cachedGrowthBookFeatures`): seeded alone, or with the
         // cached `oauthAccount` alone, the pane opens with no warning; with the flags, with or
         // without the account, the warning shows as it does on the operator's own file.
-        remembers: Remembers::OperatorConfig(Relocation {
-            config: "CLAUDE_CONFIG_DIR",
-            store: "CLAUDE_SECURESTORAGE_CONFIG_DIR",
-            home: "",
-            seed: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
-            carry: &["cachedGrowthBookFeatures", "cachedGrowthBookFeaturesAt"],
-            note: "2.1.283 (2026-09-27): trust lands in `<CLAUDE_CONFIG_DIR>/.claude.json`; an \
-                   empty `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the operator's claude.ai login; \
-                   the cached feature flags decide the channels warning under a token",
-        }),
+        // An overlaying launch runs on its own `CLAUDE_CONFIG_DIR` (`CONFIG_SUBDIR`, seeded past
+        // onboarding), so there the answer lands in marion's scratch; a live node's is the
+        // operator's `~/.claude.json`, which marion never answers into.
+        remembers: Remembers::CannedHome,
         note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
                onboarding done: folder trust, then (pane shape, claude.ai login) the development \
                channels warning",
@@ -812,12 +832,36 @@ mod tests {
         );
     }
 
+    /// **Live mode never moves `CLAUDE_CONFIG_DIR`** — the login's keychain entry is keyed on it —
+    /// **and an overlaying launch always does**, onto its own seeded directory, so a canned or
+    /// endpoint node writes no history into `~/.claude` and no trust into `~/.claude.json`.
+    ///
+    /// Mutation: make the row's `CLAUDE_CONFIG_DIR` `When::Always`, or drop it. Each fails.
     #[test]
-    fn claude_config_dir_is_never_isolated() {
-        let inv = compile(&root());
+    fn claude_config_dir_moves_under_an_overlay_and_never_under_live_auth() {
+        let live = crate::spec::Fields {
+            auth: Auth::Inherited,
+            ..root()
+        };
         assert!(
-            !inv.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"),
-            "isolating it breaks OAuth: the Keychain entry is keyed to the real config dir"
+            !compile(&live)
+                .env
+                .iter()
+                .any(|(k, _)| k == "CLAUDE_CONFIG_DIR"),
+            "isolating it logs a live node out: the Keychain entry is keyed to the config dir"
+        );
+        let canned = compile(&root());
+        assert!(
+            canned
+                .env
+                .iter()
+                .any(|(k, v)| k == "CLAUDE_CONFIG_DIR" && v == "/tmp/claude-config"),
+            "{:?}",
+            canned.env
+        );
+        assert!(
+            Auth::Endpoint.overlays(),
+            "an endpoint launch takes the same row"
         );
     }
 
@@ -872,6 +916,10 @@ mod tests {
             inv.env,
             vec![
                 (
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    "/tmp/claude-config".to_string()
+                ),
+                (
                     "ANTHROPIC_BASE_URL".to_string(),
                     "http://127.0.0.1:8099".to_string()
                 ),
@@ -890,7 +938,14 @@ mod tests {
     fn a_node_with_no_credential_in_its_spec_carries_no_anthropic_pair() {
         let inv = compile(&root());
         let names: Vec<&str> = inv.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(names, vec!["ANTHROPIC_BASE_URL", "DISABLE_AUTOUPDATER"]);
+        assert_eq!(
+            names,
+            vec![
+                "CLAUDE_CONFIG_DIR",
+                "ANTHROPIC_BASE_URL",
+                "DISABLE_AUTOUPDATER"
+            ]
+        );
     }
 
     #[test]

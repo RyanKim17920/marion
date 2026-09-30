@@ -183,6 +183,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // A canned node's token sits in its 0600 `settings.json`. A live node's declaration is argv,
     // so the token rides qwen's environment, which its MCP launcher hands the bridge.
     // The OpenAI-compatible key and endpoint qwen reads, and DashScope's.
+    overlay_documents: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("OPENAI_API_KEY"),

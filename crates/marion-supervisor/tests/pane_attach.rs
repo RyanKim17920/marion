@@ -191,19 +191,7 @@ fn start_paned_run(
     state: &Path,
     base_url: &str,
 ) {
-    // The test answers the harness's trust dialog. Where the row says its TUI keeps that answer
-    // in the operator's own config, the run (and the node, which inherits it) carries a config
-    // moved into this scratch, still on the operator's login.
-    let harness = marion_core::agent_type::builtin(agent_type)
-        .expect("a built-in agent type")
-        .harness;
-    let moved = marion_harness::adapter::harness_spec(harness)
-        .boot_dialogs
-        .remembers
-        .test_env(&dir.join("harness-config"), |k| std::env::var(k).ok())
-        .expect("move the harness config into the scratch");
     let out = Command::new(env!("CARGO_BIN_EXE_marion"))
-        .envs(moved)
         .args([
             "run",
             agent_type,
