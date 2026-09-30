@@ -394,6 +394,8 @@ pub struct Home {
     pub notice: Option<String>,
     /// The tab help was opened from, and goes back to.
     pub help_from: Tab,
+    /// Rows help is scrolled down, where it does not fit the screen.
+    pub help_scroll: usize,
 }
 
 /// How many stream lines a Page Up / Page Down moves.
@@ -413,6 +415,7 @@ impl Home {
             recent_models: Vec::new(),
             notice: None,
             help_from: tab,
+            help_scroll: 0,
         }
     }
 
@@ -422,6 +425,7 @@ impl Home {
             self.tab = self.help_from;
         } else {
             self.help_from = self.tab;
+            self.help_scroll = 0;
             self.tab = Tab::Help;
         }
     }
@@ -698,6 +702,15 @@ impl Home {
                 Key::Char('q') => Effect::Quit,
                 Key::Esc | Key::Char('?') => {
                     self.toggle_help();
+                    Effect::None
+                }
+                Key::Char('j') | Key::Down => {
+                    let lines = view::KEYS.iter().map(|(_, k)| k.len() + 1).sum::<usize>();
+                    self.help_scroll = (self.help_scroll + 1).min(lines);
+                    Effect::None
+                }
+                Key::Char('k') | Key::Up => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
                     Effect::None
                 }
                 _ => Effect::None,

@@ -57,7 +57,7 @@ pub fn frame_at(home: &Home, places: &Places, now: std::time::SystemTime) -> Fra
         start: start(home),
         watch: watch(home, now),
         setup: setup(home, places),
-        help: help(),
+        help: help(home),
         input: input(home),
         hints: hints(home),
         attention: crate::tree::attention_count(&home.watch.nodes),
@@ -817,7 +817,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
         "Everywhere",
         &[
             ("tab", "next screen", ""),
-            ("?", "help (on Start: while the prompt is empty)", ""),
+            ("?", "help (Start: empty prompt)", ""),
             ("F1", "help, from anywhere", ""),
             ("^c", "quit", ""),
             ("q", "quit, off Start", ""),
@@ -878,10 +878,20 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
     ),
 ];
 
-fn help() -> HelpView {
+/// The key table, the section for the tab help was opened from first.
+fn help(home: &Home) -> HelpView {
+    let first = match home.help_from {
+        Tab::Start => "Start",
+        Tab::Watch => "Watch",
+        Tab::Setup => "Setup",
+        Tab::Help => "Everywhere",
+    };
+    let mut order: Vec<&(&str, &[KeyRow3])> = KEYS.iter().collect();
+    order.sort_by_key(|(title, _)| *title != first);
     HelpView {
-        sections: KEYS
-            .iter()
+        scroll: home.help_scroll,
+        sections: order
+            .into_iter()
             .map(|(title, keys)| {
                 (
                     title.to_string(),
@@ -955,7 +965,7 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("a", "add key"),
             ("x", "remove key"),
         ]),
-        (_, Tab::Help) => h(&[("esc", "back"), ("tab", "next screen")]),
+        (_, Tab::Help) => h(&[("esc", "back"), ("j/k", "scroll"), ("tab", "next screen")]),
     }
 }
 

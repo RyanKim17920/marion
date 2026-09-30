@@ -545,6 +545,7 @@ fn help_view() -> HelpView {
         command: s(cmd),
     };
     HelpView {
+        scroll: 0,
         sections: vec![
             (
                 s("Everywhere"),

@@ -1,0 +1,28 @@
+---
+source: crates/marion-supervisor/src/home/tests.rs
+expression: screen
+---
+ ◆ marion  ~/code/acme-api                           Start   Watch   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  WATCH                                  START
+  j/k    move                            enter  run
+  enter  its stream full-screen; a pan…  ↑↓     harness
+  esc    back from the stream            ←→     model
+  s      steer                           ^o     read-only flavour
+  x      cancel, asks first              ^p     headless or pane
+  u      resume an ended node            esc    clear the prompt
+  o      shell in its workspace          SETUP
+  d      what its branch changed         enter  expand
+  c      copy the merge                  r      re-check
+  !      next that needs you             e      edit agent types
+  J/K    scroll its stream               n      new agent type, previewed
+  EVERYWHERE                             a      add a provider key
+  tab    next screen                     x      remove a key, asks first
+  ?      help (Start: empty prompt)      a      on Profiles: add one
+  ↓ 3 below  j/k scroll
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion --help                                                            │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  esc back · j/k scroll · tab next screen                              F1 help

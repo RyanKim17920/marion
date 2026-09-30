@@ -6,22 +6,22 @@ expression: "report(&screen(Body::Help(&v), command(\"marion --help\", \"\"), \"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  EVERYWHERE
-  tab      next screen
-  ?        this page
-  q        quit
+  EVERYWHERE                                       WATCH
+  tab    next screen                               enter  attach
+  ?      this page                                 s      steer
+  q      quit                                      x      cancel
+                                                   c      copy the merge
+                                                   !      next attention
+                                                   START
+                                                   enter  run
+                                                   ↑↓     harness
+                                                   ←→     model
 
-  WATCH
-  enter    attach                $ marion attach <id>
-  s        steer                 $ marion steer <id> <text>
-  x        cancel                $ marion cancel <id>
-  c        copy the merge        $ git merge --no-ff <branch>
-  !        next attention        $ marion ls --attention
 
-  START
-  enter    run                   $ marion run <type> --prompt <text>
-  ↑↓       harness
-  ←→       model
+
+
+
+
 
 
 
@@ -34,10 +34,10 @@ expression: "report(&screen(Body::Help(&v), command(\"marion --help\", \"\"), \"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   tab back                                                                                 F1 help
 --- styles ---
-   79  Style::new().fg(Color::Reset).bg(Color::Reset)  "nextscreenthispagequitat"
+   79  Style::new().fg(Color::Reset).bg(Color::Reset)  "nextscreenattachthispage"
     6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
    25  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "EVERYWHEREWATCHSTARTtabF"
-  476  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+  346  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
-   25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "?tab?qentersxc!enter↑↓←→"
+   25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "?tabenter?sqxc!enter↑↓←→"
     2  Style::new().yellow().bg(Color::Reset)  "◐2"

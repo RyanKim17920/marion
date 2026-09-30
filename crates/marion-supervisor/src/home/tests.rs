@@ -542,6 +542,68 @@ fn help_opens_from_any_tab_and_returns_to_it() {
     }
 }
 
+/// Help drawn as the operator sees it: the real key table (`view::KEYS`) through `marion_tui`, at
+/// the size a terminal opens at.
+fn help_screen(h: &Home, w: u16, rows: u16) -> String {
+    use ratatui::widgets::Widget as _;
+    let f = view::frame(h, &view::Places::default());
+    let screen = marion_tui::home::Screen {
+        theme: marion_tui::home::theme::Theme::from_colorterm(None),
+        project: "~/code/acme-api",
+        attention: 0,
+        body: f.body(Tab::Help),
+        input: f.input.clone(),
+        hints: f.hints.clone(),
+        notice: None,
+        frame: 0,
+    };
+    let area = ratatui::layout::Rect::new(0, 0, w, rows);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    (&screen).render(area, &mut buf);
+    (0..rows)
+        .map(|y| {
+            (0..w)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **Help shows every section of the real key table at 80x24** — two columns, the commands left
+/// for a wider screen — and the section for the tab it was opened from comes first; where it does
+/// not fit it scrolls with j/k. Mutation: draw one column, or drop the first section. It fails.
+#[test]
+fn help_shows_every_section_of_the_real_key_table_at_80x24() {
+    let mut h = home();
+    h.tab = Tab::Watch;
+    h.key(Key::Char('?'));
+    let screen = help_screen(&h, 80, 24);
+    for (title, _) in view::KEYS {
+        assert!(
+            screen.contains(&title.to_uppercase()),
+            "{title} is missing at 80x24:\n{screen}"
+        );
+    }
+    let watch = screen.find("WATCH").unwrap();
+    let start = screen.find("START").unwrap();
+    assert!(
+        watch < start,
+        "opened from Watch, Watch comes first:\n{screen}"
+    );
+    insta::assert_snapshot!(screen);
+    // A screen too short for the page scrolls, and says so.
+    let short = help_screen(&h, 80, 14);
+    assert!(short.contains("j/k scroll"), "{short}");
+    h.key(Key::Char('j'));
+    assert_eq!(h.help_scroll, 1);
+    h.key(Key::Char('k'));
+    h.key(Key::Char('k'));
+    assert_eq!(h.help_scroll, 0);
+}
+
 #[test]
 fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
     let id = AgentId("0199-abc".into());
