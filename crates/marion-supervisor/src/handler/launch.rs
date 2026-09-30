@@ -9,10 +9,11 @@ use marion_core::proto::{FailureKind, NativeLaunchContext, RpcError, SpawnCaller
 use marion_core::registry::ReplayedNode;
 use marion_core::secret::Secret;
 
+use super::lifecycle::{KillBy, StopReason, journal_failure_before_signal};
 use super::summary::Unprojectable;
 use super::{
-    DEFAULT_SPAWN_TIMEOUT_SECS, KillBy, NodeOutcome, RegistryHandle, StopReason,
-    journal_failure_after_signal, journal_failure_before_signal, lock, steer, workflow,
+    DEFAULT_SPAWN_TIMEOUT_SECS, NodeOutcome, RegistryHandle, journal_failure_after_signal, lock,
+    steer, workflow,
 };
 use crate::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use crate::serve::Peer;
@@ -95,14 +96,14 @@ pub(crate) fn validate_native_launch_boundary(
 ///
 /// **A panicking node is `Exited`-with-a-reason, not a new disposition.** `SpawnError::Panicked`
 /// already existed for exactly this, with a carefully written sentence, and was **constructed
-/// nowhere** — a documented variant describing a mechanism that did not run. `handler.rs`'s own
-/// comment at [`RegistryHandle::join_finished_nodes`] asserted that a panic *"already reached the
-/// caller as `SpawnError::Panicked`"*, which was false. Making that true is better than deleting
-/// the claim and much better than adding a third `NodeOutcome` arm: the two arms exist to keep a
-/// root's and a child's *vocabularies* apart (§9 gives them different results), and a panic is a
-/// failure **within** each vocabulary, not a third kind of node. A third arm would force every
-/// reader — [`RegistryHandle::owned_failure`], [`NodeHandle::running`] — to grow a case for
-/// something both can already say.
+/// nowhere** — a documented variant describing a mechanism that did not run.
+/// `handler/lifecycle.rs`'s own comment at [`RegistryHandle::join_finished_nodes`] asserted that a
+/// panic *"already reached the caller as `SpawnError::Panicked`"*, which was false. Making that
+/// true is better than deleting the claim and much better than adding a third `NodeOutcome` arm:
+/// the two arms exist to keep a root's and a child's *vocabularies* apart (§9 gives them different
+/// results), and a panic is a failure **within** each vocabulary, not a third kind of node. A third
+/// arm would force every reader — [`RegistryHandle::owned_failure`], [`NodeHandle::running`] — to
+/// grow a case for something both can already say.
 ///
 /// **The payload is printed rather than folded into the sentence.** `SpawnError::Panicked`'s
 /// message is about the *kind* of node and points the reader at the journal, and a panic message is

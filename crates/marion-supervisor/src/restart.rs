@@ -173,7 +173,7 @@ pub fn mark(tree: &Replay) -> Vec<Marked> {
 /// * §7.2 resolves an unconfirmed reap intent *by checking for the process*. A terminal record is
 ///   that check, already made and already journaled. Reporting `ReapIntentUnresolved` over it
 ///   claims marion cannot tell whether a process it watched die is alive — and, through
-///   `handler.rs`'s residency, keeps an already-dead fleet's supervisor alive forever.
+///   `handler/lifecycle.rs`'s residency, keeps an already-dead fleet's supervisor alive forever.
 ///
 /// A node whose fate is on the record needs no verdict from restart at all, which is what the
 /// early return says.
@@ -215,11 +215,11 @@ pub fn apply(tree: &mut Replay) -> Vec<Marked> {
 /// The nodes §7.2 leaves **resumable** across a restart: reaped idle, and never exited.
 ///
 /// The `!is_exited()` half is not redundant. `session/quit`'s confirmed `KillTree` writes a
-/// `KillConfirmed` over an already-`ReapedIdle` node — `handler.rs` says so in as many words,
-/// *"confirmed session/quit retired an already ReapedIdle node; no process existed to signal"* —
-/// which replays as `Exited(Cancelled)` with `reap_state` still `ReapedIdle`. A node retired that
-/// way has been deliberately ended and is not resumable, and keying on `reap_state` alone would
-/// offer the operator a resume of a node marion has already retired.
+/// `KillConfirmed` over an already-`ReapedIdle` node — `handler/lifecycle.rs` says so in as many
+/// words, *"confirmed session/quit retired an already ReapedIdle node; no process existed to
+/// signal"* — which replays as `Exited(Cancelled)` with `reap_state` still `ReapedIdle`. A node
+/// retired that way has been deliberately ended and is not resumable, and keying on `reap_state`
+/// alone would offer the operator a resume of a node marion has already retired.
 pub fn resumable(tree: &Replay) -> Vec<&ReplayedNode> {
     tree.nodes()
         .iter()
@@ -784,8 +784,8 @@ mod tests {
             reason: "session/quit reaped an idle node before detaching busy work".into(),
         }));
         // The signal went out and marion could not observe the death, so no `ReapConfirmed` was
-        // written (`handler.rs` returns rather than fabricating one). The operator then confirmed
-        // a `session/quit` KillTree, which did observe it.
+        // written (`handler/lifecycle.rs` returns rather than fabricating one). The operator then
+        // confirmed a `session/quit` KillTree, which did observe it.
         log.push(RecordKind::KillConfirmed(KillConfirmed {
             agent_id: id("reaping"),
             exit: ProcessExit {
@@ -805,11 +805,11 @@ mod tests {
 
     /// The `ReapedIdle` half of the terminality guard, pinned on its own.
     ///
-    /// Defensive rather than measured: `handler.rs`'s reap path only ever selects nodes that are
-    /// `Idle`, `Live` and intent-free, so marion writing this exact journal would take a sequence
-    /// nothing today produces. It is asserted anyway because `classify` is a **total function over
-    /// the journal**, not over the journals marion happens to write — a reader of any journal must
-    /// not be told marion abandoned a spawn over a process it confirmed dead itself.
+    /// Defensive rather than measured: `handler/lifecycle.rs`'s reap path only ever selects nodes
+    /// that are `Idle`, `Live` and intent-free, so marion writing this exact journal would take a
+    /// sequence nothing today produces. It is asserted anyway because `classify` is a **total
+    /// function over the journal**, not over the journals marion happens to write — a reader of any
+    /// journal must not be told marion abandoned a spawn over a process it confirmed dead itself.
     #[test]
     fn a_reaped_node_is_not_reclassified_by_a_later_abort_record() {
         let mut log = Log::default();
