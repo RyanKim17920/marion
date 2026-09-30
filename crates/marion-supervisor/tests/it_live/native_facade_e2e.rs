@@ -1088,6 +1088,13 @@ fn canned_operator(
                 env: vec![
                     (s(pi::AGENT_DIR_ENV), agent_dir.display().to_string()),
                     (s("PI_SKIP_VERSION_CHECK"), s("1")),
+                    // This operator's home is fresh, so pi's TUI would fetch `fd` and `rg` from
+                    // GitHub into `<agent dir>/bin` at startup (0.99.1 `dist/utils/tools-manager.js`,
+                    // `ensureTool`, called from `interactive-mode.js`), and a paste written while
+                    // that download ran reached no request (integrator4, 2026-09-30, under suite
+                    // load). A real operator's home keeps the binaries after the first run, and
+                    // this suite fetches nothing: `PI_OFFLINE` is the one switch `ensureTool` reads.
+                    (s("PI_OFFLINE"), s("1")),
                 ],
                 spawn_tool: None,
             })
