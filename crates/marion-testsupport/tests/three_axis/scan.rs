@@ -66,6 +66,12 @@ pub struct Scanner<'a> {
     /// Inside an `assert*!` or the argument of `contains`/`starts_with`/…: an expected value,
     /// not something the code does.
     pub assert_depth: usize,
+    /// Inside the argv of marion's **own** binary: an argument to a test helper named `marion…`,
+    /// or `.arg`/`.args` in a function that spawns marion's binary and no other program. There a
+    /// `login` is marion's verb against the test's scratch store, not a harness login.
+    pub marion_argv: usize,
+    /// Inside a struct literal's `…_hint` field: words printed for the operator, never run.
+    pub hint_depth: usize,
     pub loop_depth: usize,
     fns: Vec<FnFrame>,
     pub out: Vec<Finding>,
@@ -84,6 +90,9 @@ pub struct FnFrame {
     /// Locals bound to a secret's plaintext (`let k = key.expose();`), read as secret-named for
     /// the rest of the function.
     pub exposed: Vec<String>,
+    /// The body spawns marion's own binary (`CARGO_BIN_EXE_marion`) and no program named by a
+    /// string literal — so every `.arg`/`.args` in it is marion's argv.
+    pub runs_marion: bool,
 }
 
 pub fn scan(src: &Source, vocab: &Vocabulary, facts: FileFacts) -> Vec<Finding> {
@@ -96,6 +105,8 @@ pub fn scan(src: &Source, vocab: &Vocabulary, facts: FileFacts) -> Vec<Finding> 
         test_depth: 0,
         harness_impl_depth: 0,
         assert_depth: 0,
+        marion_argv: 0,
+        hint_depth: 0,
         loop_depth: 0,
         fns: Vec::new(),
         out: Vec::new(),
@@ -104,6 +115,37 @@ pub fn scan(src: &Source, vocab: &Vocabulary, facts: FileFacts) -> Vec<Finding> 
     s.out.sort();
     s.out.dedup();
     s.out
+}
+
+/// Whether a function body spawns marion's own binary and no other: it names
+/// `CARGO_BIN_EXE_marion`, and no `Command::new` takes a string literal program.
+fn runs_only_marion(body: &TokenStream) -> bool {
+    fn flat(t: &TokenStream, out: &mut Vec<proc_macro2::TokenTree>) {
+        for tt in t.clone() {
+            match &tt {
+                proc_macro2::TokenTree::Group(g) => {
+                    out.push(tt.clone());
+                    flat(&g.stream(), out);
+                }
+                _ => out.push(tt),
+            }
+        }
+    }
+    let mut toks = Vec::new();
+    flat(body, &mut toks);
+    let names_marion = toks.iter().any(|t| match t {
+        proc_macro2::TokenTree::Literal(l) => l.to_string() == "\"CARGO_BIN_EXE_marion\"",
+        _ => false,
+    });
+    let other_program = toks.windows(5).any(|w| {
+        matches!(
+            (&w[0], &w[3], &w[4]),
+            (proc_macro2::TokenTree::Ident(c), proc_macro2::TokenTree::Ident(n), proc_macro2::TokenTree::Group(g))
+                if c == "Command" && n == "new"
+                    && g.stream().into_iter().next().is_some_and(|f| matches!(f, proc_macro2::TokenTree::Literal(_)))
+        )
+    });
+    names_marion && !other_program
 }
 
 pub fn line(span: Span) -> usize {
@@ -190,11 +232,18 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn in_fn<F: FnOnce(&mut Self)>(&mut self, name: String, attrs: &[syn::Attribute], f: F) {
+    fn in_fn<F: FnOnce(&mut Self)>(
+        &mut self,
+        name: String,
+        attrs: &[syn::Attribute],
+        body: TokenStream,
+        f: F,
+    ) {
         self.scoped(Some(name.clone()), attrs, |s| {
             let outer_loops = std::mem::take(&mut s.loop_depth);
             s.fns.push(FnFrame {
                 name,
+                runs_marion: runs_only_marion(&body),
                 ..FnFrame::default()
             });
             f(s);
@@ -241,21 +290,33 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
     fn visit_attribute(&mut self, _: &'ast syn::Attribute) {}
 
     fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
-        self.in_fn(i.sig.ident.to_string(), &i.attrs, |s| {
-            visit::visit_item_fn(s, i)
-        });
+        let body = &i.block;
+        self.in_fn(
+            i.sig.ident.to_string(),
+            &i.attrs,
+            quote::quote!(#body),
+            |s| visit::visit_item_fn(s, i),
+        );
     }
 
     fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
-        self.in_fn(i.sig.ident.to_string(), &i.attrs, |s| {
-            visit::visit_impl_item_fn(s, i)
-        });
+        let body = &i.block;
+        self.in_fn(
+            i.sig.ident.to_string(),
+            &i.attrs,
+            quote::quote!(#body),
+            |s| visit::visit_impl_item_fn(s, i),
+        );
     }
 
     fn visit_trait_item_fn(&mut self, i: &'ast syn::TraitItemFn) {
-        self.in_fn(i.sig.ident.to_string(), &i.attrs, |s| {
-            visit::visit_trait_item_fn(s, i)
-        });
+        let body = &i.default;
+        self.in_fn(
+            i.sig.ident.to_string(),
+            &i.attrs,
+            quote::quote!(#body),
+            |s| visit::visit_trait_item_fn(s, i),
+        );
     }
 
     fn visit_item_mod(&mut self, i: &'ast syn::ItemMod) {
@@ -344,7 +405,26 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
             efficiency::check_call(self, i);
             security::check_call(self, i);
         }
-        visit::visit_expr_call(self, i);
+        // A test helper named for marion's binary (`marion(&home, &["login", …])`), or marion's
+        // own command-line table (`cli::verb("login")`).
+        let marion = matches!(&*i.func, syn::Expr::Path(p) if {
+            let segs: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            segs.first().is_some_and(|f| f == "cli")
+                || segs.last().is_some_and(|n| n == "marion" || n.starts_with("marion_"))
+        });
+        self.visit_expr(&i.func);
+        self.marion_argv += usize::from(marion);
+        for arg in &i.args {
+            self.visit_expr(arg);
+        }
+        self.marion_argv -= usize::from(marion);
+    }
+
+    fn visit_field_value(&mut self, i: &'ast syn::FieldValue) {
+        let hint = matches!(&i.member, syn::Member::Named(n) if n.to_string().ends_with("_hint"));
+        self.hint_depth += usize::from(hint);
+        visit::visit_field_value(self, i);
+        self.hint_depth -= usize::from(hint);
     }
 
     fn visit_local(&mut self, i: &'ast syn::Local) {
@@ -375,12 +455,17 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
             generality::check_method(self, i);
         }
         const EXPECTATION: &[&str] = &["contains", "starts_with", "ends_with", "eq", "ne"];
-        let expectation = EXPECTATION.contains(&i.method.to_string().as_str());
+        let method = i.method.to_string();
+        let expectation = EXPECTATION.contains(&method.as_str());
+        let marion = matches!(method.as_str(), "arg" | "args")
+            && self.fns.last().is_some_and(|f| f.runs_marion);
         self.visit_expr(&i.receiver);
         self.assert_depth += usize::from(expectation);
+        self.marion_argv += usize::from(marion);
         for arg in &i.args {
             self.visit_expr(arg);
         }
+        self.marion_argv -= usize::from(marion);
         self.assert_depth -= usize::from(expectation);
     }
 

@@ -8,29 +8,16 @@
 crates/marion-harness/src/acp.rs:AcpAdapter::config_files  safe: `api_key` is a field init inside the opencode config document, written 0600 by run::write_config_documents
 crates/marion-harness/src/goose.rs:GooseAdapter::fields  safe: `token` is a whitespace-split argv word in an error message, not a credential
 crates/marion-supervisor/src/root.rs:record_the_roots_change  safe: writes root-change.json (file counts only, no credential); root.rs is marked only because it asks for launch_documents
-crates/marion-supervisor/tests/endpoint_matrix.rs:a_provider_with_no_stored_key_is_refused_by_name_with_the_login_command  safe: "marion login …" is the expected refusal text, never run
-crates/marion-supervisor/tests/login.rs:a_custom_provider_is_added_listed_and_can_hold_a_key  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
-crates/marion-supervisor/tests/login.rs:a_key_piped_with_stdin_is_stored_in_the_file_backend_and_never_printed  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
-crates/marion-supervisor/tests/login.rs:a_repositorys_own_providers_toml_is_never_read  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
-crates/marion-supervisor/tests/login.rs:an_unknown_provider_is_refused_by_name_with_the_command_to_define_it  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
-crates/marion-supervisor/tests/login.rs:from_env_imports_the_providers_own_variable_with_explicit_consent  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
-crates/marion-supervisor/tests/login.rs:list_shows_every_provider_and_which_are_stored_but_never_the_key  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
-crates/marion-supervisor/tests/login.rs:several_labelled_keys_for_one_provider_are_stored_listed_and_removed_one_by_one  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
-crates/marion-supervisor/tests/login.rs:without_a_terminal_and_without_a_flag_login_refuses_and_waits_for_nothing  safe: marion's own `marion login` refusing without a terminal; nothing is stored or started
 
 # --- verified safe: login-p3 (2026-09-27) ---
 crates/marion-core/src/contract.rs:CredentialFailover  from/to are credential ids (`provider:label`), never keys; the contract records which credential ran, by id
 crates/marion-supervisor/src/provider_check.rs:CredentialRow  `id` is a credential id (`provider:label`); the row never holds the key, which goes to curl on stdin only
 crates/marion-harness/src/spec.rs:KeyRecipe  `note` is the row's measurement prose; the recipe names header spellings, never a key
 crates/marion-harness/src/adapter.rs:render_row  formats the header's *name* ("Authorization: Bearer" / "x-api-key") into a refusal; no key is in scope
-crates/marion-supervisor/src/bin/marion.rs:tests::the_login_help_names_login_and_logout  asserts the help text names `marion login --list`; runs nothing
 
-# --- verified safe: profiles (2026-09-27) ---
-crates/marion-harness/src/profile.rs:tests::CARRIER  a fixture carrier's `login_hint`, the words `marion profile add` prints for the operator; nothing runs it
 
 # --- verified safe: home-polish (2026-09-27) ---
 crates/marion-supervisor/src/bin/marion.rs:tests::every_home_effect_parses_back_to_itself  parses the home screen's `marion login <id>` / `marion logout <id>` echoes back through the argument parser; runs nothing
-crates/marion-supervisor/tests/home_e2e.rs:store_fake_key  safe: marion's own `marion login --stdin` into the test's scratch file store with a fixture key; no vendor login
 crates/marion-tui/src/home/help.rs:KeyRow  `key` is a keyboard key on the `?` page ("enter", "^c"), not a credential
 crates/marion-tui/src/home/keys.rs:Key  `Paste` is text the operator pasted into the prompt box; Key is never logged or written, only matched
 crates/marion-tui/src/home/watch.rs:TokenView  `window` is the sparkline's unit ("turn"); token counts only, never a credential

@@ -19,7 +19,8 @@
 //! - `token-carrier`: a harness row (`HarnessSpec { … }`) whose MCP route rides argv in some auth
 //!   mode, or an ACP row (`Agent { … }`) declaring on argv, without a token carrier that withholds
 //!   the node token from that declaration — so the token would be embedded in an argv string.
-//! - `test-login`: test code spells a login command or device flow.
+//! - `test-login`: test code spells a login command or device flow. marion's own `login`,
+//!   `logout` and `key` verbs, run through its own binary, are not one.
 
 use proc_macro2::{TokenStream, TokenTree};
 use syn::spanned::Spanned;
@@ -137,6 +138,18 @@ fn is_login_literal(v: &str) -> bool {
     TOKENS.contains(&t) || (command_like && words.iter().any(|w| TOKENS.contains(w)))
 }
 
+/// marion's own verbs that store or remove a provider key the operator gives it (`marion login`,
+/// `logout`, `key`) — never a harness's login. A test runs them against its scratch store.
+const MARION_KEY_VERBS: &[&str] = &["login", "logout", "key"];
+
+/// `v` is marion's own verb: a command line that starts with `marion`, or — in marion's argv
+/// ([`Scanner::marion_argv`]) — one of [`MARION_KEY_VERBS`] alone.
+fn is_marions_own_verb(v: &str, in_marion_argv: bool) -> bool {
+    let t = v.trim();
+    t.split_whitespace().next() == Some("marion")
+        || (in_marion_argv && MARION_KEY_VERBS.contains(&t))
+}
+
 pub fn is_secret_ident(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     SECRET_IDENTS.contains(&n.as_str()) || SECRET_SUFFIXES.iter().any(|s| n.ends_with(s))
@@ -222,13 +235,8 @@ fn check_fields(
 
 pub fn check_struct(s: &mut Scanner, i: &syn::ItemStruct) {
     let name = i.ident.to_string();
-    check_fields(
-        s,
-        &name,
-        &i.fields,
-        is_secret_type_name(&name),
-        derives_debug(&i.attrs),
-    );
+    let secret = is_secret_type_name(&name);
+    check_fields(s, &name, &i.fields, secret, derives_debug(&i.attrs));
 }
 
 /// Variants are judged by the enum's name and their fields' names only: a variant name such as
@@ -708,11 +716,11 @@ pub fn end_of_fn(s: &mut Scanner, frame: &FnFrame) {
 }
 
 pub fn check_test_literal(s: &mut Scanner, l: &syn::LitStr) {
-    if s.assert_depth > 0 {
+    if s.assert_depth > 0 || s.hint_depth > 0 {
         return;
     }
     let v = l.value();
-    if is_login_literal(&v) {
+    if is_login_literal(&v) && !is_marions_own_verb(&v, s.marion_argv > 0) {
         s.emit(
             Axis::Security,
             "test-login",

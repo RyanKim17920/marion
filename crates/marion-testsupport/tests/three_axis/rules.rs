@@ -15,10 +15,14 @@ fn vocab() -> Vocabulary {
 }
 
 fn scan_with(src: &str, test_file: bool, row_file: bool) -> Vec<(Axis, &'static str)> {
+    scan_at("x.rs", src, test_file, row_file)
+}
+
+fn scan_at(rel: &str, src: &str, test_file: bool, row_file: bool) -> Vec<(Axis, &'static str)> {
     let ast = syn::parse_file(src).expect("snippet parses");
     let secret_docs = crate::security::writes_secret_docs(&ast);
     let source = Source {
-        rel: "x.rs".to_string(),
+        rel: rel.to_string(),
         ast,
         test_file,
     };
@@ -378,4 +382,34 @@ fn tests_never_spell_a_login_flow() {
     assert!(t(r#"fn t() { skip("runs on the operator's own login (spends quota)"); }"#).is_empty());
     // Production code naming a login is not a test starting one.
     assert!(rules(r#"fn f() { hint("run `codex login`"); }"#).is_empty());
+}
+
+/// **marion's own `login`, `logout` and `key`, run through its own binary, are not a harness
+/// login** — and a harness's still is, wherever it appears.
+#[test]
+fn marions_own_key_verbs_are_not_a_harness_login_but_a_harness_login_still_is() {
+    let t = |src: &str| scan_with(src, true, false);
+    let login = (Axis::Security, "test-login");
+    // A helper named for marion's binary, and marion's own command-line table.
+    assert!(t(r#"fn t() { marion(&home, &["login", "openai", "--stdin"]); }"#).is_empty());
+    assert!(t(r#"fn t() { marion_in(&home, &repo, &["logout", "groq"]); }"#).is_empty());
+    assert!(t(r#"fn t() { let h = cli::verb("login"); }"#).is_empty());
+    // A function spawning marion's binary and nothing else.
+    assert!(
+        t(r#"fn t() { let mut c = Command::new(env!("CARGO_BIN_EXE_marion")); c.args(["login", "x"]); }"#)
+            .is_empty()
+    );
+    // A command line starting with `marion`, and a field of words printed for the operator.
+    assert!(t(r#"fn t() { refused(&["marion login canned-nokey"]); }"#).is_empty());
+    assert!(t(r#"fn t() { let c = Carrier { login_hint: "login" }; }"#).is_empty());
+
+    // A harness's login is flagged: on its own binary, beside marion's, or spelled in full.
+    assert!(t(r#"fn t() { Command::new("claude").arg("login"); }"#).contains(&login));
+    assert!(
+        t(r#"fn t() { let m = Command::new(env!("CARGO_BIN_EXE_marion")); Command::new("claude").arg("login"); }"#)
+            .contains(&login),
+        "a function that also spawns another program is not marion's argv"
+    );
+    assert!(t(r#"fn t() { marion(&home, &["claude login"]); }"#).contains(&login));
+    assert!(t(r#"fn t() { run("codex login"); }"#).contains(&login));
 }
