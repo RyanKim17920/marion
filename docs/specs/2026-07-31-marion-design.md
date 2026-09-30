@@ -94,6 +94,11 @@ independently find the supervisor its parent bound.
 **Client→supervisor notifications:** `node/pty-write { agent_id, bytes }`, `node/resize { agent_id,
 cols, rows }`.
 
+*(2026-09-30: `node/pty-write` and `node/pty` are retired. The display plane is negotiated on
+`node/attach` as pane-stream v1: keystrokes are `node/pane-write` with opaque bytes, and the pty's
+bytes arrive as dense `node/pane-frame` records after a `node/pane-ready` handshake. An attach
+without the capability is the event stream alone.)*
+
 These are **notifications, not methods**, and the method list above stays at fifteen. M3's display
 plane needs a route from an operator's keyboard to a node's pty master, and §5.2 already names the
 two operations it needs — `DisplayPlane::write_keys` and `DisplayPlane::resize` — as *plane*
@@ -402,6 +407,8 @@ branch code on `ExecutionSurfaces`.
 > The wire consequence is [`marion_core::proto::Event::NodePty`], a **separate** notification from
 > `node/event`, carrying `agent_id`, its own dense `seq`, `mono_ns` and the bytes as a JSON string.
 > Pinned by `marion_supervisor::pty::tests::no_pty_byte_reaches_events_jsonl`.
+> *(2026-09-30: that notification is retired; the separate stream is now pane-stream v1's
+> byte-exact `node/pane-frame` — see §2.)*
 
 - `shared` → typed `ControlPlane` + `DisplayPlane`.
 - `headless` → typed `ControlPlane`, **no** `DisplayPlane` (it runs over pipes, §6.4).
@@ -1152,7 +1159,8 @@ deferred.
 > **The master lives in the supervisor, not in a client.** A pty master *is* the terminal: close it
 > and the kernel SIGHUPs the child's foreground process group, so a client that held one would kill
 > every agent in a pane by crashing — §7.3.1's invariant, regressed exactly at the surface M3 adds.
-> A client is a listener on `node/pty` and can be dropped without the fd noticing. Supervisor
+> A client is a listener on the pane stream (`node/pty` until 2026-09-30, `node/pane-frame` since)
+> and can be dropped without the fd noticing. Supervisor
 > shutdown therefore **kills and reaps before closing any master**, which is a truthfulness
 > requirement: the other order writes "the terminal hung up" into the record of every live pty node
 > when the truth is that marion decided to stop.

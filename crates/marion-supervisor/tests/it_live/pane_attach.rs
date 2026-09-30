@@ -17,9 +17,9 @@
 //!   The node's `pty.cast` proves claude wrote something; only the operator's master proves marion
 //!   emulated it and painted it back out. Those are different failures and one of them is
 //!   `marion attach` rendering a blank screen for ever.
-//! * **a keystroke arriving** — asserted at the far end, in the node's `pty.cast` `i` record. A
-//!   `node/pty-write` that the supervisor accepted and never wrote to the master would satisfy any
-//!   assertion made on the client side.
+//! * **a keystroke arriving** — asserted at the far end, not on the client. A `node/pane-write`
+//!   that the supervisor accepted and never wrote to the master would satisfy any assertion made
+//!   on the client side.
 //! * **a resize taking effect** — asserted as an `r` record carrying the operator's geometry. Not
 //!   the client's local grid: §5.3 gives the node one writer and the geometry is part of what that
 //!   means, so the thing being tested is that `TIOCSWINSZ` reached the one master.
@@ -439,8 +439,8 @@ fn script() -> Script {
 ///
 /// * `root::launch_terminal`: skip `owner.opened(...)`. The attach is refused for having no display
 ///   plane and the operator's screen carries marion's own refusal instead of claude's TUI.
-/// * `handler::deliver_input`, `Input::NodePtyWrite` arm: drop the write. The `i` record never
-///   appears.
+/// * `handler::deliver_input`, `Input::NodePaneWrite` arm: drop the write. The keystroke never
+///   reaches the node.
 /// * `handler::deliver_input`, `Input::NodeResize` arm: drop the resize. No `r` record carries the
 ///   operator's geometry.
 /// * `attach::Session::start_keyboard`, `Action::Detach`: fall through to `Forward` instead of
@@ -767,7 +767,7 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
     assert!(
         until(|| again.screen().contains(SECOND_MARK)),
         "after the first client detached, a second one could not drive the node. What is asserted \
-         is the *echo*, not the write: a `node/pty-write` lands an `i` record in the recording \
+         is the *echo*, not the write: a `node/pane-write` lands input evidence in the recording \
          whether or not anything is alive on the other end of the master, so a marker that comes \
          back **through the harness's own composer** is the only form of this assertion that a \
          dead node fails. What the second operator saw:\n{}",

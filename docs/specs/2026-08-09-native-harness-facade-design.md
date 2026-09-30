@@ -334,7 +334,8 @@ Exact bytes are additive and negotiated:
 
 - pane attach advertises `exact_pty_bytes`;
 - `NodePty` and `NodePtyWrite` retain legacy UTF-8 text and gain optional base64 exact
-  data;
+  data *(2026-09-30: both are retired; pane-stream v1's `node/pane-frame` and
+  `node/pane-write` are the only pane wire)*;
 - valid UTF-8 stays compact; invalid segments include the legacy lossy fallback plus
   exact bytes for negotiated raw clients;
 - malformed base64 or conflicting representations are named protocol errors;

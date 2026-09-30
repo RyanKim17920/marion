@@ -688,8 +688,8 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
         );
         assert!(
             cast_text(&node_cast, "i").is_empty(),
-            "[{harness}] the native node's recording carries an `i` record, so its input went \
-             through the legacy pane write rather than the opaque native path: {:?}",
+            "[{harness}] the native node's recording carries an `i` record, so its input was \
+             recorded as text rather than through the opaque native path: {:?}",
             cast_text(&node_cast, "i")
         );
 

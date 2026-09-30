@@ -2668,8 +2668,8 @@ impl PtyHost {
     ) -> io::Result<Self> {
         let cast = CastWriter::create(cast_path, size, term, origin)?;
         // The binary stream is an authoritative enhancement, not the compatibility launch gate.
-        // A secure-path or entropy failure leaves the legacy host usable, but opaque input and
-        // completed replay fail closed through the retained `Unavailable` state.
+        // A secure-path or entropy failure leaves the host running and its cast recording, but
+        // opaque input and completed replay fail closed through the retained `Unavailable` state.
         let durable = match stream::SessionWriter::create(cast_path, &agent_id, size) {
             Ok(writer) => DurableRecorder::available(writer),
             Err(error) => DurableRecorder::unavailable(error),

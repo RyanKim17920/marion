@@ -596,7 +596,8 @@ be lost or duplicated.
 
 The initial implementation carries bytes through a base64 `WireBytes` newtype in the existing
 newline-framed JSON connection. Legacy UTF-8 `node/pty` remains legacy; the server does not send
-binary frames to a client that did not negotiate `binary-v1`. A dedicated authenticated Unix pane
+binary frames to a client that did not negotiate `binary-v1`. *(2026-09-30: the legacy `node/pty`
+stream is retired; a client that does not negotiate the pane stream gets no pane frames at all.)* A dedicated authenticated Unix pane
 socket is a later transport optimization behind the same cursor if measurements justify it. The
 PTY master itself is never transferred or duplicated between readers.
 

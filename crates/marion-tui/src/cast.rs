@@ -78,7 +78,7 @@ impl Cast {
     /// **A trailing partial line is dropped, not an error.** The supervisor appends to this file
     /// while the client reads it, so reading it at any instant can catch a half-written record;
     /// that is the normal case, not corruption. Dropping it costs one record of replay, and the
-    /// live `node/pty` stream carries the same bytes anyway.
+    /// live `node/pane-frame` stream carries the same bytes anyway.
     pub fn parse(text: &str) -> Result<Self, CastError> {
         let mut lines = text.lines();
         // The header must be a JSON *object*. A `.cast` whose first line is a record array is a
