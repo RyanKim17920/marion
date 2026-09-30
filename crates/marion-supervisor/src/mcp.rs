@@ -1479,7 +1479,7 @@ const WAIT_GRACE: Duration = Duration::from_secs(120);
 /// value and `run::effective_timeout`'s clamp — so marion cannot hold a caller for a period it
 /// never agreed to run the node for, in either direction. Saturating, because the clamp caps the
 /// request but the sum with the grace must still be a duration that exists.
-fn wait_bound(timeout_secs: Option<u64>) -> Duration {
+pub fn wait_bound(timeout_secs: Option<u64>) -> Duration {
     run::effective_timeout(timeout_secs.unwrap_or(crate::handler::DEFAULT_SPAWN_TIMEOUT_SECS))
         .saturating_add(WAIT_GRACE)
 }

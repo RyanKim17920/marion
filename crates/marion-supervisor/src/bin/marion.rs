@@ -32,6 +32,8 @@ use cli::{Backend, Exit, Place, Word, Words};
 
 #[path = "marion/cli.rs"]
 mod cli;
+#[path = "marion/race.rs"]
+mod race;
 
 /// The tool names `marion mcp` declares in `tools/list`, read off the answer it gives so `--help`
 /// cannot drift from it.

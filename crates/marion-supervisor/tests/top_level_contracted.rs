@@ -481,3 +481,48 @@ fn marion_mcp_spawns_a_writer_into_a_worktree_and_races_contracted_seats() {
     let left = marion_testsupport::sweep(&bed.state.to_string_lossy());
     assert!(left.is_empty(), "processes outlived the bed: {left:?}");
 }
+
+/// **`marion race` from a terminal**: the seats are the operator's contracted nodes, the scoreboard
+/// is on stdout, the winner's branch is named, and the command exits 0 because a seat passed.
+#[test]
+fn marion_race_runs_the_seats_and_prints_the_scoreboard() {
+    let Some(bed) = bed("top-race-cli", false) else {
+        return;
+    };
+    let out = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args(["race", "--prompt"])
+        .arg("Create the file the task needs at the repository root, then report.")
+        .arg("--on")
+        .arg(MODELS.map(|m| format!("claude:{m}")).join(","))
+        .args(["--verify", &format!("test -f {DONE_FILE}")])
+        .args([
+            "--timeout",
+            "120",
+            "--canned",
+            "--base-url",
+            &bed.server.base_url(),
+        ])
+        .arg("--repo")
+        .arg(&bed.repo)
+        .arg("--state-dir")
+        .arg(&bed.state)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the marion binary runs");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    // The supervisor the command started outlives it by its idle grace; the bed ends it.
+    marion_testsupport::sweep(&bed.state.to_string_lossy());
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("decided by: verification") && stdout.contains(MODELS[1]),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("seat 2 won") && stderr.contains("marion/"),
+        "{stderr}"
+    );
+    assert!(!bed.repo.join(DONE_FILE).exists());
+}

@@ -199,8 +199,18 @@ the winner's contract with a scoreboard of every seat, and every seat keeps its 
 race nobody won keeps them all). `race: {"first": true}` takes the first seat to pass and stops
 the rest, recorded as cancelled; so does a race whose requester ends. With
 `background: true` the handle is the race's id; `wait` returns the same answer and `status` lists
-the seats. The scoreboard is also kept in the project state as `races/<race_id>.json`. A race
-costs every seat's tokens.
+the seats, and the node is told the decision as its next turn once it is made. The scoreboard is
+also kept in the project state as `races/<race_id>.json`. A race costs every seat's tokens.
+
+From a terminal, `marion race` runs the same race with you as the requester: each seat is a
+top-level agent in its own worktree, and the scoreboard is printed when it is decided.
+
+```sh
+marion race --prompt "make the failing test pass" --on claude:sonnet,codex \
+  --verify "cargo test" [--first] [--prune] [--detach]
+```
+
+It exits 1 when no seat passes. A `spawn` with `candidates` from `marion mcp` races the same way.
 
 ## Sharing a run
 

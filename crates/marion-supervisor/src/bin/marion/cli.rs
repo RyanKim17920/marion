@@ -54,6 +54,13 @@ pub const VERBS: &[Verb] = &[
         main: super::ls_main,
     },
     Verb {
+        name: "race",
+        aliases: &[],
+        summary: Some("run one task on several agents and keep the one that passes"),
+        help: race_help,
+        main: super::race::main,
+    },
+    Verb {
         name: "attach",
         aliases: &[],
         summary: Some("open an agent's terminal"),
@@ -428,6 +435,31 @@ fn run_help() -> String {
          An agent uses the login you already have for its harness and makes real model calls\n\
          that cost real money. marion never logs in to a harness for you.",
         types = wrapped(builtin_names(), "  ", 90),
+    )
+}
+
+fn race_help() -> String {
+    format!(
+        "usage: marion race --prompt <text> --on <seats> --verify <command> [options]\n\
+         \n\
+         Run one task once per seat, each in its own worktree on its own marion/ branch, check\n\
+         each seat's work with the same --verify commands, and keep the seat that passes. The\n\
+         scoreboard goes to stdout; the winner's branch is the one to merge. Every seat is a\n\
+         real agent making real model calls, so a race of three costs about three runs.\n\
+         \n\
+         \x20 --prompt <text>      the task (required)\n\
+         \x20 --on <seats>         the seats, comma-separated, each `type` or `type:model`, e.g.\n\
+         \x20                      `claude,codex:gpt-5` (at least two; repeatable)\n\
+         \x20 --verify <command>   a check run in each seat's worktree; exit 0 passes (required;\n\
+         \x20                      repeatable)\n\
+         \x20 --first              take the first seat that passes and stop the others\n\
+         \x20 --prune              delete the losers' branches once a winner is decided\n\
+         \x20 --timeout <secs>     stop each seat after this many seconds (default: its type's)\n\
+         \x20 --detach             start the race and return; `marion ls` watches it\n\
+         {PLACE_HELP}\n\
+         \n\
+         Ties go to fewer tokens, then less time, then the lower seat. It exits 1 when no seat\n\
+         passes, and keeps every branch."
     )
 }
 

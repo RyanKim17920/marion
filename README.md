@@ -96,6 +96,7 @@ marion                        # the home screen: Start a task, Watch the tree, S
 marion run codex --prompt "…" --detach
 marion ls                     # watch it
 marion steer <id> "use the v2 API, not v1"
+marion race --prompt "…" --on claude,codex --verify "cargo test"  # keep the seat that passes
 marion export <id> -o run.html  # a shareable, secret-scrubbed report of a node and its subtree
 ```
 
