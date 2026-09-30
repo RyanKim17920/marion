@@ -584,7 +584,8 @@ fn hints(tab: &str) -> Vec<Hint> {
             ("enter", "run"),
             ("↑↓", "harness"),
             ("←→", "model"),
-            ("^o", "read-only"),
+            ("^o", "type"),
+            ("^p", "pane"),
             ("tab", "screens"),
         ]),
         "watch" => h(&[

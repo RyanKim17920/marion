@@ -15,8 +15,8 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
 
-  TYPE      claude edits in a worktree   claude-orchestrator read-only, deleg…
-  MODEL     default   opus   sonnet
+  TYPE      ▸claude edits in a worktree   claude-orchestrator read-only, dele…
+  MODEL     default   ▸opus   sonnet
   OPTIONS   timeout 20m · change record on
 
 
@@ -26,14 +26,14 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and  │
  │   cover it with tests▏                                                     │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens       F1 help
+  enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens  F1 help
 --- styles ---
   110  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSe"
-  519  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+   41  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSe"
+  518  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
-   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
+   19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
     3  Style::new().green().bg(Color::Reset)  "●●●"
    21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
    16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"
@@ -51,8 +51,8 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
 
-  TYPE      claude edits in a worktree   claude-orchestrator read-only, delegates
-  MODEL     default   opus   sonnet
+  TYPE      ▸claude edits in a worktree   claude-orchestrator read-only, delegates
+  MODEL     default   ▸opus   sonnet
   OPTIONS   timeout 20m · change record on
 
   ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -68,14 +68,14 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and cover it with tests▏ │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                           F1 help
+  enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                      F1 help
 --- styles ---
   159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
   890  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
-   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
+   19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"
    28  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350✗fa"
    16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"
@@ -93,8 +93,8 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
 
-  TYPE      claude edits in a worktree   claude-orchestrator read-only, delegates
-  MODEL     default   opus   sonnet
+  TYPE      ▸claude edits in a worktree   claude-orchestrator read-only, delegates
+  MODEL     default   ▸opus   sonnet
   OPTIONS   timeout 20m · change record on
 
   ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -130,14 +130,14 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and cover it with tests▏                                                             │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                                                                                       F1 help
+  enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                                                                                  F1 help
 --- styles ---
   159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
  1162  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
-   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
+   19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"
    28  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350✗fa"
    16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"

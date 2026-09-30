@@ -244,10 +244,12 @@ fn choices<'a>(
         if i > 0 {
             l.push(Span::raw("   "));
         }
-        l.push(span(
-            v.clone(),
-            if i == chosen { theme.key() } else { dim() },
-        ));
+        // The chosen one is marked in text too, not by colour alone (NO_COLOR, a light theme).
+        l.push(if i == chosen {
+            span(format!("▸{v}"), theme.key())
+        } else {
+            span(v.clone(), dim())
+        });
         if !phrase.is_empty() {
             l.push(span(format!(" {phrase}"), dim()));
         }

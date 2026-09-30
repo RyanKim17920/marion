@@ -9,7 +9,7 @@ expression: screen
   j/k    move                            enter  run
   enter  its stream full-screen; a pan…  ↑↓     harness
   esc    back from the stream            ←→     model
-  s      steer                           ^o     read-only flavour
+  s      steer                           ^o     next agent type
   x      cancel, asks first              ^p     headless or pane
   u      resume an ended node            esc    clear the prompt
   o      shell in its workspace          SETUP

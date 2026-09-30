@@ -829,7 +829,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("enter", "run", "marion run <type> --prompt <text> --detach"),
             ("↑↓", "harness", ""),
             ("←→", "model", ""),
-            ("^o", "read-only flavour", ""),
+            ("^o", "next agent type", ""),
             ("^p", "headless or pane", "--pane"),
             ("esc", "clear the prompt", ""),
         ],
@@ -925,7 +925,8 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("enter", "run"),
             ("↑↓", "harness"),
             ("←→", "model"),
-            ("^o", "read-only"),
+            ("^o", "type"),
+            ("^p", "pane"),
             ("tab", "screens"),
         ]),
         (_, Tab::Watch) if home.watch.full_stream => h(&[
