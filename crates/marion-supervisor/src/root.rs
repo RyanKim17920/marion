@@ -1462,7 +1462,7 @@ fn launch_inner(
     // headless root while a child of the same binary showed a measured version. Probed before
     // the launch, where the version of the process about to run can still be asked of the same
     // resolved program, and at the cost `run.rs` states: [`crate::run::harness_version`]'s bound
-    // sits on the pre-launch path, inside `handler.rs`'s `LAUNCH_BOUND`.
+    // sits on the pre-launch path, inside `handler/launch.rs`'s `LAUNCH_BOUND`.
     let harness_version = crate::run::harness_version(&node.invocation.program, node.harness);
     // **§7.3.3's replay leg for a root**, alongside the journal's record of the same run and for the
     // complementary reason: the journal says a root existed and how it ended, this says what it
