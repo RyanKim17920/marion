@@ -824,6 +824,27 @@ const MIN_HISTORY: usize = 20;
 /// cadence the second submission lands in a composer the first has not left.
 const STATUS_SETTLE: Duration = Duration::from_millis(1200);
 
+/// The pause between typing a slash command and the `Enter` that submits it, as a person's is.
+/// Measured on codex 0.159.2 (2026-09-30): `/status\r` in one write is read as a paste burst, and
+/// its `\r` becomes a newline in the composer — twelve of them stacked up unsent.
+const KEY_GAP: Duration = Duration::from_millis(300);
+
+/// What codex's opening turn shows once it has run: the canned child's own report.
+const CODEX_TURN_DONE: &str = "Added the M1 marker file";
+
+/// Whether the node's TUI is in the **alternate screen** at the end of its recording — a
+/// full-screen app, whose transcript lives in its own screen and never reaches the main screen's
+/// history. Measured 2026-09-30: codex 0.159.2 enters it at boot (`CSI ?1049h`, with mouse
+/// tracking) and stays; 0.155.1 and every release before it that §5.3 measured drew inline.
+fn full_screen(cast: &Path) -> bool {
+    let out = cast_text(cast, "o");
+    match (out.rfind("\u{1b}[?1049h"), out.rfind("\u{1b}[?1049l")) {
+        (Some(on), Some(off)) => on > off,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 /// **§9's M3 criterion C2, end to end: a real `codex` TUI in a pane marion owns, and the
 /// scrollback it accumulated is still there after a resize.**
 ///
@@ -960,12 +981,75 @@ fn a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane() {
     // Codex queues a `\r` typed while a turn is in flight rather than submitting it, so the turn
     // the argv prompt started is waited out first — `esc to interrupt` is codex's own word for
     // "working", and its disappearance is the harness saying it is ready for input.
+    // **The operator answers codex's folder-trust dialog, as the person at this pane would.** A
+    // fresh `CODEX_HOME` opens on it in a directory codex has not been told to trust, and this
+    // root runs in the operator's own repository, where marion answers nothing: trusting it lets
+    // folder settings run code, which is theirs to decide, so marion holds the node on it (its
+    // attention item names the dialog). Recognised by the row's own needles, so a reworded
+    // release is recognised where marion recognises it. Measured 2026-09-30: without this,
+    // codex 0.159.2 waits on the dialog for the node's whole wall clock and the argv prompt is
+    // never submitted; 0.155.1 passed only because the first typed `/status\r` pressed Enter on
+    // it.
+    let trust_dialog = || {
+        let screen = op.screen().split_whitespace().collect::<Vec<_>>().join(" ");
+        marion_harness::codex::SPEC
+            .boot_dialogs
+            .dialogs
+            .iter()
+            .any(|d| screen.contains(d.needle))
+    };
     assert!(
-        until(|| !op.screen().contains("esc to interrupt")),
+        until(|| trust_dialog() || op.screen().contains(CODEX_TURN_DONE)),
+        "codex showed neither its folder-trust dialog nor its opening turn's end. What the \
+         operator saw:\n{}",
+        op.screen()
+    );
+    if trust_dialog() {
+        op.type_in(b"\r");
+    }
+
+    // The turn has to have *run* before its absence of `esc to interrupt` means anything: the
+    // composer is on screen, empty of that word, before the argv prompt's turn has started.
+    assert!(
+        until(|| {
+            let screen = op.screen();
+            screen.contains(CODEX_TURN_DONE) && !screen.contains("esc to interrupt")
+        }),
         "codex's opening turn never settled, so nothing typed into the composer would be \
          submitted. What the operator saw:\n{}",
         op.screen()
     );
+
+    // **A codex that runs full-screen has no scrollback for C2 to keep**, and says so here rather
+    // than failing guard 1 for a reason that is not marion's. What a full-screen pane owes the
+    // operator across a resize is its redrawn screen, at the new size: asserted, then done.
+    if full_screen(&node_cast) {
+        eprintln!(
+            "C2: this codex draws full-screen (CSI ?1049h and stays), so it keeps no main-screen \
+             history and the scrollback half of C2 is not exercised by it; asserting the resized \
+             pane redraws instead"
+        );
+        let want = CODEX_RESIZED.as_cast();
+        op.resize_window(CODEX_RESIZED);
+        assert!(
+            until(|| cast_records(&node_cast)
+                .iter()
+                .any(|(c, d)| c == "r" && *d == want)),
+            "the codex node's pty was never resized to {want}. Its recorded geometries were {:?}",
+            geometries(&node_cast)
+        );
+        assert!(
+            until(|| {
+                let screen = op.screen();
+                screen.contains(CODEX_TURN_DONE) && screen.contains(CODEX_MARK)
+            }),
+            "after the resize the operator's screen no longer shows codex's transcript. What the \
+             operator saw:\n{}",
+            op.screen()
+        );
+        drop(op);
+        return;
+    }
     let mut sent = 0usize;
     assert!(
         until(|| {
@@ -973,7 +1057,9 @@ fn a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane() {
                 return true;
             }
             if sent < STATUS_SENDS {
-                op.type_in(b"/status\r");
+                op.type_in(b"/status");
+                std::thread::sleep(KEY_GAP);
+                op.type_in(b"\r");
                 sent += 1;
                 std::thread::sleep(STATUS_SETTLE);
             }
