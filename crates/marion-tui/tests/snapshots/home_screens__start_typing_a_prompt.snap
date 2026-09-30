@@ -10,7 +10,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
 
 ❯ ● claude       2.1.268   ready
   ● codex        0.61.0    ready
-  ◐ gemini       0.9.1     sign-in needed
+  ◐ qwen         0.9.1     sign-in needed
   ● opencode     1.2.3     ready
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
@@ -28,7 +28,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens  F1 help
 --- styles ---
-  128  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+  126  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexqwenopencodecopilot"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
    23  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONS"
   518  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
@@ -46,7 +46,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
 
 ❯ ● claude       2.1.268   ready
   ● codex        0.61.0    ready
-  ◐ gemini       0.9.1     sign-in needed
+  ◐ qwen         0.9.1     sign-in needed
   ● opencode     1.2.3     ready
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
@@ -61,7 +61,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   14:24 ● claude opus      Add rate limiting to /v1/orders                                 running
   13:02 ✓ claude sonnet    Review the pagination PR for off-by-one errors                   landed
   11:47 ✓ codex default    Port the CSV exporter to streaming writes                        landed
-  10:15 ✗ gemini default   Summarise open TODOs in src/billing                              failed
+  10:15 ✗ qwen default     Summarise open TODOs in src/billing                              failed
 
   $ marion run claude --model opus --prompt "Add rate limiting to /v1/orders (token bucket, 100 …"
 
@@ -70,7 +70,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                      F1 help
 --- styles ---
-  177  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+  173  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexqwenopencodecopilot"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
    29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
   890  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
@@ -88,7 +88,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
 
 ❯ ● claude       2.1.268   ready
   ● codex        0.61.0    ready
-  ◐ gemini       0.9.1     sign-in needed
+  ◐ qwen         0.9.1     sign-in needed
   ● opencode     1.2.3     ready
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
@@ -103,7 +103,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   14:24 ● claude opus      Add rate limiting to /v1/orders                                                                                             running
   13:02 ✓ claude sonnet    Review the pagination PR for off-by-one errors                                                                               landed
   11:47 ✓ codex default    Port the CSV exporter to streaming writes                                                                                    landed
-  10:15 ✗ gemini default   Summarise open TODOs in src/billing                                                                                          failed
+  10:15 ✗ qwen default     Summarise open TODOs in src/billing                                                                                          failed
 
 
 
@@ -132,7 +132,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                                                                                  F1 help
 --- styles ---
-  177  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+  173  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexqwenopencodecopilot"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
    29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
  1162  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"

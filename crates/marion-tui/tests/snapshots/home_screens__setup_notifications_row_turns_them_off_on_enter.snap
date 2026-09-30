@@ -10,7 +10,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"notify\"), 100, 40)"
 
   ● claude       2.1.268   ready                       headless · pane · channel push
   ● codex        0.61.0    ready                       headless · pane · ACP
-  ◐ gemini       0.9.1     sign-in needed              headless · pane
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
   ● opencode     1.2.3     ready                       headless · pane · ACP
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
   ○ agy          —         not installed               —
@@ -19,7 +19,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"notify\"), 100, 40)"
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
 
   AGENT TYPES   7 · custom ones come from .marion/agents.toml
-  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
+  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
   API KEYS   3 keys
@@ -44,7 +44,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"notify\"), 100, 40)"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   tab back                                                                                 F1 help
 --- styles ---
-  176  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  172  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencodec"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionon"
    52  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
   838  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"

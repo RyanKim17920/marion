@@ -10,11 +10,11 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
 
   ● claude       2.1.268   ready                       headless · pane · channel push
   ● codex        0.61.0    ready                       headless · pane · ACP
-❯ ◐ gemini       0.9.1     sign-in needed              headless · pane
-    └ BINARY   /usr/local/bin/gemini
+❯ ◐ qwen         0.9.1     sign-in needed              headless · pane
+    └ BINARY   /usr/local/bin/qwen
       VERSION  0.9.1
       AUTH     not signed in
-      FIX      run gemini once and sign in
+      FIX      run qwen once and sign in
                marion uses your login, never its own
   ⠸ opencode     —         checking…                   headless · pane · ACP
   ⠼ copilot      —         checking…                   headless · ACP
@@ -24,7 +24,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
 
   AGENT TYPES   7 · custom ones come from .marion/agents.toml
-  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
+  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
   API KEYS   3 keys
@@ -34,11 +34,11 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter details · r re-check · e edit types · n new type · a add key            F1 help
 --- styles ---
-  195  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
-   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
+  191  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+   10  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionqwen"
    53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
   680  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠸⠼⠴reviewermigrator"
-   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯qwen❯"
     9  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓"
    17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"

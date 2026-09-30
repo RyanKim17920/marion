@@ -22,7 +22,7 @@ pub struct HarnessRow {
     pub note: String,
     /// The surfaces marion can drive it on, worded (`headless · pane · ACP`).
     pub surfaces: String,
-    /// What to do about it, with the command in backticks: ``run `gemini` once and sign in``.
+    /// What to do about it, with the command in backticks: ``run `qwen` once and sign in``.
     pub fix: Option<String>,
     /// Setup's detail rows, label then value: `binary`, `version`, `auth`.
     pub detail: Vec<(String, String)>,

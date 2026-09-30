@@ -78,12 +78,12 @@ fn harnesses() -> Vec<HarnessRow> {
             None,
         ),
         harness(
-            "gemini",
+            "qwen",
             Some("0.9.1"),
             Ready::Attention,
             "sign-in needed",
             "headless · pane",
-            Some("run `gemini` once and sign in"),
+            Some("run `qwen` once and sign in"),
         ),
         harness(
             "opencode",
@@ -150,7 +150,7 @@ fn start_view() -> StartView {
             RecentRow {
                 when: s("10:15"),
                 tone: Tone::Failed,
-                who: s("gemini default"),
+                who: s("qwen default"),
                 prompt: s("Summarise open TODOs in src/billing"),
                 outcome: s("failed"),
             },
@@ -434,7 +434,7 @@ fn setup_view(checking: bool) -> SetupView {
             t("claude", Ready::Ready, false),
             t("claude-orchestrator", Ready::Ready, false),
             t("codex", Ready::Ready, false),
-            t("gemini", Ready::Attention, false),
+            t("qwen", Ready::Attention, false),
             t("opencode", Ready::Ready, false),
             t("reviewer", Ready::Ready, true),
             t("migrator", Ready::Ready, true),
@@ -1210,7 +1210,7 @@ fn watch_confirm_open() {
 #[test]
 fn setup_expanded_harness() {
     let v = setup_view(false);
-    let input = command("gemini", "sign in, then r");
+    let input = command("qwen", "sign in, then r");
     insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "setup")));
 }
 

@@ -10,7 +10,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
 
   ● claude       2.1.268   ready
   ● codex        0.61.0    ready
-  ◐ gemini       0.9.1     sign-in needed
+  ◐ qwen         0.9.1     sign-in needed
   ● opencode     1.2.3     ready
 ❯ ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
     └ FIX  brew upgrade copilot-cli, then r to re-check
@@ -28,7 +28,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens  F1 help
 --- styles ---
-   67  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   65  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencode,"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
    26  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
   465  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
@@ -46,7 +46,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
 
   ● claude       2.1.268   ready
   ● codex        0.61.0    ready
-  ◐ gemini       0.9.1     sign-in needed
+  ◐ qwen         0.9.1     sign-in needed
   ● opencode     1.2.3     ready
 ❯ ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
     └ FIX  brew upgrade copilot-cli, then r to re-check
@@ -70,7 +70,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                      F1 help
 --- styles ---
-  103  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  101  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencode,"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
    32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
   783  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
@@ -88,7 +88,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
 
   ● claude       2.1.268   ready
   ● codex        0.61.0    ready
-  ◐ gemini       0.9.1     sign-in needed
+  ◐ qwen         0.9.1     sign-in needed
   ● opencode     1.2.3     ready
 ❯ ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
     └ FIX  brew upgrade copilot-cli, then r to re-check
@@ -104,7 +104,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
   14:24 ● claude opus      Add rate limiting to /v1/orders                                                                                             running
   13:02 ✓ claude sonnet    Review the pagination PR for off-by-one errors                                                                               landed
   11:47 ✓ codex default    Port the CSV exporter to streaming writes                                                                                    landed
-  10:15 ✗ gemini default   Summarise open TODOs in src/billing                                                                                          failed
+  10:15 ✗ qwen default     Summarise open TODOs in src/billing                                                                                          failed
 
 
 
@@ -132,7 +132,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                                                                                  F1 help
 --- styles ---
-  116  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  112  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencode,"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
    32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
  1059  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"

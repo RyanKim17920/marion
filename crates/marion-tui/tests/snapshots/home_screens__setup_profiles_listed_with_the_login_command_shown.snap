@@ -7,7 +7,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ──────────────────────────────────────────────────────────────────────────────
 
   AGENT TYPES   7 · custom ones come from .marion/agents.toml
-  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode
+  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode
   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
@@ -28,7 +28,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                            F1 help
 --- styles ---
-   85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeclaude-orchestrato"
+   83  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeclaude-orchestrato"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
    23  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTTYPESAPIKEYSLOGINS"
   543  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
@@ -41,7 +41,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  ◐ gemini       0.9.1     sign-in needed              headless · pane
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
   ● opencode     1.2.3     ready                       headless · pane · ACP
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
   ○ agy          —         not installed               —
@@ -50,7 +50,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
 
   AGENT TYPES   7 · custom ones come from .marion/agents.toml
-  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
+  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
   API KEYS   3 keys
@@ -69,7 +69,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                                                F1 help
 --- styles ---
-  164  Style::new().fg(Color::Reset).bg(Color::Reset)  "geminiopencodecopilotagy"
+  160  Style::new().fg(Color::Reset).bg(Color::Reset)  "qwenopencodecopilotagy~/"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
    30  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
   705  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
@@ -87,7 +87,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
 
   ● claude       2.1.268   ready                       headless · pane · channel push
   ● codex        0.61.0    ready                       headless · pane · ACP
-  ◐ gemini       0.9.1     sign-in needed              headless · pane
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
   ● opencode     1.2.3     ready                       headless · pane · ACP
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
   ○ agy          —         not installed               —
@@ -96,7 +96,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
 
   AGENT TYPES   7 · custom ones come from .marion/agents.toml
-  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
+  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
   API KEYS   3 keys
@@ -131,7 +131,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                                                                                                            F1 help
 --- styles ---
-  179  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  175  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencodec"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
    52  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
  1106  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"

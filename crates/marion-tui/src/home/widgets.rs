@@ -366,9 +366,9 @@ mod tests {
 
     #[test]
     fn code_spans_lift_the_command_out_of_the_sentence() {
-        let s = code_spans("run `gemini` once", Style::default(), Theme::TRUECOLOR);
+        let s = code_spans("run `qwen` once", Style::default(), Theme::TRUECOLOR);
         let text: Vec<_> = s.iter().map(|x| x.content.as_ref()).collect();
-        assert_eq!(text, ["run ", "gemini", " once"]);
+        assert_eq!(text, ["run ", "qwen", " once"]);
         assert_eq!(s[1].style, Theme::TRUECOLOR.key());
     }
 }
