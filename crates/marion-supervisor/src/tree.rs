@@ -663,19 +663,59 @@ pub fn snapshot(repo: &Path, state_dir: &Path) -> Result<Vec<NodeSummary>, Refus
 /// shape. The whole id, unlike the tree row's short one, because a list is what `marion attach`
 /// is copied from; the parent short, because it is only there to place the node.
 pub fn list_line(node: &NodeSummary) -> String {
-    let (state, reap) = (node.state, node.reap_state);
+    let what = attention_of(node).and(node.attention.as_deref());
+    line_of(
+        node.state,
+        node.reap_state,
+        &node.agent_type,
+        &node.agent_id,
+        node.parent_id.as_ref(),
+        what,
+    )
+}
+
+/// **A node on a retired harness as one `marion list` line**: [`list_line`]'s shape, from the
+/// journal's record of it, with `— retired harness (<name>)` where an attention reason would go —
+/// marion can no longer act on it, and says so rather than presenting a harness it cannot run.
+/// `None` for a node on a harness this build has.
+pub fn retired_line(node: &marion_core::registry::ReplayedNode) -> Option<String> {
+    let harness = node.recorded_harness().filter(|h| h.known().is_none())?;
+    // Nothing runs a retired harness, so a node its journal leaves live is an orphan, as
+    // [`stopped_with_its_supervisor`] reads any node nobody serves.
+    let reap = match node.reap_state {
+        ReapState::Live if !node.state.is_exited() => ReapState::Orphaned,
+        other => other,
+    };
+    Some(line_of(
+        node.state,
+        reap,
+        node.agent_type().unwrap_or_default(),
+        &node.agent_id,
+        node.parent_id(),
+        Some(&harness.cli_name()),
+    ))
+}
+
+/// The one spelling of a list line, whichever record it is read from.
+fn line_of(
+    state: NodeState,
+    reap: ReapState,
+    agent_type: &str,
+    id: &AgentId,
+    parent: Option<&AgentId>,
+    what: Option<&str>,
+) -> String {
     let mut line = format!(
-        "{} {} {} {}",
+        "{} {} {agent_type} {}",
         tone_of(state, reap).glyph(),
         state_label(state, reap),
-        node.agent_type,
-        node.agent_id.0
+        id.0
     );
-    if let Some(parent) = &node.parent_id {
+    if let Some(parent) = parent {
         line.push_str(" parent ");
         line.push_str(short_id(&parent.0));
     }
-    if let Some(what) = attention_of(node).and(node.attention.as_deref()) {
+    if let Some(what) = what {
         line.push_str(" — ");
         line.push_str(what);
     }
@@ -797,25 +837,56 @@ impl JournalView {
         &self,
         target: &str,
     ) -> Result<(NodeSummary, marion_core::proto::result::NodeDetail), Refusal> {
-        let id = resolve_target(target, &self.nodes())?;
-        let replayed = self
+        let replayed = self.resolve(target)?;
+        let mut node = crate::handler::summarize(replayed, false)
+            .map_err(|e| e.as_error(&replayed.agent_id).message)?;
+        let detail = self.detail(replayed);
+        node.tokens = detail.usage.map(|u| u.total());
+        Ok((stopped_with_its_supervisor(node), detail))
+    }
+
+    /// **A node on a retired harness**, by whole or short id: its [`retired_line`] and what its
+    /// files still say — the task, how it ended, its spend. `None` for any other node, which
+    /// [`Self::node`] answers. No `NodeSummary` exists for it (there is no `Harness` to name), so
+    /// this is the one view `marion ls <id>` has of a node from before its harness's retirement.
+    pub fn retired(
+        &self,
+        target: &str,
+    ) -> Option<(String, marion_core::proto::result::NodeDetail)> {
+        let replayed = self.resolve(target).ok()?;
+        Some((retired_line(replayed)?, self.detail(replayed)))
+    }
+
+    /// The node `target` names ([`resolve_node`]) among every node the journal places — a retired
+    /// harness's too, so a short id names the same node whichever view is asked.
+    fn resolve(&self, target: &str) -> Result<&marion_core::registry::ReplayedNode, Refusal> {
+        let placed = self
             .replay
+            .nodes()
+            .iter()
+            .filter(|n| n.recorded_harness().is_some())
+            .map(|n| n.agent_id.0.as_str());
+        let id = resolve_node(target, placed)?;
+        self.replay
             .get(&id)
-            .ok_or_else(|| format!("no node `{target}` in this project's journal"))?;
-        let mut node =
-            crate::handler::summarize(replayed, false).map_err(|e| e.as_error(&id).message)?;
-        let detail = match crate::node_detail::inputs(replayed) {
+            .ok_or_else(|| format!("no node `{target}` in this project's journal"))
+    }
+
+    /// `replayed`'s detail with its activity's tail, read from its files.
+    fn detail(
+        &self,
+        replayed: &marion_core::registry::ReplayedNode,
+    ) -> marion_core::proto::result::NodeDetail {
+        match crate::node_detail::inputs(replayed) {
             Some(i) => crate::node_detail::read(
                 &self.project,
-                &id,
+                &replayed.agent_id,
                 &i,
                 Some(marion_core::proto::params::ActivityCursor::Tail),
                 None,
             ),
             None => Default::default(),
-        };
-        node.tokens = detail.usage.map(|u| u.total());
-        Ok((stopped_with_its_supervisor(node), detail))
+        }
     }
 }
 
@@ -1917,6 +1988,60 @@ mod tests {
             detail.workspace
         );
         assert!(detail.stream.is_some(), "the activity's tail was asked for");
+    }
+
+    /// **`ls <id>` on a node from before its harness was retired**: the journal, its contract and
+    /// its stream all name gemini, and the node still reads — headed `retired harness (gemini)`,
+    /// with its task, its result and its spend — while `ls` itself leaves it out of the forest, as
+    /// a supervisor's snapshot does. Its parent still lists and details as before.
+    #[test]
+    fn a_node_on_a_retired_harness_reads_from_the_journal_by_name() {
+        let (_dir, repo, state, fx) = finished("tree-journal-retired");
+        let project =
+            marion_core::paths::ProjectDir::new(&state, &crate::socket::project_root(&repo));
+        marion_testsupport::retire_node(&project, &fx.child, "gemini");
+        let view = JournalView::open(&repo, &state).unwrap().unwrap();
+
+        let (line, detail) = view
+            .retired(short_id(&fx.child.0))
+            .expect("the short id names the retired node");
+        assert!(line.contains(&fx.child.0), "{line}");
+        assert!(line.contains(" exited:ok "), "{line}");
+        assert!(
+            line.ends_with(&format!(
+                "parent {} — retired harness (gemini)",
+                short_id(&fx.root.0)
+            )),
+            "{line}"
+        );
+        let task = detail.task.expect("its contract still reads");
+        assert!(task.prompt.contains("--top N"), "{task:?}");
+        let done = detail.completion.expect("and says how it ended");
+        assert_eq!(done.status, marion_core::contract::ExitStatus::Ok);
+        assert_eq!(done.branch.as_deref(), Some(fx.branch.as_str()));
+        assert_eq!(done.changed_paths, 1);
+        assert_eq!(
+            detail.usage.map(|u| u.total()),
+            Some(1200 + 340 + 5000),
+            "its recorded spend"
+        );
+        let why = detail
+            .stream
+            .and_then(|s| s.unread)
+            .expect("activity says why");
+        assert!(why.contains("`gemini`"), "{why}");
+
+        let refusal = view
+            .node(&fx.child.0)
+            .expect_err("no summary names a retired harness");
+        assert!(refusal.contains("retired"), "{refusal}");
+        let ids: Vec<AgentId> = view.nodes().into_iter().map(|n| n.agent_id).collect();
+        assert_eq!(ids, std::slice::from_ref(&fx.root));
+        assert!(
+            view.retired(&fx.root.0).is_none(),
+            "the root is no retired node"
+        );
+        assert!(view.node(short_id(&fx.root.0)).is_ok());
     }
 
     /// A target the journal does not record is refused by name, not answered with an empty node.

@@ -474,27 +474,36 @@ fn home_on(tab: marion_tui::home::Tab, repo: PathBuf, state: PathBuf) -> ExitCod
 /// `marion ls <id>`: one node's detail, as text.
 ///
 /// When nobody is serving the project, the node as the journal and its contract left it
-/// ([`marion_supervisor::tree::JournalView`]), printed by the same [`detail_text`].
+/// ([`marion_supervisor::tree::JournalView`]), printed by the same [`detail_text`] — a node on a
+/// retired harness too, headed by its [`marion_supervisor::tree::retired_line`].
 fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
     use marion_supervisor::tree;
     let offline = tree::JournalView::open(repo, state);
     let found = offline.and_then(|view| match view {
         Some(view) => {
             eprintln!("{FROM_JOURNAL}");
-            view.node(target).map(|(n, d)| (n, d, view.nodes()))
+            let nodes = view.nodes();
+            match view.retired(target) {
+                Some((line, d)) => Ok((line, None, d, nodes)),
+                None => view
+                    .node(target)
+                    .map(|(n, d)| (tree::list_line(&n), Some(n.agent_id), d, nodes)),
+            }
         }
-        None => live_node(target, repo, state),
+        None => live_node(target, repo, state)
+            .map(|(n, d, nodes)| (tree::list_line(&n), Some(n.agent_id), d, nodes)),
     });
     match found {
-        Ok((node, detail, nodes)) => {
+        Ok((head, id, detail, nodes)) => {
             let rollup = marion_supervisor::rollup::Rollup::build(&nodes);
-            let subtree = rollup
-                .get(&node.agent_id)
-                .filter(|_| rollup.has_children(&node.agent_id));
+            let subtree = id
+                .as_ref()
+                .filter(|id| rollup.has_children(id))
+                .and_then(|id| rollup.get(id));
             // A task, a narrative and a stream line are node-authored text.
             print!(
                 "{}",
-                marion_supervisor::printable::printable(&detail_text(&node, &detail, subtree))
+                marion_supervisor::printable::printable(&detail_text(&head, &detail, subtree))
             );
             ExitCode::SUCCESS
         }
@@ -542,18 +551,15 @@ fn live_node(
     })
 }
 
-/// A node and its detail as the lines `marion ls <id>` prints. Tokens only, never a price.
+/// A node's `head` line and its detail as the lines `marion ls <id>` prints. Tokens only, never a
+/// price.
 fn detail_text(
-    node: &marion_core::proto::NodeSummary,
+    head: &str,
     d: &marion_core::proto::result::NodeDetail,
     subtree: Option<&marion_supervisor::rollup::Totals>,
 ) -> String {
     use marion_core::contract::Workspace;
-    let mut out = format!(
-        "{}
-",
-        marion_supervisor::tree::list_line(node)
-    );
+    let mut out = format!("{head}\n");
     let mut kv = |k: &str, v: &str| {
         out.push_str(&format!(
             "  {k:<10} {v}
@@ -5697,7 +5703,8 @@ mod tests {
             }))),
             ..Default::default()
         };
-        let text = detail_text(&node, &with, None);
+        let head = marion_supervisor::tree::list_line(&node);
+        let text = detail_text(&head, &with, None);
         assert!(text.contains("  diff       +6 −3 · 1 files\n"), "{text}");
         assert!(
             text.contains("  merge      git merge --no-ff marion/t-1\n"),
@@ -5707,6 +5714,6 @@ mod tests {
             completion: Some(completion(None)),
             ..Default::default()
         };
-        assert!(!detail_text(&node, &without, None).contains("diff"));
+        assert!(!detail_text(&head, &without, None).contains("diff"));
     }
 }
