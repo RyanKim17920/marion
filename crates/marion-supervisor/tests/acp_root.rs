@@ -33,6 +33,21 @@ fn fake() -> String {
     .to_string()
 }
 
+/// A user-level config directory whose ACP allowlist lists `command`, for `XDG_CONFIG_HOME`: the
+/// root names its child by command line, and a model-named command runs only where the operator
+/// listed it (`trust::require_model_named`).
+fn listing(dir: &Path, command: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let config = dir.join("config");
+    let marion = config.join("marion");
+    std::fs::create_dir_all(&marion).unwrap();
+    std::fs::set_permissions(&marion, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = marion.join(marion_supervisor::trust::ACP_ALLOW_FILE);
+    std::fs::write(&file, format!("allow = [{command:?}]\n")).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    config
+}
+
 fn journal_nodes(state: &Path, repo: &Path) -> Vec<ReplayedNode> {
     let project = ProjectDir::new(state, &marion_supervisor::socket::project_root(repo));
     let bytes = std::fs::read(project.journal()).unwrap_or_default();
@@ -67,6 +82,10 @@ fn an_acp_root_delegates_to_a_child_and_is_watched_live() {
                 "--timeout",
                 "90",
             ])
+            .env(
+                "XDG_CONFIG_HOME",
+                listing(&dir, &format!("python3 {}", fake())),
+            )
             .current_dir(&dir),
         RUN_BOUND,
     )
@@ -165,6 +184,10 @@ fn an_acp_roots_background_childs_end_is_its_next_prompt() {
                 "--timeout",
                 "90",
             ])
+            .env(
+                "XDG_CONFIG_HOME",
+                listing(&dir, &format!("python3 {}", fake())),
+            )
             .current_dir(&dir),
         RUN_BOUND,
     )

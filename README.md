@@ -164,6 +164,9 @@ and never hides your credentials from the harness.
 - **A repository cannot run its own command without your consent.** A `.marion/agents.toml`
   row with `harness = "acp:<command>"` runs only after `marion trust allow` has recorded the
   file's exact bytes, and any edit revokes that. There is never a prompt.
+- **A model cannot run a program by naming it.** A `spawn` from a node or an MCP client may name
+  `acp:<command>` only for a command you listed in `~/.config/marion/acp.toml`; your own
+  `marion run acp:<command>` needs no listing.
 - **Near-zero idle cost.** marion waits on events, not timers. An idle supervisor with no
   running nodes measured 4 context switches per second, down from 264. The release binaries
   are 2.7 MB (`marion`) and 4.6 MB (`marion-supervisor`) on arm64 macOS.

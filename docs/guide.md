@@ -166,6 +166,11 @@ Until then, and again after any edit to the file, a spawn of that type is refuse
 edited or missing. Types on built-in harness rows, or on an ACP refinement row by its id
 (`acp:copilot`), need no trust.
 
+A model's own `spawn`, from a node or from a `marion mcp` client, may name a free-form
+`acp:<command>` only when you have listed that exact command line in your user-level
+`$XDG_CONFIG_HOME/marion/acp.toml` (0600), as `allow = ["my-agent --acp"]`. Anything else is
+refused with the line to add. `marion run acp:<command>` is yours and needs no listing.
+
 ## Logins, API keys and endpoints
 
 By default every node runs on the login you already set up for its harness: its OAuth session,

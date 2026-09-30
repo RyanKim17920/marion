@@ -344,6 +344,10 @@ fn tool_spawn(
     if let Some(e) = unimplemented_parameter(args) {
         return Err(bridge::spawn_result(id, &agent_type, Err(e)));
     }
+    // A model chose this type, on either surface: a free-form ACP command runs only if the
+    // operator listed it. The supervisor gates a node's spawn again; a top-level root is gated here.
+    crate::trust::require_model_named(&agent_type)
+        .map_err(|e| bridge::spawn_result(id, &agent_type, Err(e.into())))?;
     let top_level;
     let args = match who {
         Principal::TopLevel(t) => {
@@ -1887,6 +1891,33 @@ mod tests {
     ///
     /// It needs no `MARION_REPO` and starts no child, so it is a unit test rather than the
     /// end-to-end control in `tests/background_spawn.rs`.
+    /// **A model on either surface cannot run a program by naming it**, and is no longer invited
+    /// to: the `spawn` schema offers no free-form `acp:<command>`, and one asked for anyway is
+    /// refused before anything is dialed, naming the operator's allowlist.
+    #[test]
+    fn spawn_refuses_an_unlisted_acp_command_before_it_dials_and_never_offers_one() {
+        let bg = crate::background::Background::new();
+        let reply = handle_tool_call(
+            &Principal::Node,
+            &bg,
+            &serde_json::json!(1),
+            "spawn",
+            &serde_json::json!({"agent_type": "acp:sh -c 'echo pwned'", "prompt": "p"}),
+        );
+        assert_eq!(
+            reply["result"]["isError"],
+            serde_json::json!(true),
+            "{reply}"
+        );
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains(crate::trust::ACP_ALLOW_FILE), "{text}");
+        let schema =
+            bridge::agent_type_description(&marion_core::agent_type::AgentTypes::builtins_only());
+        assert!(!schema.contains("acp:<"), "{schema}");
+    }
+
     /// **`steer` names what it is missing before it dials anything**: a message, and exactly one
     /// address. Both addresses at once is refused rather than one silently preferred — a model that
     /// passed two ids meant one of them, and steering the other would redirect the wrong child.

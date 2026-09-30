@@ -267,8 +267,9 @@ pub fn tools(types: &AgentTypes) -> Value {
 
 /// What `spawn`'s `agent_type` may name, as a sentence for the node that reads the schema: every
 /// name [`AgentTypes::names`] lists with its description, so a user-defined row is offered exactly
-/// as a built-in is. A **description and never an `enum`**: `acp:<command>` is a legal value no
-/// finite list could hold.
+/// as a built-in is. A **description and never an `enum`**: a list of names cannot carry each
+/// type's description. A free-form `acp:<command>` is not offered: a model may run one only where
+/// the operator listed it (`trust::require_model_named`).
 pub fn agent_type_description(types: &AgentTypes) -> String {
     let listed = types
         .names()
@@ -277,8 +278,7 @@ pub fn agent_type_description(types: &AgentTypes) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "One of: {listed}. Or `acp:<command …>` for any ACP agent, named by its command line. The \
-         built-ins plus the rows of this tree's {}.",
+        "One of: {listed}. The built-ins plus the rows of this tree's {}.",
         crate::run::AGENT_TYPES_FILE
     )
 }

@@ -3612,6 +3612,7 @@ impl RegistryHandle {
         Self::check_child_no_change_record(p)?;
         Self::check_child_pane(p)?;
         crate::profiles::check_child_profile(p)?;
+        crate::trust::check_child_spawn(p)?;
         let Some(env) = self.spawn_env.clone() else {
             return Err(RpcError::unimplemented(
                 "agent/spawn",
@@ -12614,6 +12615,51 @@ mod tests {
                 fx.handle.owned_nodes(),
                 1,
                 "…and must not add a node to the table"
+            );
+        }
+
+        /// **A node's model cannot run a program by naming it.** An authenticated node asking for
+        /// `acp:<command>` that the operator never listed is refused by name, with the one line the
+        /// operator would add, before anything is journaled; a refinement row still resolves past
+        /// the gate.
+        #[test]
+        fn a_node_naming_an_unlisted_acp_command_is_refused_and_journals_nothing() {
+            let fx = owning("owns-acp-cmd", vec![intent("root", None, "claude", 0)]);
+            let real = fx.handle.claim(
+                &id("root"),
+                Some(marion_core::contract::TaskId("t".into())),
+                fx.repo.clone(),
+            );
+            let before = journal_len(&fx);
+            let caller = || {
+                Some(SpawnCaller {
+                    agent_id: id("root"),
+                    node_token: real.clone(),
+                })
+            };
+            let e = spawn(
+                &fx,
+                AgentSpawnParams {
+                    agent_type: "acp:sh -c 'echo pwned > /tmp/marion-pwned'".into(),
+                    ..params(caller(), 1)
+                },
+            )
+            .expect_err("a model-named command must not run");
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
+            assert!(
+                e.message.contains(crate::trust::ACP_ALLOW_FILE),
+                "{}",
+                e.message
+            );
+            assert!(e.message.contains("allow = ["), "{}", e.message);
+            assert_eq!(journal_len(&fx), before, "refused before any intent");
+            assert!(
+                crate::trust::check_child_spawn(&AgentSpawnParams {
+                    agent_type: "acp:copilot".into(),
+                    ..params(caller(), 1)
+                })
+                .is_ok(),
+                "a refinement row's argv is marion's"
             );
         }
 
