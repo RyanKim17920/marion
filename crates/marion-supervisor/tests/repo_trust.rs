@@ -229,15 +229,39 @@ fn a_repositorys_command_runs_only_while_its_exact_bytes_are_allowed() {
          model = \"marion/default\"\nprompt_prefix = \"Review only.\\n\\n\"\n",
     )
     .unwrap();
-    match launch_type(&prefixed, "reviewer") {
+    match TypesSnapshot::take(&prefixed, None).and_then(|s| s.launch_type("reviewer")) {
         Err(e @ SpawnError::Untrusted(TrustError::Untrusted { .. })) => {
             assert!(e.to_string().contains("prompt_prefix = "), "{e}")
         }
         other => panic!("expected an untrusted refusal, got {other:?}"),
     }
+    // A descendant resolves through the snapshot its root took, handed down on disk (sec-b): the
+    // same untrusted widening row is refused there too, so repo trust is not skipped below the
+    // root's own children.
+    let handed = root.join("handed-down");
+    std::fs::create_dir_all(&handed).unwrap();
+    TypesSnapshot::take(&prefixed, None)
+        .unwrap()
+        .write(&handed)
+        .unwrap();
+    let inherited = TypesSnapshot::read(&handed)
+        .unwrap()
+        .expect("the snapshot a child hands down");
+    assert!(
+        matches!(
+            inherited.launch_type("reviewer"),
+            Err(SpawnError::Untrusted(TrustError::Untrusted { .. }))
+        ),
+        "a grandchild resolving the untrusted widening row is refused too"
+    );
     let shown = allow(&prefixed, &store);
     assert!(shown.contains("sets:    prompt_prefix = "), "{shown}");
-    launch_type(&prefixed, "reviewer").expect("an allowed widening row resolves");
+    inherited
+        .launch_type("reviewer")
+        .expect("once the exact bytes are trusted, the handed-down snapshot resolves");
+    TypesSnapshot::take(&prefixed, None)
+        .and_then(|s| s.launch_type("reviewer"))
+        .expect("an allowed widening row resolves");
     // opencode, a `LaunchOnly` row: its prompt rides argv, so a dead endpoint and a bridge that
     // does not exist still end in a contract.
     if marion_testsupport::harness_available("opencode") {
