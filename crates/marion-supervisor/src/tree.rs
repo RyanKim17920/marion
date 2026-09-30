@@ -720,6 +720,9 @@ pub struct Subscription {
     /// A frame whose end has not arrived yet: kept across reads, so a read that stops mid-line on
     /// a non-blocking socket loses nothing.
     partial: Vec<u8>,
+    /// Desktop notices this connection was sent after [`Self::claim_notices`], oldest first, for
+    /// the screen to ring between frames: `(title, body, ring)`.
+    pub notices: Vec<(String, String, String)>,
 }
 
 impl Subscription {
@@ -748,6 +751,7 @@ impl Subscription {
             shown,
             socket,
             partial: Vec::new(),
+            notices: Vec::new(),
         };
         let mut early = Vec::new();
         let response = loop {
@@ -781,6 +785,21 @@ impl Subscription {
         Ok(sub)
     }
 
+    /// **Ask to be shown the supervisor's desktop notices** where it has no desktop notifier
+    /// (`notify/claim`). The answer arrives as a frame [`Self::drain`] skips; the notices then
+    /// arrive in [`Self::notices`] while this connection is first in line.
+    pub fn claim_notices(&mut self) -> Result<(), Refusal> {
+        let frame = Frame::Request(marion_core::proto::Request::new(
+            RequestId::Number(2),
+            Call::NotifyClaim(marion_core::proto::params::NotifyClaimParams {}),
+        ));
+        let stream = self.lines.get_mut();
+        stream
+            .write_all(frame.to_line().as_bytes())
+            .and_then(|()| stream.flush())
+            .map_err(|e| format!("sending notify/claim: {e}"))
+    }
+
     /// For a caller that waits on [`Self::fd`] itself: reads stop rather than block, and
     /// [`Self::drain`] folds whatever has arrived.
     pub fn nonblocking(&mut self) -> std::io::Result<()> {
@@ -800,9 +819,12 @@ impl Subscription {
         let mut changed = false;
         loop {
             match self.frame()? {
-                Some(Frame::Notification(n)) => {
-                    changed |= fold_tree_event(&mut self.nodes, &n.event)
-                }
+                Some(Frame::Notification(n)) => match n.event {
+                    Event::NotifyNotice { title, body, ring } => {
+                        self.notices.push((title, body, ring));
+                    }
+                    event => changed |= fold_tree_event(&mut self.nodes, &event),
+                },
                 Some(_) => {}
                 None => return Ok(changed),
             }
@@ -832,6 +854,38 @@ mod tests {
     use super::*;
     use marion_core::contract::AgentId;
     use marion_core::harness::Harness;
+
+    /// **A notice is kept for the screen to ring, never folded into the forest**, and a claim is
+    /// one `notify/claim` request line.
+    #[test]
+    fn a_notice_on_the_subscription_is_kept_for_the_screen_and_changes_no_node() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let mut sub = Subscription {
+            lines: BufReader::new(a),
+            nodes: Vec::new(),
+            shown: String::new(),
+            socket: PathBuf::new(),
+            partial: Vec::new(),
+            notices: Vec::new(),
+        };
+        sub.nonblocking().unwrap();
+        sub.claim_notices().unwrap();
+        let mut sent = String::new();
+        b.set_nonblocking(true).unwrap();
+        let _ = std::io::Read::read_to_string(&mut b, &mut sent);
+        assert!(sent.contains("\"notify/claim\""), "{sent}");
+        let line =
+            Frame::Notification(marion_core::proto::Notification::new(Event::NotifyNotice {
+                title: "marion · p".into(),
+                body: "codex-impl 8ea3 (codex) failed — exited:failed".into(),
+                ring: "osc9".into(),
+            }))
+            .to_line();
+        b.write_all(line.as_bytes()).unwrap();
+        assert_eq!(sub.drain(), Ok(false), "no node moved");
+        assert_eq!(sub.notices.len(), 1);
+        assert_eq!(sub.notices[0].2, "osc9");
+    }
 
     /// The home screen polls the socket itself and reads it without blocking, so a frame can
     /// arrive in pieces — even split inside a multi-byte character — and must be folded whole
@@ -869,6 +923,7 @@ mod tests {
             shown: String::new(),
             socket: PathBuf::new(),
             partial: Vec::new(),
+            notices: Vec::new(),
         };
         sub.nonblocking().unwrap();
         assert_eq!(sub.drain(), Ok(false), "nothing yet, and no wait for it");

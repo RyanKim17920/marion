@@ -537,6 +537,10 @@ impl Session {
             if sub.nonblocking().is_err() {
                 return;
             }
+            // A screen on a terminal shows the supervisor's notices where no desktop notifier does.
+            if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                let _ = sub.claim_notices();
+            }
             self.home.set_nodes(sub.nodes.clone());
             self.sub = Some(sub);
             self.forest_moved();
@@ -546,7 +550,11 @@ impl Session {
     /// Fold what the supervisor's stream has sent; a closed stream is a supervisor gone.
     fn follow_forest(&mut self) {
         let Some(sub) = &mut self.sub else { return };
-        match sub.drain() {
+        let drained = sub.drain();
+        // Rung here, between frames: the screen draws after this, so an escape never lands inside
+        // one.
+        ring_notices(std::mem::take(&mut sub.notices));
+        match drained {
             Ok(true) => {
                 let nodes = sub.nodes.clone();
                 self.home.set_nodes(nodes);
@@ -964,6 +972,24 @@ fn profile_harnesses() -> Vec<String> {
         .filter(|h| crate::profiles::carrier(*h).is_ok())
         .map(|h| crate::profiles::display_name(h).to_string())
         .collect()
+}
+
+/// Ring each notice the supervisor sent this screen, the way the operator's `notify.toml` asks.
+fn ring_notices(notices: Vec<(String, String, String)>) {
+    if notices.is_empty() {
+        return;
+    }
+    let mut out = std::io::stdout().lock();
+    for (title, body, ring) in notices {
+        let ring = match ring.as_str() {
+            "osc9" => crate::notify::TerminalRing::Osc9,
+            "osc777" => crate::notify::TerminalRing::Osc777,
+            _ => crate::notify::TerminalRing::Bell,
+        };
+        let shown = crate::notify::Shown { title, body };
+        let _ = std::io::Write::write_all(&mut out, &crate::notify::terminal_bytes(ring, &shown));
+    }
+    let _ = std::io::Write::flush(&mut out);
 }
 
 /// What a finished cancel says: how many nodes it ended, and how many had to be killed.
