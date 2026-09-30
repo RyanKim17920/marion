@@ -1288,6 +1288,19 @@ new rows (cline, `acp:cline`, `acp:qwen`) and qwen P-lifecycle FAIL → PASS. ge
 admitted: the gemini CLI is retired upstream and its real-binary cells are ignored. The probes
 under `spikes/` were not re-run.
 
+**pi 0.99.1, admitted 2026-09-30.** npm's latest `@earendil-works/pi-coding-agent` moved from
+the pinned 0.80.2 to 0.99.1 (published 2026-09-29; the entry point is now `dist/bundle/cli.js`).
+It was installed side by side under the shim's own store, `<marion state>/harness-pins/pi/0.99.1`,
+and the operator's global 0.80.2 was not touched, so the shim ran every suite on 0.99.1. Green with
+only the entry widened: `marion-testsupport` (41), `pi_rpc` (3), `harness_matrix` (9),
+`depth_gate` (5), `journal_wiring` (18), `continuation` (6), `os_sandbox_escape` (6), the seven pi
+cells of `cross_product` (7), `native_facade_e2e` (4). The suites ran one target at a time rather
+than through `scripts/admit-harness.sh`, whose sequential run is longer than one bounded call on a
+shared machine. **pi's first conformance row** (`tests/fixtures/conformance/pi-0.99.1/`) was also
+recorded: the battery's duplex driver had spoken only stream-json, so pi's `--mode rpc` row never
+started under it, and it now drives the row's own `Dialect`. Every probe passes except P-tui,
+which pi's row has no pane shape for. The S34 probes under `spikes/s34/` were not re-run.
+
 **codex 0.155.1, admitted 2026-09-22 via `scripts/admit-harness.sh`.** The installer moved
 `current` to 0.155.1, with 0.153.4 and 0.154.0 between. 0.147.0 was still on disk, so the shim had
 held every suite there and the gate never went red. Widening the entry moved the shim to 0.155.1,

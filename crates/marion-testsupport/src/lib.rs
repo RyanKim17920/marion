@@ -999,6 +999,14 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // faults as `stopReason: "error"` in the final `agent_end` at exit 0; per-message usage net
         // of cache reads; stdin read to EOF when it is not a terminal; `--session <id>` resuming
         // under the same agent dir and cwd. See `marion_harness::pi`.
+        //
+        // 0.99.1: observed green on Darwin 25.5.0, 2026-09-30, installed side by side at
+        // `<marion state>/harness-pins/pi/0.99.1` (the operator's 0.80.2 left in place):
+        // marion-testsupport (41), pi_rpc (3), harness_matrix (9), depth_gate (5), journal_wiring
+        // (18), continuation (6), os_sandbox_escape (6), cross_product's seven pi cells (7),
+        // native_facade_e2e (4), conformance (1, every probe PASS but P-tui, which pi's row has
+        // no pane for). Suites were run one target at a time at RUST_TEST_THREADS=2 rather than
+        // through scripts/admit-harness.sh, whose sequential run outlasts one bounded call.
         accepted: marion_harness::pi::SPEC.verified,
     },
 ];
