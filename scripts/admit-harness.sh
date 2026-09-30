@@ -117,14 +117,19 @@ for f in $files; do rustfmt --edition 2024 --config skip_children=true "$f" || {
 lane_on() {
     ADMIT_HARNESS=$1 perl -0ne 'exit !(/Lane::new\(\s*true,\s*NativeLane::new\("\Q$ENV{ADMIT_HARNESS}\E"/)' "$facades"
 }
+# A suite is a top-level `tests/<suite>.rs`, its own binary, or a module file
+# `tests/it_<x>/<suite>.rs` of the `it_<x>` binary (whose `main.rs` only declares them). It is
+# named `<suite>` or `it_<x>/<suite>` here, so the run below knows which binary to select it from.
 gate='on_path\(|harness_available\(|require_claude_and_codex\('
+suite_files() { printf '%s\n' "$tests_dir"/*.rs "$tests_dir"/it_*/*.rs | grep -v '/main\.rs$'; }
+suite_names() { sed "s|^$tests_dir/||; s|\\.rs\$||"; }
 suites=""
 lane_suites=""
 for h in $(printf '%s' "$pairs" | awk '{print $1}'); do
     suites="$suites
-$(grep -lw "$h" "$tests_dir"/*.rs | xargs grep -lE "$gate" | xargs -n1 basename | sed 's/\.rs$//')"
+$(suite_files | xargs grep -lw "$h" | xargs grep -lE "$gate" | suite_names)"
     if lane_on "$h"; then
-        lane_suites=$(grep -l 'enabled_native_commands()' "$tests_dir"/*.rs | xargs grep -lE "$gate" | xargs -n1 basename | sed 's/\.rs$//')
+        lane_suites=$(suite_files | xargs grep -l 'enabled_native_commands()' | xargs grep -lE "$gate" | suite_names)
     fi
 done
 suites=$(printf '%s\n%s\n' "$suites" "$lane_suites" | sed '/^$/d' | sort -u)
@@ -163,8 +168,12 @@ run_suite() {
 
 cd "$here" || exit 1
 run_suite marion-testsupport cargo test -p marion-testsupport --lib
+# A merged binary's suite is selected by its module path: `<suite>::` names every test in it.
 for s in $suites; do
-    run_suite "$s" cargo test -p marion-supervisor --test "$s"
+    case $s in
+    */*) run_suite "${s#*/}" cargo test -p marion-supervisor --test "${s%%/*}" "${s#*/}::" ;;
+    *) run_suite "$s" cargo test -p marion-supervisor --test "$s" ;;
+    esac
 done
 
 # The conformance battery, for exactly the admitted programs (each names every row that runs it:
