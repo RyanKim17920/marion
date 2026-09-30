@@ -628,8 +628,50 @@ fn a_failed_runs_notice_is_its_marion_verb_line() {
     );
 }
 
+/// **`m` merges an agent's landed branch, and only after a `y` that names the branch and the
+/// command**; `c` still copies it. An agent that landed nothing says so.
 #[test]
-fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
+fn m_merges_a_landed_branch_after_a_y() {
+    let mut h = home();
+    h.tab = Tab::Watch;
+    assert_eq!(h.key(Key::Char('m')), Effect::None);
+    assert!(h.notice.as_deref().unwrap_or("").contains("no branch"));
+    let id = h.selected().unwrap().agent_id.clone();
+    h.absorb_detail(
+        id,
+        NodeDetail {
+            completion: Some(CompletionSummary {
+                status: ExitStatus::Ok,
+                narrative: None,
+                branch: Some("marion/t1".into()),
+                commit: None,
+                changed_paths: 1,
+                exit: String::new(),
+                diff: None,
+            }),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        h.key(Key::Char('m')),
+        Effect::None,
+        "no merge on the first key"
+    );
+    let f = view::frame(&h, &view::Places::default());
+    let marion_tui::home::Input::Confirm { question, command } = f.input else {
+        panic!("a confirm");
+    };
+    assert!(question.contains("marion/t1"), "{question}");
+    assert_eq!(command, "git merge --no-ff marion/t1");
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("not merged"));
+    h.key(Key::Char('m'));
+    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/t1".into()));
+    assert!(matches!(h.key(Key::Char('c')), Effect::Copy(_)));
+}
+
+#[test]
+fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
     let id = AgentId("0199-abc".into());
     let all = [
         Effect::Run {
@@ -657,6 +699,19 @@ fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
             "{e:?}"
         );
     }
+    let merge = Effect::Merge("marion/t1".into());
+    assert_eq!(
+        merge.argv(),
+        Some(
+            ["git", "merge", "--no-ff", "marion/t1"]
+                .map(String::from)
+                .to_vec()
+        )
+    );
+    assert!(
+        merge.destructive(),
+        "a merge changes the checkout: after a y"
+    );
     assert_eq!(Effect::None.argv(), None);
     assert_eq!(Effect::Quit.argv(), None);
 }

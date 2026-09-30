@@ -73,6 +73,7 @@ enum Handoff {
     Resume(AgentId),
     Shell(PathBuf),
     Diff(String),
+    Merge(String),
     EditTypes,
     /// `marion login <credential id>` / `marion logout <credential id>`, in the foreground.
     Login(String),
@@ -129,6 +130,14 @@ pub fn run(opts: &Options) -> Result<(), String> {
             Handoff::Diff(branch) => {
                 let c = branch_log(&s.repo, &branch);
                 s.foreground(c, "git log");
+            }
+            Handoff::Merge(branch) => {
+                let mut c = std::process::Command::new("git");
+                c.arg("-C").arg(&s.repo).args(["merge", "--no-ff", &branch]);
+                s.foreground(c, "git merge");
+                if s.home.notice.is_none() {
+                    s.home.notice = Some(format!("merged {branch}"));
+                }
             }
             Handoff::EditTypes => {
                 let file = s.repo.join(crate::run::AGENT_TYPES_FILE);
@@ -409,6 +418,7 @@ impl Session {
             Effect::Resume(id) => Some(Handoff::Resume(id)),
             Effect::Shell(dir) => Some(Handoff::Shell(dir)),
             Effect::Diff(branch) => Some(Handoff::Diff(branch)),
+            Effect::Merge(branch) => Some(Handoff::Merge(branch)),
             Effect::EditTypes => Some(Handoff::EditTypes),
             Effect::Login(id) => Some(Handoff::Login(id)),
             Effect::Logout(id) => Some(Handoff::Logout(id)),

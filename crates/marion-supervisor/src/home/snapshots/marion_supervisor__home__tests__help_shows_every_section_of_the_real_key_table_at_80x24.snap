@@ -5,22 +5,22 @@ expression: screen
  ◆ marion  ~/code/acme-api                           Start   Watch   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────
 
-  WATCH                                  START
-  j/k    move                            enter  run
-  enter  its stream full-screen; a pan…  ↑↓     harness
-  esc    back from the stream            ←→     model
-  s      steer                           ^o     next agent type
-  x      cancel, asks first              ^p     headless or pane
-  u      resume an ended node            esc    clear the prompt
-  o      shell in its workspace          SETUP
-  d      what its branch changed         enter  expand
-  c      copy the merge                  r      re-check
-  !      next that needs you             e      edit agent types
-  J/K    scroll its stream               n      new agent type, previewed
-  EVERYWHERE                             a      add a provider key
-  tab    next screen                     x      remove a key, asks first
-  ?      help (Start: empty prompt)      a      on Profiles: add one
-  ↓ 3 below  j/k scroll
+  WATCH                                  EVERYWHERE
+  j/k    move                            tab    next screen
+  enter  its stream full-screen; a pan…  ?      help (Start: empty prompt)
+  esc    back from the stream            F1     help, from anywhere
+  s      steer                           ^c     quit
+  x      cancel, asks first              q      quit, off Start
+  u      resume an ended node            START
+  o      shell in its workspace          enter  run
+  d      what its branch changed         ↑↓     harness
+  m      merge its branch, asks first    ←→     model
+  c      copy the merge                  ^o     next agent type
+  !      next that needs you             ^p     headless or pane
+  J/K    scroll its stream               esc    clear the prompt
+                                         SETUP
+                                         enter  expand
+  ↓ 8 below  j/k scroll
 
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion --help                                                            │

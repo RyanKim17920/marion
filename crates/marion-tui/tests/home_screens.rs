@@ -593,7 +593,7 @@ fn hints(tab: &str) -> Vec<Hint> {
             ("enter", "attach"),
             ("s", "steer"),
             ("x", "cancel"),
-            ("c", "copy merge"),
+            ("m", "merge"),
             ("!", "next attention"),
         ]),
         "setup" => h(&[

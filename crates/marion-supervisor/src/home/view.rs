@@ -849,7 +849,12 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("u", "resume an ended node", "marion resume <id>"),
             ("o", "shell in its workspace", ""),
             ("d", "what its branch changed", "git log -p HEAD..<branch>"),
-            ("c", "copy the merge", "git merge --no-ff <branch>"),
+            (
+                "m",
+                "merge its branch, asks first",
+                "git merge --no-ff <branch>",
+            ),
+            ("c", "copy the merge", ""),
             ("!", "next that needs you", "marion ls --attention"),
             ("J/K", "scroll its stream", ""),
         ],
@@ -948,7 +953,7 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("s", "steer"),
             ("x", "cancel"),
             ("u", "resume"),
-            ("c", "copy merge"),
+            ("m", "merge"),
             ("!", "needs you"),
         ]),
         (_, Tab::Setup) if home.on_profiles() => h(&[
@@ -1003,6 +1008,10 @@ fn input(home: &Home) -> Input {
         }
         Mode::Confirm(effect @ Effect::Logout(id)) => Input::Confirm {
             question: format!("Remove the key {id}?"),
+            command: line(effect),
+        },
+        Mode::Confirm(effect @ Effect::Merge(branch)) => Input::Confirm {
+            question: format!("Merge {branch} into your checkout?"),
             command: line(effect),
         },
         Mode::Confirm(effect @ Effect::ProfileRemove(name)) => Input::Confirm {

@@ -66,6 +66,9 @@ pub enum Effect {
     Diff(String),
     /// Put this text on the operator's clipboard (OSC 52).
     Copy(String),
+    /// Leave the screen, run `git merge --no-ff <branch>` in the project, come back. It changes the
+    /// operator's checkout: only ever after a `y`.
+    Merge(String),
     /// Probe the harnesses again (`marion doctor`).
     Recheck,
     /// Leave the screen, open the project's agents file in `$EDITOR`, come back and validate it.
@@ -140,6 +143,7 @@ impl Effect {
             }
             Effect::Diff(branch) => v(&["git", "log", "-p", "--stat", &format!("HEAD..{branch}")]),
             Effect::Copy(text) => vec![text.clone()],
+            Effect::Merge(branch) => v(&["git", "merge", "--no-ff", branch]),
             Effect::Recheck => v(&["marion", "doctor"]),
             Effect::EditTypes => {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
@@ -154,6 +158,7 @@ impl Effect {
             self,
             Effect::Cancel(_)
                 | Effect::Kill(_)
+                | Effect::Merge(_)
                 | Effect::Logout(_)
                 | Effect::ProfileRemove(_)
                 | Effect::WriteTypes { .. }
@@ -601,6 +606,7 @@ impl Home {
                         self.notice = Some("not written; still editing".into());
                     }
                     Effect::Logout(_) => self.notice = Some("key kept".into()),
+                    Effect::Merge(_) => self.notice = Some("not merged".into()),
                     Effect::ProfileRemove(_) => self.notice = Some("profile kept".into()),
                     _ => self.notice = Some("not cancelled".into()),
                 }
@@ -865,6 +871,10 @@ impl Home {
             },
             Key::Char('c') => match self.branch() {
                 Some(b) => return Effect::Copy(marion_core::contract::merge_command(&b)),
+                None => self.notice = Some("it has landed no branch to merge".into()),
+            },
+            Key::Char('m') => match self.branch() {
+                Some(b) => self.mode = Mode::Confirm(Effect::Merge(b)),
                 None => self.notice = Some("it has landed no branch to merge".into()),
             },
             _ => {}

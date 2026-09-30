@@ -32,12 +32,12 @@ expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 100, 30)"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ steer a1f0 ❯ use a VecDeque, not a Vec, for the window▏              enter sends · esc cancels │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention           F1 help
+  j/k move · enter attach · s steer · x cancel · m merge · ! next attention                F1 help
 --- styles ---
   162  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    20  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexsteera1f0"
    38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGACTIVITY"
-  939  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  935  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    15  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▏"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     3  Style::new().green().bg(Color::Reset)  "●●●"

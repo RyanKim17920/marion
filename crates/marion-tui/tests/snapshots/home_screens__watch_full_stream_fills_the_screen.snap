@@ -26,12 +26,12 @@ expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 80, 24)"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯                                                                          │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge          F1 help
+  j/k move · enter attach · s steer · x cancel · m merge               F1 help
 --- styles ---
   220  Style::new().fg(Color::Reset).bg(Color::Reset)  "$gitcommit-amlimiterrepo"
     6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
-   19  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "STREAMj/kentersxcF1"
-  542  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   19  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "STREAMj/kentersxmF1"
+  538  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "WatchK❯"
     2  Style::new().yellow().bg(Color::Reset)  "◐2"

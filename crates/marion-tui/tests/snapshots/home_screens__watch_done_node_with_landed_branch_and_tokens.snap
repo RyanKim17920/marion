@@ -26,12 +26,12 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-3c33                                same as enter │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge          F1 help
+  j/k move · enter attach · s steer · x cancel · m merge               F1 help
 --- styles ---
   125  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexcodex✓impl3c33Addto"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
    46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
-  582  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  578  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     9  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interrupt"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆━━━━━━━"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯Kc❯"
@@ -69,12 +69,12 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-3c33                                                    same as enter │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention           F1 help
+  j/k move · enter attach · s steer · x cancel · m merge · ! next attention                F1 help
 --- styles ---
   174  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
    47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
-  806  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  802  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     9  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interrupt"
    21  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s━━━━━━━"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯Kc❯"
@@ -132,12 +132,12 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-3c33                                                                                                                same as enter │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention                                                                       F1 help
+  j/k move · enter attach · s steer · x cancel · m merge · ! next attention                                                                            F1 help
 --- styles ---
   345  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
    64  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
- 1473  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+ 1469  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     9  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interrupt"
    37  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▃▂▄▅▇█▆▄▃▄"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯co❯"
