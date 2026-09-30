@@ -142,7 +142,7 @@ marion runs every harness on the login you already set up for it: its OAuth sess
 key variable, or its config file. It never starts a login, never picks an auth method for you,
 and never hides your credentials from the harness.
 
-- **`marion login <provider>`** stores an API key you give it (macOS Keychain, or a `0600` file)
+- **`marion key add <provider>`** stores an API key you give it (macOS Keychain, or a `0600` file)
   and adds custom OpenAI-, Anthropic- or Gemini-compatible endpoints, so any harness can run on
   any model through `--model <provider>:<model>`.
 - **`marion profile`** points a harness at a directory you logged into yourself, so one node can

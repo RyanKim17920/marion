@@ -3599,20 +3599,34 @@ mod tests {
         assert_eq!(piped_message("  keep  ".into()), "  keep  ");
     }
 
-    /// Endpoint mode starts with `marion login`, so its help names `logout` and the forms a user
-    /// reaches for: a label, stdin, the provider's env var, the listing, a custom provider.
+    /// Endpoint mode starts with `marion key add`, so its help names every form a user reaches
+    /// for: a label, stdin, the provider's env var, the listing, a custom provider, removal. The
+    /// old `login`/`logout` still run and are listed nowhere.
     #[test]
-    fn the_login_help_names_login_and_logout() {
-        let text = (cli::verb("login").unwrap().help)();
+    fn the_key_help_names_add_list_and_rm() {
+        let text = (cli::verb("key").unwrap().help)();
         for needle in [
-            "marion login <provider>[:<label>]",
+            "marion key add <provider>[:<label>]",
             "--stdin",
             "--from-env",
-            "marion login --list",
-            "marion login custom <id> --base-url <url> --wire <wire>",
-            "marion logout <provider>[:<label>]",
+            "marion key list",
+            "marion key add custom <id> --url <url> --wire <wire>",
+            "marion key rm <provider>[:<label>]",
         ] {
             assert!(text.contains(needle), "{needle}: {text}");
+        }
+        // Its two old spellings: rows of their own that share its help, listed nowhere.
+        let hidden: Vec<&str> = cli::VERBS
+            .iter()
+            .filter(|v| v.summary.is_none() && (v.help)() == text)
+            .map(|v| v.name)
+            .collect();
+        assert_eq!(hidden.len(), 2, "{hidden:?}");
+        for old in hidden {
+            assert!(
+                !cli::top_help().contains(&format!("  {old} ")),
+                "{old} is not listed"
+            );
         }
     }
 
@@ -4592,20 +4606,18 @@ mod tests {
             assert_eq!(steer.target, id.0);
             assert_eq!(steer.text, SteerText::Words(text.into()));
         }
-        // Setup's key hand-offs run exactly the command they echo: the verb and one credential id,
-        // which `marion login`/`logout` take as their only positional argument.
+        // Setup's key hand-offs run exactly the command they echo: `key`, the subcommand and one
+        // credential id, which `marion key add`/`rm` take as their only positional argument.
         for (e, v) in [
-            (Effect::Login("openrouter:work".into()), "login"),
-            (Effect::Logout("openrouter:work".into()), "logout"),
+            (Effect::Login("openrouter:work".into()), "add"),
+            (Effect::Logout("openrouter:work".into()), "rm"),
         ] {
             let a = verb(&e);
-            assert_eq!(a, [v, "openrouter:work"]);
-            assert!(marion_core::provider::CredentialId::parse(&a[1]).is_some());
+            assert_eq!(a, ["key", v, "openrouter:work"]);
+            assert!(marion_core::provider::CredentialId::parse(&a[2]).is_some());
         }
         // The verbs the echoes name are the verbs this binary dispatches.
-        for v in [
-            "attach", "cancel", "resume", "steer", "login", "logout", "run",
-        ] {
+        for v in ["attach", "cancel", "resume", "steer", "key", "run"] {
             assert!(
                 cli::verb(v).is_some(),
                 "`marion {v}` is echoed and not dispatched"

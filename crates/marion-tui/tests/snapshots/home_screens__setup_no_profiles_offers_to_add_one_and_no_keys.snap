@@ -22,10 +22,10 @@ expression: "report(&screen(Body::Setup(&v), input, \"profiles\"), 100, 30)"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS
+  API KEYS
   no keys stored · a adds one with marion login <provider>
 
-  PROFILES
+  LOGINS
 ❯ + add a profile
   each harness uses its own login · a runs marion profile add, then you run the login it prints
 
@@ -36,7 +36,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"profiles\"), 100, 30)"
 --- styles ---
   134  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    18  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion+addaprofile"
-   49  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
   716  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
    46  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupamarionlogin<provid"

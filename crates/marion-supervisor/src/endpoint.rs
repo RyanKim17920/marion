@@ -73,7 +73,7 @@ pub struct Endpoint {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EndpointError {
     #[error(
-        "provider `{0}` is neither built in nor in your providers.toml; `marion login --list` \
+        "provider `{0}` is neither built in nor in your providers.toml; `marion key list` \
          shows the ones marion knows"
     )]
     UnknownProvider(String),
@@ -83,7 +83,7 @@ pub enum EndpointError {
     )]
     NoModel(String),
     #[error(
-        "no key is stored for provider `{provider}` (tried {tried}); run `marion login {provider}`"
+        "no key is stored for provider `{provider}` (tried {tried}); run `marion key add {provider}`"
     )]
     LoggedOut { provider: String, tried: String },
     #[error(
@@ -559,10 +559,7 @@ mod tests {
             &reg,
             &empty,
         ));
-        assert!(
-            e.contains("`nope`") && e.contains("marion login --list"),
-            "{e}"
-        );
+        assert!(e.contains("`nope`") && e.contains("marion key list"), "{e}");
         let e = err(resolve_endpoint(
             Some("openai:gpt-5"),
             &ty(Harness::Codex, None, None),
@@ -570,7 +567,7 @@ mod tests {
             &reg,
             &empty,
         ));
-        assert!(e.contains("marion login openai"), "{e}");
+        assert!(e.contains("marion key add openai"), "{e}");
         let e = err(resolve_endpoint(
             None,
             &ty(Harness::Codex, Some("openai"), None),
@@ -889,7 +886,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("openrouter:work, openrouter:personal") && err.contains("marion login"),
+            err.contains("openrouter:work, openrouter:personal") && err.contains("marion key add"),
             "{err}"
         );
     }

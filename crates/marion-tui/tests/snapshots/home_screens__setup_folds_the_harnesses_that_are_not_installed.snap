@@ -23,7 +23,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
   ● openrouter  openrouter:work
@@ -36,7 +36,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
 --- styles ---
   160  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionacpvibe"
-   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
   773  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯ax❯"

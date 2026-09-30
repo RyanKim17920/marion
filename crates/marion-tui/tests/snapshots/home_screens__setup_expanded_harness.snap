@@ -63,7 +63,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
 
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ gemini                                                                       sign in, then r │
@@ -72,7 +72,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 --- styles ---
   181  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   66  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+   67  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
   667  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
@@ -105,13 +105,13 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
   ● openrouter  openrouter:work
   keys in the macOS Keychain · a adds one · x removes the selected
 
-  PROFILES   3 profiles
+  LOGINS   3 logins
   ● claude    work      default · logged in
   ◐ codex     cx        logged out
   ⠹ opencode  oc        checking…
@@ -134,8 +134,8 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 --- styles ---
   218  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   74  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
- 1063  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   73  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+ 1061  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯geminiaxaux❯"
    14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"

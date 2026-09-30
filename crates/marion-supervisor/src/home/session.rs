@@ -150,8 +150,8 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 s.foreground(c, "editor");
                 s.validate_types();
             }
-            Handoff::Login(id) => s.credential("login", &id),
-            Handoff::Logout(id) => s.credential("logout", &id),
+            Handoff::Login(id) => s.credential("add", &id),
+            Handoff::Logout(id) => s.credential("rm", &id),
             Handoff::ProfileAdd(harness, name) => {
                 let c = s.profile_command(&["add", &harness, &name]);
                 s.foreground(c, "marion profile add");
@@ -650,10 +650,10 @@ impl Session {
     fn credential(&mut self, verb: &str, id: &str) {
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("marion"));
         let mut c = std::process::Command::new(exe);
-        c.args([verb, id]);
-        self.foreground(c, &format!("marion {verb}"));
+        c.args(["key", verb, id]);
+        self.foreground(c, &format!("marion key {verb}"));
         if self.home.notice.is_none() {
-            self.home.notice = Some(format!("marion {verb} {id}: done"));
+            self.home.notice = Some(format!("marion key {verb} {id}: done"));
         }
         self.load_logins();
     }

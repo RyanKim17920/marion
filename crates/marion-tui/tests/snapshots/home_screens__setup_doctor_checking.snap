@@ -27,7 +27,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
 
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion doctor                                                                      checking… │
@@ -36,7 +36,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
 --- styles ---
   181  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   66  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+   67  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
   679  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠸⠼⠴reviewermigrator"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"

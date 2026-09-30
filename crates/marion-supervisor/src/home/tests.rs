@@ -1027,7 +1027,7 @@ fn removing_a_key_waits_for_y_and_names_the_credential_id() {
 }
 
 #[test]
-fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_login() {
+fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_key_add() {
     let mut h = setup_home();
     assert_eq!(h.key(Key::Char('a')), Effect::None);
     assert_eq!(
@@ -1049,7 +1049,7 @@ fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_login() {
         h.notice
             .as_deref()
             .unwrap_or("")
-            .contains("marion login --list")
+            .contains("marion key list")
     );
     // On a key's row, the box starts with that key's provider.
     h.setup.cursor = 3;
@@ -1065,14 +1065,14 @@ fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_login() {
 }
 
 #[test]
-fn login_and_logout_echo_the_commands_they_run_and_only_logout_asks_first() {
+fn key_add_and_rm_echo_the_commands_they_run_and_only_rm_asks_first() {
     assert_eq!(
         Effect::Login("openrouter:work".into()).argv().unwrap(),
-        ["marion", "login", "openrouter:work"]
+        ["marion", "key", "add", "openrouter:work"]
     );
     assert_eq!(
         Effect::Logout("openrouter:work".into()).argv().unwrap(),
-        ["marion", "logout", "openrouter:work"]
+        ["marion", "key", "rm", "openrouter:work"]
     );
     assert!(!Effect::Login("x".into()).destructive());
     assert!(Effect::Logout("x".into()).destructive());

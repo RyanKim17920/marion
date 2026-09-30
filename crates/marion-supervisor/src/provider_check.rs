@@ -324,7 +324,7 @@ fn reach_text(r: &Option<Reach>) -> String {
 pub fn render(rows: &[CredentialRow], matrix: &[MatrixCell]) -> String {
     let mut out = String::from("credentials:\n");
     if rows.is_empty() {
-        out.push_str("  none stored; `marion login <provider>` stores one\n");
+        out.push_str("  none stored; `marion key add <provider>` stores one\n");
     }
     for r in rows {
         let key = if r.key_present {

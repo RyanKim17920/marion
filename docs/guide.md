@@ -241,16 +241,18 @@ codex-impl = ["MY_PROVIDER_KEY"]   # say, a codex model_providers env_key
 "*" = ["CORP_*"]                  # every agent type
 ```
 
-`marion login` is only for keys and endpoints you give it:
+`marion key` is only for API keys and endpoints you give it:
 
 ```sh
-marion login openrouter                  # read with echo off; or --stdin, or --from-env
-marion login openrouter:work            # several keys per provider, kept apart by label
-marion login --list                      # providers and which keys are stored, never a key
-marion login custom local --base-url http://127.0.0.1:11434/v1 --wire openai-chat --auth none
-marion logout openrouter
+marion key add openrouter                # read with echo off; or --stdin, or --from-env
+marion key add openrouter:work           # several keys per provider, kept apart by label
+marion key list                          # providers and which keys are stored, never a key
+marion key add custom local --url http://127.0.0.1:11434/v1 --wire openai-chat --auth none
+marion key rm openrouter
 marion run opencode --prompt "…" --model openrouter:qwen/qwen3-coder
 ```
+
+`marion login` and `marion logout` are the old spellings of `key add` and `key rm`, and still work.
 
 A key goes into the macOS Keychain (service `marion`) or, elsewhere or with
 `MARION_CREDENTIAL_STORE=file`, into a `0600` file in a `0700` directory under
@@ -260,7 +262,7 @@ gets a Keychain prompt rather than the key. Until marion releases are Developer-
 upgrade is a new binary to the Keychain, so the first read after one shows a single "marion wants
 to access" prompt; Always Allow ends it. Keys stored by an older marion were created by `security`
 and any program of yours can still read them silently; `marion doctor` names each one with the
-command that re-stores it as marion's own. `login custom` adds an OpenAI-, Anthropic-
+command that re-stores it as marion's own. `key add custom` adds an OpenAI-, Anthropic-
 or Gemini-compatible endpoint (`--wire anthropic|openai-chat|openai-responses|gemini`, comma
 separated for several; `--auth none` for a keyless local server) to the user-level
 `providers.toml`; a repository's `.marion/` is never read for providers. `providers.toml`'s

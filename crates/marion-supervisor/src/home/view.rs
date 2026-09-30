@@ -713,7 +713,7 @@ fn logins_note(home: &Home) -> String {
     let store = &short_place(store);
     if home.setup.logins.is_empty() {
         format!(
-            "no API keys stored ({store}) · `a` adds one with `marion login <provider>`; \
+            "no API keys stored ({store}) · `a` adds one with `marion key add <provider>`; \
              subscription logins stay with each harness's own CLI"
         )
     } else {
@@ -746,10 +746,10 @@ fn profile_row(p: &super::StoredProfile) -> ProfileRow {
 /// never logs in for anyone: `add` prints the command, and the row shows it.
 fn profiles_note(home: &Home) -> String {
     if let Some(e) = &home.setup.profiles_error {
-        return format!("profiles could not be listed: {e}");
+        return format!("logins could not be listed: {e}");
     }
     if !home.setup.profiles_listed {
-        return "listing profiles…".into();
+        return "listing logins…".into();
     }
     if home.setup.profiles.is_empty() {
         "each harness uses its own login · `a` runs `marion profile add`, then you run the login it prints"
@@ -866,17 +866,21 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("r", "re-check", "marion doctor"),
             ("e", "edit agent types", "$EDITOR .marion/agents.toml"),
             ("n", "new agent type, previewed", ".marion/agents.toml"),
-            ("a", "add a provider key", "marion login <provider>"),
-            ("x", "remove a key, asks first", "marion logout <id>"),
+            ("a", "on API keys: add one", "marion key add <provider>"),
+            (
+                "x",
+                "on API keys: remove one, asks first",
+                "marion key rm <id>",
+            ),
             (
                 "a",
-                "on Profiles: add one",
+                "on Logins: add one",
                 "marion profile add <harness> <name>",
             ),
             ("u", "use a profile", "marion profile use <harness> <name>"),
             (
                 "x",
-                "on Profiles: remove one, asks first",
+                "on Logins: remove one, asks first",
                 "marion profile remove <name>",
             ),
         ],
@@ -958,7 +962,7 @@ fn hints(home: &Home) -> Vec<Hint> {
         ]),
         (_, Tab::Setup) if home.on_profiles() => h(&[
             ("j/k", "move"),
-            ("a", "add profile"),
+            ("a", "add login"),
             ("u", "use"),
             ("x", "remove"),
             ("r", "re-check"),
@@ -987,7 +991,7 @@ fn input(home: &Home) -> Input {
             text: text.clone(),
         },
         Mode::Login { text } => Input::Compose {
-            target: "marion login".into(),
+            target: "marion key add".into(),
             text: text.clone(),
         },
         Mode::Profile { text } => Input::Compose {

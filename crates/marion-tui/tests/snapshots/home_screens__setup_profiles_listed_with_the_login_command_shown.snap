@@ -11,13 +11,13 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
   ● openrouter  openrouter:work
   keys in the macOS Keychain · a adds one · x removes the selected
 
-  PROFILES   3 profiles
+  LOGINS   3 logins
   ● claude    work      default · logged in · last limit allowed_warning (fiv…
 ❯ ◐ codex     cx        logged out
       log in yourself:
@@ -30,8 +30,8 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
 --- styles ---
    77  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeclaude-orchestrato"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   33  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTTYPESLOGINSPROFILES"
-  556  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTTYPESAPIKEYSLOGINSj"
+  554  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    79  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
    11  Style::new().green().bg(Color::Reset)  "●●●●●●✓●●●●"
@@ -53,13 +53,13 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
   ● openrouter  openrouter:work
   keys in the macOS Keychain · a adds one · x removes the selected
 
-  PROFILES   3 profiles
+  LOGINS   3 logins
   ● claude    work      default · logged in · last limit allowed_warning (five_hour)
 ❯ ◐ codex     cx        logged out
       log in yourself: CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login
@@ -71,8 +71,8 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
 --- styles ---
   156  Style::new().fg(Color::Reset).bg(Color::Reset)  "geminiopencodecopilotagy"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   40  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESLOGINSP"
-  718  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
+  716  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    79  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
    12  Style::new().green().bg(Color::Reset)  "●●●●●●●✓●●●●"
@@ -99,13 +99,13 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
   ● openrouter  openrouter:work
   keys in the macOS Keychain · a adds one · x removes the selected
 
-  PROFILES   3 profiles
+  LOGINS   3 logins
   ● claude    work      default · logged in · last limit allowed_warning (five_hour)
 ❯ ◐ codex     cx        logged out
       log in yourself: CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login
@@ -133,8 +133,8 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
 --- styles ---
   169  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   49  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
- 1077  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+ 1075  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    82  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
    14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"

@@ -1,5 +1,6 @@
-//! `marion login` / `marion logout`: the user storing, listing and removing provider keys for
-//! endpoint mode, and defining their own providers.
+//! `marion key add|list|rm`: the user storing, listing and removing provider API keys for
+//! endpoint mode, and defining their own providers. `marion login` / `marion logout` are the old
+//! spellings, still accepted and listed nowhere: a harness's own login is a `marion profile`.
 //!
 //! **User-run only.** A key is read from a terminal with echo off, or — only when the user says so
 //! on the command line — from stdin (`--stdin`) or from the provider's own environment variable
@@ -17,28 +18,35 @@ use marion_core::provider::{self, AuthKind, CredentialId, ProviderDef, Registry,
 
 use crate::credentials::{self, CredentialStore, Logins, Secret, parse_key};
 
-/// `marion login --help`'s first half, and what a malformed `login`/`logout` prints. `--label
-/// <label>` is still accepted as the other spelling of `:<label>`, and not shown.
+/// `marion key --help`'s first half, and what a malformed `key` prints. `--label <label>` is still
+/// accepted as the other spelling of `:<label>`, `--base-url` as `--url`, and neither is shown.
 pub const USAGE: &str = "\
-usage: marion login <provider>[:<label>] [--from-env | --stdin]
-       marion login --list
-       marion login custom <id> --base-url <url> --wire <wire>[,<wire>]
-                           [--name <name>] [--auth api-key|none]
-       marion logout <provider>[:<label>]
+usage: marion key add <provider>[:<label>] [--from-env | --stdin]
+       marion key add custom <id> --url <url> --wire <wire>[,<wire>]
+                                 [--name <name>] [--auth api-key|none]
+       marion key list
+       marion key rm <provider>[:<label>]
 
-  <provider>   a provider id; `marion login --list` shows them all
+  <provider>   a provider id; `marion key list` shows them all
   :<label>     keep this key beside the provider's others (`openrouter:work`)
   --stdin      read the key from standard input instead of a terminal
   --from-env   import the key from the provider's own environment variable
   wires:       anthropic, openai-chat, openai-responses, gemini";
 
-/// `marion login …` and `marion logout …`; `argv[0]` is the verb.
+/// `marion key add|list|rm …`, and the old `marion login …` / `marion logout …`; `argv[0]` is the
+/// verb.
 pub fn main(argv: &[String]) -> ExitCode {
     let mut out = io::stdout();
     let mut err = io::stderr();
-    let code = match argv.first().map(String::as_str) {
-        Some("logout") => logout(&argv[1..], &mut out),
-        Some("login") => login(&argv[1..], &mut out),
+    let code = match (
+        argv.first().map(String::as_str),
+        argv.get(1).map(String::as_str),
+    ) {
+        (Some("key"), Some("add")) => login(&argv[2..], &mut out),
+        (Some("key"), Some("list" | "ls")) if argv.len() == 2 => list(&mut out),
+        (Some("key"), Some("rm" | "remove")) => logout(&argv[2..], &mut out),
+        (Some("logout"), _) => logout(&argv[1..], &mut out),
+        (Some("login"), _) => login(&argv[1..], &mut out),
         _ => Err(Failure::Usage),
     };
     match code {
@@ -76,8 +84,8 @@ fn store() -> Result<Box<dyn CredentialStore>, Failure> {
 fn known<'r>(reg: &'r Registry, id: &str) -> Result<&'r ProviderDef, Failure> {
     reg.get(id).ok_or_else(|| {
         Failure::Refused(format!(
-            "no provider named `{id}`; `marion login --list` shows the ones marion knows, and \
-             `marion login custom {id} --base-url <url> --wire <wire>` defines your own"
+            "no provider named `{id}`; `marion key list` shows the ones marion knows, and \
+             `marion key add custom {id} --url <url> --wire <wire>` defines your own"
         ))
     })
 }
@@ -167,7 +175,7 @@ fn read_from_terminal(p: &ProviderDef) -> Result<Secret, Failure> {
     let stdin = io::stdin();
     if !rustix::termios::isatty(&stdin) {
         return Err(Failure::Refused(format!(
-            "`marion login {}` reads the key from a terminal, and stdin is not one. Pipe it with \
+            "`marion key add {}` reads the key from a terminal, and stdin is not one. Pipe it with \
              `--stdin`, or import {} with `--from-env`",
             p.id,
             p.import_env.as_deref().unwrap_or("the provider's variable")
@@ -359,7 +367,7 @@ fn custom(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
     while let Some(flag) = it.next() {
         let value = it.next().ok_or(Failure::Usage)?;
         match flag.as_str() {
-            "--base-url" => base_url = Some(value.clone()),
+            "--url" | "--base-url" => base_url = Some(value.clone()),
             "--name" => name = Some(value.clone()),
             "--wire" => {
                 let mut ws = Vec::new();
@@ -404,7 +412,7 @@ fn custom(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
         path.display()
     )?;
     if def.auth.needs_credential() {
-        writeln!(out, "Store its key with `marion login {}`.", def.id)?;
+        writeln!(out, "Store its key with `marion key add {}`.", def.id)?;
     }
     Ok(())
 }

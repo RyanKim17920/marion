@@ -96,16 +96,24 @@ pub const VERBS: &[Verb] = &[
         main: super::mcp_main,
     },
     Verb {
+        name: "key",
+        aliases: &[],
+        summary: Some("add, list or remove API keys for model providers"),
+        help: login_help,
+        main: super::login_main,
+    },
+    // The old spellings of `key add` and `key rm`, listed nowhere; scripts and docs still use them.
+    Verb {
         name: "login",
         aliases: &[],
-        summary: Some("store an API key for a provider"),
+        summary: None,
         help: login_help,
         main: super::login_main,
     },
     Verb {
         name: "logout",
         aliases: &[],
-        summary: Some("remove a stored API key"),
+        summary: None,
         help: login_help,
         main: super::login_main,
     },
@@ -389,7 +397,7 @@ fn run_help() -> String {
          is shown on stderr; its raw output goes to stdout when stdout is not a terminal.\n\
          \n\
          \x20 --prompt <text>      the task (required)\n\
-         \x20 --model <name>       the model; `openrouter:<model>` runs on a key from `marion login`\n\
+         \x20 --model <name>       the model; `openrouter:<model>` runs on a key from `marion key add`\n\
          \x20 --timeout <secs>     stop the agent after this many seconds (default: its type's)\n\
          \x20 --profile <name>     which of your logins to use (see `marion profile`)\n\
          \x20 --budget-tokens <n>  stop it and everything it starts once they spend n tokens\n\
@@ -516,8 +524,9 @@ fn login_help() -> String {
         "{}\n\
          \n\
          An agent whose type or --model names a provider (`--model openrouter:<model>`) runs on\n\
-         the key stored for it. --list shows each provider and which keys are stored, never a\n\
-         key. marion never reuses a vendor's subscription login.",
+         the key stored for it. `list` shows each provider and which keys are stored, never a\n\
+         key. These are API keys; a harness's own login is a `marion profile`, and marion never\n\
+         reuses a vendor's subscription login.",
         marion_supervisor::login::USAGE
     )
 }
@@ -575,7 +584,7 @@ fn doctor_help() -> String {
         "{}\n\
          \n\
          Check each harness: whether it is installed, its version, and what marion can do with\n\
-         it, plus the API keys `marion login` stored. It makes no model call unless --adapter is\n\
+         it, plus the API keys `marion key add` stored. It makes no model call unless --adapter is\n\
          given, which runs one tiny real task per harness (and costs a little). --harness checks\n\
          one; --acp-command adds an ACP agent by its command line; --providers checks only the\n\
          stored keys.",

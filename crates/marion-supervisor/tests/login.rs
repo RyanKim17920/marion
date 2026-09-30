@@ -1,4 +1,4 @@
-//! `marion login` / `marion logout`, driven through the real `marion` binary against a throwaway
+//! `marion key add|list|rm` (and the old `marion login` / `marion logout`), driven through the real `marion` binary against a throwaway
 //! `XDG_CONFIG_HOME` and the file credential store.
 //!
 //! Every key here is a fixture string. No test reads a real credential, touches the Keychain or
@@ -110,6 +110,53 @@ fn a_key_piped_with_stdin_is_stored_in_the_file_backend_and_never_printed() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
+/// **`marion key add|list|rm` is the command**, and `login`/`logout` its old spellings: a key
+/// added with `key add` is listed by `key list` and gone after `key rm`; a custom provider takes
+/// `--url`.
+#[test]
+fn key_add_list_and_rm_manage_a_key_end_to_end() {
+    let home = scratch("key-verb");
+    let run = marion(
+        &home,
+        &["key", "add", "openai", "--stdin"],
+        Some(FAKE_KEY),
+        &[],
+    );
+    assert_eq!(run.code, 0, "{}", run.all());
+    assert!(!run.all().contains(FAKE_KEY), "{}", run.all());
+    let listed = marion(&home, &["key", "list"], None, &[]);
+    assert!(
+        list_row(&listed, "openai").contains("openai"),
+        "{}",
+        listed.stdout
+    );
+    assert!(!listed.all().contains(FAKE_KEY));
+    let removed = marion(&home, &["key", "rm", "openai"], None, &[]);
+    assert_eq!(removed.code, 0, "{}", removed.all());
+    assert!(
+        !std::fs::read_to_string(stored_file(&home))
+            .unwrap_or_default()
+            .contains(FAKE_KEY)
+    );
+    let custom = marion(
+        &home,
+        &[
+            "key",
+            "add",
+            "custom",
+            "my-gw",
+            "--url",
+            "https://gw.example/v1",
+            "--wire",
+            "openai-chat",
+        ],
+        None,
+        &[],
+    );
+    assert_eq!(custom.code, 0, "{}", custom.all());
+    assert_ne!(marion(&home, &["key", "bogus"], None, &[]).code, 0);
+}
+
 #[test]
 fn from_env_imports_the_providers_own_variable_with_explicit_consent() {
     let home = scratch("fromenv");
@@ -196,7 +243,11 @@ fn an_unknown_provider_is_refused_by_name_with_the_command_to_define_it() {
     let run = marion(&home, &["login", "nope", "--stdin"], Some(FAKE_KEY), &[]);
     assert_ne!(run.code, 0);
     assert!(run.stderr.contains("`nope`"), "{}", run.stderr);
-    assert!(run.stderr.contains("marion login custom"), "{}", run.stderr);
+    assert!(
+        run.stderr.contains("marion key add custom"),
+        "{}",
+        run.stderr
+    );
     assert!(!run.all().contains(FAKE_KEY));
 }
 
@@ -218,7 +269,11 @@ fn a_custom_provider_is_added_listed_and_can_hold_a_key() {
         &[],
     );
     assert_eq!(run.code, 0, "{}", run.all());
-    assert!(run.stdout.contains("marion login my-gw"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("marion key add my-gw"),
+        "{}",
+        run.stdout
+    );
     let toml = std::fs::read_to_string(home.join("xdg/marion/providers.toml")).unwrap();
     assert!(toml.contains("[providers.my-gw]"), "{toml}");
     assert_eq!(

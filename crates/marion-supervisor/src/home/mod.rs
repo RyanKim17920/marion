@@ -112,8 +112,8 @@ impl Effect {
             Effect::None | Effect::Quit | Effect::PreviewType(_) | Effect::WriteTypes { .. } => {
                 return None;
             }
-            Effect::Login(id) => v(&["marion", "login", id]),
-            Effect::Logout(id) => v(&["marion", "logout", id]),
+            Effect::Login(id) => v(&["marion", "key", "add", id]),
+            Effect::Logout(id) => v(&["marion", "key", "rm", id]),
             Effect::ProfileAdd { harness, name } => v(&["marion", "profile", "add", harness, name]),
             Effect::ProfileUse { harness, name } => v(&["marion", "profile", "use", harness, name]),
             Effect::ProfileRemove(name) => v(&["marion", "profile", "remove", name]),
@@ -1016,7 +1016,7 @@ impl Home {
         }
         if !self.setup.providers.iter().any(|p| p == provider) {
             self.notice = Some(format!(
-                "no provider named `{provider}`; `marion login --list` shows them"
+                "no provider named `{provider}`; `marion key list` shows them"
             ));
             return Effect::None;
         }

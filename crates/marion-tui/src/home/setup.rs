@@ -273,7 +273,7 @@ fn body_lines<'a>(
         1 => "1 key".to_string(),
         n => format!("{n} keys"),
     };
-    out.push((g, section("Logins", &count)));
+    out.push((g, section("API keys", &count)));
     let provider_w = v
         .logins
         .iter()
@@ -309,10 +309,10 @@ fn body_lines<'a>(
     blank(&mut out);
     let count = match v.profiles.len() {
         0 => String::new(),
-        1 => "1 profile".to_string(),
-        n => format!("{n} profiles"),
+        1 => "1 login".to_string(),
+        n => format!("{n} logins"),
     };
-    out.push((g, section("Profiles", &count)));
+    out.push((g, section("Logins", &count)));
     let first = v.harnesses.len() + v.logins.len();
     let harness_w = column(v.profiles.iter().map(|p| p.harness.as_str()), 8, 12);
     let profile_w = column(v.profiles.iter().map(|p| p.name.as_str()), 8, 20);

@@ -1717,7 +1717,7 @@ fn check_providers(
         if registry.get(provider).is_none() {
             return Err(format!(
                 "agent type {name:?} names provider `{provider}`, which is neither built in nor \
-                 in your providers.toml; `marion login --list` shows the ones marion knows"
+                 in your providers.toml; `marion key list` shows the ones marion knows"
             ));
         }
     }
@@ -6159,7 +6159,7 @@ mod tests {
         assert!(check_providers(&parse("provider = \"openrouter\"\n"), seed).is_ok());
         let err = check_providers(&parse("provider = \"nope\"\n"), seed).unwrap_err();
         assert!(
-            err.contains("`nope`") && err.contains("marion login"),
+            err.contains("`nope`") && err.contains("marion key list"),
             "{err}"
         );
         let custom = || {

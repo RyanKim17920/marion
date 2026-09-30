@@ -18,7 +18,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
 ❯ ● openrouter  openrouter:work
@@ -30,7 +30,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 --- styles ---
   133  Style::new().fg(Color::Reset).bg(Color::Reset)  "opencodecopilotagy~/code"
    16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
-   36  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESLOGINSj"
+   37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
   517  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
@@ -58,7 +58,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
 ❯ ● openrouter  openrouter:work
@@ -72,7 +72,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 --- styles ---
   153  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
-   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
   728  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯ax❯"
@@ -100,13 +100,13 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  API KEYS   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
 ❯ ● openrouter  openrouter:work
   keys in the macOS Keychain · a adds one · x removes the selected
 
-  PROFILES   3 profiles
+  LOGINS   3 logins
   ● claude    work      default · logged in
   ◐ codex     cx        logged out
   ⠹ opencode  oc        checking…
@@ -134,8 +134,8 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 --- styles ---
   161  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
-   54  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
- 1041  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+ 1039  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    12  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯axaux❯"
    14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"

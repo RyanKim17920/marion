@@ -185,7 +185,7 @@ fn a_provider_with_no_stored_key_is_refused_by_name_with_the_login_command() {
     let t = tree("nokey", Some("http://127.0.0.1:9/v1".into()));
     let _cells = providers_at("http://127.0.0.1:9/v1");
     let err = spawn_err(&t, "codex-impl", "canned-nokey:some-model");
-    assert_refused_before_the_node_existed(&t, &err, &["marion login canned-nokey"]);
+    assert_refused_before_the_node_existed(&t, &err, &["marion key add canned-nokey"]);
 }
 
 #[test]
