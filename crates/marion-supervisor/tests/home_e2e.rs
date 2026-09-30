@@ -50,7 +50,7 @@ mkdir -p {argv}
 if [ -n "$MARION_SHIM_TURN" ]; then
   # What marion launched the server with, and the node token from its environment — a live codex
   # node's token rides the environment, never argv — under the server's pid.
-  printf '%s TOKEN_FROM_ENV="%s"\n' "$MARION_SHIM_ARGV" "${{MARION_NODE_TOKEN-}}" > {argv}/$PPID
+  printf '%s TOKEN_FROM_ENV="%s"\n' "$MARION_SHIM_ARGV" "$(cat "${{MARION_NODE_TOKEN_FILE:-/dev/null}}")" > {argv}/$PPID
   # The turn's first call, then the rest only once the gate opens, so the node is still running
   # while the test steers and cancels it.
   sleep 0.3; echo '{started}'

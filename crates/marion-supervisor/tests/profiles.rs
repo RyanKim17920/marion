@@ -121,7 +121,7 @@ case "$1" in --version) echo "codex-cli 0.155.1"; exit 0 ;; esac
 if [ -n "$MARION_SHIM_TURN" ]; then
   case "$1" in
     *{root}*)
-      printf '%s TOKEN_FROM_ENV="%s"\n' "$MARION_SHIM_ARGV" "${{MARION_NODE_TOKEN-}}" > {root_argv}
+      printf '%s TOKEN_FROM_ENV="%s"\n' "$MARION_SHIM_ARGV" "$(cat "${{MARION_NODE_TOKEN_FILE:-/dev/null}}")" > {root_argv}
       waited=0
       while [ ! -e {gate} ]; do
         sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 2400 ] && exit 0
@@ -323,10 +323,10 @@ fn bed(tag: &str, work_mode: &str, cwork_mode: &str) -> Bed {
     bed
 }
 
-/// **The root's capability token, off its environment.** A live codex root carries marion's
-/// declaration on `-c` pairs rather than in a file (`codex::SPEC`'s live route), and the token
-/// rides codex's environment beside it rather than on argv, so the fake root records it from
-/// there.
+/// **The root's capability token, from the file its environment names.** A live codex root
+/// carries marion's declaration on `-c` pairs rather than in a file (`codex::SPEC`'s live route),
+/// and the token is withheld from argv and from codex's environment, which names its 0600 file
+/// instead, so the fake root records the file's contents.
 fn root_token(root_argv: &Path) -> String {
     const KEY: &str = "TOKEN_FROM_ENV=\"";
     let deadline = Instant::now() + BOUND;
