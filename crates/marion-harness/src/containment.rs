@@ -59,6 +59,56 @@ impl Containment {
     }
 }
 
+/// **Where marion's own OS sandbox would bound a node** ([`crate::os_sandbox`]): the auth its
+/// tree runs under, and whether the sandbox is on and supported on this host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Host {
+    pub auth: crate::Auth,
+    pub os_sandbox: bool,
+}
+
+impl Host {
+    /// This host, for a tree under `auth` whose supervisor has the sandbox `enabled`
+    /// (`run::Env::os_sandbox`): on only where the host also supports it.
+    pub fn here(auth: crate::Auth, enabled: bool) -> Host {
+        Host {
+            auth,
+            os_sandbox: enabled && crate::os_sandbox::support().available(),
+        }
+    }
+
+    /// Whether marion's sandbox bounds a node of `t` here — the same decision the launch makes
+    /// ([`crate::os_sandbox::applies`]), so no node is labelled by one rule and run by another.
+    fn contains(self, t: &AgentType) -> bool {
+        self.os_sandbox
+            && crate::os_sandbox::covers(
+                harness_spec(t.harness).os_sandbox,
+                self.auth,
+                !writes_files(t),
+            )
+    }
+}
+
+/// Where a node of type `t` stands on `host`: kept to its workspace (or read-only) by marion's
+/// own sandbox where it applies, else by its row's rule and its grants alone ([`of`]).
+pub fn on(t: &AgentType, host: Host) -> Containment {
+    if host.contains(t) {
+        return if writes_files(t) || runs_commands(t) {
+            Containment::WorkspaceWrites
+        } else {
+            Containment::ReadOnly
+        };
+    }
+    of(t)
+}
+
+/// Whether a node of `t` is kept in a sandbox on `host` — its harness's own, or marion's where
+/// it bounds something the node does. A node read-only by its grants is not sandboxed by marion's:
+/// it chose not to write, and delegating writes is what it is for ([`sandboxed`]).
+pub fn sandboxed_on(t: &AgentType, host: Host) -> bool {
+    sandboxed(t) || (host.contains(t) && (writes_files(t) || runs_commands(t)))
+}
+
 /// Where a node of type `t` stands, from its row's rule and its grants.
 pub fn of(t: &AgentType) -> Containment {
     let acts = writes_files(t) || runs_commands(t);
@@ -115,6 +165,41 @@ mod tests {
         assert_eq!(at("claude"), Containment::Uncontained);
         assert!(Containment::Uncontained < Containment::WorkspaceWrites);
         assert!(Containment::WorkspaceWrites < Containment::ReadOnly);
+    }
+
+    fn on_host(name: &str, auth: crate::Auth, os_sandbox: bool) -> Containment {
+        on(
+            &builtin(name).unwrap_or_else(|| panic!("{name} is built in")),
+            Host { auth, os_sandbox },
+        )
+    }
+
+    /// **Under marion's own sandbox a wrapped row's implementer is contained to its workspace**
+    /// — on a host where it is on, for a node whose harness home is marion's. Under the operator's
+    /// own login, or where the sandbox is off or unsupported, it stands where its row alone puts
+    /// it; codex is contained either way.
+    #[test]
+    fn marions_sandbox_contains_a_wrapped_rows_implementer_where_it_applies() {
+        use crate::Auth::{Canned, Endpoint, Inherited};
+        assert_eq!(
+            on_host("claude", Canned, true),
+            Containment::WorkspaceWrites
+        );
+        assert_eq!(
+            on_host("claude", Endpoint, true),
+            Containment::WorkspaceWrites
+        );
+        assert_eq!(on_host("claude", Inherited, true), Containment::Uncontained);
+        assert_eq!(on_host("claude", Canned, false), Containment::Uncontained);
+        assert_eq!(on_host("codex", Canned, true), Containment::WorkspaceWrites);
+        assert_eq!(
+            on_host("codex", Inherited, false),
+            Containment::WorkspaceWrites
+        );
+        assert_eq!(
+            on_host("claude-orchestrator", Canned, true),
+            Containment::ReadOnly
+        );
     }
 
     /// Only a row with a sandbox offers one to run verification in, and it carries the row's own

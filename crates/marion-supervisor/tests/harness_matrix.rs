@@ -179,7 +179,10 @@ fn drive(cell: &Cell) -> Evidence {
     })
     .expect("the canned provider binds");
 
-    let env = canned_env(&state, &repo, Some(server.base_url()));
+    let env = common::canned::for_child(
+        &canned_env(&state, &repo, Some(server.base_url())),
+        cell.agent_type,
+    );
     let req = SpawnRequest {
         budget: None,
         review: None,

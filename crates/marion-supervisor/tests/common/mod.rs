@@ -274,5 +274,15 @@ pub fn needs_wider_opt_in(root: &str, child: &str) -> bool {
     let ty = |n: &str| {
         marion_core::agent_type::builtin(n).unwrap_or_else(|| panic!("{n} is a built-in type"))
     };
-    marion_harness::authority::permits(&ty(root), &ty(child)).is_err()
+    // Judged as the supervisor judges a canned tree on this host: marion's own sandbox contains
+    // the nodes it will run under it.
+    let host = marion_harness::containment::Host::here(marion_harness::Auth::Canned, true);
+    let (root, child) = (ty(root), ty(child));
+    marion_harness::authority::permits_between(
+        &marion_harness::authority::Authority::on(&root, host),
+        &root.name,
+        &marion_harness::authority::Authority::on(&child, host),
+        &child.name,
+    )
+    .is_err()
 }

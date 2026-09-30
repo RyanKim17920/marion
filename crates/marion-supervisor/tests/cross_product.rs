@@ -1464,15 +1464,16 @@ fn e_codex_root_spawns_a_claude_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &CLAUDE);
 }
 
-/// **Without the operator's opt-in, a codex root cannot start a claude child**: codex runs
-/// sandboxed, claude has no sandbox marion can apply, so the spawn is refused by name — the root
-/// is told why and how to allow it, and no child node exists.
+/// **Without the operator's opt-in, a codex root cannot start a cline child**: codex runs
+/// sandboxed, cline has no sandbox marion can apply (its row is not yet measured under marion's
+/// own), so the spawn is refused by name — the root is told why and how to allow it, and no child
+/// node exists. A claude child is contained by marion's sandbox here and needs no opt-in.
 #[test]
-fn e_codex_root_is_refused_a_claude_child_without_the_opt_in() {
-    for n in [&CODEX, &CLAUDE] {
+fn e_codex_root_is_refused_a_cline_child_without_the_opt_in() {
+    for n in [&CODEX, &CLINE] {
         assert!(on_path(n.program), "this cell drives a REAL {}", n.program);
     }
-    let ev = drive_as(&CODEX, &CLAUDE, &[], false);
+    let ev = drive_as(&CODEX, &CLINE, &[], false);
     let told = ev
         .root_requests()
         .iter()

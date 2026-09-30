@@ -95,7 +95,13 @@ fn spawn_acp_child(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> 
         "root",
         marion_core::agent_type::builtin("claude").expect("the root type resolves"),
     );
-    run_spawn(&fx.env, &req, &TaskId(task_id.into()), &caller).map_err(|e| e.to_string())
+    // Off marion's sandbox: its claude root would be contained there, and the ACP row, not yet
+    // measured under the sandbox, is not — a start the operator must opt into.
+    let env = Env {
+        os_sandbox: false,
+        ..fx.env.clone()
+    };
+    run_spawn(&env, &req, &TaskId(task_id.into()), &caller).map_err(|e| e.to_string())
 }
 
 /// **The clause itself.** A real `opencode acp` agent, spawned as a child through `run_spawn`,

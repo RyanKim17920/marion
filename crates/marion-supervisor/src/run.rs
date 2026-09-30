@@ -1852,6 +1852,7 @@ fn node_authority(
     caller: &Caller,
     agent_type: &AgentType,
     req: &SpawnRequest,
+    host: marion_harness::containment::Host,
 ) -> Result<(Vec<marion_core::contract::Glob>, Vec<String>), SpawnError> {
     // **§6.1 step 2, and it runs before every side effect there is** — before the worktree, before
     // `config_files`, before `compile`, before any process. That ordering is the whole point: the
@@ -1899,12 +1900,14 @@ fn node_authority(
     // The caller's authority as it stands: its type's, or none to delegate writes with where the
     // operator started its session in a read-only mode.
     let caller_type = snapshot.bounded(caller.agent_type.clone())?;
-    let mut caller_authority = marion_harness::authority::Authority::of(&caller_type);
+    // Both judged on this tree's `host`: marion's own sandbox contains a node wherever it will run
+    // the node under it ([`marion_harness::containment::on`]).
+    let mut caller_authority = marion_harness::authority::Authority::on(&caller_type, host);
     if snapshot.read_only_session() {
         caller_authority = caller_authority.in_read_only_session();
     }
     // A reviewer runs read-only whatever its type, so that is the authority it is judged by.
-    let mut child_authority = marion_harness::authority::Authority::of(agent_type);
+    let mut child_authority = marion_harness::authority::Authority::on(agent_type, host);
     if req.is_read_only() {
         child_authority = child_authority.in_read_only_session();
     }
@@ -1992,7 +1995,13 @@ pub fn run_spawn_watched(
         ..req.clone()
     };
     let (requested, widened) = match requester {
-        Requester::Node(caller) => node_authority(&snapshot, caller, &agent_type, req)?,
+        Requester::Node(caller) => node_authority(
+            &snapshot,
+            caller,
+            &agent_type,
+            req,
+            marion_harness::containment::Host::here(env.auth, env.os_sandbox),
+        )?,
         // No caller to gate by or to bound it: the requested type's own authority, held to its
         // scope ceiling below like every other node's.
         Requester::Operator { .. } => (requested_scope(req), Vec::new()),
@@ -5372,7 +5381,7 @@ mod tests {
         let state = root.join("state");
         let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
         let env = Env {
-            os_sandbox: true,
+            os_sandbox: false,
             project_dir: project.clone(),
             state: state.clone(),
             project_root: repo.clone(),

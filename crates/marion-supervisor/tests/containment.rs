@@ -6,6 +6,10 @@
 //! So a caller may spawn only a type at least as contained as its own, and the refusal is by name,
 //! before any side effect.
 //!
+//! Where marion's own OS sandbox runs a node, it contains that node too: a claude implementer on a
+//! canned or endpoint tree writes only its workspace, so a codex may start one with no opt-in. The
+//! refusals below run on a host without that sandbox, where claude writes as the operator.
+//!
 //! No harness runs here: the refused spawn stops before the intent, and the allowed one is carried
 //! only as far as the worktree question on a directory that is not a repository.
 
@@ -14,7 +18,7 @@ use std::path::Path;
 use marion_core::contract::{AgentId, Isolation, TaskId};
 use marion_core::journal::RecordKind;
 use marion_harness::authority::Axis;
-use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
+use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_supervisor::spawn::SpawnError;
 use marion_supervisor::types_snapshot::TypesSnapshot;
 use marion_testsupport::scratch;
@@ -49,6 +53,14 @@ fn spawn_from(caller_type: &str, child_type: &str) -> Result<(), SpawnError> {
     spawn_opted(caller_type, child_type, false).0
 }
 
+/// [`spawn_from`] on a host where marion's own sandbox runs the tree's nodes.
+fn spawn_sandboxed(
+    caller_type: &str,
+    child_type: &str,
+) -> (Result<(), SpawnError>, Vec<RecordKind>) {
+    spawn_on(caller_type, child_type, false, false, true)
+}
+
 /// A spawn from a caller whose tree carries (or not) the operator's containment opt-in, and the
 /// journal it left behind.
 fn spawn_opted(
@@ -59,20 +71,35 @@ fn spawn_opted(
     spawn_in(caller_type, child_type, opt_in, false)
 }
 
-/// [`spawn_opted`], from a root whose session the operator started (or not) in a read-only mode.
+/// [`spawn_on`] on a host without marion's own sandbox.
 fn spawn_in(
     caller_type: &str,
     child_type: &str,
     opt_in: bool,
     read_only_session: bool,
 ) -> (Result<(), SpawnError>, Vec<RecordKind>) {
+    spawn_on(caller_type, child_type, opt_in, read_only_session, false)
+}
+
+/// [`spawn_opted`], from a root whose session the operator started (or not) in a read-only mode,
+/// on a host where marion's own sandbox runs the tree's nodes (or not).
+fn spawn_on(
+    caller_type: &str,
+    child_type: &str,
+    opt_in: bool,
+    read_only_session: bool,
+    sandbox: bool,
+) -> (Result<(), SpawnError>, Vec<RecordKind>) {
     let dir = scratch(&format!(
-        "containment-{caller_type}-{child_type}-{opt_in}-{read_only_session}"
+        "containment-{caller_type}-{child_type}-{opt_in}-{read_only_session}-{sandbox}"
     ));
     // Not a repository: an allowed spawn stops at the worktree question, before any process.
     let tree = dir.join("tree");
     std::fs::create_dir_all(&tree).unwrap();
-    let env = canned_env(&dir.join("state"), &tree, None);
+    let env = Env {
+        os_sandbox: sandbox,
+        ..canned_env(&dir.join("state"), &tree, None)
+    };
     // The caller's recorded table, carrying the opt-in exactly as a root started with it would.
     TypesSnapshot::take(&tree, Some(caller_type))
         .unwrap()
@@ -169,6 +196,35 @@ fn a_node_may_spawn_types_at_least_as_contained_as_itself() {
             "{caller} -> {child} passed the containment gate: {err}"
         );
     }
+}
+
+/// **Under marion's own sandbox a codex starts a claude implementer with no opt-in**, since the
+/// claude child is contained to its workspace as the codex is: past the gate, and no widening
+/// journaled. A sandboxed claude still cannot start a child on a row the sandbox does not cover.
+#[test]
+fn under_marions_sandbox_codex_starts_claude_and_nothing_is_widened() {
+    if !marion_harness::os_sandbox::support().available() {
+        eprintln!(
+            "skipped: {}",
+            marion_harness::os_sandbox::support().describe()
+        );
+        return;
+    }
+    let (result, kinds) = spawn_sandboxed("codex", "claude");
+    let err = result.expect_err("no repository, so no worktree");
+    assert!(matches!(err, SpawnError::NotAGitRepo { .. }), "{err}");
+    assert!(
+        !kinds
+            .iter()
+            .any(|k| matches!(k, RecordKind::WiderDelegation(_))),
+        "{kinds:?}"
+    );
+    let (result, _) = spawn_sandboxed("claude", "acp-goose");
+    let err = result.expect_err("an unmeasured row is not contained");
+    assert!(
+        matches!(&err, SpawnError::WiderThanParent(r) if r.axes == [Axis::Containment]),
+        "{err}"
+    );
 }
 
 /// **A session started in plan mode is a read-only non-delegator**, even on claude's implementer

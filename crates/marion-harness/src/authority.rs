@@ -110,6 +110,16 @@ impl Authority {
         }
     }
 
+    /// The authority a node of type `t` holds on `host`: its containment and whether it is
+    /// sandboxed count marion's own sandbox where it applies ([`containment::on`]).
+    pub fn on(t: &AgentType, host: containment::Host) -> Authority {
+        Authority {
+            containment: containment::on(t, host),
+            sandboxed: containment::sandboxed_on(t, host),
+            ..Authority::of(t)
+        }
+    }
+
     /// This authority for a node marion knows to be read-only whatever its type grants — a session
     /// the operator started in a read-only mode (claude's `plan`, codex's `read-only` sandbox), or
     /// a reviewer: it writes and runs nothing, delegates nothing that does, and is contained as a
@@ -120,6 +130,8 @@ impl Authority {
             shell: false,
             containment: Containment::ReadOnly,
             delegates_writes: false,
+            // Its limit is the read-only axis: a sandbox it runs in bounds nothing it may do.
+            sandboxed: false,
             ..self
         }
     }
@@ -255,6 +267,31 @@ pub fn permits_scope(parent: &[Glob], child: &[Glob]) -> Result<(), String> {
 mod tests {
     use super::*;
     use marion_core::agent_type::{builtin, builtin_names};
+
+    /// **A contained codex starts a claude implementer where marion's sandbox contains it too**,
+    /// with no opt-in; under the operator's own login the claude child is uncontained and the
+    /// refusal stands until the operator opts the tree in.
+    #[test]
+    fn a_codex_starts_claude_without_opt_in_where_marions_sandbox_contains_it() {
+        let codex = builtin("codex").unwrap();
+        let claude = builtin("claude").unwrap();
+        let on = |auth, os_sandbox| {
+            let host = crate::containment::Host { auth, os_sandbox };
+            permits_between(
+                &Authority::on(&codex, host),
+                &codex.name,
+                &Authority::on(&claude, host),
+                &claude.name,
+            )
+        };
+        assert_eq!(on(crate::Auth::Canned, true), Ok(()));
+        let refused = on(crate::Auth::Inherited, true).expect_err("uncontained under a live login");
+        assert_eq!(refused.axes, vec![Axis::Containment]);
+        assert!(
+            on(crate::Auth::Canned, false).is_err(),
+            "no sandbox on this host"
+        );
+    }
 
     /// **The sweep: every pair of built-in types**, each judged against the rule stated axis by
     /// axis from the two types alone. A pair is permitted exactly when the child exceeds its parent

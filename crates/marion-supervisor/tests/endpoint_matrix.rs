@@ -170,7 +170,7 @@ fn assert_refused_before_the_node_existed(t: &Tree, err: &str, needles: &[&str])
 
 fn spawn_err(t: &Tree, agent_type: &str, model: &str) -> String {
     run_spawn(
-        &t.env,
+        &common::canned::for_child(&t.env, agent_type),
         &request(t, agent_type, model),
         &TaskId(format!("endpoint-{agent_type}")),
         &Caller::root(
@@ -295,7 +295,7 @@ fn drive_held(cell: &Cell, hold: Option<std::sync::Arc<dyn marion_provider::Hold
     let _cells = providers_at(&base_url);
     let t = tree(cell.agent_type, Some(base_url));
     let contract = run_spawn(
-        &t.env,
+        &common::canned::for_child(&t.env, cell.agent_type),
         &request(&t, cell.agent_type, &format!("{}:{MODEL}", cell.provider)),
         &TaskId(format!("endpoint-{}", cell.agent_type)),
         &Caller::root(

@@ -25,6 +25,24 @@ pub fn canned_env(state: &Path, project_root: &Path, base_url: Option<String>) -
     }
 }
 
+/// `env` for a cell about **one child's harness**, spawned by a claude root: marion's own sandbox on
+/// only where it covers the child's row. Where it does not (a row not yet measured under it), a
+/// claude root the sandbox contains may not start that child without the operator's opt-in, so
+/// the cell runs its tree unsandboxed — the claude root uncontained as well.
+#[allow(dead_code)]
+pub fn for_child(env: &Env, child_type: &str) -> Env {
+    let t = marion_core::agent_type::builtin(child_type)
+        .unwrap_or_else(|| panic!("{child_type} is a built-in type"));
+    let rule = marion_harness::adapter::harness_spec(t.harness).os_sandbox;
+    Env {
+        os_sandbox: !matches!(
+            rule,
+            marion_harness::os_sandbox::OsSandboxRule::Unsupported { .. }
+        ),
+        ..env.clone()
+    }
+}
+
 /// One project, one canned provider, and the `Env` `run_spawn` takes — held together so a test can
 /// spawn into the *same* project more than once.
 pub struct CannedFixture {
