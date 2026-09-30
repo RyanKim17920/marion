@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::encoding::{Duration, Millis, SystemTime};
-use crate::harness::Harness;
+use crate::harness::RecordedHarness;
 use crate::ids::{RAND_BYTES, uuid_v7};
 use crate::review::{Findings, ReviewRecord};
 
@@ -284,7 +284,9 @@ pub type ResultStatus = ExitStatus;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChildRef {
     /// The §3.1 enum, not free text. Serializes as its wire string, so the JSON is unchanged.
-    pub harness: Harness,
+    /// **Recorded**, not [`crate::harness::Harness`]: a contract persisted before its harness was retired still
+    /// reads ([`RecordedHarness`]), and every contract written now names a known one.
+    pub harness: RecordedHarness,
     pub version: String,
     /// The model the child was launched with, **in the harness's own spelling and only if one
     /// actually reached the harness** — the compiled value, exactly as `allowed_tools` records

@@ -103,6 +103,100 @@ impl Harness {
 /// `gemini`: Google's gemini CLI, retired upstream in favour of Antigravity (`agy`).
 pub const RETIRED: &[&str] = &["gemini"];
 
+/// `s` as its [`RETIRED`] entry, or `None` for a name this build never retired.
+pub fn retired(s: &str) -> Option<&'static str> {
+    RETIRED.iter().copied().find(|r| *r == s)
+}
+
+/// **A harness as a persisted file names it**: one this build has, or one it has retired.
+///
+/// What a contract (`TaskContract.child.harness`) and a node's `events.jsonl`
+/// (`Payload::Vendor.harness`) carry. Both were written while the harness was supported, and both
+/// outlive its retirement exactly as the journal does, so reading them must keep the record
+/// rather than fail on it — the rule [`crate::journal::decode`] follows for the journal. A new
+/// record always names a [`Harness`]: [`Self::Retired`] is only ever read, never launched.
+///
+/// The rescue is exactly [`RETIRED`]: a name that is neither a harness nor retired is still an
+/// [`UnknownHarness`], so a typo or a foreign file does not read as history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecordedHarness {
+    Known(Harness),
+    /// A [`RETIRED`] entry, by its wire spelling.
+    Retired(&'static str),
+}
+
+impl RecordedHarness {
+    /// The harness this build can act on, or `None` for a retired one.
+    pub const fn known(self) -> Option<Harness> {
+        match self {
+            RecordedHarness::Known(h) => Some(h),
+            RecordedHarness::Retired(_) => None,
+        }
+    }
+
+    /// The wire spelling, exactly as the file wrote it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RecordedHarness::Known(h) => h.as_str(),
+            RecordedHarness::Retired(s) => s,
+        }
+    }
+
+    /// The name a person reads: [`Harness::cli_name`], and `retired harness (<name>)` for a retired
+    /// one, so no view presents it as a harness it could still run.
+    pub fn cli_name(self) -> String {
+        match self {
+            RecordedHarness::Known(h) => h.cli_name().to_string(),
+            RecordedHarness::Retired(s) => format!("retired harness ({s})"),
+        }
+    }
+}
+
+impl From<Harness> for RecordedHarness {
+    fn from(h: Harness) -> Self {
+        RecordedHarness::Known(h)
+    }
+}
+
+impl PartialEq<Harness> for RecordedHarness {
+    fn eq(&self, other: &Harness) -> bool {
+        self.known() == Some(*other)
+    }
+}
+
+impl fmt::Display for RecordedHarness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for RecordedHarness {
+    type Err = UnknownHarness;
+
+    /// [`Harness::from_str`], then [`RETIRED`], and nothing else.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.parse::<Harness>() {
+            Ok(h) => Ok(RecordedHarness::Known(h)),
+            Err(e) => retired(s).map(RecordedHarness::Retired).ok_or(e),
+        }
+    }
+}
+
+/// The bare wire string, as [`Harness`] writes it: a known harness's file is byte-for-byte what it
+/// was before this type existed.
+impl Serialize for RecordedHarness {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RecordedHarness {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// An unrecognised `harness:` value. §3.1: unknown keys are a **load error**, never a silent
 /// default — defaulting would compile some other harness's argv for a type that asked for one
 /// marion has never heard of.
@@ -218,5 +312,35 @@ mod tests {
         );
         // A derived enum would have written "ClaudeCode" here; that would rewrite every contract.
         assert!(serde_json::from_str::<Harness>("\"ClaudeCode\"").is_err());
+    }
+
+    /// **A recorded harness reads a retired name, and only a retired one.** Every harness and every
+    /// [`RETIRED`] entry round-trips through its wire string; a name that is neither is still the
+    /// same [`UnknownHarness`] a `Harness` refuses it with.
+    #[test]
+    fn a_recorded_harness_keeps_a_retired_name_and_refuses_an_unknown_one() {
+        for h in Harness::ALL {
+            let r: RecordedHarness = serde_json::from_str(&format!("\"{h}\"")).unwrap();
+            assert_eq!(r, RecordedHarness::Known(h));
+            assert_eq!(serde_json::to_string(&r).unwrap(), format!("\"{h}\""));
+        }
+        for name in RETIRED {
+            let r: RecordedHarness = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(r, RecordedHarness::Retired(name));
+            assert_eq!(r.known(), None, "nothing can act on a retired harness");
+            assert_eq!(r.cli_name(), format!("retired harness ({name})"));
+            assert_eq!(serde_json::to_string(&r).unwrap(), format!("\"{name}\""));
+            assert!(name.parse::<Harness>().is_err(), "{name} is no harness");
+        }
+        assert_eq!(
+            "bard".parse::<RecordedHarness>(),
+            Err(UnknownHarness("bard".into()))
+        );
+        let e = serde_json::from_str::<RecordedHarness>("\"bard\"").unwrap_err();
+        assert!(e.to_string().contains("unknown harness"), "{e}");
+        assert_eq!(
+            "claude".parse::<RecordedHarness>(),
+            Ok(RecordedHarness::Known(Harness::ClaudeCode))
+        );
     }
 }

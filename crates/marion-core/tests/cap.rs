@@ -39,7 +39,7 @@ fn contract(comp: Completion) -> TaskContract {
         task_id: TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
         requester: AgentId("019fbf94-0000-7000-8000-000000000001".into()),
         child: ChildRef {
-            harness: marion_core::Harness::Codex,
+            harness: marion_core::Harness::Codex.into(),
             version: "0.146.0".into(),
             // `codex exec` carries no model argument, so a Codex contract names none.
             model: None,
@@ -426,6 +426,39 @@ fn a_contract_persisted_before_child_model_existed_still_deserializes() {
     let back: TaskContract = serde_json::from_value(v).expect("an older contract still reads");
     assert_eq!(back.child.model, None);
     assert_eq!(back, contract(completion()));
+}
+
+/// **A contract persisted before its harness was retired still reads**: every field as it was
+/// written, the harness kept as the retired name it is — and written back unchanged. A harness that
+/// is neither known nor retired is still refused, so the rescue reads history and nothing else.
+#[test]
+fn a_contract_naming_a_retired_harness_reads_and_an_unknown_one_does_not() {
+    use marion_core::harness::RecordedHarness;
+    let with = |harness: &str| {
+        let mut v = serde_json::to_value(contract(completion())).unwrap();
+        v["child"]["harness"] = harness.into();
+        v
+    };
+    let v = with("gemini");
+    let back: TaskContract =
+        serde_json::from_value(v.clone()).expect("an old gemini contract reads");
+    assert_eq!(back.child.harness, RecordedHarness::Retired("gemini"));
+    assert_eq!(back.child.harness.known(), None);
+    let done = back.completion.as_ref().unwrap();
+    assert_eq!(done.status, ExitStatus::Ok);
+    assert_eq!(
+        done.narrative.as_ref().map(|n| n.value.as_str()),
+        Some("did the thing")
+    );
+    assert_eq!(done.changed_paths, [PathBuf::from("src/main.rs")]);
+    assert_eq!(
+        serde_json::to_value(&back).unwrap(),
+        v,
+        "it writes back as it was read"
+    );
+
+    let e = serde_json::from_value::<TaskContract>(with("bard")).unwrap_err();
+    assert!(e.to_string().contains("unknown harness \"bard\""), "{e}");
 }
 
 /// And when a harness *did* carry one, it is a bare string beside the harness — not a nested

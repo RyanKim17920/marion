@@ -172,7 +172,7 @@ impl Draft {
 pub fn from_stream_event(harness: Harness, ev: StreamEvent<'_>) -> Draft {
     let payload = match ev {
         StreamEvent::Frame(json) => Payload::Vendor {
-            harness,
+            harness: harness.into(),
             key: frame_key(json).to_string(),
             json: json.clone(),
         },
@@ -1009,7 +1009,7 @@ mod tests {
     fn frame(key: &str) -> Draft {
         Draft::observed(
             Payload::Vendor {
-                harness: Harness::Codex,
+                harness: Harness::Codex.into(),
                 key: key.into(),
                 json: json!({"item": {"id": "msg_09cb"}}),
             },

@@ -252,7 +252,9 @@ pub fn summary_lines(reviewer: &AgentId, contract: &TaskContract) -> Vec<String>
             "review {short}: the reviewer's contract has no completion"
         )];
     };
-    let warning = unguarded(contract.child.harness).map(|w| format!("review {short}: {w}"));
+    let warning = (contract.child.harness.known())
+        .and_then(unguarded)
+        .map(|w| format!("review {short}: {w}"));
     let Some(f) = c.findings.as_ref() else {
         return warning
             .into_iter()

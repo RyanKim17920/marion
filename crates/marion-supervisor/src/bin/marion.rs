@@ -3407,6 +3407,10 @@ fn watch_the_root(
             };
             match payload {
                 Payload::Vendor { harness, json, .. } => {
+                    // A frame this run's own root wrote names the harness it is running on.
+                    let Some(harness) = harness.known() else {
+                        return;
+                    };
                     let mut buf: Vec<u8> = Vec::new();
                     let _ = self.view.vendor(harness, &json, &mut buf);
                     self.write(&buf);

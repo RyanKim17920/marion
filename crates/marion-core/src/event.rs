@@ -118,7 +118,7 @@ use serde_json::Value;
 
 use crate::contract::{AgentId, ExitStatus, ProcessExit};
 use crate::encoding::SystemTime;
-use crate::harness::Harness;
+use crate::harness::RecordedHarness;
 use crate::ir::{Completeness, EventId, Provenance, SrcSeq};
 use crate::registry::Truncation;
 
@@ -234,7 +234,8 @@ pub enum Payload {
     /// normalized. `key` is the harness's own discriminator for the frame — codex's `item.completed`,
     /// Claude Code's `type` — recorded as the harness spelled it, never translated.
     Vendor {
-        harness: Harness,
+        /// [`RecordedHarness`], so a stream a since-retired harness wrote still reads whole.
+        harness: RecordedHarness,
         key: String,
         json: Value,
     },
@@ -592,7 +593,7 @@ mod tests {
 
     fn frame() -> Payload {
         Payload::Vendor {
-            harness: Harness::Codex,
+            harness: Harness::Codex.into(),
             key: "item.completed".into(),
             json: serde_json::json!({"item": {"id": "msg_09cb"}}),
         }
@@ -831,6 +832,38 @@ mod tests {
         assert!(matches!(
             log.truncation,
             Some(Truncation::Unparsable { .. })
+        ));
+    }
+
+    /// **A stream written by a since-retired harness still reads whole**, its frames naming the
+    /// retired harness; a frame naming a harness that never existed still stops the fold, as any
+    /// line marion cannot read does.
+    #[test]
+    fn a_retired_harness_s_frames_read_and_an_unknown_one_s_do_not() {
+        let named = |harness: &str| {
+            let mut bytes = lines(&stream()[..1]);
+            let line = String::from_utf8(lines(&stream()[1..2])).unwrap();
+            assert!(line.contains(r#""harness":"codex""#), "{line}");
+            bytes.extend(
+                line.replace(r#""harness":"codex""#, &format!(r#""harness":"{harness}""#))
+                    .bytes(),
+            );
+            bytes.extend(lines(&stream()[2..]));
+            read(&bytes)
+        };
+        let (log, out) = named("gemini");
+        assert_eq!(log.truncation, None);
+        assert_eq!(out.len(), 4, "every event of the old stream read");
+        assert!(matches!(
+            &out[1].payload,
+            Payload::Vendor { harness: RecordedHarness::Retired("gemini"), key, .. }
+                if key == "item.completed"
+        ));
+        let (log, out) = named("bard");
+        assert_eq!(out.len(), 1, "nothing past the frame naming no harness");
+        assert!(matches!(
+            log.truncation,
+            Some(Truncation::Unparsable { line: 1, .. })
         ));
     }
 

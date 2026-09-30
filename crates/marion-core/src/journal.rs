@@ -965,9 +965,7 @@ fn decode_retired(line: &[u8]) -> Option<JournalRecord> {
         return None;
     }
     let named: Named = serde_json::from_value(body.clone()).ok()?;
-    if !crate::harness::RETIRED.contains(&named.harness.as_str()) {
-        return None;
-    }
+    crate::harness::retired(&named.harness)?;
     let placement = match was.as_str() {
         "SpawnIntent" => Some(serde_json::from_value::<RetiredPlacement>(body).ok()?),
         "SessionObserved" | "ProfileFailover" => None,

@@ -1599,7 +1599,7 @@ pub fn build_contract(
         // `version` and `model` are provisional: `run_spawn` overwrites them from the **compiled
         // invocation**, which is the only thing that knows what actually ran.
         child: ChildRef {
-            harness,
+            harness: harness.into(),
             version: "unknown".into(),
             model: None,
             provider: None,
