@@ -45,19 +45,15 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
-use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-};
-use crate::auth::Auth;
+use crate::adapter::{DataAdapter, Row};
 use crate::env_filter::{EnvGrant, LoginEnv};
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, Constraint,
-    Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
-    ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
-    Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, ConfigFile,
+    Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    McpServers, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume,
+    Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -187,6 +183,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // A canned node's token sits in its 0600 `settings.json`. A live node's declaration is argv,
     // so the token rides qwen's environment, which its MCP launcher hands the bridge.
     // The OpenAI-compatible key and endpoint qwen reads, and DashScope's.
+    // Under an overlay the node owns its `QWEN_HOME`, so the settings document carries the memory
+    // switch (item 9) and the declaration (`qwen-write-then-report.settings.json`). A live node's
+    // is the operator's: nothing is written, and the declaration rides `--mcp-config`.
+    files: &[ConfigFile {
+        path: "home/settings.json",
+        modes: Modes::Overlay,
+        base: r#"{"memory":{"enableManagedAutoMemory":false}}"#,
+        servers: Some(MCP_SERVERS),
+        pretty: true,
+    }],
     overlay_documents: &[],
     login_env: LoginEnv {
         login: &[
@@ -397,60 +403,17 @@ pub fn mcp_config_document(b: &BridgeEnv) -> String {
     MCP_SERVERS.render(b)
 }
 
-/// qwen 0.23.0, headless `-p` (fixture `tests/fixtures/s25/`).
+/// qwen 0.23.0, headless `-p` (fixture `tests/fixtures/s25/`), served by its row alone.
 ///
 /// Claude Code's shape over an OpenAI provider: both of §3.1's axes are one list — what
 /// `--core-tools` names is both what the model sees and what runs under `--yolo` — and the
-/// declaration is one argv token. See the module docs for the deferred-discovery switch and
-/// the twelve exempt survivors.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct QwenAdapter;
-
-impl HarnessAdapter for QwenAdapter {
-    fn harness(&self) -> Harness {
-        Harness::Qwen
-    }
-
-    /// The declaration token; the refusals are the row's ([`SPEC`]'s `requires`).
-    fn fields(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-        _shape: spec::Shape,
-    ) -> Result<spec::Fields, HarnessError> {
-        let mut f = self.launch_fields(spec, ctx)?;
-        // **Under `Inherited` the declaration is compiled onto argv, not written to a file** —
-        // codex's arrangement, for codex's reason: a live node's settings document is the
-        // operator's own, and `--mcp-config` was measured carrying the same block inline.
-        f.mcp_config = (spec.auth == Auth::Inherited && spec.mcp == McpDeclaration::Marion)
-            .then(|| mcp_config_document(&declared_bridge(self, spec, ctx)));
-        Ok(f)
-    }
-
-    /// Under `Canned`, the settings document: the memory side turn switched off, and the
-    /// declaration where one was asked for. **Nothing at all under `Inherited`** — see
-    /// [`HarnessAdapter::mcp_route`], which is what keeps that from reading as "no bridge".
-    fn config_files(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        if spec.auth == Auth::Inherited {
-            return Ok(Vec::new());
-        }
-        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| declared_bridge(self, spec, ctx));
-        Ok(vec![(
-            settings_path(&spec.config_dir),
-            serde_json::to_string_pretty(&settings_json(bridge.as_ref()))
-                .expect("a Value always serialises"),
-        )])
-    }
-}
+/// declaration is one argv token under live auth, the settings document under an overlay.
+pub const ADAPTER: DataAdapter = DataAdapter::of(&SPEC);
 
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(QwenAdapter)),
+    adapter: |_| Ok(Box::new(ADAPTER)),
 };
 
 #[cfg(test)]

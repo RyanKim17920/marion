@@ -237,6 +237,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     }),
     // Its own key and token, and the Bedrock or Vertex login its switches select.
     // Its own `CLAUDE_CONFIG_DIR` under an overlay (the `env` row above), past onboarding.
+    files: &[],
     overlay_documents: &[CONFIG_SEED],
     login_env: LoginEnv {
         login: &[

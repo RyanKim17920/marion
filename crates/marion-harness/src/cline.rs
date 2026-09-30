@@ -156,6 +156,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         body: Body::McpServers(MCP_SERVERS),
     }),
     // Any provider cline is configured for, by its key.
+    files: &[],
     overlay_documents: &[],
     login_env: LoginEnv {
         login: &[],

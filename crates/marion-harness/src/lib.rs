@@ -56,7 +56,6 @@ pub use cline::ClineAdapter;
 pub use codex::CodexAdapter;
 pub use codex::config_toml;
 pub use copilot::CopilotAdapter;
-pub use goose::GooseAdapter;
 pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, BridgeEnv, DEPTH_ENV, READY_FILE_ENV};
 pub use native::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
@@ -66,7 +65,6 @@ pub use native::{
 };
 pub use opencode::OpenCodeAdapter;
 pub use pi::PiAdapter;
-pub use qwen::QwenAdapter;
 // `opencode` is addressed by module path rather than flattened here. It defines an
 // `MCP_ALIAS` and spells marion's tool names differently — a flattened emitter would make the
 // harness a caller is configuring invisible at the use site, which is the exact confusion §3.1's

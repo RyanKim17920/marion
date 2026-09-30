@@ -197,6 +197,10 @@ pub struct HarnessSpec {
     pub requires: &'static [Requirement],
     /// How §3.1's two axes are compiled from a launch ([`crate::HarnessAdapter::axes`]).
     pub axes: AxesRule,
+    /// **Documents the harness reads beside its declaration**, written under the node's own
+    /// directory before launch, per auth mode ([`ConfigFile`]) — qwen's settings with its memory
+    /// side turn switched off. Empty where the row writes none but its declaration.
+    pub files: &'static [ConfigFile],
     /// How the launch's model reaches the row's [`Field::Model`].
     pub model: ModelForm,
     /// Whether the first turn waits on the bridge's readiness marker (§6.1 step 8).
@@ -1950,6 +1954,40 @@ impl McpServers {
 
 /// The top-level key of an [`McpServers`] document.
 pub const MCP_SERVERS_KEY: &str = "mcpServers";
+
+/// **One document a row writes under the node's directory**, as data: a JSON object, and marion's
+/// server added under [`MCP_SERVERS_KEY`] where a bridge is declared and the document carries the
+/// declaration. Rendered structurally — the base is parsed and the entry inserted — never by
+/// splicing text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigFile {
+    /// Where, relative to the node's config dir; never absolute, never through `..`.
+    pub path: &'static str,
+    /// The auth modes it is written under.
+    pub modes: Modes,
+    /// The document without marion's server: a JSON object, as text.
+    pub base: &'static str,
+    /// marion's server entry in the harness's dialect, where this document is the declaration.
+    pub servers: Option<McpServers>,
+    pub pretty: bool,
+}
+
+impl ConfigFile {
+    /// The document, with `bridge`'s entry where one is declared. `None` where the base is not a
+    /// JSON object — a row the validator refuses ([`crate::sweep::validate`]).
+    pub fn render(self, bridge: Option<&BridgeEnv>) -> Option<String> {
+        let mut doc: serde_json::Value = serde_json::from_str(self.base).ok()?;
+        doc.as_object()?;
+        if let (Some(servers), Some(b)) = (self.servers, bridge) {
+            doc[MCP_SERVERS_KEY] = serde_json::json!({ MCP_ALIAS: servers.entry(b) });
+        }
+        Some(if self.pretty {
+            serde_json::to_string_pretty(&doc).expect("a Value always serialises")
+        } else {
+            doc.to_string()
+        })
+    }
+}
 
 /// How marion's MCP declaration is carried onto a node that keeps the operator's own
 /// configuration — [`McpRoutes::live`], spelled out.

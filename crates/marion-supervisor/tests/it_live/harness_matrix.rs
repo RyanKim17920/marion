@@ -581,7 +581,7 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
 /// between server and tool, which is the sixth spelling of one tool and what (5) asserts here.
 ///
 /// What this cell witnesses that `tests/fixtures/s26/` alone cannot: marion's **own** bridge behind
-/// `--with-extension`, started by goose from the one argv token `GooseAdapter` renders, answering
+/// `--with-extension`, started by goose from the one argv token the goose row renders, answering
 /// `tools/list` before goose's first turn and `tools/call` during it — and the persisted contract
 /// carrying that call's narrative as the child's own words. The bridge's environment reaches it by
 /// inheritance, not through the extension string: goose persists that string's `ENV=v` pairs in
@@ -662,7 +662,7 @@ fn a_cline_child_reports_through_marions_bridge_over_the_openai_wire() {
 /// Claude Code's shape and not its Gemini CLI ancestor's (s25 item 2).
 ///
 /// What this cell witnesses that `tests/fixtures/s25/` alone cannot: marion's **own** bridge behind
-/// the `settings.json` `QwenAdapter::config_files` writes under the relocated `QWEN_HOME`, connected
+/// the `settings.json` the qwen row writes under the relocated `QWEN_HOME`, connected
 /// **before** turn one under `QWEN_CODE_LEGACY_MCP_BLOCKING=1` — without which the tool is deferred
 /// behind `tool_search` and a canned model that never calls that never reaches it.
 #[test]

@@ -174,6 +174,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // so its token rides codex's environment and the `-c` pairs name it in `env_vars`
     // ([`live_config_overrides`]).
     // Its OpenAI key; a custom `model_providers.*.env_key` is the operator's `env_passthrough`.
+    files: &[],
     overlay_documents: &[],
     login_env: LoginEnv {
         login: &[

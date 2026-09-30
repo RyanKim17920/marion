@@ -2125,7 +2125,7 @@ mod tests {
         };
         let mut notes = Vec::new();
         let turn = live_turn(
-            &marion_harness::QwenAdapter,
+            &marion_harness::qwen::ADAPTER,
             Path::new("/bin/sh"),
             &inv,
             probe_tmp().unwrap(),
@@ -2258,7 +2258,7 @@ mod tests {
             session_mode: None,
         };
         let turn = live_turn(
-            &marion_harness::QwenAdapter,
+            &marion_harness::qwen::ADAPTER,
             Path::new("/bin/sh"),
             &inv,
             probe_tmp().unwrap(),

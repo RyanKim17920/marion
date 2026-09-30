@@ -38,23 +38,19 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
-use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-};
+use crate::adapter::{DataAdapter, Row};
 use crate::env_filter::LoginEnv;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec;
 use crate::spec::{
     AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, CommandLine,
     Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
     ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces,
     TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use std::path::PathBuf;
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
 const HOME_DIR: &str = "home";
@@ -181,6 +177,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // the token rides the process environment in both modes; the extension child inherits it.
     // [`extension_declaration`] says why the declaration cannot carry it.
     // Any provider goose is configured for, by its key.
+    files: &[],
     overlay_documents: &[],
     login_env: LoginEnv {
         login: &[],
@@ -551,61 +548,18 @@ pub fn unspellable(b: &BridgeEnv) -> Option<String> {
     EXTENSION.unspellable(b)
 }
 
-/// goose 1.49.0, headless `run -t` (fixture `tests/fixtures/s26/`).
+/// goose 1.49.0, headless `run -t` (fixture `tests/fixtures/s26/`), served by its row alone.
 ///
 /// The `LaunchOnly` shape gemini and copilot take, with gemini's kind of availability axis — a
 /// mode, not a list: the developer extension is loaded whole or not at all — and a declaration
-/// that is one argv token rather than a document. See the module docs for why the bridge's
-/// node token rides the process environment and not that token.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct GooseAdapter;
-
-impl HarnessAdapter for GooseAdapter {
-    fn harness(&self) -> Harness {
-        Harness::Goose
-    }
-
-    /// The unspellable-path refusal, the declaration token, and the environment the bridge
-    /// inherits; the launch-input refusals are the row's ([`SPEC`]'s `requires`).
-    fn fields(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-        _shape: spec::Shape,
-    ) -> Result<spec::Fields, HarnessError> {
-        let mut f = self.launch_fields(spec, ctx)?;
-        if spec.mcp == McpDeclaration::Marion {
-            let bridge = declared_bridge(self, spec, ctx);
-            // goose splits the token on whitespace; a path it would split is refused by name
-            // rather than declared as two arguments.
-            if let Some(token) = unspellable(&bridge) {
-                return Err(HarnessError::Unspellable {
-                    harness: Harness::Goose,
-                    what: format!(
-                        "`--with-extension` is split on whitespace, and {token:?} contains some"
-                    ),
-                });
-            }
-            f.mcp_config = Some(extension_declaration(&bridge));
-        }
-        Ok(f)
-    }
-
-    /// No file at all — see [`HarnessAdapter::mcp_route`], which is what keeps that from reading
-    /// as "this node got no bridge".
-    fn config_files(
-        &self,
-        _spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
-    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        Ok(Vec::new())
-    }
-}
+/// that is one argv token ([`EXTENSION`]) rather than a document. See the module docs for why the
+/// bridge's node token rides the process environment and not that token.
+pub const ADAPTER: DataAdapter = DataAdapter::of(&SPEC);
 
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(GooseAdapter)),
+    adapter: |_| Ok(Box::new(ADAPTER)),
 };
 
 #[cfg(test)]

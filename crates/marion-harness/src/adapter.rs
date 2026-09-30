@@ -485,6 +485,20 @@ pub trait HarnessAdapter {
             .spec()
             .live_declaration
             .and_then(|d| d.argv_name(&spec.config_dir, spec.mcp == McpDeclaration::Marion));
+        // A declaration that is one argv token rides the launch wherever this auth's route is
+        // argv — spelled from the row's body, and refused where the body cannot spell it.
+        if let Some(spec::LiveDeclaration::ArgvInline { flag, body, .. }) =
+            self.spec().live_declaration
+            && matches!(self.mcp_route(spec), McpRoute::Argv(_))
+        {
+            let token = body
+                .spell(&declared_bridge(self, spec, ctx))
+                .map_err(|word| HarnessError::Unspellable {
+                    harness: self.harness(),
+                    what: format!("`{flag}` is split on whitespace, and {word:?} contains some"),
+                })?;
+            f.mcp_config = Some(token);
+        }
         f.title = Some(grammar::session_title(&ctx.agent_id));
         Ok(f)
     }
@@ -558,26 +572,41 @@ pub trait HarnessAdapter {
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        let Some((path, body)) = self
+        let declared = spec.mcp == McpDeclaration::Marion;
+        let bridge = declared.then(|| declared_bridge(self, spec, ctx));
+        let mut documents = Vec::new();
+        if let Some((path, body)) = self
             .spec()
             .live_declaration
             .and_then(spec::LiveDeclaration::document)
-            .filter(|_| spec.mcp == McpDeclaration::Marion)
-        else {
-            return Ok(Vec::new());
-        };
-        if let (spec::Readiness::Marker { marker, .. }, None) =
-            (self.spec().readiness, &ctx.ready_file)
+            .filter(|_| declared)
         {
-            return Err(HarnessError::MissingInput {
-                harness: self.harness(),
-                what: marker,
-            });
+            if let (spec::Readiness::Marker { marker, .. }, None) =
+                (self.spec().readiness, &ctx.ready_file)
+            {
+                return Err(HarnessError::MissingInput {
+                    harness: self.harness(),
+                    what: marker,
+                });
+            }
+            let b = bridge.as_ref().expect("declared above");
+            documents.push((spec.config_dir.join(path), body.render(b)));
         }
-        Ok(vec![(
-            spec.config_dir.join(path),
-            body.render(&declared_bridge(self, spec, ctx)),
-        )])
+        for file in self
+            .spec()
+            .files
+            .iter()
+            .filter(|f| f.modes.covers(spec.auth))
+        {
+            let body = file
+                .render(bridge.as_ref())
+                .ok_or(HarnessError::MissingInput {
+                    harness: self.harness(),
+                    what: "a row document whose base is a JSON object",
+                })?;
+            documents.push((spec.config_dir.join(file.path), body));
+        }
+        Ok(documents)
     }
 
     /// **Every file a launch writes before its harness starts**: [`Self::config_files`], and the
@@ -1187,6 +1216,30 @@ fn render_row(
 /// An adapter as the supervisor holds one: shared across the threads that service a node.
 pub type BoxedAdapter = Box<dyn HarnessAdapter + Send + Sync>;
 
+/// **A harness served by its row alone** — every method the trait's default, reading the row.
+/// What a row read from a file has, and what a built-in row whose every rule is data uses too, so
+/// the two are launched by the same code.
+#[derive(Debug, Clone, Copy)]
+pub struct DataAdapter {
+    row: &'static spec::HarnessSpec,
+}
+
+impl DataAdapter {
+    pub const fn of(row: &'static spec::HarnessSpec) -> Self {
+        DataAdapter { row }
+    }
+}
+
+impl HarnessAdapter for DataAdapter {
+    fn harness(&self) -> Harness {
+        self.row.harness
+    }
+
+    fn spec(&self) -> &'static spec::HarnessSpec {
+        self.row
+    }
+}
+
 /// One harness as marion knows it: its row (`plan-harness-spec.md`) and the adapter that serves it.
 /// Each row file states its own ([`crate::codex::ROW`], …); [`ROWS`] is the only list of them.
 pub struct Row {
@@ -1314,11 +1367,9 @@ mod tests {
     use crate::cline::ClineAdapter;
     use crate::codex::CodexAdapter;
     use crate::copilot::CopilotAdapter;
-    use crate::goose::GooseAdapter;
     use crate::mcp_bridge;
     use crate::mcp_bridge::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::opencode::OpenCodeAdapter;
-    use crate::qwen::QwenAdapter;
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
 
@@ -1934,6 +1985,25 @@ mod tests {
         }
     }
 
+    /// **A row whose one-token declaration cannot spell a launch refuses it by name**, from the
+    /// row's body alone: goose splits `--with-extension` on whitespace, so a bridge path with a
+    /// space in it is named, never declared as two words.
+    #[test]
+    fn a_launch_its_rows_declaration_cannot_spell_is_refused_by_name() {
+        let spaced = SpawnCtx {
+            bridge: "/opt/marion bin/marion-supervisor".into(),
+            ..ctx()
+        };
+        let err = crate::goose::ADAPTER
+            .compile(&goose_spec(), &spaced)
+            .unwrap_err();
+        assert!(
+            matches!(&err, HarnessError::Unspellable { harness: Harness::Goose, what }
+                if what.contains("--with-extension") && what.contains("marion bin")),
+            "{err}"
+        );
+    }
+
     fn goose_spec() -> LaunchSpec {
         LaunchSpec {
             model: Some("canned-1".into()),
@@ -2163,7 +2233,7 @@ mod tests {
             ("codex", Box::new(CodexAdapter), codex_spec()),
             ("opencode", Box::new(OpenCodeAdapter), opencode_spec()),
             ("copilot", Box::new(CopilotAdapter), copilot_spec()),
-            ("goose", Box::new(GooseAdapter), goose_spec()),
+            ("goose", Box::new(crate::goose::ADAPTER), goose_spec()),
         ]
     }
 
@@ -2620,14 +2690,14 @@ mod tests {
             );
         }
         for spec in [goose_spec(), writing(goose_spec())] {
-            let inv = GooseAdapter.compile(&spec, &ctx()).unwrap();
+            let inv = crate::goose::ADAPTER.compile(&spec, &ctx()).unwrap();
             let compiled = match inv.args.iter().position(|a| a == "--with-builtin") {
                 // Absent from argv is not absent from the record: no flag *is* the default mode.
                 None => goose::NO_BUILTIN.to_string(),
                 Some(i) => inv.args[i + 1].clone(),
             };
             assert_eq!(
-                GooseAdapter.compiled_permissions(&spec).unwrap(),
+                crate::goose::ADAPTER.compiled_permissions(&spec).unwrap(),
                 vec![format!("with-builtin:{compiled}")]
             );
         }
@@ -4515,7 +4585,7 @@ mod tests {
             model: None,
             ..qwen_spec()
         };
-        let inv = QwenAdapter.compile(&live, &minted).unwrap();
+        let inv = crate::qwen::ADAPTER.compile(&live, &minted).unwrap();
         let joined = inv.args.join(" ");
         assert!(joined.contains("--mcp-config"), "{joined}");
         assert!(
@@ -4536,7 +4606,7 @@ mod tests {
             inv.env
         );
 
-        let canned = QwenAdapter.compile(&qwen_spec(), &minted).unwrap();
+        let canned = crate::qwen::ADAPTER.compile(&qwen_spec(), &minted).unwrap();
         assert!(
             !canned
                 .env
@@ -4545,7 +4615,9 @@ mod tests {
             "{:?}",
             canned.env
         );
-        let files = QwenAdapter.config_files(&qwen_spec(), &minted).unwrap();
+        let files = crate::qwen::ADAPTER
+            .config_files(&qwen_spec(), &minted)
+            .unwrap();
         assert!(
             files
                 .iter()
@@ -4907,7 +4979,7 @@ mod tests {
                 },
             ),
             (
-                Box::new(GooseAdapter),
+                Box::new(crate::goose::ADAPTER),
                 LaunchSpec {
                     auth: Auth::Inherited,
                     base_url: None,
@@ -4927,7 +4999,7 @@ mod tests {
                 },
             ),
             (
-                Box::new(QwenAdapter),
+                Box::new(crate::qwen::ADAPTER),
                 LaunchSpec {
                     auth: Auth::Inherited,
                     base_url: None,

@@ -205,6 +205,29 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
     if (1..row.verified.len()).any(|i| row.verified[..i].contains(&row.verified[i])) {
         fault("version.verified", "a version repeats".into());
     }
+    for file in row.files {
+        let path = std::path::Path::new(file.path);
+        if file.path.is_empty()
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            fault(
+                "files",
+                format!(
+                    "{:?} is not a plain path under the node's directory",
+                    file.path
+                ),
+            );
+        }
+        if file.render(None).is_none() {
+            fault(
+                "files",
+                format!("{:?}'s base is not a JSON object", file.path),
+            );
+        }
+    }
     let mut seen = Vec::new();
     for r in row.wires {
         if unstated(r.note) {
@@ -371,6 +394,28 @@ mod tests {
                 },
                 "version.verified",
                 "version.verified: states no verified version",
+            ),
+            (
+                HarnessSpec {
+                    files: Box::leak(Box::new([spec::ConfigFile {
+                        path: "../settings.json",
+                        ..qwen.files[0]
+                    }])),
+                    ..qwen
+                },
+                "files",
+                "files: \"../settings.json\" is not a plain path under the node's directory",
+            ),
+            (
+                HarnessSpec {
+                    files: Box::leak(Box::new([spec::ConfigFile {
+                        base: "[]",
+                        ..qwen.files[0]
+                    }])),
+                    ..qwen
+                },
+                "files",
+                "files: \"home/settings.json\"'s base is not a JSON object",
             ),
             (
                 HarnessSpec {

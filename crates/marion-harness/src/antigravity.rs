@@ -126,6 +126,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         body: Body::McpServers(MCP_SERVERS),
     }),
     // Its Google login.
+    files: &[],
     overlay_documents: &[],
     login_env: LoginEnv {
         login: &[
