@@ -64,6 +64,8 @@ struct Bed {
     data: PathBuf,
     project: ProjectDir,
     reqlog: PathBuf,
+    key: PathBuf,
+    base_url: String,
     sup: common::Supervisor,
     _server: CannedServer,
     _dir: marion_testsupport::Scratch,
@@ -113,6 +115,8 @@ fn bed_held(tag: &str, script: Script, hold: Option<Arc<dyn Hold>>) -> Option<Be
     );
     Some(Bed {
         project: ProjectDir::new(&state, &key),
+        base_url: server.base_url(),
+        key,
         repo,
         state,
         config,
@@ -125,6 +129,60 @@ fn bed_held(tag: &str, script: Script, hold: Option<Arc<dyn Hold>>) -> Option<Be
 }
 
 impl Bed {
+    /// **SIGKILL the supervisor and start another on the same state**, as a crash and the next
+    /// command would. `between` runs while none is up: the moment to kill what it left behind or
+    /// cut the journal to a crash point.
+    fn restart(&mut self, between: impl FnOnce(&Bed)) {
+        self.sup.stop();
+        between(self);
+        self.sup = common::Supervisor::start_with(
+            &self.state,
+            &self.key,
+            &std::env::var("PATH").unwrap_or_default(),
+            &self.base_url,
+            BOUND,
+            &[
+                ("XDG_CONFIG_HOME", &self.config),
+                ("XDG_DATA_HOME", &self.data),
+            ],
+        );
+    }
+
+    /// The intents that sit in `step`'s seats.
+    fn step_intents(&self, step: u8) -> Vec<marion_core::journal::SpawnIntent> {
+        records(&self.project.journal())
+            .into_iter()
+            .filter_map(|k| match k {
+                RecordKind::SpawnIntent(i)
+                    if i.workflow.as_ref().is_some_and(|s| s.step == step) =>
+                {
+                    Some(i)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Kill the process group of every node the journal says was started for `step`: what a
+    /// crashed supervisor leaves running dies with it here, so nothing outlives the test.
+    fn kill_step_nodes(&self, step: u8) {
+        let ids: Vec<_> = self
+            .step_intents(step)
+            .into_iter()
+            .map(|i| i.agent_id)
+            .collect();
+        for k in records(&self.project.journal()) {
+            if let RecordKind::Spawned(sp) = k
+                && ids.contains(&sp.agent_id)
+                && let Some(pid) = sp.pid
+            {
+                for target in [format!("-{pid}"), pid.to_string()] {
+                    let _ = Command::new("kill").args(["-9", "--", &target]).status();
+                }
+            }
+        }
+    }
+
     /// `text` as the operator's own workflow `name`.
     fn user_workflow(&self, name: &str, text: &str) {
         let dir = self.config.join("marion").join("workflows");
@@ -1084,4 +1142,139 @@ fn a_fast_forward_is_refused_on_a_dirty_or_moved_checkout() {
         moved
     );
     assert!(!bed.repo.join("ok").exists());
+}
+
+/// A step held mid-turn and the step after it, with a rescue gated on the first failing.
+const RESTARTED: &str = r#"schema = 1
+name = "restarted"
+
+[[step]]
+id = "work"
+kind = "agent"
+on = "claude"
+prompt = "WORKMARK: make ok"
+verify = ["test -f ok"]
+
+[[step]]
+id = "rescue"
+kind = "agent"
+on = "claude"
+when = "work:failed"
+prompt = "RESCUEMARK: make ok again"
+verify = ["test -f ok"]
+
+[[step]]
+id = "check"
+kind = "agent"
+on = "claude"
+read_only = true
+prompt = "CHECKMARK: look"
+"#;
+
+fn restart_script() -> Script {
+    Script {
+        nodes: vec![
+            node("WORKMARK", &["ok"], "wrote ok"),
+            node("RESCUEMARK", &["ok"], "rescued"),
+            node("CHECKMARK", &[], "looked"),
+        ],
+        ..Script::default()
+    }
+}
+
+/// **(f) A supervisor SIGKILLed mid-step leaves a run its successor finishes**: the step whose node
+/// was lost with it is not launched again — its seat keeps its one intent — it fails as lost, as a
+/// race's lost seat does, and the run goes on to the step gated on that failure and closes.
+#[test]
+fn a_run_whose_supervisor_is_killed_mid_step_is_finished_by_the_next_without_a_second_launch() {
+    let hold = MarkerHold::new("WORKMARK");
+    let Some(mut bed) = bed_held("wf-restart-mid", restart_script(), Some(hold.clone())) else {
+        return;
+    };
+    bed.user_workflow("restarted", RESTARTED);
+    let wf = bed.run("restarted", &[]).expect("the run opens");
+    hold.await_parked(1);
+    bed.restart(|bed| {
+        bed.kill_step_nodes(0);
+        hold.release();
+    });
+    let mut watcher = bed.watcher();
+    let result = bed.await_close(&mut watcher, &wf);
+    assert_eq!(
+        verdicts(&result),
+        [
+            Some(StepVerdict::Failed),
+            Some(StepVerdict::Succeeded),
+            Some(StepVerdict::Succeeded)
+        ],
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(result.outcome, RunOutcome::Succeeded);
+    assert_eq!(
+        bed.step_intents(0).len(),
+        1,
+        "the lost step was not launched again"
+    );
+    assert_eq!(bed.step_intents(1).len(), 1);
+    assert_eq!(bed.step_intents(2).len(), 1);
+}
+
+/// **(g) A crash between a step's decision and the next step's launch** — the journal's durable
+/// state at that instant, its tail cut at the decision — is finished by the next supervisor, which
+/// launches the next step once and closes the run.
+#[test]
+fn a_run_cut_between_a_decision_and_the_next_launch_is_finished_by_the_next_supervisor() {
+    let hold = MarkerHold::new("CHECKMARK");
+    let Some(mut bed) = bed_held("wf-restart-gap", restart_script(), Some(hold.clone())) else {
+        return;
+    };
+    bed.user_workflow("restarted", RESTARTED);
+    let wf = bed.run("restarted", &[]).expect("the run opens");
+    hold.await_parked(1);
+    bed.restart(|bed| {
+        bed.kill_step_nodes(2);
+        let journal = bed.project.journal();
+        let text = std::fs::read_to_string(&journal).unwrap();
+        let mut kept = String::new();
+        for line in text.lines() {
+            kept.push_str(line);
+            kept.push('\n');
+            // The last decision before the check step's launch: the rescue's skip.
+            if line.contains("WorkflowStepDecided") && line.contains("\"step\":1") {
+                break;
+            }
+        }
+        assert!(
+            kept.len() < text.len(),
+            "the journal is cut before the launch"
+        );
+        std::fs::write(&journal, kept).unwrap();
+        assert!(
+            bed.step_intents(2).is_empty(),
+            "the cut journal has no check intent"
+        );
+        hold.release();
+    });
+    let mut watcher = bed.watcher();
+    let result = bed.await_close(&mut watcher, &wf);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Succeeded,
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(
+        verdicts(&result),
+        [
+            Some(StepVerdict::Succeeded),
+            Some(StepVerdict::Skipped),
+            Some(StepVerdict::Succeeded)
+        ]
+    );
+    assert_eq!(
+        bed.step_intents(2).len(),
+        1,
+        "the check step launched once after the restart"
+    );
 }
