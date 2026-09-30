@@ -1121,7 +1121,7 @@ fn next_attempt(
     at: usize,
     run: &ChildRun,
     adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
-    wt: &Path,
+    wt: crate::spawn::Tree<'_>,
     base: Option<&Oid>,
     remaining: StdDuration,
 ) -> Option<(Next, marion_core::contract::FailureCause)> {
@@ -1550,6 +1550,30 @@ pub fn run_spawn(
     run_spawn_watched(env, req, task_id, caller, &Unwatched)
 }
 
+/// **How far marion trusts the git configuration of `dir`.** A tree under this project's agent
+/// directories is a worktree marion made for a child, so its gitfile is checked and its git
+/// directory pinned ([`crate::gitcmd::Tree::Child`]); any other directory is the operator's own
+/// checkout. Decided by where marion put the tree, never by what is in it, which the child controls.
+pub fn tree_of<'a>(env: &'a Env, dir: &'a Path) -> crate::spawn::Tree<'a> {
+    tree_in(&env.project_dir, &env.project_root, dir)
+}
+
+/// [`tree_of`] from its two parts: the project's state directory and the operator's repository.
+pub fn tree_in<'a>(
+    project: &ProjectDir,
+    project_root: &'a Path,
+    dir: &'a Path,
+) -> crate::spawn::Tree<'a> {
+    if dir.starts_with(project.agents_dir()) {
+        crate::spawn::Tree::Child {
+            wt: dir,
+            repo: project_root,
+        }
+    } else {
+        crate::spawn::Tree::Operator(dir)
+    }
+}
+
 /// Where a working tree declares its own agent types, relative to the tree's root.
 pub const AGENT_TYPES_FILE: &str = ".marion/agents.toml";
 
@@ -1825,8 +1849,14 @@ pub fn run_spawn_watched(
     crate::private_fs::create_dir_all(&ch)?;
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
-    let (workspace, base, cwd_claim, mut prelaunch) =
-        select_workspace(req, &agent_type, &env.project_dir, task_id, &agent_id)?;
+    let (workspace, base, cwd_claim, mut prelaunch) = select_workspace(
+        req,
+        &agent_type,
+        &env.project_dir,
+        &env.project_root,
+        task_id,
+        &agent_id,
+    )?;
     // The tree this child's own children branch from is the one it runs in.
     observer.workspace_chosen(&agent_id, &workspace);
     // Held for the child's whole run. Named rather than `_`, because `let _ = ..` drops immediately
@@ -2287,7 +2317,7 @@ pub fn run_spawn_watched(
             at,
             &run,
             adapter.as_ref(),
-            &wt,
+            tree_of(env, &wt),
             base.as_ref(),
             bound.saturating_sub(launched_at.elapsed()),
         ) {
@@ -2493,16 +2523,18 @@ pub fn run_spawn_watched(
     // No `changed_paths` is fabricated for the no-git case, and there is deliberately no filesystem
     // fallback (mtimes, a directory walk): git is §6.7's one authority for this field, so a second
     // source would be a different measurement wearing the same field name.
-    let changed = base.as_ref().and_then(|b| changed_paths(&wt, b).ok());
+    let tree = tree_of(env, &wt);
+    let changed = base.as_ref().and_then(|b| changed_paths(tree, b).ok());
     let diff = base
         .as_ref()
-        .and_then(|b| diff_text(&wt, b).ok())
+        .and_then(|b| diff_text(tree, agent_dir.path(), b).ok())
         .filter(|d| !d.is_empty());
     // **The child's work onto its own branch, over the same sealed tree the diff describes** —
     // before verification can write into it, and before the reap below removes it. Without this
     // the reap deleted uncommitted work and the diff text was the only copy left.
     // A reviewer's change is a violation to record, never work to land.
     let landed = crate::spawn::Landed::land(
+        tree,
         &workspace,
         base.as_ref().filter(|_| req.review.is_none()),
         changed.as_deref(),
@@ -2664,7 +2696,12 @@ pub fn run_spawn_watched(
     if let Workspace::Worktree { path, branch } = &contract.workspace
         && landed.may_reap()
     {
-        cleanup(&req.repo, path, branch, contract.base_commit.as_ref());
+        cleanup(
+            &env.project_root,
+            path,
+            branch,
+            contract.base_commit.as_ref(),
+        );
     }
     Ok(returned)
 }
@@ -2751,6 +2788,7 @@ fn select_workspace(
     req: &SpawnRequest,
     agent_type: &AgentType,
     project: &ProjectDir,
+    project_root: &Path,
     task_id: &TaskId,
     agent_id: &AgentId,
 ) -> Result<
@@ -2770,7 +2808,7 @@ fn select_workspace(
     // §6.6's occupancy claim is retaken for a `shared-cwd` node, because the claim died with the
     // supervisor that held it and the guarantee it makes has not changed.
     if let Some(r) = &req.resume {
-        let base = crate::spawn::head_commit(r.workspace.path());
+        let base = crate::spawn::head_commit(tree_in(project, project_root, r.workspace.path()));
         let claim = match &r.workspace {
             Workspace::SharedCwd { path }
                 if marion_harness::writes_files(agent_type) && !req.allow_concurrent_writes =>
@@ -2800,7 +2838,7 @@ fn select_workspace(
             // `make_worktree`.
             let carry_work = req.repo.starts_with(project.agents_dir());
             let (base, branch) = crate::spawn::make_worktree_at(
-                &req.repo,
+                tree_in(project, project_root, &req.repo),
                 &wt,
                 &[
                     worktree_branch(agent_id, &req.prompt),
@@ -2810,7 +2848,7 @@ fn select_workspace(
                 carry_work,
             )?;
             let prelaunch = PrelaunchWorktree {
-                repo: req.repo.clone(),
+                repo: project_root.to_path_buf(),
                 target: Some((wt.clone(), branch.clone(), base.clone())),
             };
             Ok((
@@ -2829,7 +2867,7 @@ fn select_workspace(
             // still affords §6.7's diff. Outside a repository there is no commit, and `None` is the
             // honest value; `head_commit` returns it rather than inventing a zero oid, and
             // everything downstream that needs a base is `Option`-typed for exactly this case.
-            let base = crate::spawn::head_commit(&req.repo);
+            let base = crate::spawn::head_commit(tree_in(project, project_root, &req.repo));
             // §6.6: at most one write-capable node per cwd. Taken *before* the child exists and
             // released when this claim drops, which is every exit from `run_spawn_watched`.
             let claim = if marion_harness::writes_files(agent_type) && !req.allow_concurrent_writes
@@ -3297,20 +3335,20 @@ fn persist_contract_and_close_stream(
 /// commit of the child's work, or the child's own — fails the compare and survives. Both steps run
 /// under the one guard so a sibling cannot recreate the branch between them, and a worktree that
 /// could not be removed keeps its branch. Best-effort, as the removal always was.
+///
+/// Run in the operator's own repository `repo` — never in the caller's tree, which may be a child's
+/// worktree whose configuration is the child's — through [`crate::gitcmd::command`].
 fn cleanup(repo: &Path, wt: &Path, branch: &str, base: Option<&Oid>) {
     let _serialized = crate::spawn::repo_write_guard();
     let git = |args: &[&str]| {
-        let mut command = SysCommand::new("git");
-        command
-            .current_dir(repo)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
-            .spawn(&mut command)
-            .and_then(std::process::Child::wait_with_output)
-            .is_ok_and(|out| out.status.success())
+        crate::gitcmd::command(&crate::spawn::Tree::Operator(repo), args).is_ok_and(
+            |mut command| {
+                crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+                    .spawn(&mut command)
+                    .and_then(std::process::Child::wait_with_output)
+                    .is_ok_and(|out| out.status.success())
+            },
+        )
     };
     let removed = git(&["worktree", "remove", "--force", &wt.to_string_lossy()]);
     if let (true, Some(task_ref), Some(base)) = (removed, task_branch_ref(branch), base) {
@@ -3607,7 +3645,13 @@ mod tests {
         };
         let caller_wt = project.agent(&AgentId("caller".into())).worktree();
         std::fs::create_dir_all(caller_wt.parent().unwrap()).unwrap();
-        crate::spawn::make_worktree(&repo, &caller_wt, &["marion/caller".into()], false).unwrap();
+        crate::spawn::make_worktree(
+            crate::spawn::Tree::Operator(&repo),
+            &caller_wt,
+            &["marion/caller".into()],
+            false,
+        )
+        .unwrap();
         std::fs::write(caller_wt.join("src/keep.txt"), "the caller's edit\n").unwrap();
         std::fs::write(repo.join("src/keep.txt"), "the operator's edit\n").unwrap();
 
@@ -3617,6 +3661,7 @@ mod tests {
             &request(&caller_wt),
             &agent_type,
             &project,
+            &repo,
             &TaskId("t-child".into()),
             &child,
         )
@@ -3631,6 +3676,7 @@ mod tests {
             &request(&repo),
             &agent_type,
             &project,
+            &repo,
             &TaskId("t-sibling".into()),
             &sibling,
         )
@@ -3699,7 +3745,7 @@ mod tests {
         };
         assert!(
             matches!(
-                select_workspace(&req, &agent_type, &project, &task_id, &agent_id),
+                select_workspace(&req, &agent_type, &project, &repo, &task_id, &agent_id),
                 Err(SpawnError::NotAGitRepo { .. })
             ),
             "the fixture's repo is deliberately not a repository, so a fresh spawn cannot cut a \
@@ -3713,7 +3759,7 @@ mod tests {
             usage: None,
         });
         let (workspace, _base, _claim, _prelaunch) =
-            select_workspace(&req, &agent_type, &project, &task_id, &agent_id)
+            select_workspace(&req, &agent_type, &project, &repo, &task_id, &agent_id)
                 .expect("the recorded tree needs no repository question asked of it");
         assert_eq!(
             workspace, recorded,
@@ -4271,7 +4317,7 @@ mod tests {
                 0,
                 run,
                 adapter.as_ref(),
-                &wt,
+                crate::spawn::Tree::Operator(&wt),
                 None,
                 StdDuration::from_secs(60),
             )
@@ -4828,22 +4874,35 @@ mod tests {
         };
 
         let unchanged = root.join("wt-unchanged");
-        let (base, _) =
-            crate::spawn::make_worktree(&repo, &unchanged, &["marion/unchanged".into()], false)
-                .unwrap();
+        let (base, _) = crate::spawn::make_worktree(
+            crate::spawn::Tree::Operator(&repo),
+            &unchanged,
+            &["marion/unchanged".into()],
+            false,
+        )
+        .unwrap();
         cleanup(&repo, &unchanged, "marion/unchanged", Some(&base));
         assert!(!unchanged.exists(), "the worktree is removed");
         assert!(
             !exists("marion/unchanged"),
             "and its unchanged branch with it"
         );
-        crate::spawn::make_worktree(&repo, &unchanged, &["marion/unchanged".into()], false)
-            .expect("so the task id can be used again");
+        crate::spawn::make_worktree(
+            crate::spawn::Tree::Operator(&repo),
+            &unchanged,
+            &["marion/unchanged".into()],
+            false,
+        )
+        .expect("so the task id can be used again");
 
         let advanced = root.join("wt-advanced");
-        let (base, _) =
-            crate::spawn::make_worktree(&repo, &advanced, &["marion/advanced".into()], false)
-                .unwrap();
+        let (base, _) = crate::spawn::make_worktree(
+            crate::spawn::Tree::Operator(&repo),
+            &advanced,
+            &["marion/advanced".into()],
+            false,
+        )
+        .unwrap();
         git(
             &advanced,
             &[

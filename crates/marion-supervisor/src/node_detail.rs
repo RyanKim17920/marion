@@ -131,7 +131,15 @@ fn diff_stat(git_dir: &Path, base: &Oid, commit: &Oid) -> Option<DiffStat> {
     let mut cmd = std::process::Command::new("git");
     cmd.arg("--git-dir")
         .arg(git_dir)
-        .args(["diff", "--no-ext-diff", "--no-color", "--shortstat"])
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--shortstat",
+        ])
         .arg(&base.0)
         .arg(&commit.0)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -607,6 +615,56 @@ mod tests {
             diff_stat(&common, &Oid(base), &Oid("0".repeat(40))),
             None,
             "a commit git cannot find is no stat, not zero"
+        );
+    }
+
+    /// **A landed branch's own `.gitattributes` runs no textconv program**: a child can commit
+    /// `* diff=<driver>` naming any driver the operator's config defines, and the stat marion
+    /// computes for the watcher must not run it over the child's content. git 2.50's `--shortstat`
+    /// was measured not to consult textconv at all; `--no-textconv` makes that marion's decision
+    /// rather than git's default, and this pins it.
+    #[test]
+    fn the_diff_stat_runs_no_textconv_driver_the_landed_branch_names() {
+        let dir = marion_testsupport::scratch("detail-diffstat-textconv");
+        let repo = marion_testsupport::fixture_repo(&dir);
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let marker = dir.join("textconv-ran");
+        let driver = dir.join("textconv.sh");
+        std::fs::write(
+            &driver,
+            format!("#!/bin/sh\ntouch '{}'\ncat \"$1\"\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&driver, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "diff.probe.textconv", &driver.to_string_lossy()]);
+        let base = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join(".gitattributes"), "*.txt diff=probe\n").unwrap();
+        std::fs::write(repo.join("src/keep.txt"), "changed by the child\n").unwrap();
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=m@example.invalid",
+            "-c",
+            "user.name=m",
+            "commit",
+            "-qm",
+            "landed",
+        ]);
+        let landed = git(&["rev-parse", "HEAD"]);
+        let stat = diff_stat(&repo.join(".git"), &Oid(base), &Oid(landed));
+        assert!(stat.is_some(), "the stat is still computed");
+        assert!(
+            !marker.exists(),
+            "marion ran a textconv driver the branch named"
         );
     }
 

@@ -6,7 +6,6 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::Command as SysCommand;
 
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, SystemTime};
@@ -420,14 +419,9 @@ fn plain_patch_args<'a>(revs: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {
-    let mut command = SysCommand::new("git");
-    command
-        .current_dir(repo)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+/// `git args` on `tree`, through [`crate::gitcmd::command`]'s hardening.
+fn git(tree: Tree<'_>, args: &[&str]) -> Result<String, SpawnError> {
+    let mut command = crate::gitcmd::command(&tree, args)?;
     let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut command)?
         .wait_with_output()?;
@@ -439,6 +433,8 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
+
+pub use crate::gitcmd::Tree;
 
 fn now() -> SystemTime {
     SystemTime(std::time::SystemTime::now())
@@ -603,7 +599,7 @@ impl CwdClaim {
 /// its HEAD as it always did. The same guard covers the commit and the cut, so no sibling's spawn
 /// can interleave between them.
 pub fn make_worktree(
-    repo: &Path,
+    repo: Tree<'_>,
     path: &Path,
     branches: &[String],
     carry_work: bool,
@@ -615,7 +611,7 @@ pub fn make_worktree(
 /// landed commit — and at `repo`'s HEAD otherwise. `carry_work` applies only to a HEAD cut: a
 /// named commit already is the work the child is to see.
 pub fn make_worktree_at(
-    repo: &Path,
+    repo: Tree<'_>,
     path: &Path,
     branches: &[String],
     at: Option<&Oid>,
@@ -686,7 +682,7 @@ pub fn checked_out_branch(wt: &Path) -> Option<String> {
 /// `rev-parse`. That guard exists because reading HEAD and *writing* a worktree must be one
 /// operation; this reads and writes nothing, so serializing it would add contention to the path that
 /// touches the repository least.
-pub fn head_commit(cwd: &Path) -> Option<Oid> {
+pub fn head_commit(cwd: Tree<'_>) -> Option<Oid> {
     git(cwd, &["rev-parse", "HEAD"])
         .ok()
         .map(|s| s.trim().to_string())
@@ -699,7 +695,7 @@ pub fn head_commit(cwd: &Path) -> Option<Oid> {
 ///
 /// The intent-to-add pass runs against a **scratch index**, never the workspace's own, so
 /// deriving a diff cannot disturb what the user sees in their own repo.
-pub fn changed_paths(wt: &Path, base: &Oid) -> Result<Vec<PathBuf>, SpawnError> {
+pub fn changed_paths(wt: Tree<'_>, base: &Oid) -> Result<Vec<PathBuf>, SpawnError> {
     let mut set: Vec<PathBuf> = Vec::new();
     let mut push = |s: &str| {
         for l in s.lines().filter(|l| !l.trim().is_empty()) {
@@ -721,9 +717,10 @@ pub fn changed_paths(wt: &Path, base: &Oid) -> Result<Vec<PathBuf>, SpawnError> 
 
 /// A scratch `GIT_INDEX_FILE`, seeded from a commit and removed on the way out.
 ///
-/// It lives in the system temp dir and **never inside the workspace**: an index file written under
-/// the worktree would itself show up as an untracked file, so the diff would report the instrument
-/// that produced it.
+/// It lives in `scratch_dir` — the node's own agent directory, marion's and owner-only — and
+/// **never inside the workspace**: an index file written under the worktree would itself show up
+/// as an untracked file, so the diff would report the instrument that produced it. Not the shared
+/// system temp dir either, where a predictable name could be planted or read by another local user.
 struct ScratchIndex(PathBuf);
 
 impl Drop for ScratchIndex {
@@ -736,9 +733,10 @@ impl Drop for ScratchIndex {
 
 impl ScratchIndex {
     /// `GIT_INDEX_FILE=<tmp>` plus `git read-tree <base>`, §6.7's own recipe.
-    fn seeded(wt: &Path, base: &Oid) -> Result<Self, SpawnError> {
-        let path = std::env::temp_dir().join(format!(
-            "marion-diff-index-{}-{:?}",
+    fn seeded(wt: Tree<'_>, scratch_dir: &Path, base: &Oid) -> Result<Self, SpawnError> {
+        crate::private_fs::create_dir_all(scratch_dir)?;
+        let path = scratch_dir.join(format!(
+            "diff-index-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -759,15 +757,11 @@ impl ScratchIndex {
 /// [`TreeSnapshot`] redirects the index *and* the object store. One function, so a caller cannot
 /// half-redirect — which for the snapshot path would mean writing blobs into the operator's own
 /// `.git/objects`.
-fn git_env(wt: &Path, env: &[(&str, &OsStr)], args: &[&str]) -> Result<String, SpawnError> {
-    let mut cmd = SysCommand::new("git");
-    cmd.current_dir(wt).args(args);
+fn git_env(wt: Tree<'_>, env: &[(&str, &OsStr)], args: &[&str]) -> Result<String, SpawnError> {
+    let mut cmd = crate::gitcmd::command(&wt, args)?;
     for (k, v) in env {
         cmd.env(k, v);
     }
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
     let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut cmd)?
         .wait_with_output()?;
@@ -787,7 +781,7 @@ fn git_env(wt: &Path, env: &[(&str, &OsStr)], args: &[&str]) -> Result<String, S
 /// changes what `git status`, `git diff`, `git stash` and `git commit -a` do for the user — on
 /// files marion was only ever reading — and since `isolation` defaults to `shared-cwd`, that
 /// workspace is by default the user's own checkout.
-fn git_indexed(wt: &Path, index: &ScratchIndex, args: &[&str]) -> Result<String, SpawnError> {
+fn git_indexed(wt: Tree<'_>, index: &ScratchIndex, args: &[&str]) -> Result<String, SpawnError> {
     git_env(wt, &[("GIT_INDEX_FILE", index.0.as_os_str())], args)
 }
 
@@ -809,8 +803,8 @@ fn git_indexed(wt: &Path, index: &ScratchIndex, args: &[&str]) -> Result<String,
 /// Untracked paths are enumerated with the same `ls-files --others --exclude-standard` call
 /// [`changed_paths`] uses, so the two derive their subject from one dialect rather than two: a path
 /// that reaches `changed_paths` is a path whose content reaches the diff.
-pub fn diff_text(wt: &Path, base: &Oid) -> Result<String, SpawnError> {
-    let index = ScratchIndex::seeded(wt, base)?;
+pub fn diff_text(wt: Tree<'_>, scratch_dir: &Path, base: &Oid) -> Result<String, SpawnError> {
+    let index = ScratchIndex::seeded(wt, scratch_dir, base)?;
     let untracked: Vec<String> = git(wt, &["ls-files", "--others", "--exclude-standard"])?
         .lines()
         .map(str::trim)
@@ -885,7 +879,11 @@ pub fn commit_message(
 ///
 /// A child that committed its own work and left the tree clean returns its tip with no commit
 /// added; a tree with no changes and no commits returns `None`.
-pub fn commit_child_work(wt: &Path, base: &Oid, message: &str) -> Result<Option<Oid>, SpawnError> {
+pub fn commit_child_work(
+    wt: Tree<'_>,
+    base: &Oid,
+    message: &str,
+) -> Result<Option<Oid>, SpawnError> {
     let _serialized = repo_write_guard();
     commit_all(wt, base, message)
 }
@@ -896,7 +894,7 @@ pub const CARRIED_WORK_MESSAGE: &str =
     "marion: work in progress, carried to a child spawned from it";
 
 /// [`commit_child_work`]'s body, for a caller already holding [`repo_write_guard`].
-fn commit_all(wt: &Path, base: &Oid, message: &str) -> Result<Option<Oid>, SpawnError> {
+fn commit_all(wt: Tree<'_>, base: &Oid, message: &str) -> Result<Option<Oid>, SpawnError> {
     let get = |key: &str| {
         git(wt, &["config", "--get", key])
             .ok()
@@ -954,6 +952,7 @@ impl Landed {
     /// dropping them would destroy the evidence `scope_violations` points at — and stay flagged
     /// there, so the parent decides whether to merge.
     pub fn land(
+        tree: Tree<'_>,
         workspace: &Workspace,
         base: Option<&Oid>,
         changed: Option<&[PathBuf]>,
@@ -965,7 +964,7 @@ impl Landed {
         if changed.is_some_and(<[PathBuf]>::is_empty) {
             return Self::Nothing;
         }
-        match commit_child_work(path, base, message) {
+        match commit_child_work(tree, base, message) {
             Ok(Some(commit)) => Self::OnBranch {
                 branch: branch.clone(),
                 commit,
@@ -1096,7 +1095,13 @@ impl TreeSnapshot {
         // Asked of git rather than by probing for a `.git` entry: a linked worktree's `.git` is a
         // *file*, a bare repo has no worktree at all, and `$GIT_DIR` can point anywhere. One
         // question, answered by the tool that owns it.
-        if git(repo, &["rev-parse", "--is-inside-work-tree"])?.trim() != "true" {
+        if git(
+            Tree::Operator(repo),
+            &["rev-parse", "--is-inside-work-tree"],
+        )?
+        .trim()
+            != "true"
+        {
             return Err(SpawnError::Git(
                 "rev-parse --is-inside-work-tree",
                 format!("{} is not inside a git working tree", repo.display()),
@@ -1154,10 +1159,14 @@ impl TreeSnapshot {
     pub fn take(&self, repo: &Path) -> Result<Oid, SpawnError> {
         // `.` rather than a bare `-A`: identical at the repo root, and explicit about the subject
         // if this is ever called from anywhere else.
-        git_env(repo, &self.env(), &["add", "-A", "."])?;
-        Ok(Oid(git_env(repo, &self.env(), &["write-tree"])?
-            .trim()
-            .into()))
+        git_env(Tree::Operator(repo), &self.env(), &["add", "-A", "."])?;
+        Ok(Oid(git_env(
+            Tree::Operator(repo),
+            &self.env(),
+            &["write-tree"],
+        )?
+        .trim()
+        .into()))
     }
 
     /// **How many entries [`Self::take`] was never allowed to look at**, right now.
@@ -1175,17 +1184,19 @@ impl TreeSnapshot {
     /// The snapshot's own environment, for the reason every other call here uses it: this walk must
     /// not be the one thing in this type that touches the operator's index.
     pub fn ignored_entries(&self, repo: &Path) -> Result<usize, SpawnError> {
-        Ok(
-            git_env(repo, &self.env(), &["status", "--porcelain", "--ignored"])?
-                .lines()
-                .filter(|l| l.starts_with("!!"))
-                .count(),
-        )
+        Ok(git_env(
+            Tree::Operator(repo),
+            &self.env(),
+            &["status", "--porcelain", "--ignored"],
+        )?
+        .lines()
+        .filter(|l| l.starts_with("!!"))
+        .count())
     }
 
     /// `HEAD`, as **context** and never as a diff base. `None` where there is no commit yet.
     pub fn head(&self, repo: &Path) -> Option<Oid> {
-        git(repo, &["rev-parse", "HEAD"])
+        git(Tree::Operator(repo), &["rev-parse", "HEAD"])
             .ok()
             .map(|s| Oid(s.trim().to_string()))
     }
@@ -1195,7 +1206,7 @@ impl TreeSnapshot {
     /// same run.
     pub fn changed_paths(&self, repo: &Path, a: &Oid, b: &Oid) -> Result<Vec<PathBuf>, SpawnError> {
         Ok(git_env(
-            repo,
+            Tree::Operator(repo),
             &self.env(),
             &["diff", "--name-only", "--no-renames", &a.0, &b.0],
         )?
@@ -1209,7 +1220,11 @@ impl TreeSnapshot {
     /// The patch between two trees — the same two revisions [`Self::changed_paths`] is asked about,
     /// so the two share one dialect by construction rather than by agreement. See [`PLAIN_PATCH`].
     pub fn diff(&self, repo: &Path, a: &Oid, b: &Oid) -> Result<String, SpawnError> {
-        git_env(repo, &self.env(), &plain_patch_args(&[&a.0, &b.0]))
+        git_env(
+            Tree::Operator(repo),
+            &self.env(),
+            &plain_patch_args(&[&a.0, &b.0]),
+        )
     }
 
     /// Drop the copied index once both snapshots are taken.
@@ -1231,7 +1246,7 @@ impl TreeSnapshot {
 /// was never the tree. `--path-format=absolute` is deliberately not used — it needs git 2.31 — so
 /// the relative answer is joined onto the repo instead.
 fn git_path(repo: &Path, leaf: &str) -> Result<PathBuf, SpawnError> {
-    let p = git(repo, &["rev-parse", "--git-path", leaf])?;
+    let p = git(Tree::Operator(repo), &["rev-parse", "--git-path", leaf])?;
     let p = Path::new(p.trim());
     Ok(if p.is_absolute() {
         p.to_path_buf()
@@ -1507,6 +1522,7 @@ mod tests {
     use super::*;
     use marion_core::harness::Harness;
     use marion_harness::adapter_for;
+    use std::process::Command as SysCommand;
 
     /// **The pre-move implementation, preserved verbatim.**
     ///
@@ -1658,12 +1674,15 @@ mod tests {
             marion_testsupport::git(&repo, &["config", key, value]);
         }
         assert!(
-            git(&repo, &["diff", "--no-ext-diff", &base.0]).is_err(),
+            git(Tree::Operator(&repo), &["diff", "--no-ext-diff", &base.0]).is_err(),
             "positive control: the configured textconv driver is consulted by a bare diff"
         );
 
         for (label, patch) in [
-            ("diff_text", diff_text(&repo, &base)),
+            (
+                "diff_text",
+                diff_text(Tree::Operator(&repo), &root.join("scratch"), &base),
+            ),
             ("TreeSnapshot::diff", snapshot.diff(&repo, &pre, &post)),
         ] {
             let patch = patch.unwrap_or_else(|e| panic!("{label} failed: {e}"));
@@ -2196,6 +2215,65 @@ mod tests {
         (dir, repo, base)
     }
 
+    /// A child that has repointed its worktree's `.git` at a repository of its own, whose config
+    /// runs `marker`'s script as `core.fsmonitor`. Returns the worktree, the base and the marker.
+    fn planted_fsmonitor(
+        name: &str,
+    ) -> (marion_testsupport::Scratch, PathBuf, PathBuf, Oid, PathBuf) {
+        let (dir, repo, base) = committed_repo(name);
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, "marion/child", false)
+            .expect("the child's worktree");
+        std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
+        let evil = dir.join("evil");
+        tgit(
+            &dir,
+            &[
+                "clone",
+                "-q",
+                &repo.to_string_lossy(),
+                &evil.to_string_lossy(),
+            ],
+        );
+        let marker = dir.join("fsmonitor-ran");
+        let hook = dir.join("hook.sh");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        tgit(
+            &evil,
+            &["config", "core.fsmonitor", &hook.to_string_lossy()],
+        );
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", evil.join(".git").display()),
+        )
+        .unwrap();
+        (dir, repo, wt, base, marker)
+    }
+
+    /// **A child's planted `.git` decides nothing marion's git does in its tree.** The child has
+    /// repointed its gitfile at a repository whose config runs a program as `core.fsmonitor`;
+    /// measuring, diffing and committing the tree must run none of it, and are refused by name.
+    #[test]
+    fn a_childs_repointed_gitfile_runs_no_program_of_its_choosing() {
+        let (_dir, repo, wt, base, marker) = planted_fsmonitor("spawn-planted-fsmonitor");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        let refused = changed_paths(child, &base).expect_err("a repointed gitfile is refused");
+        assert!(
+            refused
+                .to_string()
+                .contains(".git is not the gitfile git wrote"),
+            "{refused}"
+        );
+        let _ = diff_text(child, &wt.with_extension("scratch"), &base);
+        let _ = commit_child_work(child, &base, "m");
+        assert!(!marker.exists(), "marion ran the child's fsmonitor program");
+    }
+
     #[test]
     fn the_operators_configured_identity_is_used_and_marion_s_only_in_its_absence() {
         let some = |s: &str| Some(s.to_string());
@@ -2262,9 +2340,9 @@ mod tests {
         std::fs::write(repo.join("new.txt"), "created\n").unwrap();
         std::fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
         std::fs::write(repo.join("ignored.txt"), "never\n").unwrap();
-        let changed = changed_paths(&repo, &base).unwrap();
+        let changed = changed_paths(Tree::Operator(&repo), &base).unwrap();
 
-        let tip = commit_child_work(&repo, &base, "marion: t: subject\n\nbody\n")
+        let tip = commit_child_work(Tree::Operator(&repo), &base, "marion: t: subject\n\nbody\n")
             .expect("the commit succeeds")
             .expect("and names a tip beyond the base");
         assert_eq!(tip.0, tgit(&repo, &["rev-parse", "HEAD"]));
@@ -2306,14 +2384,27 @@ mod tests {
     fn a_child_cut_from_a_marion_worktree_starts_from_its_parents_uncommitted_work() {
         let (dir, repo, base) = committed_repo("spawn-carry-work");
         let parent = dir.join("parent-wt");
-        make_worktree(&repo, &parent, &["marion/parent".into()], false)
-            .expect("the parent's worktree");
+        make_worktree(
+            Tree::Operator(&repo),
+            &parent,
+            &["marion/parent".into()],
+            false,
+        )
+        .expect("the parent's worktree");
         std::fs::write(parent.join("keep.txt"), "the parent's edit\n").unwrap();
         std::fs::write(parent.join("new.txt"), "the parent's new file\n").unwrap();
 
         let child = dir.join("child-wt");
-        let (child_base, _) = make_worktree(&parent, &child, &["marion/child".into()], true)
-            .expect("the child's worktree, carrying the parent's work");
+        let (child_base, _) = make_worktree(
+            Tree::Child {
+                wt: &parent,
+                repo: &repo,
+            },
+            &child,
+            &["marion/child".into()],
+            true,
+        )
+        .expect("the child's worktree, carrying the parent's work");
         assert_eq!(
             std::fs::read_to_string(child.join("keep.txt")).unwrap(),
             "the parent's edit\n"
@@ -2338,7 +2429,7 @@ mod tests {
         );
         assert_eq!(tgit(&parent, &["status", "--porcelain"]), "");
         assert_eq!(
-            changed_paths(&parent, &base).unwrap().len(),
+            changed_paths(Tree::Operator(&parent), &base).unwrap().len(),
             2,
             "the parent's contract still counts its own work"
         );
@@ -2346,8 +2437,13 @@ mod tests {
         // The operator's checkout is never committed to.
         std::fs::write(repo.join("keep.txt"), "the operator's edit\n").unwrap();
         let plain = dir.join("plain-wt");
-        let (plain_base, _) =
-            make_worktree(&repo, &plain, &["marion/plain".into()], false).unwrap();
+        let (plain_base, _) = make_worktree(
+            Tree::Operator(&repo),
+            &plain,
+            &["marion/plain".into()],
+            false,
+        )
+        .unwrap();
         assert_eq!(plain_base, base, "cut from HEAD");
         assert_eq!(tgit(&repo, &["status", "--porcelain"]), "M keep.txt");
     }
@@ -2355,7 +2451,10 @@ mod tests {
     #[test]
     fn a_tree_with_no_changes_gets_no_commit_and_no_tip() {
         let (_dir, repo, base) = committed_repo("spawn-commit-none");
-        assert_eq!(commit_child_work(&repo, &base, "m").unwrap(), None);
+        assert_eq!(
+            commit_child_work(Tree::Operator(&repo), &base, "m").unwrap(),
+            None
+        );
         assert_eq!(tgit(&repo, &["rev-parse", "HEAD"]), base.0);
     }
 
@@ -2368,7 +2467,7 @@ mod tests {
         tgit(&repo, &["commit", "-qam", "child's own"]);
         let own = tgit(&repo, &["rev-parse", "HEAD"]);
         assert_eq!(
-            commit_child_work(&repo, &base, "m").unwrap(),
+            commit_child_work(Tree::Operator(&repo), &base, "m").unwrap(),
             Some(Oid(own))
         );
         assert_eq!(tgit(&repo, &["rev-list", "--count", "main"]), "2");
@@ -2386,8 +2485,14 @@ mod tests {
             path: repo.clone(),
             branch: "main".into(),
         };
-        let changed = changed_paths(&repo, &base).unwrap();
-        let landed = Landed::land(&workspace, Some(&base), Some(&changed), "m");
+        let changed = changed_paths(Tree::Operator(&repo), &base).unwrap();
+        let landed = Landed::land(
+            Tree::Operator(&repo),
+            &workspace,
+            Some(&base),
+            Some(&changed),
+            "m",
+        );
         assert!(matches!(landed, Landed::Kept { .. }), "{landed:?}");
         assert!(!landed.may_reap());
         let mut contract = verified_contract(
@@ -2416,9 +2521,15 @@ mod tests {
         let (_dir, repo, base) = committed_repo("spawn-commit-skip");
         std::fs::write(repo.join("new.txt"), "created\n").unwrap();
         let shared = Workspace::SharedCwd { path: repo.clone() };
-        let changed = changed_paths(&repo, &base).unwrap();
+        let changed = changed_paths(Tree::Operator(&repo), &base).unwrap();
         assert!(matches!(
-            Landed::land(&shared, Some(&base), Some(&changed), "m"),
+            Landed::land(
+                Tree::Operator(&repo),
+                &shared,
+                Some(&base),
+                Some(&changed),
+                "m"
+            ),
             Landed::Nothing
         ));
         let worktree = Workspace::Worktree {
@@ -2426,7 +2537,13 @@ mod tests {
             branch: "main".into(),
         };
         assert!(matches!(
-            Landed::land(&worktree, Some(&base), Some(&[]), "m"),
+            Landed::land(
+                Tree::Operator(&repo),
+                &worktree,
+                Some(&base),
+                Some(&[]),
+                "m"
+            ),
             Landed::Nothing
         ));
         assert_eq!(

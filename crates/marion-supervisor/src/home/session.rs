@@ -26,7 +26,7 @@ use marion_tui::home::{Ready, Screen as HomeScreen, Tab, Theme};
 use marion_tui::{Screen, ScreenBackend, Sticky};
 use ratatui::Terminal;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -125,10 +125,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 s.foreground(c, "shell");
             }
             Handoff::Diff(branch) => {
-                let mut c = std::process::Command::new("git");
-                c.arg("-C")
-                    .arg(&s.repo)
-                    .args(["log", "-p", "--stat", &format!("HEAD..{branch}")]);
+                let c = branch_log(&s.repo, &branch);
                 s.foreground(c, "git log");
             }
             Handoff::EditTypes => {
@@ -1030,9 +1027,38 @@ fn harnesses_of(rows: &[doctor::Row]) -> Vec<Harness> {
         .collect()
 }
 
+/// `git log -p` of what `branch` added over HEAD, for the operator to read. A child's branch can
+/// carry a `.gitattributes` naming a diff driver, so the patch is shown raw: no textconv program
+/// and no external diff runs over the child's content.
+fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("git");
+    c.arg("-C").arg(repo).args([
+        "log",
+        "-p",
+        "--stat",
+        "--no-textconv",
+        "--no-ext-diff",
+        &format!("HEAD..{branch}"),
+    ]);
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The branch log the home screen hands the operator runs no program a branch names.
+    #[test]
+    fn the_branch_log_runs_no_textconv_or_external_diff() {
+        let c = branch_log(Path::new("/r"), "marion/t-1");
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"--no-textconv".to_string()), "{args:?}");
+        assert!(args.contains(&"--no-ext-diff".to_string()), "{args:?}");
+        assert_eq!(args.last().map(String::as_str), Some("HEAD..marion/t-1"));
+    }
 
     #[test]
     fn the_started_root_is_read_off_runs_own_line() {

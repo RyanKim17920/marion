@@ -710,8 +710,15 @@ fn deriving_the_diff_leaves_the_workspaces_own_index_byte_for_byte_unchanged() {
     let index_before =
         std::fs::read(repo.join(".git/worktrees/wt/index")).expect("the worktree index");
 
-    let diff = marion_supervisor::spawn::diff_text(&wt, &marion_core::contract::Oid(base.clone()))
-        .expect("the diff derives");
+    let diff = marion_supervisor::spawn::diff_text(
+        marion_supervisor::spawn::Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        },
+        &_root.join("scratch"),
+        &marion_core::contract::Oid(base.clone()),
+    )
+    .expect("the diff derives");
 
     assert!(
         diff.contains("+created, never staged"),

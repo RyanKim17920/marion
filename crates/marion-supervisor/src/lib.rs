@@ -56,6 +56,7 @@ pub mod facade_cli;
 /// The translating gateway endpoint mode routes through where a harness and its provider share no
 /// wire: one per node, on 127.0.0.1, behind a per-run bearer.
 pub mod gateway;
+pub mod gitcmd;
 /// The seam between the registry and the socket: §2's `node/get` and `tree/subscribe`, and the
 /// projection of a replayed node into something a client can be told.
 pub mod handler;
