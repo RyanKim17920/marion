@@ -38,7 +38,7 @@
 //!
 //! It needs real `codex` and `claude` on `PATH` at the versions
 //! [`marion_testsupport::PINNED_HARNESSES`] lists, and it does **not** skip when they are missing:
-//! it fails naming the binary, on `m1_hop`'s reasoning.
+//! it fails naming the binary, on `cross_product`'s reasoning.
 
 use std::path::Path;
 use std::process::Command;

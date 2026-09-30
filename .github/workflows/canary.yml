@@ -116,6 +116,8 @@ jobs:
       - name: Matrix against the installed releases
         env:
           MARION_GATE: warn
+          # The whole root×child square in cross_product, which a default run trims.
+          MARION_FULL_MATRIX: "1"
         run: cargo test --workspace --no-fail-fast 2>&1 | tee matrix.log
 
       - name: Admit the drifted releases

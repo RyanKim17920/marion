@@ -4795,7 +4795,7 @@ mod tests {
     }
 
     /// **The half a careless refusal breaks.** `--canned` plus `--base-url` is how every integration
-    /// test in this workspace launches — `m1_hop`, `cross_product`, `journal_wiring` and
+    /// test in this workspace launches — `cross_product`, `journal_wiring` and
     /// `launch_only_root` all pass the pair — so widening the gate to "any `--base-url` is refused"
     /// would take the whole suite down with it. Both a loopback fixture endpoint and a non-loopback
     /// one stay accepted, since `--canned` says where the run is pointed and marion obeys it there.

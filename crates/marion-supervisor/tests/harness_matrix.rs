@@ -1,6 +1,6 @@
 //! The child-side harness matrix: **one real child per harness, end to end, at zero cost.**
 //!
-//! `m1_hop` proves one cell of the cross-product — a claude-code root spawning a codex child. This
+//! `cross_product`'s claude→codex cell proves one pair — a claude-code root spawning a codex child. This
 //! file proves the *child* axis for all four harnesses marion can name, because that is the axis
 //! the adapter seam was built for and the one whose failures are silent: until `run_spawn`
 //! dispatched on `agent_type.harness`, a gemini agent type wrote a Codex config, ran `codex`, and
@@ -36,7 +36,7 @@
 //! [`marion_testsupport::PINNED_HARNESSES`] lists** — that table is the source of truth, and the
 //! gate refuses a binary of the right name at an unrecognised version rather than reporting a
 //! matrix result attributed to a build that never ran.
-//! Like `m1_hop` and `timeout_kill` it is **not** `#[ignore]`d and it does **not** skip
+//! Like `cross_product` and `timeout_kill` it is **not** `#[ignore]`d and it does **not** skip
 //! when a binary is missing: §9's standing rule is that *a criterion that quietly passes on a
 //! machine that cannot run it is worth less than no criterion*. One `#[test]` per harness, never a
 //! loop over five, so a failure names its own cell instead of hiding the four behind it.

@@ -35,6 +35,9 @@ set -u
 # The evidence is only evidence under the strict gate: MARION_GATE=warn would let an unadmitted
 # version run green, which is exactly what this script exists to rule out.
 unset MARION_GATE
+# An admission is evidence for every pair the harness takes part in, so cross_product runs its
+# whole root×child square rather than the default trimmed set.
+export MARION_FULL_MATRIX=1
 
 usage() {
     echo "usage: $0 <harness> <version> [<harness> <version> ...]" >&2

@@ -576,7 +576,7 @@ pub fn verification_process(command: &Command) -> SysCommand {
 /// is the ordinary shape, and a later line must see what an earlier one wrote.
 ///
 /// Every stream is recorded `Capped::whole`: the persisted contract is the uncapped record
-/// (`m1_hop.rs` asserts it) and `cap_for_return` alone shortens the copy handed back. A command
+/// (`cross_product.rs` asserts it) and `cap_for_return` alone shortens the copy handed back. A command
 /// that could not be started at all is an outcome too — `exit_code: None`, the error in `stderr` —
 /// never a gap in the evidence, which would read as "one fewer command was asked for".
 pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
@@ -5964,7 +5964,7 @@ mod tests {
 
     /// §3.1's precedence, in one statement: the request wins, the agent type is the default, and
     /// the two harnesses that have always run without a model still resolve to `None` — which is
-    /// what keeps `codex exec`'s measured argv, and `m1_hop` and `timeout_kill` with it, unchanged.
+    /// what keeps `codex exec`'s measured argv, and `cross_product` and `timeout_kill` with it, unchanged.
     #[test]
     fn the_request_overrides_the_agent_types_default_and_absence_stays_absence() {
         let gemini = builtin("gemini").unwrap();
@@ -6716,7 +6716,7 @@ mod tests {
     }
 
     /// The runner records `Capped::whole`: the persisted contract is the uncapped record
-    /// (`m1_hop.rs` asserts it), and `cap_for_return` alone shortens the copy handed back.
+    /// (`cross_product.rs` asserts it), and `cap_for_return` alone shortens the copy handed back.
     #[test]
     fn a_large_verification_output_is_persisted_whole_and_capped_only_on_return() {
         let scratch = scratch("verif-large");

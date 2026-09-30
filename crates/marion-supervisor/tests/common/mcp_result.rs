@@ -1,5 +1,5 @@
 //! **The text of an MCP tool result as the model was shown it**, read off a recorded provider
-//! request. Shared by `m1_hop.rs`, `native_facade_spawn.rs`, `cross_product.rs` and (for codex)
+//! request. Shared by `native_facade_spawn.rs`, `cross_product.rs` and (for codex)
 //! `m4_fan_in.rs`, which each used to carry a copy, and which broke together when a shape below
 //! moved.
 //!

@@ -5,7 +5,7 @@
 //! it worth anything: the harness can call `spawn`, the supervisor authorizes it as that node, and
 //! the child comes back to the native root as its own tool result.
 //!
-//! It is `m1_hop.rs`'s hop with the root replaced: there the root is `marion run claude`, here it
+//! It is `cross_product.rs`'s claude→codex hop with the root replaced: there the root is `marion run claude`, here it
 //! is the **shipped `marion claude`** on the operator's own controlling PTY. Everything else is
 //! the same shape, deliberately — the same canned provider, the same wire separation (an Anthropic
 //! root and a Responses child, so no marker is needed to tell whose turn a request is), the same

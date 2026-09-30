@@ -2603,7 +2603,7 @@ mod tests {
     /// beneath the failure line is the returned contract in full, unaltered — and since this module
     /// only ever reads the value `run_spawn` hands back, and `persist_then_cap` writes the disk copy
     /// before capping and before returning, nothing here can reach what was persisted. (The disk
-    /// copy itself is asserted by `cross_product`, `harness_matrix`, `m1_hop`, `depth_gate` and
+    /// copy itself is asserted by `cross_product`, `harness_matrix`, `depth_gate` and
     /// `journal_wiring`, which read `contracts/<task_id>.json` back.)
     #[test]
     fn the_contract_beneath_the_failure_line_is_the_whole_unaltered_record() {

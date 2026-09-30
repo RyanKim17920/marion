@@ -8,15 +8,29 @@
 //!   through the real `marion` binary against a **stub** harness on `PATH`, one `#[test]` per
 //!   harness per property. It proves the *root* axis for that surface: claude-code's duplex root
 //!   path is not in it, and nothing real is on the other end of `spawn`.
-//! - `m1_hop.rs` proves exactly one cell of the cross-product — a claude root spawning a codex
-//!   child — end to end against real binaries.
+//! - `m1_hop.rs` proved exactly one cell of the cross-product — a claude root spawning a codex
+//!   child — end to end against real binaries. It is this file's claude→codex cell now, which
+//!   carries its out-of-scope write and its offered-`spawn` check.
 //!
-//! That leaves fifteen combinations that had never run. A gemini root spawning an opencode child
+//! That left fifteen combinations that had never run. A gemini root spawning an opencode child
 //! is not implied by "gemini works as a root" and "opencode works as a child": the two nodes share
 //! one canned provider, one bridge binary, one state tree and — in four of the sixteen cells — one
 //! **wire**, and each of those is a place the two halves can meet and fail. This file closes it.
 //!
-//! # One `#[test]` per cell, sixteen of them, and never a loop
+//! # What runs by default, and the full square
+//!
+//! Every cell runs two real harnesses, and the square grew to 63 cells over nine harnesses — the
+//! heaviest suite in the workspace. By default the file runs the cells that between them cover
+//! every harness **as a root** and every harness **as a child**, and one pair per **wire class**
+//! (the same-wire cells below, and a ring over the OpenAI-chat harnesses), plus three pairs that
+//! cross wires: claude→claude, claude→codex, claude→opencode (the verifying cell), codex→codex,
+//! gemini→gemini, opencode→copilot, copilot→goose, goose→cline, cline→opencode, pi→pi and
+//! qwen→claude. Each runs a harness about as often as a stub on the other side would. The rest of
+//! the square is [`full_matrix_cell`]: skipped by name unless `MARION_FULL_MATRIX=1`, which the
+//! nightly canary and `scripts/admit-harness.sh` set, so every pair still runs every night and on
+//! every admission.
+//!
+//! # One `#[test]` per cell, and never a loop
 //!
 //! A loop reports the first failure and hides the other fifteen. Each cell is named for its own
 //! pair, so a failing run names the cell in its output.
@@ -174,6 +188,10 @@ const CHILD_FILE: &str = "src/xprod-marker.txt";
 
 /// What that file contains. Distinctive, so a stray copy anywhere on the machine is attributable.
 const CHILD_FILE_CONTENT: &str = "marion cross-product marker\n";
+
+/// The claude→codex cell's deliberate out-of-scope write: outside the `src/**` the spawn asks for
+/// and inside the agent type's `**` ceiling, so it is the request that refuses it, detectively.
+const OUT_OF_SCOPE: &str = "out_of_scope/xprod-violation.txt";
 
 // --- the five harnesses, as data ---------------------------------------------------------------
 
@@ -761,12 +779,22 @@ fn drive(root: &Node, child: &Node) -> Evidence {
 
 /// [`drive`], with the root's `spawn` also carrying `verification` commands.
 fn drive_with(root: &Node, child: &Node, verification: &[&str]) -> Evidence {
+    drive_script(root, child, script(root, child, verification))
+}
+
+/// [`drive`], on a script the cell has adjusted from the default one.
+fn drive_script(root: &Node, child: &Node, script: Script) -> Evidence {
     let opt_in = common::needs_wider_opt_in(root.agent_type, child.child_agent_type);
-    drive_as(root, child, verification, opt_in)
+    drive_run(root, child, script, opt_in)
 }
 
 /// [`drive_with`], stating the operator's containment opt-in rather than deriving it.
 fn drive_as(root: &Node, child: &Node, verification: &[&str], opt_in: bool) -> Evidence {
+    drive_run(root, child, script(root, child, verification), opt_in)
+}
+
+/// One cell: `script` served, the opt-in as given.
+fn drive_run(root: &Node, child: &Node, script: Script, opt_in: bool) -> Evidence {
     let name = format!(
         "{}-{}{}",
         root.agent_type,
@@ -781,7 +809,7 @@ fn drive_as(root: &Node, child: &Node, verification: &[&str], opt_in: bool) -> E
     let server = CannedServer::start(Config {
         addr: ([127, 0, 0, 1], 0).into(),
         reqlog: dir.join("provider-requests.jsonl"),
-        script: script(root, child, verification),
+        script,
     })
     .expect("the canned provider binds");
 
@@ -953,6 +981,12 @@ fn tool_result_on(root: &Node, body: &Value) -> Option<String> {
 /// root was actually handed, and last the two whole-run properties — the tree's terminal states and
 /// the leak check.
 fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
+    assert_cell_with(root, child, ev, &[]);
+}
+
+/// [`assert_cell`], for a cell whose child also wrote `violations` — paths outside the `src/**` the
+/// spawn asked for — which must appear in `changed_paths` and be exactly the scope violations.
+fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str]) {
     let cell = format!("{} root → {} child", root.harness, child.harness);
 
     // ---- 1: the run finished, and cleanly. ------------------------------------------------------
@@ -1134,11 +1168,26 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
         comp.changed_paths,
         ev.log_summary()
     );
-    assert!(
-        comp.scope_violations.is_empty(),
-        "{cell}: {CHILD_FILE} is inside the `src/**` this cell's spawn asked for, so a \
-         violation here means the scope comparison, not the child, is wrong: {:?}",
-        comp.scope_violations
+    // Detective, not preventive: an out-of-scope write happened, is in the audit, and is exactly
+    // the violation — a strict subset of `changed_paths`, never a copy of it.
+    for v in violations {
+        assert!(
+            comp.changed_paths.iter().any(|p| p == Path::new(v)),
+            "{cell}: the out-of-scope write {v} must appear in changed_paths: {:?}",
+            comp.changed_paths
+        );
+    }
+    let expected: Vec<std::path::PathBuf> =
+        violations.iter().map(std::path::PathBuf::from).collect();
+    assert_eq!(
+        comp.scope_violations, expected,
+        "{cell}: {CHILD_FILE} is inside the `src/**` this cell's spawn asked for, so it is never a \
+         violation; exactly the cell's deliberate out-of-scope writes are"
+    );
+    assert_eq!(
+        contract.scope_requested,
+        vec![marion_core::contract::Glob("src/**".into())],
+        "{cell}: the scope the spawn asked for is the one the audit compared against"
     );
 
     // ---- 10: the ROOT received the contract, and it is the one on disk. -------------------------
@@ -1276,6 +1325,24 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
 
 /// One cell, start to finish. The binaries are asserted first and by name: a missing one is a
 /// failure that says which, never a skip.
+/// The environment switch that runs the whole square (the nightly canary sets it).
+const FULL_MATRIX_ENV: &str = "MARION_FULL_MATRIX";
+
+/// A cell of the full square beyond the default set: run under `MARION_FULL_MATRIX=1`, and skipped
+/// **loudly, by name** otherwise — the default set already runs each harness as a root, each as a
+/// child and one pair per wire class (see the module docs).
+fn full_matrix_cell(root: &Node, child: &Node) {
+    if std::env::var(FULL_MATRIX_ENV).as_deref() != Ok("1") {
+        eprintln!(
+            "cross_product: {} root × {} child is in the full square; skipped without \
+             {FULL_MATRIX_ENV}=1 (the nightly canary runs it)",
+            root.program, child.program
+        );
+        return;
+    }
+    cell(root, child);
+}
+
 fn cell(root: &Node, child: &Node) {
     for n in [root, child] {
         assert!(
@@ -1288,31 +1355,54 @@ fn cell(root: &Node, child: &Node) {
     assert_cell(root, child, &ev);
 }
 
-// --- the twenty-five cells ----------------------------------------------------------------------
+// --- the cells ----------------------------------------------------------------------------------
 //
 // One `#[test]` each, named for its own pair. Never a loop: a loop reports the first failure and
-// hides the other twenty-four. Sixteen cells over the first four harnesses, then copilot's column
-// and row (q–y); every count of "sixteen" in the prose above predates the fifth harness and
-// describes the original square, whose properties the nine new cells inherit unchanged.
+// hides the rest. Sixteen cells over the first four harnesses, then each later harness's column
+// and row; every count of "sixteen" in the prose above predates the fifth harness and describes
+// the original square. A cell that calls `cell` runs by default; `full_matrix_cell` is the rest of
+// the square (see "What runs by default").
 
 #[test]
 fn a_claude_root_spawns_a_claude_child_and_receives_its_contract() {
     cell(&CLAUDE, &CLAUDE);
 }
 
+/// **The claude→codex hop, end to end** — M1's acceptance run, and the cell that took over
+/// `m1_hop.rs`'s assertions: besides every criterion [`assert_cell`] makes, the codex child writes
+/// a second file outside the `src/**` its spawn asked for, which must be caught detectively — in
+/// `changed_paths` and exactly the scope violation — and the root's harness offered
+/// `mcp__marion__spawn` before it called it.
 #[test]
 fn b_claude_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&CLAUDE, &CODEX);
+    for n in [&CLAUDE, &CODEX] {
+        assert!(on_path(n.program), "this cell drives a REAL {}", n.program);
+    }
+    let mut s = script(&CLAUDE, &CODEX, &[]);
+    s.child_patch = format!(
+        "*** Begin Patch\n*** Add File: {CHILD_FILE}\n+{}\n*** Add File: {OUT_OF_SCOPE}\n+written \
+         outside the requested scope, on purpose\n*** End Patch",
+        CHILD_FILE_CONTENT.trim_end()
+    );
+    let ev = drive_script(&CLAUDE, &CODEX, s);
+    assert_cell_with(&CLAUDE, &CODEX, &ev, &[OUT_OF_SCOPE]);
+    let offers_spawn = |r: &Value| {
+        r.pointer("/body/tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("mcp__marion__spawn"))
+    };
+    assert!(
+        ev.requests.iter().any(offers_spawn),
+        "no request offered mcp__marion__spawn: the root took its turn before the harness had \
+         connected marion's MCP server, so its call could not have been made"
+    );
 }
 
 #[test]
 fn c_claude_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&CLAUDE, &GEMINI);
-}
-
-#[test]
-fn d_claude_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&CLAUDE, &OPENCODE);
+    full_matrix_cell(&CLAUDE, &GEMINI);
 }
 
 /// **An opencode child of a claude root, with every feature a child has** (s36's parity cell): the
@@ -1371,7 +1461,7 @@ fn d_claude_root_spawns_an_opencode_child_that_verifies_lands_its_branch_and_jou
 
 #[test]
 fn e_codex_root_spawns_a_claude_child_and_receives_its_contract() {
-    cell(&CODEX, &CLAUDE);
+    full_matrix_cell(&CODEX, &CLAUDE);
 }
 
 /// **Without the operator's opt-in, a codex root cannot start a claude child**: codex runs
@@ -1408,22 +1498,22 @@ fn f_codex_root_spawns_a_codex_child_and_receives_its_contract() {
 
 #[test]
 fn g_codex_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&CODEX, &GEMINI);
+    full_matrix_cell(&CODEX, &GEMINI);
 }
 
 #[test]
 fn h_codex_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&CODEX, &OPENCODE);
+    full_matrix_cell(&CODEX, &OPENCODE);
 }
 
 #[test]
 fn i_gemini_root_spawns_a_claude_child_and_receives_its_contract() {
-    cell(&GEMINI, &CLAUDE);
+    full_matrix_cell(&GEMINI, &CLAUDE);
 }
 
 #[test]
 fn j_gemini_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&GEMINI, &CODEX);
+    full_matrix_cell(&GEMINI, &CODEX);
 }
 
 #[test]
@@ -1433,27 +1523,27 @@ fn k_gemini_root_spawns_a_gemini_child_and_receives_its_contract() {
 
 #[test]
 fn l_gemini_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&GEMINI, &OPENCODE);
+    full_matrix_cell(&GEMINI, &OPENCODE);
 }
 
 #[test]
 fn m_opencode_root_spawns_a_claude_child_and_receives_its_contract() {
-    cell(&OPENCODE, &CLAUDE);
+    full_matrix_cell(&OPENCODE, &CLAUDE);
 }
 
 #[test]
 fn n_opencode_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&OPENCODE, &CODEX);
+    full_matrix_cell(&OPENCODE, &CODEX);
 }
 
 #[test]
 fn o_opencode_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&OPENCODE, &GEMINI);
+    full_matrix_cell(&OPENCODE, &GEMINI);
 }
 
 #[test]
 fn p_opencode_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&OPENCODE, &OPENCODE);
+    full_matrix_cell(&OPENCODE, &OPENCODE);
 }
 
 // The copilot column and row: the fifth harness as a child of each of the four, and as a root
@@ -1462,17 +1552,17 @@ fn p_opencode_root_spawns_an_opencode_child_and_receives_its_contract() {
 
 #[test]
 fn q_claude_root_spawns_a_copilot_child_and_receives_its_contract() {
-    cell(&CLAUDE, &COPILOT);
+    full_matrix_cell(&CLAUDE, &COPILOT);
 }
 
 #[test]
 fn r_codex_root_spawns_a_copilot_child_and_receives_its_contract() {
-    cell(&CODEX, &COPILOT);
+    full_matrix_cell(&CODEX, &COPILOT);
 }
 
 #[test]
 fn s_gemini_root_spawns_a_copilot_child_and_receives_its_contract() {
-    cell(&GEMINI, &COPILOT);
+    full_matrix_cell(&GEMINI, &COPILOT);
 }
 
 #[test]
@@ -1482,27 +1572,27 @@ fn t_opencode_root_spawns_a_copilot_child_and_receives_its_contract() {
 
 #[test]
 fn u_copilot_root_spawns_a_claude_child_and_receives_its_contract() {
-    cell(&COPILOT, &CLAUDE);
+    full_matrix_cell(&COPILOT, &CLAUDE);
 }
 
 #[test]
 fn v_copilot_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&COPILOT, &CODEX);
+    full_matrix_cell(&COPILOT, &CODEX);
 }
 
 #[test]
 fn w_copilot_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&COPILOT, &GEMINI);
+    full_matrix_cell(&COPILOT, &GEMINI);
 }
 
 #[test]
 fn x_copilot_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&COPILOT, &OPENCODE);
+    full_matrix_cell(&COPILOT, &OPENCODE);
 }
 
 #[test]
 fn y_copilot_root_spawns_a_copilot_child_and_receives_its_contract() {
-    cell(&COPILOT, &COPILOT);
+    full_matrix_cell(&COPILOT, &COPILOT);
 }
 
 // The goose column and row: the sixth harness as a child of each of the five, and as a root over
@@ -1512,22 +1602,22 @@ fn y_copilot_root_spawns_a_copilot_child_and_receives_its_contract() {
 
 #[test]
 fn za_claude_root_spawns_a_goose_child_and_receives_its_contract() {
-    cell(&CLAUDE, &GOOSE);
+    full_matrix_cell(&CLAUDE, &GOOSE);
 }
 
 #[test]
 fn zb_codex_root_spawns_a_goose_child_and_receives_its_contract() {
-    cell(&CODEX, &GOOSE);
+    full_matrix_cell(&CODEX, &GOOSE);
 }
 
 #[test]
 fn zc_gemini_root_spawns_a_goose_child_and_receives_its_contract() {
-    cell(&GEMINI, &GOOSE);
+    full_matrix_cell(&GEMINI, &GOOSE);
 }
 
 #[test]
 fn zd_opencode_root_spawns_a_goose_child_and_receives_its_contract() {
-    cell(&OPENCODE, &GOOSE);
+    full_matrix_cell(&OPENCODE, &GOOSE);
 }
 
 #[test]
@@ -1537,32 +1627,32 @@ fn ze_copilot_root_spawns_a_goose_child_and_receives_its_contract() {
 
 #[test]
 fn zf_goose_root_spawns_a_claude_child_and_receives_its_contract() {
-    cell(&GOOSE, &CLAUDE);
+    full_matrix_cell(&GOOSE, &CLAUDE);
 }
 
 #[test]
 fn zg_goose_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&GOOSE, &CODEX);
+    full_matrix_cell(&GOOSE, &CODEX);
 }
 
 #[test]
 fn zh_goose_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&GOOSE, &GEMINI);
+    full_matrix_cell(&GOOSE, &GEMINI);
 }
 
 #[test]
 fn zi_goose_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&GOOSE, &OPENCODE);
+    full_matrix_cell(&GOOSE, &OPENCODE);
 }
 
 #[test]
 fn zj_goose_root_spawns_a_copilot_child_and_receives_its_contract() {
-    cell(&GOOSE, &COPILOT);
+    full_matrix_cell(&GOOSE, &COPILOT);
 }
 
 #[test]
 fn zk_goose_root_spawns_a_goose_child_and_receives_its_contract() {
-    cell(&GOOSE, &GOOSE);
+    full_matrix_cell(&GOOSE, &GOOSE);
 }
 
 // The cline column and row: the seventh harness as a child of each of the six, and as a root over
@@ -1571,27 +1661,27 @@ fn zk_goose_root_spawns_a_goose_child_and_receives_its_contract() {
 
 #[test]
 fn zl_claude_root_spawns_a_cline_child_and_receives_its_contract() {
-    cell(&CLAUDE, &CLINE);
+    full_matrix_cell(&CLAUDE, &CLINE);
 }
 
 #[test]
 fn zm_codex_root_spawns_a_cline_child_and_receives_its_contract() {
-    cell(&CODEX, &CLINE);
+    full_matrix_cell(&CODEX, &CLINE);
 }
 
 #[test]
 fn zn_gemini_root_spawns_a_cline_child_and_receives_its_contract() {
-    cell(&GEMINI, &CLINE);
+    full_matrix_cell(&GEMINI, &CLINE);
 }
 
 #[test]
 fn zo_opencode_root_spawns_a_cline_child_and_receives_its_contract() {
-    cell(&OPENCODE, &CLINE);
+    full_matrix_cell(&OPENCODE, &CLINE);
 }
 
 #[test]
 fn zp_copilot_root_spawns_a_cline_child_and_receives_its_contract() {
-    cell(&COPILOT, &CLINE);
+    full_matrix_cell(&COPILOT, &CLINE);
 }
 
 #[test]
@@ -1601,17 +1691,17 @@ fn zq_goose_root_spawns_a_cline_child_and_receives_its_contract() {
 
 #[test]
 fn zr_cline_root_spawns_a_claude_child_and_receives_its_contract() {
-    cell(&CLINE, &CLAUDE);
+    full_matrix_cell(&CLINE, &CLAUDE);
 }
 
 #[test]
 fn zs_cline_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&CLINE, &CODEX);
+    full_matrix_cell(&CLINE, &CODEX);
 }
 
 #[test]
 fn zt_cline_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&CLINE, &GEMINI);
+    full_matrix_cell(&CLINE, &GEMINI);
 }
 
 #[test]
@@ -1621,17 +1711,17 @@ fn zu_cline_root_spawns_an_opencode_child_and_receives_its_contract() {
 
 #[test]
 fn zv_cline_root_spawns_a_copilot_child_and_receives_its_contract() {
-    cell(&CLINE, &COPILOT);
+    full_matrix_cell(&CLINE, &COPILOT);
 }
 
 #[test]
 fn zw_cline_root_spawns_a_goose_child_and_receives_its_contract() {
-    cell(&CLINE, &GOOSE);
+    full_matrix_cell(&CLINE, &GOOSE);
 }
 
 #[test]
 fn zx_cline_root_spawns_a_cline_child_and_receives_its_contract() {
-    cell(&CLINE, &CLINE);
+    full_matrix_cell(&CLINE, &CLINE);
 }
 
 // The qwen **row**: the eighth harness as a root over each of the other seven. What these add is Claude
@@ -1649,32 +1739,32 @@ fn zzf_qwen_root_spawns_a_claude_child_and_receives_its_contract() {
 
 #[test]
 fn zzg_qwen_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&QWEN, &CODEX);
+    full_matrix_cell(&QWEN, &CODEX);
 }
 
 #[test]
 fn zzh_qwen_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&QWEN, &GEMINI);
+    full_matrix_cell(&QWEN, &GEMINI);
 }
 
 #[test]
 fn zzi_qwen_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&QWEN, &OPENCODE);
+    full_matrix_cell(&QWEN, &OPENCODE);
 }
 
 #[test]
 fn zzj_qwen_root_spawns_a_copilot_child_and_receives_its_contract() {
-    cell(&QWEN, &COPILOT);
+    full_matrix_cell(&QWEN, &COPILOT);
 }
 
 #[test]
 fn zzk_qwen_root_spawns_a_goose_child_and_receives_its_contract() {
-    cell(&QWEN, &GOOSE);
+    full_matrix_cell(&QWEN, &GOOSE);
 }
 
 #[test]
 fn zzl_qwen_root_spawns_a_cline_child_and_receives_its_contract() {
-    cell(&QWEN, &CLINE);
+    full_matrix_cell(&QWEN, &CLINE);
 }
 
 // The pi **row and column**: the ninth harness, the first with no MCP client of its own, reached
@@ -1683,32 +1773,32 @@ fn zzl_qwen_root_spawns_a_cline_child_and_receives_its_contract() {
 
 #[test]
 fn zzm_claude_root_spawns_a_pi_child_and_receives_its_contract() {
-    cell(&CLAUDE, &PI);
+    full_matrix_cell(&CLAUDE, &PI);
 }
 
 #[test]
 fn zzn_codex_root_spawns_a_pi_child_and_receives_its_contract() {
-    cell(&CODEX, &PI);
+    full_matrix_cell(&CODEX, &PI);
 }
 
 #[test]
 fn zzo_opencode_root_spawns_a_pi_child_and_receives_its_contract() {
-    cell(&OPENCODE, &PI);
+    full_matrix_cell(&OPENCODE, &PI);
 }
 
 #[test]
 fn zzp_pi_root_spawns_a_claude_child_and_receives_its_contract() {
-    cell(&PI, &CLAUDE);
+    full_matrix_cell(&PI, &CLAUDE);
 }
 
 #[test]
 fn zzq_pi_root_spawns_a_codex_child_and_receives_its_contract() {
-    cell(&PI, &CODEX);
+    full_matrix_cell(&PI, &CODEX);
 }
 
 #[test]
 fn zzr_pi_root_spawns_an_opencode_child_and_receives_its_contract() {
-    cell(&PI, &OPENCODE);
+    full_matrix_cell(&PI, &OPENCODE);
 }
 
 #[test]

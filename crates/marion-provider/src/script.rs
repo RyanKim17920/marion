@@ -872,7 +872,7 @@ pub struct Script {
     /// A **second** node in the same run: the root, whose requests reach the same provider.
     ///
     /// `None` — the default — means every request this provider sees belongs to one node, which is
-    /// what `m1_hop` and `harness_matrix` need (in `m1_hop` the root is the only Anthropic speaker
+    /// what `cross_product`'s claude→codex cell and `harness_matrix` need (in that cell the root is the only Anthropic speaker
     /// and the child the only Responses speaker, so the wire already separates them). It is `Some`
     /// for the cross-product matrix, where the root's harness may be the child's.
     pub root: Option<RootScript>,
@@ -1810,7 +1810,7 @@ mod tests {
     }
 
     /// With no edit scripted, the Anthropic node keeps [`classify_root`]'s two steps exactly —
-    /// which is what `m1_hop`'s root and every `harness_matrix` claude child drive.
+    /// which is what `cross_product`'s claude roots and every `harness_matrix` claude child drive.
     #[test]
     fn an_anthropic_script_with_no_edit_is_the_two_step_node_it_always_was() {
         assert!(Script::default().anthropic_edit.is_none());
@@ -2076,8 +2076,8 @@ mod tests {
         }
     }
 
-    /// With no root scripted, nothing changes: the default `Script` is exactly what `m1_hop` and
-    /// `harness_matrix` drive, and it answers every wire as one node's.
+    /// With no root scripted, nothing changes: the default `Script` is exactly what `harness_matrix`
+    /// drives, and it answers every wire as one node's.
     #[test]
     fn a_script_with_no_root_is_the_one_node_script_it_always_was() {
         assert!(Script::default().root.is_none());

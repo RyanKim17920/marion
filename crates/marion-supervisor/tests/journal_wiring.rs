@@ -30,7 +30,7 @@
 //! ```
 //!
 //! It needs real `claude` and `codex` on `PATH` and it does **not** skip when they are missing, for
-//! the reason `m1_hop.rs` gives. Every model call is served by the CannedProvider: **no paid
+//! the reason `cross_product.rs` gives. Every model call is served by the CannedProvider: **no paid
 //! tokens.**
 
 use std::collections::BTreeSet;

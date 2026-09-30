@@ -1,6 +1,6 @@
 //! **The normalization §9 prescribes before a returned contract is compared to its persisted copy.**
 //!
-//! Shared by `m1_hop.rs`, `m4_fan_in.rs` and `cross_product.rs`, which each used to carry a copy.
+//! Shared by `m4_fan_in.rs` and `cross_product.rs`, which each used to carry a copy.
 
 use serde_json::Value;
 

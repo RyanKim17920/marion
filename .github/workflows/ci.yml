@@ -23,7 +23,7 @@
 # they are in the list on the same footing as everything else in it.
 #
 # The suites still named out are the ones whose gate is `on_path` directly, which asserts:
-# acp_child, cross_product, depth_gate, descendant_gate, harness_matrix, journal_wiring, m1_hop,
+# acp_child, cross_product, depth_gate, descendant_gate, harness_matrix, journal_wiring,
 # m4_fan_in, native_facade_e2e, native_facade_smoke, native_facade_spawn, no_git, pane_attach,
 # permission_round_trip, restart_resume, timeout_kill, worktree_reap. Moving one here means giving
 # its tests the skip-capable gate first, not adding its name.

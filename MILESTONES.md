@@ -3985,7 +3985,9 @@ Post-M5: ModelProxy translation. Acceptance criteria for each: design doc §9.
 **The delegation core works.** A real `claude` root calls `mcp__marion__spawn`; a real `codex`
 child starts in a worktree, edits a file, and returns through marion's `report` tool over MCP (S6's
 primary branch); the root receives the structured contract as a tool result; a deliberate
-out-of-scope write is caught detectively; the whole run is canned. `cargo test --test m1_hop`,
+out-of-scope write is caught detectively; the whole run is canned. `cargo test --test m1_hop`
+(since 2026-09-29 `cargo test --test cross_product b_claude_root_spawns_a_codex_child`, which took
+over `m1_hop.rs`'s assertions),
 ~4.7 s *(measured 2026-08-04; **570 tests** across five crates at HEAD `08b4fde`, up from 138 on
 2026-08-03 — see
 "The evidence base" below for what that growth is and, more importantly, what it is not)*.
