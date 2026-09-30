@@ -4905,7 +4905,10 @@ mod tests {
             );
         }
         let declared = mcp_tool_names();
-        assert_eq!(declared, ["spawn", "wait", "status", "list", "steer", "cancel"]);
+        assert_eq!(
+            declared,
+            ["spawn", "wait", "status", "list", "steer", "cancel"]
+        );
         let mcp = (cli::verb("mcp").unwrap().help)();
         assert!(mcp.contains(&declared.join(", ")), "{mcp}");
     }
