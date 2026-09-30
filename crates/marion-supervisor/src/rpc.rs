@@ -39,6 +39,56 @@ pub(crate) const SIGKILL: i32 = 9;
 /// number: §8 calls a binary that hangs on interrupt a distinct finding from one that is absent.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 
+/// The longest line a server may write that marion keeps as a frame. A line is buffered whole
+/// before it is a frame at all, so without a bound one newline-free write grows marion's memory
+/// until the wall clock ends the turn; a line past this is read to its end and dropped.
+pub(crate) const MAX_LINE: usize = 32 * 1024 * 1024;
+
+/// Every line of `r`, as `BufRead::lines` yields them (`\n` or `\r\n` stripped), handed to
+/// `each`, except that a line longer than `max` bytes is discarded as it is read rather than
+/// buffered. Stops at EOF, a read error, or a line that is not UTF-8, as `lines` does.
+pub(crate) fn bounded_lines(mut r: impl BufRead, max: usize, mut each: impl FnMut(String)) {
+    let mut line = Vec::new();
+    let mut oversized = false;
+    loop {
+        let (used, done) = match r.fill_buf() {
+            // A last line with no newline is still a line, as `lines` has it.
+            Ok([]) if line.is_empty() || oversized => return,
+            Ok([]) => (0, true),
+            Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
+                Some(i) => {
+                    if !oversized {
+                        line.extend_from_slice(&buf[..i]);
+                    }
+                    (i + 1, true)
+                }
+                None => {
+                    if !oversized {
+                        line.extend_from_slice(buf);
+                    }
+                    (buf.len(), false)
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        r.consume(used);
+        if line.len() > max {
+            oversized = true;
+            line = Vec::new();
+        }
+        if done && !std::mem::take(&mut oversized) {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            match String::from_utf8(std::mem::take(&mut line)) {
+                Ok(text) => each(text),
+                Err(_) => return,
+            }
+        }
+    }
+}
+
 /// How long after the server's process is gone marion keeps reading its pipe before concluding an
 /// answer is never coming. Not zero: the frames cross a pipe and a mutex after the exit status is
 /// readable, so a server that wrote its last frame and exited in one breath is still being read.
@@ -170,10 +220,10 @@ impl<'a, P: Peer> Driver<'a, P> {
         // started outlives it, so the group kill is this thread's exit condition. It blocks in
         // `read`, so it costs nothing while the server is quiet.
         std::thread::spawn(move || {
-            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            bounded_lines(std::io::BufReader::new(out), MAX_LINE, |line| {
                 sink.lock().lines.push(line);
                 sink.cv.notify_all();
-            }
+            });
             sink.lock().eof = true;
             sink.cv.notify_all();
         });
@@ -483,4 +533,42 @@ fn line_offset(text: &str, n: usize) -> usize {
     text.match_indices('\n')
         .nth(n - 1)
         .map_or(text.len(), |(i, _)| i + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(input: &[u8], max: usize, cap: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        bounded_lines(std::io::BufReader::with_capacity(cap, input), max, |l| {
+            out.push(l)
+        });
+        out
+    }
+
+    /// **A server's line is bounded**: one past `max` is dropped whole, however it arrives in
+    /// reads, and the lines around it survive exactly as `BufRead::lines` would give them.
+    #[test]
+    fn a_line_past_the_bound_is_dropped_and_its_neighbours_kept() {
+        let long = "x".repeat(100);
+        let input = format!("{{\"a\":1}}\r\n{long}\n{{\"b\":2}}\nlast");
+        for cap in [1, 7, 64, 4096] {
+            assert_eq!(
+                lines(input.as_bytes(), 50, cap),
+                ["{\"a\":1}", "{\"b\":2}", "last"],
+                "buffer {cap}"
+            );
+            assert_eq!(
+                lines(input.as_bytes(), 100, cap),
+                ["{\"a\":1}", long.as_str(), "{\"b\":2}", "last"],
+                "a line exactly at the bound is kept (buffer {cap})"
+            );
+        }
+        assert_eq!(
+            lines(b"ok\n\xff\nnever\n", 50, 8),
+            ["ok"],
+            "not UTF-8 ends it"
+        );
+    }
 }

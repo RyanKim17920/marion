@@ -2172,6 +2172,11 @@ pub fn run_spawn_watched(
                     session.observe_line(line);
                 }),
                 turns: feed(),
+                policy: crate::acp_child::ClientPolicy::for_node(
+                    &inv.cwd,
+                    &agent_type,
+                    req.review.is_some(),
+                ),
             })
             .map(|r| ChildRun {
                 stdout: r.stdout,

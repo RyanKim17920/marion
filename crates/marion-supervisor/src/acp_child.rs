@@ -48,7 +48,7 @@
 //! The workspace has no async runtime and `agent-client-protocol` 2.0.0 is not a dependency. One
 //! detached reader thread per pipe and a poll loop, exactly as `doctor` and `run_bounded` do it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -149,6 +149,133 @@ pub struct AcpChildSpec<'a> {
     /// only [`Self::prompt`]. With a feed the session ends only when every prompt has settled and
     /// a `take_or_seal` seals the inbox; see [`prompt_session`].
     pub turns: Option<crate::inbox::TurnFeed>,
+    /// What marion's client lets the agent do through it: which tree its file calls reach and which
+    /// of its tools a permission request is approved for.
+    pub policy: ClientPolicy,
+}
+
+/// The largest file `fs/read_text_file` returns. The whole text goes back in one frame the agent
+/// then holds, so an unbounded read is one request away from exhausting both processes.
+pub const READ_LIMIT: u64 = 16 * 1024 * 1024;
+
+/// **What marion's ACP client does on a node's behalf**, fixed at launch from the node's type and
+/// whether it is read-only.
+///
+/// ACP has no field that narrows an agent's own tools, but the requests an agent sends *marion* are
+/// marion's to answer: `fs/*` touches only the node's own tree, a read-only node's writes are
+/// refused, and `session/request_permission` is approved only for what the node was granted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientPolicy {
+    /// The node's working tree, canonical. Every file call is confined to it.
+    pub root: PathBuf,
+    /// Whether the node may change files: its type writes and it is not read-only.
+    pub writes: bool,
+    /// Whether the node may run commands: its type runs them and it is not read-only.
+    pub runs: bool,
+}
+
+impl ClientPolicy {
+    /// The policy for a node of `ty` working in `root`.
+    pub fn for_node(root: &Path, ty: &marion_core::agent_type::AgentType, read_only: bool) -> Self {
+        Self {
+            root: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            writes: !read_only && marion_harness::adapter::writes_files(ty),
+            runs: !read_only && marion_harness::adapter::runs_commands(ty),
+        }
+    }
+
+    /// Whether the node may do what a `session/request_permission` asks, by the tool's ACP `kind`
+    /// (`read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `other`). A tool
+    /// of no known kind is an MCP tool: marion's own verbs are the node's reason to exist and are
+    /// always approved; any other needs the node's write grant.
+    fn permits(&self, params: &Value) -> bool {
+        let call = params.get("toolCall").unwrap_or(&Value::Null);
+        match call.get("kind").and_then(Value::as_str).unwrap_or("other") {
+            "read" | "search" | "think" | "fetch" => true,
+            "edit" | "delete" | "move" => self.writes,
+            "execute" => self.runs,
+            _ => {
+                self.writes
+                    || call
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t.contains("marion"))
+            }
+        }
+    }
+
+    /// `path` as a canonical path inside [`Self::root`], or why not. A path that does not exist yet
+    /// is placed by its directory, which must exist; a symlink anywhere on the way is followed and
+    /// judged by where it lands.
+    fn confine(&self, path: &str) -> Result<PathBuf, String> {
+        let given = Path::new(path);
+        if !given.is_absolute() {
+            return Err(format!("{path}: ACP file paths are absolute"));
+        }
+        let resolved = match std::fs::canonicalize(given) {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let (Some(dir), Some(name)) = (given.parent(), given.file_name()) else {
+                    return Err(format!("{path}: {e}"));
+                };
+                // A dangling symlink is a place the agent could make marion write outside.
+                if std::fs::symlink_metadata(given).is_ok() {
+                    return Err(format!("{path}: a symlink to nowhere"));
+                }
+                std::fs::canonicalize(dir)
+                    .map_err(|e| format!("{path}: {e}"))?
+                    .join(name)
+            }
+            Err(e) => return Err(format!("{path}: {e}")),
+        };
+        if resolved.starts_with(&self.root) {
+            Ok(resolved)
+        } else {
+            Err(format!(
+                "{path} is outside this node's working tree {}; marion's client reads and writes \
+                 only there",
+                self.root.display()
+            ))
+        }
+    }
+
+    fn read(&self, path: &str) -> Result<String, String> {
+        use std::io::Read as _;
+        let at = self.confine(path)?;
+        let mut text = String::new();
+        std::fs::File::open(&at)
+            .map_err(|e| format!("{path}: {e}"))?
+            .take(READ_LIMIT + 1)
+            .read_to_string(&mut text)
+            .map_err(|e| format!("{path}: {e}"))?;
+        if text.len() as u64 > READ_LIMIT {
+            return Err(format!(
+                "{path} is larger than the {READ_LIMIT} bytes marion's client returns in one read"
+            ));
+        }
+        Ok(text)
+    }
+
+    fn write(&self, path: &str, content: &str) -> Result<(), String> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        if !self.writes {
+            return Err(format!(
+                "{path}: this node is read-only, so marion's client writes nothing for it"
+            ));
+        }
+        let at = self.confine(path)?;
+        // `confine` followed every link already; refusing one here closes the gap in which the
+        // file could be swapped for a link after the check.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(&at)
+            .and_then(|mut f| f.write_all(content.as_bytes()))
+            .map_err(|e| format!("{path}: {e}"))
+    }
 }
 
 impl std::fmt::Debug for AcpChildSpec<'_> {
@@ -304,12 +431,10 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         .checked_add(spec.bound)
         .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400));
 
-    let mut agent =
-        Driver::spawn(spec.inv, spec.tmpdir, spec.on_line, AcpPeer).map_err(|source| {
-            AcpChildError::Spawn {
-                program: spec.inv.program.clone(),
-                source,
-            }
+    let mut agent = Driver::spawn(spec.inv, spec.tmpdir, spec.on_line, AcpPeer(spec.policy))
+        .map_err(|source| AcpChildError::Spawn {
+            program: spec.inv.program.clone(),
+            source,
         })?;
     (spec.on_started)(agent.pid);
 
@@ -697,39 +822,32 @@ fn excerpt(s: &str) -> String {
     crate::rpc::excerpt(s, STDERR_EXCERPT)
 }
 
-/// marion's ACP client: the [`Peer`] that answers what an agent asks mid-turn.
-struct AcpPeer;
+/// marion's ACP client: the [`Peer`] that answers what an agent asks mid-turn, under the node's
+/// [`ClientPolicy`].
+struct AcpPeer(ClientPolicy);
 
 /// A spawned ACP agent: the shared id-correlated driver with marion's ACP client as its peer.
 type Driver<'a> = crate::rpc::Driver<'a, AcpPeer>;
 
 impl Peer for AcpPeer {
-    /// Answer one client-bound request.
+    /// Answer one client-bound request, under the node's [`ClientPolicy`].
     ///
-    /// **Permissively, and the three kinds are not a policy marion invented here.** The shipped
-    /// [`acp::initialize_request`] tells every agent that marion's client does `fs.readTextFile`,
-    /// `fs.writeTextFile` and `terminal` before this driver sees a frame, so a refusal at this
-    /// point would be a capability advertised and then withheld. And a denial would constrain
-    /// nothing that is not already unconstrained: `AcpAdapter::compiled_permissions` records
-    /// [`acp::NO_TOOL_AVAILABILITY_SURFACE`] because ACP has no field anywhere that narrows an
-    /// agent's own tools, and S21's session had `write`, `edit` and `bash` in scope with marion
-    /// asking for nothing. Denying the prompt while the agent holds `bash` would buy a slower turn
-    /// and no safety.
+    /// The shipped [`acp::initialize_request`] tells every agent that marion's client does
+    /// `fs.readTextFile`, `fs.writeTextFile` and `terminal`, so each is answered rather than
+    /// dropped; what the answer allows is the node's grant, never more.
     ///
-    /// **The permission rule, stated once.** Every `session/request_permission` is answered with
-    /// [`allow_option`]'s choice, whoever's tool it is:
-    /// * *marion's own verbs* (`report`, `spawn`, …, in any agent's spelling — S22's claude shim
-    ///   names `mcp__marion__report` in the ask, codex's only in the `tool_call` before it) are
-    ///   approved because the bridge is the node's reason to exist, and an unapproved `report` is
-    ///   a node that did the work and ends `Unreported`;
-    /// * *the agent's other tools* follow the grant, and on ACP the grant is the agent's whole
-    ///   toolset — the contract records [`acp::NO_TOOL_AVAILABILITY_SURFACE`] because the protocol
-    ///   has no field that narrows it. An operator who wants the agent to stop asking at all states
-    ///   the agent's own auto-accept mode as the type's `approval_mode`, which the driver sets as
-    ///   the session mode before the prompt.
+    /// **The permission rule, stated once.** A `session/request_permission` is approved (with
+    /// [`allow_option`]'s choice) only where [`ClientPolicy::permits`] says the node may do it:
+    /// reading always; editing, deleting and moving on a node that writes; executing on a node that
+    /// runs commands; marion's own verbs always, because an unapproved `report` is a node that did
+    /// the work and ends `Unreported`. Anything else is answered with the agent's own reject option
+    /// ([`reject_option`]), or a cancelled outcome where it offers none. Approval is allow-once
+    /// where the agent offers it, never allow-always, so no grant outlives the turn inside the
+    /// agent's own settings.
     ///
-    /// Both are answered allow-once where the agent offers it, never allow-always (see
-    /// [`allow_option`]), so no grant outlives the turn inside the agent's own settings.
+    /// **Files, stated once.** `fs/read_text_file` and `fs/write_text_file` reach only the node's
+    /// working tree, judged after every symlink is followed, and a read returns at most
+    /// [`READ_LIMIT`] bytes; a read-only node's write is refused.
     ///
     /// Anything else gets a JSON-RPC `-32601` naming the method — **answered, not dropped**, for
     /// `duplex`'s reason about unimplemented `control_request`s. `terminal/*` is the live case:
@@ -743,7 +861,11 @@ impl Peer for AcpPeer {
             .unwrap_or_default();
         let params = request.get("params").unwrap_or(&Value::Null).clone();
         match method {
-            "session/request_permission" => match allow_option(&params) {
+            "session/request_permission" => match if self.0.permits(&params) {
+                allow_option(&params)
+            } else {
+                reject_option(&params)
+            } {
                 Some(pick) => ok(
                     &id,
                     json!({"outcome": {"outcome": "selected", "optionId": pick}}),
@@ -754,9 +876,9 @@ impl Peer for AcpPeer {
                 None => ok(&id, json!({"outcome": {"outcome": "cancelled"}})),
             },
             "fs/read_text_file" => match params.get("path").and_then(Value::as_str) {
-                Some(p) => match std::fs::read_to_string(p) {
+                Some(p) => match self.0.read(p) {
                     Ok(text) => ok(&id, json!({"content": text})),
-                    Err(e) => err(&id, -32000, format!("{p}: {e}")),
+                    Err(e) => err(&id, -32000, e),
                 },
                 None => err(&id, -32602, "fs/read_text_file names no `path`".into()),
             },
@@ -767,9 +889,9 @@ impl Peer for AcpPeer {
                 params.get("path").and_then(Value::as_str),
                 params.get("content").and_then(Value::as_str),
             ) {
-                (Some(p), Some(c)) => match std::fs::write(p, c) {
+                (Some(p), Some(c)) => match self.0.write(p, c) {
                     Ok(()) => ok(&id, json!({})),
-                    Err(e) => err(&id, -32000, format!("{p}: {e}")),
+                    Err(e) => err(&id, -32000, e),
                 },
                 _ => err(
                     &id,
@@ -812,6 +934,25 @@ pub fn allow_option(params: &Value) -> Option<String> {
         .find(|o| kind(o) == "allow_once")
         .or_else(|| options.iter().find(|o| kind(o).starts_with("allow")))
         .or_else(|| options.first())
+        .and_then(|o| o.get("optionId")?.as_str())
+        .map(str::to_string)
+}
+
+/// The option a refused permission request is answered with: `reject_once` where it is offered,
+/// else any other reject. `None` where the agent offers no way to say no, which is answered as a
+/// cancelled outcome rather than by selecting an allow.
+pub fn reject_option(params: &Value) -> Option<String> {
+    let options = params.get("options")?.as_array()?;
+    let kind = |o: &Value| {
+        o.get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    options
+        .iter()
+        .find(|o| kind(o) == "reject_once")
+        .or_else(|| options.iter().find(|o| kind(o).starts_with("reject")))
         .and_then(|o| o.get("optionId")?.as_str())
         .map(str::to_string)
 }
@@ -877,6 +1018,172 @@ mod tests {
         }
     }
 
+    /// A node that may write and run commands in `root`: the grant an ACP implementer gets.
+    fn full_grant(root: &Path) -> ClientPolicy {
+        ClientPolicy {
+            root: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            writes: true,
+            runs: true,
+        }
+    }
+
+    fn ask(peer: &mut AcpPeer, method: &str, params: Value) -> Value {
+        peer.answer(&json!({"jsonrpc": "2.0", "id": 7, "method": method, "params": params}))
+    }
+
+    /// **marion's client reaches only the node's own tree.** A read or a write outside it — by an
+    /// absolute path, by `..`, or through a symlink placed inside the tree — is refused, and a
+    /// read-only node's write inside it is refused too. Inside the tree both are performed.
+    #[test]
+    fn fs_calls_are_confined_to_the_nodes_tree_and_a_read_only_node_writes_nothing() {
+        let dir = scratch("acp-fs-confined");
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let outside = dir.join("secret.txt");
+        std::fs::write(&outside, "operator secret").unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
+        std::os::unix::fs::symlink(&dir, tree.join("up")).unwrap();
+        let mut peer = AcpPeer(full_grant(&tree));
+        let text = |v: &Value| v.to_string();
+
+        let inside = tree.join("a.txt");
+        let wrote = ask(
+            &mut peer,
+            "fs/write_text_file",
+            json!({"path": inside, "content": "hi"}),
+        );
+        assert!(wrote.get("result").is_some(), "{wrote}");
+        assert_eq!(std::fs::read_to_string(&inside).unwrap(), "hi");
+        let read = ask(&mut peer, "fs/read_text_file", json!({"path": inside}));
+        assert_eq!(read["result"]["content"], "hi", "{read}");
+
+        for escape in [
+            outside.clone(),
+            tree.join("../secret.txt"),
+            tree.join("link"),
+            tree.join("up/secret.txt"),
+        ] {
+            let r = ask(&mut peer, "fs/read_text_file", json!({"path": escape}));
+            assert!(r.get("error").is_some(), "{escape:?} was read: {r}");
+            assert!(!text(&r).contains("operator secret"), "{r}");
+            let w = ask(
+                &mut peer,
+                "fs/write_text_file",
+                json!({"path": escape, "content": "pwned"}),
+            );
+            assert!(w.get("error").is_some(), "{escape:?} was written: {w}");
+        }
+        let w = ask(
+            &mut peer,
+            "fs/write_text_file",
+            json!({"path": dir.join("new.txt"), "content": "pwned"}),
+        );
+        assert!(w.get("error").is_some(), "{w}");
+        assert!(!dir.join("new.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "operator secret"
+        );
+        let relative = ask(&mut peer, "fs/read_text_file", json!({"path": "a.txt"}));
+        assert!(relative.get("error").is_some(), "{relative}");
+
+        let mut reader = AcpPeer(ClientPolicy {
+            writes: false,
+            runs: false,
+            ..full_grant(&tree)
+        });
+        let w = ask(
+            &mut reader,
+            "fs/write_text_file",
+            json!({"path": inside, "content": "changed"}),
+        );
+        assert!(w.get("error").is_some(), "{w}");
+        assert_eq!(std::fs::read_to_string(&inside).unwrap(), "hi");
+    }
+
+    /// **A whole-file read is bounded**: a file past [`READ_LIMIT`] is refused, not returned.
+    #[test]
+    fn a_read_past_the_limit_is_refused() {
+        let dir = scratch("acp-fs-limit");
+        let big = dir.join("big.txt");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(READ_LIMIT + 1).unwrap();
+        let mut peer = AcpPeer(full_grant(&dir));
+        let r = ask(&mut peer, "fs/read_text_file", json!({"path": big}));
+        assert!(
+            r.get("error").is_some(),
+            "{}",
+            &r.to_string()[..200.min(r.to_string().len())]
+        );
+    }
+
+    /// **Permission follows the grant, never approve-all.** Reading is always approved; editing
+    /// only on a node that writes; executing only on a node that runs commands; marion's own verbs
+    /// always. A refusal selects the agent's reject option, or cancels where it offers none.
+    #[test]
+    fn a_permission_request_is_answered_by_the_nodes_grant() {
+        let options = json!([
+            {"optionId": "yes", "kind": "allow_once"},
+            {"optionId": "no", "kind": "reject_once"}
+        ]);
+        let picked = |policy: &ClientPolicy, call: Value| {
+            let mut peer = AcpPeer(policy.clone());
+            let r = ask(
+                &mut peer,
+                "session/request_permission",
+                json!({"sessionId": "s", "toolCall": call, "options": options}),
+            );
+            r["result"]["outcome"]["optionId"]
+                .as_str()
+                .unwrap_or("cancelled")
+                .to_string()
+        };
+        let dir = scratch("acp-permission");
+        let all = full_grant(&dir);
+        let editor = ClientPolicy {
+            runs: false,
+            ..all.clone()
+        };
+        let reader = ClientPolicy {
+            writes: false,
+            runs: false,
+            ..all.clone()
+        };
+        let edit = json!({"toolCallId": "1", "kind": "edit", "title": "Edit a.txt"});
+        let exec = json!({"toolCallId": "2", "kind": "execute", "title": "rm -rf /"});
+        let read = json!({"toolCallId": "3", "kind": "read", "title": "Read a.txt"});
+        let report = json!({"toolCallId": "4", "kind": "other", "title": "mcp__marion__report"});
+        let foreign = json!({"toolCallId": "5", "kind": "other", "title": "mcp__evil__drop"});
+        for (policy, call, want) in [
+            (&all, &edit, "yes"),
+            (&all, &exec, "yes"),
+            (&editor, &edit, "yes"),
+            (&editor, &exec, "no"),
+            (&reader, &edit, "no"),
+            (&reader, &exec, "no"),
+            (&reader, &read, "yes"),
+            (&reader, &report, "yes"),
+            (&reader, &foreign, "no"),
+        ] {
+            assert_eq!(
+                picked(policy, call.clone()),
+                want,
+                "{policy:?} asked {call}"
+            );
+        }
+        let mut peer = AcpPeer(reader);
+        let no_reject = ask(
+            &mut peer,
+            "session/request_permission",
+            json!({"sessionId": "s", "toolCall": exec,
+                   "options": [{"optionId": "yes", "kind": "allow_once"}]}),
+        );
+        assert_eq!(
+            no_reject["result"]["outcome"]["outcome"], "cancelled",
+            "{no_reject}"
+        );
+    }
+
     /// The `initialize` result, in the shape `AgentHandshake::parse` accepts — wire v1 and a named
     /// agent, since anything else is refused before a session is opened.
     const HELLO: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-acp","version":"0.1"},"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"fork":{}}}}}"#;
@@ -897,6 +1204,7 @@ mod tests {
             on_started,
             on_line: None,
             turns: None,
+            policy: full_grant(&inv.cwd),
         }
     }
 
@@ -1301,6 +1609,7 @@ sleep 15"#,
                 on_started: &|_| panic!("nothing may be spawned"),
                 on_line: None,
                 turns: None,
+                policy: full_grant(&inv.cwd),
             })
             .expect_err("refused")
         };

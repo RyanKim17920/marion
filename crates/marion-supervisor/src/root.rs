@@ -396,6 +396,9 @@ pub struct RootNode {
     /// differently. `CeilingOnly` and not a ceiling-plus-request pair: **no parent authored a
     /// request** — see `marion_core::root_change::RootScope`.
     pub scope: RootScope,
+    /// What marion's ACP client lets an ACP root do through it (`acp_child::ClientPolicy`): its
+    /// own tree only, under its type's grant.
+    pub acp_client: crate::acp_child::ClientPolicy,
     /// The `session/new` request an ACP root is opened with — the one object
     /// `McpRoute::verify` checked carries marion's bridge, so the frame sent is the frame verified.
     /// `None` on every other path, whose declaration travels at launch.
@@ -977,7 +980,6 @@ pub fn prepare_watched(
         mcp_config,
         ready_file,
         token,
-        invocation,
         harness,
         auth: launch.auth,
         surfaces,
@@ -991,6 +993,8 @@ pub fn prepare_watched(
         },
         session_declaration: session,
         profiles,
+        acp_client: crate::acp_child::ClientPolicy::for_node(&invocation.cwd, &agent_type, false),
+        invocation,
         acp_agent: agent_type.acp_agent.clone(),
         resumed: spec.resume.as_ref().map(|r| r.session.clone()),
         resumed_usage: spec.resume.as_ref().and_then(|r| r.usage),
@@ -2495,6 +2499,7 @@ fn launch_acp(
         on_started,
         on_line: Some(&on_line),
         turns: node.turns.clone(),
+        policy: node.acp_client.clone(),
     })?;
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     Ok(RootOutcome {
