@@ -427,8 +427,8 @@ impl Session {
                 self.profile_verb(&["use", &harness, &name]);
                 None
             }
-            Effect::ProfileRemove(name) => {
-                self.profile_verb(&["remove", &name]);
+            Effect::ProfileRemove { harness, name } => {
+                self.profile_verb(&["rm", &harness, &name]);
                 None
             }
             Effect::PreviewType(draft) => {

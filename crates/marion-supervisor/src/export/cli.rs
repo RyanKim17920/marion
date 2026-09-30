@@ -11,7 +11,7 @@ use super::model::{ExportOpts, Format, TimelineMode};
 
 /// The verb's usage line, for the top-level usage text and for a refusal here.
 pub const USAGE: &str = "marion export <agent-id|short-id> [--md|--html] [-o <file>] [--include-prompt] \
-                         [--full-diff] [--timeline all|<n>] [--repo <path>] [--state-dir <path>]";
+                         [--full-diff] [--timeline all|<n>] [--repo <path>]";
 
 /// `marion export`'s arguments, parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]

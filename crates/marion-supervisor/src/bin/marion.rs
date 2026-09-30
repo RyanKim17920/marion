@@ -171,7 +171,7 @@ struct ResumeArgs {
 fn parse_resume(argv: &[String]) -> Result<ResumeArgs, Exit> {
     let mut words = Words::after_verb(argv);
     let (mut target, mut prompt) = (None, String::new());
-    let (mut place, mut backend) = (Place::default(), Backend::default());
+    let (mut place, mut backend) = (Place::default(), Backend::from_env());
     while let Some(word) = words.next()? {
         match word {
             Word::Flag("--prompt", v) => prompt = words.value("--prompt", v)?,
@@ -389,6 +389,8 @@ struct ListArgs {
     target: Option<String>,
     /// Keep only the nodes `tree::attention_of` names; a filter is text, so it prints lines.
     attention: bool,
+    /// Lines even on a terminal (`--plain`, or the old `marion list`).
+    plain: bool,
     place: Place,
 }
 
@@ -398,6 +400,7 @@ fn parse_list(argv: &[String]) -> Result<ListArgs, Exit> {
     while let Some(word) = words.next()? {
         match word {
             Word::Flag("--attention", v) => args.attention = cli::switch("--attention", v)?,
+            Word::Flag("--plain", v) => args.plain = cli::switch("--plain", v)?,
             Word::Flag(f, v) if args.place.take(f, v, &mut words)? => {}
             Word::Flag(f, _) => return Err(cli::unknown(f)),
             Word::Plain(id) if args.target.is_none() => args.target = Some(id.to_string()),
@@ -414,14 +417,11 @@ fn parse_list(argv: &[String]) -> Result<ListArgs, Exit> {
 /// because there is nobody to press a key or the operator asked for a filtered list. It starts no
 /// supervisor.
 fn ls_main(argv: &[String]) -> Result<ExitCode, Exit> {
-    let args = parse_list(argv)?;
-    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let mut args = parse_list(argv)?;
+    // The old `marion list` is `ls --plain`.
+    args.plain |= argv.first().is_some_and(|w| w == "list");
+    let interactive = !args.plain && io::stdin().is_terminal() && io::stdout().is_terminal();
     Ok(ls(args, interactive))
-}
-
-/// `marion list`: [`ls_main`], always as lines.
-fn list_main(argv: &[String]) -> Result<ExitCode, Exit> {
-    Ok(ls(parse_list(argv)?, false))
 }
 
 fn ls(args: ListArgs, interactive: bool) -> ExitCode {
@@ -866,7 +866,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Exit> {
         agent_type: String::new(),
         prompt: String::new(),
         place: Place::default(),
-        backend: Backend::default(),
+        backend: Backend::from_env(),
         model: None,
         timeout_secs: None,
         no_change_record: false,
@@ -3385,6 +3385,7 @@ mod tests {
             assert_eq!(cli::verb(v.name).map(|found| found.name), Some(v.name));
         }
         assert_eq!(cli::VERBS.len(), 15, "a command was added or dropped");
+        assert_eq!(cli::verb("list").map(|v| v.name), Some("ls"));
         assert_eq!(cli::verb("tree").map(|v| v.name), Some("ls"));
         assert!(cli::verb("bogus").is_none());
         let top = cli::top_help();
@@ -4961,18 +4962,15 @@ mod tests {
             "--detach",
             "--no-change-record",
             "--allow-wider-children",
-            "--canned",
-            "--base-url",
             "--repo",
-            "--state-dir",
         ] {
             assert!(u.contains(flag), "{flag} is not documented:\n{u}");
         }
-        // Inert, and kept only for old scripts: documenting it would be advertising nothing.
-        assert!(!u.contains("--live"), "{u}");
-        // `--base-url` must not read as a way to reach a gateway under real auth, which marion
-        // refuses as unimplemented.
-        assert!(u.contains("(only with --canned)"), "{u}");
+        // Test plumbing and environment, still read and not advertised: `--live` is inert,
+        // `--canned`/`--base-url` are `$MARION_CANNED`'s, `--state-dir` is `$MARION_STATE_DIR`'s.
+        for hidden in ["--live", "--canned", "--base-url", "--state-dir"] {
+            assert!(!u.contains(hidden), "{hidden}: {u}");
+        }
         for name in marion_core::agent_type::builtin_names() {
             assert!(u.contains(name), "{name} must be listed");
         }
@@ -4995,6 +4993,21 @@ mod tests {
         ]))
         .unwrap();
         assert!(b.wider_children);
+    }
+
+    /// **`$MARION_CANNED` says `--canned` for a whole shell**: unset, empty or `0` is the
+    /// operator's login, `1` the canned provider at its default address, a URL the provider there.
+    #[test]
+    fn marion_canned_in_the_environment_selects_the_canned_provider() {
+        use cli::Backend;
+        assert!(!Backend::from_value(None).canned);
+        assert!(!Backend::from_value(Some("0")).canned);
+        assert!(!Backend::from_value(Some(" ")).canned);
+        let one = Backend::from_value(Some("1"));
+        assert!(one.canned && one.base_url.is_none());
+        let at = Backend::from_value(Some("http://127.0.0.1:9/v1"));
+        assert!(at.canned);
+        assert_eq!(at.base_url.as_deref(), Some("http://127.0.0.1:9/v1"));
     }
 
     /// **The gate's escape hatch parses, and it is valueless.**

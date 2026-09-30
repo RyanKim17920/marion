@@ -29,10 +29,12 @@ use crate::profiles::{
 };
 
 /// The usage line `marion --help` shows, and what a malformed `profile` verb prints.
+/// `remove <name>` and `list --state-dir` are still read, and not shown: every form names a profile
+/// the same way, `<harness> <name>`.
 pub const USAGE: &str = "usage: marion profile add <harness> <name> [--dir <path>]\n\
-     \x20      marion profile list [--state-dir <path>]\n\
+     \x20      marion profile list\n\
      \x20      marion profile use <harness> <name>\n\
-     \x20      marion profile remove <name> [--purge]";
+     \x20      marion profile rm <harness> <name> [--purge]";
 
 /// `marion profile …`, from this process's environment. `argv` is everything after `profile`.
 pub fn main(argv: &[String]) -> ExitCode {
@@ -101,8 +103,15 @@ pub fn run(
             list(&paths, out)
         }
         ["use", harness, name] => use_default(paths, harness, name, out),
-        ["remove", name] => remove(paths, name, false, out),
-        ["remove", name, "--purge"] => remove(paths, name, true, out),
+        ["rm" | "remove", harness, name] if *name != "--purge" => {
+            remove(paths, Some(harness), name, false, out)
+        }
+        ["rm" | "remove", harness, name, "--purge"] => {
+            remove(paths, Some(harness), name, true, out)
+        }
+        // The old spelling: the name alone.
+        ["remove", name] => remove(paths, None, name, false, out),
+        ["remove", name, "--purge"] => remove(paths, None, name, true, out),
         _ => Err(Refusal::Usage),
     }
 }
@@ -306,18 +315,30 @@ fn use_default(
 /// never a directory the operator adopted with `--dir`, which is theirs.
 fn remove(
     paths: &ProfilePaths,
+    harness: Option<&str>,
     name: &str,
     purge: bool,
     out: &mut dyn Write,
 ) -> Result<(), Refusal> {
+    let harness = harness.map(harness_named).transpose()?;
     let mut file = ProfilesFile::load(&paths.config)?;
     let Some(at) = file.profile.iter().position(|p| p.name == name) else {
         return Err(ProfileError::Unknown {
             name: name.into(),
-            harness: "<harness>".into(),
+            harness: harness.map_or("<harness>", |h| h.as_str()).into(),
         }
         .into());
     };
+    if let Some(h) = harness
+        && file.profile[at].harness != h.as_str()
+    {
+        return Err(ProfileError::HarnessMismatch {
+            name: name.into(),
+            profile_harness: file.profile[at].harness.clone(),
+            harness: h.as_str().into(),
+        }
+        .into());
+    }
     let entry = file.profile.remove(at);
     file.default.retain(|_, n| n != name);
     file.save(&paths.config)?;
@@ -405,6 +426,23 @@ mod tests {
             file.default.is_empty(),
             "adding does not change the default login"
         );
+    }
+
+    /// **`rm` names a profile as every other form does, `<harness> <name>`**, and refuses a
+    /// harness the profile is not for; the old `remove <name>` still works.
+    #[test]
+    fn rm_takes_the_harness_and_the_name_and_remove_still_works() {
+        let (_s, paths, home) = bed("profile-cli-rm");
+        verb(&paths, &home, &["add", "claude", "work"]).unwrap();
+        verb(&paths, &home, &["add", "codex", "cx"]).unwrap();
+        assert!(
+            verb(&paths, &home, &["rm", "codex", "work"]).is_err(),
+            "wrong harness"
+        );
+        verb(&paths, &home, &["rm", "claude", "work"]).unwrap();
+        verb(&paths, &home, &["remove", "cx"]).unwrap();
+        let file = ProfilesFile::load(&paths.config).unwrap();
+        assert!(file.find("work").is_none() && file.find("cx").is_none());
     }
 
     #[test]

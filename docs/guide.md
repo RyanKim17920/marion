@@ -32,12 +32,16 @@ marion cancel <id> [--force]              # end it and its subtree gracefully; -
 marion steer <id> <text…>                 # `-` reads the message from stdin
 ```
 
-An `<id>` is a node's whole id, the short id its tree row shows, or a unique start of its id.
+An `<id>` is an agent's whole id, the short id its tree row shows, or a unique start of its id.
 
 `--repo` defaults to the enclosing git repository, else the working directory. State
-(journals, transcripts, sockets) lives under `--state-dir`, else `$MARION_STATE_DIR`, else
-`$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every verb follows that rule, so
-`marion ls` shows a session only when it sees the same value the session started with.
+(journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`,
+else `~/.local/state/marion` (`--state-dir <path>` still says it for one command). Every verb
+follows that rule, so `marion ls` shows a session only when it sees the same value the session
+started with. `MARION_CANNED=1` (or the provider's URL) runs agents on marion's free test provider
+(`marion-canned`) instead of your login, for trying marion out; `--canned` and `--base-url` say the
+same for one command. `marion ls --plain` prints the tree as lines even on a terminal (`marion
+list` is its old name).
 
 `--timeout` is the root's wall clock on every harness: past it, marion kills the node's process
 tree, confirms it is gone and records the run as timed out. A permission the node asks for that
@@ -285,7 +289,7 @@ marion profile add claude work              # makes the directory and prints the
 marion profile add claude old --dir ~/.claude-work   # or adopt a directory you already use
 marion profile list                         # logged in or out, last used, last limit reading
 marion profile use claude work              # the default for claude nodes
-marion profile remove old [--purge]         # --purge deletes only a directory marion made
+marion profile rm claude old [--purge]      # --purge deletes only a directory marion made
 marion run claude --prompt "…" --profile work
 MARION_PROFILE=work marion claude           # a native session
 ```
@@ -308,7 +312,7 @@ What happens when a run fails depends on why:
 - **Vendor outage** (a 529 or 5xx): recorded as the cause; the profile never changes.
 
 A resume continues on the profile its session was recorded under. Profiles apply to live runs
-only; `--canned` runs keep marion's own isolation.
+only; canned runs keep marion's own isolation.
 
 | harness | profile variable | status probe | shared from the default directory |
 |---|---|---|---|

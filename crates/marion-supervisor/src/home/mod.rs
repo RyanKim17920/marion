@@ -90,8 +90,12 @@ pub enum Effect {
         harness: String,
         name: String,
     },
-    /// `marion profile remove <name>`: forgotten, its directory kept. Destructive: after a `y`.
-    ProfileRemove(String),
+    /// `marion profile rm <harness> <name>`: forgotten, its directory kept. Destructive: after a
+    /// `y`.
+    ProfileRemove {
+        harness: String,
+        name: String,
+    },
     /// Work out what the form's draft does to the agents file: the session reads the file, applies
     /// the draft, holds the result to the spawn path's loader, and shows the diff for a `y`.
     PreviewType(types_form::Draft),
@@ -116,7 +120,9 @@ impl Effect {
             Effect::Logout(id) => v(&["marion", "key", "rm", id]),
             Effect::ProfileAdd { harness, name } => v(&["marion", "profile", "add", harness, name]),
             Effect::ProfileUse { harness, name } => v(&["marion", "profile", "use", harness, name]),
-            Effect::ProfileRemove(name) => v(&["marion", "profile", "remove", name]),
+            Effect::ProfileRemove { harness, name } => {
+                v(&["marion", "profile", "rm", harness, name])
+            }
             Effect::Run {
                 agent_type,
                 model,
@@ -160,7 +166,7 @@ impl Effect {
                 | Effect::Kill(_)
                 | Effect::Merge(_)
                 | Effect::Logout(_)
-                | Effect::ProfileRemove(_)
+                | Effect::ProfileRemove { .. }
                 | Effect::WriteTypes { .. }
         )
     }
@@ -667,7 +673,7 @@ impl Home {
                     }
                     Effect::Logout(_) => self.notice = Some("key kept".into()),
                     Effect::Merge(_) => self.notice = Some("not merged".into()),
-                    Effect::ProfileRemove(_) => self.notice = Some("profile kept".into()),
+                    Effect::ProfileRemove { .. } => self.notice = Some("profile kept".into()),
                     _ => self.notice = Some("not cancelled".into()),
                 }
                 Effect::None
@@ -1025,7 +1031,12 @@ impl Home {
             },
             Key::Char('x') => match (self.selected_login(), self.selected_profile()) {
                 (Some(l), _) => self.mode = Mode::Confirm(Effect::Logout(l.id.clone())),
-                (_, Some(p)) => self.mode = Mode::Confirm(Effect::ProfileRemove(p.name.clone())),
+                (_, Some(p)) => {
+                    self.mode = Mode::Confirm(Effect::ProfileRemove {
+                        harness: p.harness.clone(),
+                        name: p.name.clone(),
+                    })
+                }
                 _ => self.notice = Some("select a stored key or a profile to remove it".into()),
             },
             _ => {}

@@ -195,7 +195,8 @@ pub struct Row {
 
 /// The doctor's flags, as a person types them through `marion doctor`. `--capabilities` is still
 /// accepted and not shown: it names the default.
-pub const USAGE: &str = "usage: marion doctor [--harness <name>] [--adapter [--model <id>]] \
+/// `--adapter` is still read as `--try`, and not shown.
+pub const USAGE: &str = "usage: marion doctor [--harness <name>] [--try [--model <id>]] \
                          [--acp-command <cmd>]\n\
                          \x20      marion doctor --providers [--model <id>]";
 
@@ -214,7 +215,7 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--capabilities" => mode = Some(ProbeMode::Capabilities),
-            "--adapter" => mode = Some(ProbeMode::Adapter),
+            "--try" | "--adapter" => mode = Some(ProbeMode::Adapter),
             "--harness" => {
                 let v = it.next().ok_or("--harness needs a harness name")?;
                 harness = Some(v.parse::<Harness>().map_err(|e| e.to_string())?);
@@ -2171,8 +2172,13 @@ mod tests {
             ProbeMode::Capabilities
         );
         assert_eq!(
-            parse_args(&["--adapter".into()]).unwrap().mode,
+            parse_args(&["--try".into()]).unwrap().mode,
             ProbeMode::Adapter
+        );
+        assert_eq!(
+            parse_args(&["--adapter".into()]).unwrap().mode,
+            ProbeMode::Adapter,
+            "the old spelling"
         );
         assert_eq!(parse_args(&[]).unwrap().mode, ProbeMode::Capabilities);
         assert_eq!(

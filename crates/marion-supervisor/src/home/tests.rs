@@ -1197,12 +1197,24 @@ fn removing_a_profile_waits_for_y_and_n_keeps_it() {
     let mut h = profiles_home();
     h.setup.cursor = 4;
     assert_eq!(h.key(Key::Char('x')), Effect::None);
-    assert_eq!(h.mode, Mode::Confirm(Effect::ProfileRemove("work".into())));
+    assert_eq!(
+        h.mode,
+        Mode::Confirm(Effect::ProfileRemove {
+            harness: "claude".into(),
+            name: "work".into(),
+        })
+    );
     assert_eq!(h.key(Key::Char('n')), Effect::None);
     assert_eq!(h.mode, Mode::Normal);
     assert_eq!(h.notice.as_deref(), Some("profile kept"));
     h.key(Key::Char('x'));
-    assert_eq!(h.key(Key::Char('y')), Effect::ProfileRemove("work".into()));
+    assert_eq!(
+        h.key(Key::Char('y')),
+        Effect::ProfileRemove {
+            harness: "claude".into(),
+            name: "work".into(),
+        }
+    );
     // On the row that adds the first profile there is nothing to remove.
     let mut h = setup_home();
     h.setup.cursor = 4;
@@ -1292,7 +1304,10 @@ fn profile_verbs_echo_the_commands_they_run_and_only_remove_asks_first() {
         harness: "claude".into(),
         name: "work".into(),
     };
-    let remove = Effect::ProfileRemove("work".into());
+    let remove = Effect::ProfileRemove {
+        harness: "claude".into(),
+        name: "work".into(),
+    };
     assert_eq!(
         add.argv().unwrap(),
         ["marion", "profile", "add", "claude", "work"]
@@ -1303,7 +1318,7 @@ fn profile_verbs_echo_the_commands_they_run_and_only_remove_asks_first() {
     );
     assert_eq!(
         remove.argv().unwrap(),
-        ["marion", "profile", "remove", "work"]
+        ["marion", "profile", "rm", "claude", "work"]
     );
     assert!(!add.destructive() && !use_.destructive());
     assert!(remove.destructive());
@@ -1339,7 +1354,10 @@ fn the_profile_echoes_run_through_marion_profiles_own_verbs() {
     });
     let file = crate::profiles::ProfilesFile::load(&paths.config).unwrap();
     assert_eq!(file.default["claude-code"], "work");
-    run(&Effect::ProfileRemove("work".into()));
+    run(&Effect::ProfileRemove {
+        harness: "claude".into(),
+        name: "work".into(),
+    });
     let file = crate::profiles::ProfilesFile::load(&paths.config).unwrap();
     assert!(file.profile.is_empty() && file.default.is_empty());
     assert!(

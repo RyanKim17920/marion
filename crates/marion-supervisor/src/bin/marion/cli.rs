@@ -47,18 +47,11 @@ pub const VERBS: &[Verb] = &[
     },
     Verb {
         name: "ls",
-        aliases: &["tree"],
+        // `list` is `ls --plain`: it prints lines even on a terminal (see `super::ls_main`).
+        aliases: &["tree", "list"],
         summary: Some("show the agent tree, or one agent's detail"),
         help: ls_help,
         main: super::ls_main,
-    },
-    // `ls`, printed as lines even on a terminal. Kept for scripts and the home screen's hints.
-    Verb {
-        name: "list",
-        aliases: &[],
-        summary: None,
-        help: ls_help,
-        main: super::list_main,
     },
     Verb {
         name: "attach",
@@ -297,6 +290,8 @@ impl Place {
 }
 
 /// **Which provider**: `--canned` and its `--base-url`, for the commands that may start agents.
+/// Test plumbing, so neither is in any help: `$MARION_CANNED` (`1`, or the provider's URL) says the
+/// same for a whole shell, and a flag on the command line wins over it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Backend {
     /// Opt **in** to marion's canned provider; real auth is what a person at a terminal means.
@@ -305,6 +300,28 @@ pub struct Backend {
 }
 
 impl Backend {
+    /// What `$MARION_CANNED` says, before any flag: see [`Backend::from_value`].
+    pub fn from_env() -> Self {
+        Self::from_value(std::env::var("MARION_CANNED").ok().as_deref())
+    }
+
+    /// `$MARION_CANNED`'s value as a backend: unset, empty or `0` is the operator's own login;
+    /// `1` is marion's canned provider at its default address; anything else is that provider at
+    /// the URL given.
+    pub fn from_value(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            None | Some("" | "0") => Self::default(),
+            Some("1") => Self {
+                canned: true,
+                base_url: None,
+            },
+            Some(url) => Self {
+                canned: true,
+                base_url: Some(url.to_string()),
+            },
+        }
+    }
+
     /// `true` when `flag` was one of this group and has been taken.
     pub fn take(&mut self, flag: &str, inline: Option<&str>, w: &mut Words) -> Result<bool, Exit> {
         match flag {
@@ -331,17 +348,10 @@ impl Backend {
 
 // --- help ---------------------------------------------------------------------------------------
 
-const PLACE_HELP: &str = concat!(
-    "  --repo <path>        the repository (default: the enclosing git repository, else here)\n",
-    "  --state-dir <path>   where marion keeps its state (default: $MARION_STATE_DIR, else\n",
-    "                       $XDG_STATE_HOME/marion, else ~/.local/state/marion)",
-);
-
-const BACKEND_HELP: &str = concat!(
-    "  --canned             use marion's free test provider instead of your login (start it\n",
-    "                       first with `marion-canned`); it answers nothing useful\n",
-    "  --base-url <url>     where that test provider listens (only with --canned)",
-);
+/// `--repo`. `--state-dir` is still read and not shown: where marion keeps its state is
+/// `$MARION_STATE_DIR`'s to say (the guide documents it), not a flag every command lists.
+const PLACE_HELP: &str =
+    "  --repo <path>        the repository (default: the enclosing git repository, else here)";
 
 const ID_HELP: &str =
     "<id> is an agent's whole id, the short id its tree row shows, or a unique start of its id.";
@@ -408,7 +418,6 @@ fn run_help() -> String {
          \x20 --allow-wider-children  let an agent start agents with more authority than its\n\
          \x20                      own (a sandboxed codex starting claude, a planner starting an\n\
          \x20                      implementer); each one is recorded and shown on its node\n\
-         {BACKEND_HELP}\n\
          {PLACE_HELP}\n\
          \n\
          agent types, plus any in the repository's .marion/agents.toml:\n\
@@ -424,7 +433,7 @@ fn run_help() -> String {
 
 fn ls_help() -> String {
     format!(
-        "usage: marion ls [<id>] [--attention] [--repo <path>] [--state-dir <path>]\n\
+        "usage: marion ls [<id>] [--attention] [--plain] [--repo <path>]\n\
          \n\
          Show the agent tree. On a terminal it opens the home screen's Watch view; piped, or\n\
          with --attention, it prints one agent per line. With an <id> it prints that agent's\n\
@@ -433,17 +442,17 @@ fn ls_help() -> String {
          \n\
          \x20 --attention          only the agents that need you: blocked, failed, timed out,\n\
          \x20                      ended without reporting, or orphaned\n\
+         \x20 --plain              print one agent per line, even on a terminal\n\
          {PLACE_HELP}\n\
          \n\
          {ID_HELP}\n\
-         It never starts a supervisor. `marion tree` is its old name; `marion list` prints the\n\
-         lines even on a terminal."
+         It never starts a supervisor."
     )
 }
 
 fn attach_help() -> String {
     format!(
-        "usage: marion attach <id> [--repo <path>] [--state-dir <path>]\n\
+        "usage: marion attach <id> [--repo <path>]\n\
          \n\
          Open the terminal of an agent started with `marion run --pane`: see its screen and\n\
          type into it. ^] d detaches and leaves it running.\n\
@@ -456,7 +465,7 @@ fn attach_help() -> String {
 
 fn steer_help() -> String {
     format!(
-        "usage: marion steer <id> [--repo <path>] [--state-dir <path>] [--] <message…>\n\
+        "usage: marion steer <id> [--repo <path>] [--] <message…>\n\
          \x20      marion steer <id> -          read the message from stdin\n\
          \n\
          Send a running agent a message, as you; it reads it at its next turn. Prints which\n\
@@ -472,7 +481,7 @@ fn steer_help() -> String {
 
 fn cancel_help() -> String {
     format!(
-        "usage: marion cancel <id> [--force] [--repo <path>] [--state-dir <path>]\n\
+        "usage: marion cancel <id> [--force] [--repo <path>]\n\
          \n\
          Stop a running agent and everything below it. Each running turn is stopped the way its\n\
          harness allows, deepest first, and whatever is still running when its grace ends is\n\
@@ -495,7 +504,6 @@ fn resume_help() -> String {
          watch it as `marion run` does. --prompt gives it something new to start from.\n\
          \n\
          \x20 --prompt <text>      a message to resume with\n\
-         {BACKEND_HELP}\n\
          {PLACE_HELP}\n\
          \n\
          {ID_HELP}\n\
@@ -506,14 +514,13 @@ fn resume_help() -> String {
 fn mcp_help() -> String {
     let tools = super::mcp_tool_names();
     format!(
-        "usage: marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
+        "usage: marion mcp [--repo <path>]\n\
          \n\
          Serve marion's tools over stdio to an MCP client you configure, for example:\n\
          \x20 command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]\n\
          The tools: {tools}.\n\
          Its spawn starts an agent the way `marion run` does. stdout carries only JSON-RPC.\n\
          \n\
-         {BACKEND_HELP}\n\
          {PLACE_HELP}",
         tools = tools.join(", "),
     )
@@ -537,7 +544,7 @@ fn profile_help() -> String {
          \n\
          A profile is another login for a harness, kept in its own directory. `add` creates it\n\
          and prints the one command that logs in (marion never runs it); `list` shows each\n\
-         profile's login state and last usage; `use` makes one the harness's default; `remove`\n\
+         profile's login state and last usage; `use` makes one the harness's default; `rm`\n\
          forgets one, and --purge also deletes its directory. `marion run --profile <name>`\n\
          picks one for a single run.",
         marion_supervisor::profile_cli::USAGE
@@ -546,7 +553,7 @@ fn profile_help() -> String {
 
 fn export_help() -> String {
     "usage: marion export <id> [--md | --html] [-o <file>] [--include-prompt] [--full-diff]\n\
-     \x20                     [--timeline all|<n>] [--repo <path>] [--state-dir <path>]\n\
+     \x20                     [--timeline all|<n>] [--repo <path>]\n\
      \n\
      Write a shareable report of a node and everything under it: each node's task, steers,\n\
      activity, checks, result, landed branch and tokens, as Markdown (the default) or one\n\
@@ -584,7 +591,7 @@ fn doctor_help() -> String {
         "{}\n\
          \n\
          Check each harness: whether it is installed, its version, and what marion can do with\n\
-         it, plus the API keys `marion key add` stored. It makes no model call unless --adapter is\n\
+         it, plus the API keys `marion key add` stored. It makes no model call unless --try is\n\
          given, which runs one tiny real task per harness (and costs a little). --harness checks\n\
          one; --acp-command adds an ACP agent by its command line; --providers checks only the\n\
          stored keys.",

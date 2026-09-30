@@ -70,7 +70,7 @@ root that delegates one edit to a codex child. You need `claude` and `codex` on 
 ```sh
 cargo install --locked --git https://github.com/RyanKim17920/marion marion-provider   # marion-canned
 marion-canned &
-marion run claude --prompt "say hello" --canned
+MARION_CANNED=1 marion run claude --prompt "say hello"
 ```
 
 **2. A real delegation on your own login.** This makes real model calls, which cost real money. Run it

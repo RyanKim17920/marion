@@ -877,7 +877,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             (
                 "x",
                 "on Logins: remove one, asks first",
-                "marion profile remove <name>",
+                "marion profile rm <harness> <name>",
             ),
         ],
     ),
@@ -1028,7 +1028,7 @@ fn input(home: &Home) -> Input {
             question: format!("Merge {branch} into your checkout?"),
             command: line(effect),
         },
-        Mode::Confirm(effect @ Effect::ProfileRemove(name)) => Input::Confirm {
+        Mode::Confirm(effect @ Effect::ProfileRemove { name, .. }) => Input::Confirm {
             question: format!("Remove the profile {name}?"),
             command: line(effect),
         },
