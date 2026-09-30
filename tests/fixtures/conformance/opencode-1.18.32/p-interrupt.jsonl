@@ -1,8 +1,0 @@
-{"dir":"note","msg":{"args":["run","--pure","--format","json","--title","marion-conformance-node","-m","marion/default","CONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"pid":49993,"spawned":"opencode"},"t":0.001}
-{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":1,"turn":["CONFINTERRUPT",0],"user_texts":["\"CONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.\""],"wire":"openai"},"t":2.134}
-{"dir":"note","msg":"holding provider request 1","t":2.134}
-{"dir":"note","msg":"signal 2 to process group 49993","t":2.17}
-{"dir":"note","msg":{"code":null,"exited":49993,"signal":9},"t":12.28}
-{"dir":"note","msg":"signal 9 to process group 49993","t":12.347}
-{"dir":"note","msg":"released provider request 1","t":12.389}
-{"dir":"prov","msg":{"resp":"script","wire":"openai"},"t":12.404}

@@ -1796,7 +1796,7 @@ const VERIFIED_HARNESSES: &[(Harness, &str, &str)] = &[
     (Harness::ClaudeCode, "claude", "2.1.283"),
     (Harness::Codex, "codex", "0.155.1"),
     (Harness::Gemini, "gemini", "0.53.0"),
-    (Harness::OpenCode, "opencode", "1.18.32"),
+    (Harness::OpenCode, "opencode", "1.18.33"),
     (Harness::Copilot, "copilot", "1.0.83"),
     (Harness::Goose, "goose", "1.52.0"),
     (Harness::Cline, "cline", "3.0.61"),

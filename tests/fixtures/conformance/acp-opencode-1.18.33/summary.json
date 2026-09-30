@@ -1,25 +1,26 @@
 {
   "result": {
-    "fixtures": "acp-opencode-1.18.32",
+    "fixtures": "acp-opencode-1.18.33",
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 311, output: 24, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f1b4c5bc8ffemJkn0W0wnPTvUz ; activity none (row: no activity rule)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f104f5bf6ffe0Qhdvl53hzpIPD ; activity none (row: no activity rule)",
         "status": "PASS"
       },
       "P-approval": {
-        "expected": "granted (session-mode), `report` is answered; ungranted, the harness asks or refuses",
-        "observed": "granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion",
-        "status": "PASS"
+        "expected": "",
+        "observed": "granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised",
+        "reason": "granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised",
+        "status": "UNSUPPORTED"
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: ended after 8.4 s, 2 request(s), still running; cause Auth { line: \"Internal error: Incorrect API key provided: dummy.\" }; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); no frame reads as a refused credential; prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 55.4 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 47.3 s, 8 request(s), still running; cause none said; stream failure None",
+        "observed": "401: ended after 1.9 s, 2 request(s), still running; cause Auth { line: \"Internal error: Incorrect API key provided: dummy.\" }; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); no frame reads as a refused credential; prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 46.0 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 46.1 s, 8 request(s), still running; cause none said; stream failure None",
         "status": "FAIL"
       },
       "P-interrupt": {
         "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
-        "observed": "the cancel ended the turn in 0.2 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "observed": "the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
         "status": "PASS"
       },
       "P-launch": {
@@ -39,12 +40,12 @@
       },
       "P-resume": {
         "expected": "the row's resume spelling continues the killed session with its history",
-        "observed": "second life ended; its request carries the first life's prompt: true; session ses_f1b4c000cffewMS6VHxBMuWzMM -> ses_f1b4c000cffewMS6VHxBMuWzMM; resume refusal: none",
+        "observed": "second life ended; its request carries the first life's prompt: true; session ses_f104f3880ffeshepQvdjE9xqY1 -> ses_f104f3880ffeshepQvdjE9xqY1; resume refusal: none",
         "status": "PASS"
       },
       "P-tools": {
         "expected": "`marion_report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-        "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 8.0 s after the spawn and listed marion's tools",
+        "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.0 s after the spawn and listed marion's tools",
         "status": "PASS"
       },
       "P-tui": {
@@ -55,11 +56,11 @@
       },
       "P-version": {
         "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-        "observed": "OpenCode 1.18.32 (admitted in PINNED_HARNESSES); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))",
+        "observed": "OpenCode 1.18.33 (admitted in PINNED_HARNESSES); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))",
         "status": "PASS"
       }
     },
-    "version": "OpenCode 1.18.32"
+    "version": "OpenCode 1.18.33"
   },
   "row": "acp:opencode"
 }

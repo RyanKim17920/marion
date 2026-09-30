@@ -1163,6 +1163,20 @@ cores (other agents' runs) failed two opencode-child cells with no goose in them
 cline root, each with an opencode child); both passed alone, and the admitting run used
 `RUST_TEST_THREADS=2`. The probes under `spikes/` were not re-run.
 
+**opencode 1.18.33, admitted 2026-09-29 via `scripts/admit-harness.sh`.** Homebrew replaced
+1.18.32 in place (install receipt 2026-09-28 11:26, beside two other formulae; not a self-update),
+and the gate refused it. Green with only the entry widened: `marion-testsupport` (41),
+`acp_child` (5), `continuation` (7), `cross_product` (65), `depth_gate` (5), `endpoint_matrix`
+(19), `harness_matrix` (9), `journal_wiring` (18), `native_facade_e2e` (4), `native_facade_spawn`
+(2), `node_tmpdir` (2), `restart_resume` (0), `timeout_kill` (3), `turn_delivery` (4),
+`conformance` (1). The first attempt went red on opencode's P-approval, and a direct diff of
+1.18.32 against 1.18.33 showed no change: the recorded PASS was stale, from before the row moved
+to `DeclarationKey`, and opencode's own default runs an MCP tool unasked. The probe now contests
+the key with an operator `ask` (`809e8179`), which rejects `report` on both releases. A second
+attempt failed only `timeout_kill`'s two opencode cells, which passed alone (3/3) at load 8 and
+in the admitting run. The conformance cells moved only in their version column. The probes
+under `spikes/` were not re-run.
+
 **codex 0.155.1, admitted 2026-09-22 via `scripts/admit-harness.sh`.** The installer moved
 `current` to 0.155.1, with 0.153.4 and 0.154.0 between. 0.147.0 was still on disk, so the shim had
 held every suite there and the gate never went red. Widening the entry moved the shim to 0.155.1,

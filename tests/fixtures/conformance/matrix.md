@@ -8,14 +8,14 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | acp:codex-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:copilot | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:gemini | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:opencode | OpenCode 1.18.32 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | **FAIL** | n/a |
+| acp:opencode | OpenCode 1.18.33 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | **FAIL** | n/a |
 | agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | claude-code | 2.1.283 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | **FAIL** |
 | codex | 0.155.1 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS |
 | copilot | 1.0.83 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a |
 | gemini | 0.53.0 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | n/a | **FAIL** | PASS | n/a |
 | goose | 1.52.0 | PASS | PASS | PASS | PASS | **FAIL** | n/a | PASS | n/a | PASS | PASS | n/a |
-| opencode | 1.18.32 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
+| opencode | 1.18.33 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
 | qwen | 0.23.0 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | **FAIL** | n/a |
 
 ## Findings per cell
@@ -76,18 +76,18 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** UNSUPPORTED: marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### acp:opencode OpenCode 1.18.32
+### acp:opencode OpenCode 1.18.33
 
-- **P-version** PASS: OpenCode 1.18.32 (admitted in PINNED_HARNESSES); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))
+- **P-version** PASS: OpenCode 1.18.33 (admitted in PINNED_HARNESSES); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; still running; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 8.0 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 311, output: 24, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f1b4c5bc8ffemJkn0W0wnPTvUz ; activity none (row: no activity rule)
+- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.0 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f104f5bf6ffe0Qhdvl53hzpIPD ; activity none (row: no activity rule)
 - **P-approval** UNSUPPORTED: granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised
 - **P-midturn** PASS: queued as its own turn (2 turn ends; requests [4]); 2 prompt answer(s)
-- **P-interrupt** PASS: the cancel ended the turn in 0.2 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f1b4c000cffewMS6VHxBMuWzMM -> ses_f1b4c000cffewMS6VHxBMuWzMM; resume refusal: none
+- **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f104f3880ffeshepQvdjE9xqY1 -> ses_f104f3880ffeshepQvdjE9xqY1; resume refusal: none
 - **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: signal 15, left []
-- **P-errors** FAIL: 401: ended after 8.4 s, 2 request(s), still running; cause Auth { line: "Internal error: Incorrect API key provided: dummy." }; stream failure Some("Internal error: Incorrect API key provided: dummy."); no frame reads as a refused credential; prompt answer {"code":-32603,"data":{"errorName":"APIError","service":"session"},"message":"Internal error: Incorrect API key provided: dummy."} | 429: still running after 55.4 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 47.3 s, 8 request(s), still running; cause none said; stream failure None
+- **P-errors** FAIL: 401: ended after 1.9 s, 2 request(s), still running; cause Auth { line: "Internal error: Incorrect API key provided: dummy." }; stream failure Some("Internal error: Incorrect API key provided: dummy."); no frame reads as a refused credential; prompt answer {"code":-32603,"data":{"errorName":"APIError","service":"session"},"message":"Internal error: Incorrect API key provided: dummy."} | 429: still running after 46.0 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 46.1 s, 8 request(s), still running; cause none said; stream failure None
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
 ### agy unknown
@@ -174,18 +174,18 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** PASS: 401: ended after 0.2 s, 2 request(s), exit 1; cause Auth { line: "Error: Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy.." }; stream failure Some("Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\n\nPlease retry if you think this is a transient or recoverable error."); refused credential read off a frame: "Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\n\nPlease retry if you think this is a transient or recoverable error." | 429: ended after 7.9 s, 7 request(s), exit 0; cause RateLimit { line: "Ran into this error: Rate limit exceeded: rate limit exceeded.\n\nPlease retry if you think this is a transient or recoverable error." }; stream failure Some("Ran into this error: Rate limit exceeded: rate limit exceeded.\n\nPlease retry if you think this is a transient or recoverable error.") | 500: ended after 6.8 s, 7 request(s), exit 0; cause Outage { line: "Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\n\nPlease retry if you think this is a transient or recoverable error." }; stream failure Some("Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\n\nPlease retry if you think this is a transient or recoverable error.")
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### opencode 1.18.32
+### opencode 1.18.33
 
-- **P-version** PASS: 1.18.32 (admitted in PINNED_HARNESSES); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried
+- **P-version** PASS: 1.18.33 (admitted in PINNED_HARNESSES); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; exit 0; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.2 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_f1b52a8b2ffeNNQUoF3T9Q56J3 ; activity marion_report
-- **P-approval** PASS: `report` answered with no grant: true (S13 on 1.17.3: with no `permission` entry for marion's tool the call runs; `ask` auto-rejects at exit 0, so marion states no permission at all)
+- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 5.9 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_f105151b8ffeDcjqtXFcXxHjs2 ; activity marion_report
+- **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("The user rejected permission to use this specific tool call.")), 0 permission ask(s) reached marion
 - **P-midturn** UNSUPPORTED: headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/opencode (1.18.32): `run --session <id>` continues the session with the store in a file OPENCODE_DB (db1/db2); `:memory:` failed with Session not found
 - **P-interrupt** PASS: the cancel did not end the turn within 10 s; 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f1b526e22ffeLT2hsKXrn9ZpMy -> ses_f1b526e22ffeLT2hsKXrn9ZpMy; resume refusal: none
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f10511328ffe6tDD3F9gPmr4TX -> ses_f10511328ffe6tDD3F9gPmr4TX; resume refusal: none
 - **P-lifecycle** PASS: turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left []
-- **P-errors** FAIL: 401: ended after 8.9 s, 1 request(s), exit 1; cause Auth { line: "Incorrect API key provided: dummy." }; stream failure Some("Incorrect API key provided: dummy."); refused credential read off a frame: "Incorrect API key provided: dummy." | 429: still running after 45.0 s, 4 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None
+- **P-errors** FAIL: 401: ended after 1.7 s, 1 request(s), exit 1; cause Auth { line: "Incorrect API key provided: dummy." }; stream failure Some("Incorrect API key provided: dummy."); refused credential read off a frame: "Incorrect API key provided: dummy." | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
 ### qwen 0.23.0

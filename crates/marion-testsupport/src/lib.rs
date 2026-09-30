@@ -817,7 +817,12 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // bound after writing its file); the same two cells failed the same way against an
         // npm-installed 1.18.30 under the same load, all eight opencode-child cells passed 8/8
         // serially on 1.18.32, and the admitting run used `RUST_TEST_THREADS=4`. Load, not drift.
-        accepted: &["1.17.3", "1.18.29", "1.18.30", "1.18.32"],
+        // 1.18.33: observed green on Darwin 25.5.0, 2026-09-29, via scripts/admit-harness.sh
+        // (opencode 1.18.33 in one run): marion-testsupport (41), acp_child (5), continuation
+        // (7), cross_product (65), depth_gate (5), endpoint_matrix (19), harness_matrix (9),
+        // journal_wiring (18), native_facade_e2e (4), native_facade_spawn (2), node_tmpdir (2),
+        // restart_resume (0), timeout_kill (3), turn_delivery (4), conformance (1).
+        accepted: &["1.17.3", "1.18.29", "1.18.30", "1.18.32", "1.18.33"],
     },
     PinnedHarness {
         program: "copilot",
