@@ -49,10 +49,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, Constraint,
-    Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes,
-    Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarrier,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, CommandLine,
+    Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces,
+    TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -175,7 +175,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     live_declaration: Some(LiveDeclaration::ArgvInline {
         flag: "--with-extension",
         key: EXTENSION_KEY,
-        body: Body::Code(extension_declaration),
+        body: Body::CommandLine(EXTENSION),
     }),
     // goose persists every `ENV=v` pair of the `--with-extension` token in its session store, so
     // the token rides the process environment in both modes; the extension child inherits it.
@@ -535,32 +535,20 @@ pub fn home(config_dir: &std::path::Path) -> std::path::PathBuf {
 /// Values with whitespace cannot be spelled in this grammar; the adapter refuses such a launch by
 /// name before rendering ([`unspellable`]), so this function never has to.
 pub fn extension_declaration(b: &BridgeEnv) -> String {
-    let mut parts = vec![EXTENSION_KEY.to_string()];
-    for (k, v) in b.pairs() {
-        parts.push(format!("{k}={v}"));
-    }
-    parts.push(b.bridge.to_string_lossy().into_owned());
-    parts.extend(b.args.iter().cloned());
-    // The name prefix joins the first pair (or the command) directly: `marion:K=V …`.
-    let (head, tail) = parts.split_at(1);
-    format!("{}{}", head[0], tail.join(" "))
+    EXTENSION.render(b)
 }
+
+/// The `--with-extension` grammar: the extension's name, then its command line, split on
+/// whitespace.
+pub const EXTENSION: CommandLine = CommandLine {
+    head: EXTENSION_KEY,
+    split_on_whitespace: true,
+};
 
 /// The first token of the declaration that whitespace would split in two — the bridge program,
 /// one of its args, or a pair's value — or `None` when the whole string is spellable.
 pub fn unspellable(b: &BridgeEnv) -> Option<String> {
-    let has_space = |s: &str| s.chars().any(char::is_whitespace);
-    let program = b.bridge.to_string_lossy();
-    if has_space(&program) {
-        return Some(program.into_owned());
-    }
-    if let Some(a) = b.args.iter().find(|a| has_space(a)) {
-        return Some(a.clone());
-    }
-    b.pairs()
-        .into_iter()
-        .find(|(k, v)| has_space(k) || has_space(v))
-        .map(|(k, v)| format!("{k}={v}"))
+    EXTENSION.unspellable(b)
 }
 
 /// goose 1.49.0, headless `run -t` (fixture `tests/fixtures/s26/`).
@@ -816,6 +804,35 @@ mod tests {
         assert!(SPEC.token.canned.process_env(&b, path).is_empty());
         assert_eq!(SPEC.token.canned.document(&b, path), None);
         assert!(!extension_declaration(&b).contains(NODE_TOKEN_ENV));
+    }
+
+    /// **The row's declaration body is data that spells itself and refuses what it cannot**:
+    /// the same token the adapter declares, and the split word named, from the row alone — what a
+    /// row read from a file needs, having no hook to refuse with.
+    #[test]
+    fn the_rows_command_line_body_spells_the_declaration_and_refuses_a_split_word() {
+        let Some(LiveDeclaration::ArgvInline { body, .. }) = SPEC.live_declaration else {
+            panic!("goose declares on one argv token");
+        };
+        let b = bridge();
+        assert_eq!(
+            body.spell(&b),
+            Ok(format!(
+                "marion:{} {}",
+                b.pairs()
+                    .into_iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                std::iter::once(b.bridge.to_string_lossy().into_owned())
+                    .chain(b.args.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+        );
+        let mut spaced = bridge();
+        spaced.repo = "/my repo".into();
+        assert_eq!(body.spell(&spaced), Err("MARION_REPO=/my repo".into()));
     }
 
     #[test]

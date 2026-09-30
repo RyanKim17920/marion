@@ -1825,6 +1825,9 @@ pub enum Spelling {
 #[derive(Debug, Clone, Copy)]
 pub enum Body {
     McpServers(McpServers),
+    /// One command line with the bridge's identity in front ([`CommandLine`]) — goose's
+    /// `--with-extension` token.
+    CommandLine(CommandLine),
     Code(fn(&BridgeEnv) -> String),
 }
 
@@ -1833,8 +1836,65 @@ impl Body {
     pub fn render(self, b: &BridgeEnv) -> String {
         match self {
             Body::McpServers(m) => m.render(b),
+            Body::CommandLine(c) => c.render(b),
             Body::Code(f) => f(b),
         }
+    }
+
+    /// [`Self::render`], or the part of `b` the body's grammar cannot spell ([`CommandLine::
+    /// unspellable`]) — the refusal a launch owes rather than a declaration read back wrong.
+    pub fn spell(self, b: &BridgeEnv) -> Result<String, String> {
+        match self {
+            Body::CommandLine(c) => match c.unspellable(b) {
+                Some(token) => Err(token),
+                None => Ok(c.render(b)),
+            },
+            other => Ok(other.render(b)),
+        }
+    }
+}
+
+/// **The bridge as one command line**: `<head><K=V …> <command> <args…>`, space-separated — the
+/// bridge's identity pairs, its program, its arguments. `head` joins the first word directly
+/// (`marion:MARION_REPO=…`). Where the harness splits the line on whitespace, a word with
+/// whitespace inside cannot be spelled and is refused ([`Self::unspellable`]) rather than declared
+/// as two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandLine {
+    pub head: &'static str,
+    pub split_on_whitespace: bool,
+}
+
+impl CommandLine {
+    pub fn render(self, b: &BridgeEnv) -> String {
+        let mut words: Vec<String> = b
+            .pairs()
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        words.push(b.bridge.to_string_lossy().into_owned());
+        words.extend(b.args.iter().cloned());
+        format!("{}{}", self.head, words.join(" "))
+    }
+
+    /// The first word whitespace would split in two — the bridge program, one of its args, or a
+    /// pair — or `None` where the whole line is spellable, or the harness does not split it.
+    pub fn unspellable(self, b: &BridgeEnv) -> Option<String> {
+        if !self.split_on_whitespace {
+            return None;
+        }
+        let has_space = |s: &str| s.chars().any(char::is_whitespace);
+        let program = b.bridge.to_string_lossy();
+        if has_space(&program) {
+            return Some(program.into_owned());
+        }
+        if let Some(a) = b.args.iter().find(|a| has_space(a)) {
+            return Some(a.clone());
+        }
+        b.pairs()
+            .into_iter()
+            .find(|(k, v)| has_space(k) || has_space(v))
+            .map(|(k, v)| format!("{k}={v}"))
     }
 }
 
