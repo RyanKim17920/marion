@@ -224,7 +224,13 @@ fn script(root: &Node, child: &Node) -> Script {
     s
 }
 
-fn marion_argv(root: &Node, repo: &Path, state: &Path, base_url: &str) -> Vec<String> {
+fn marion_argv(
+    root: &Node,
+    child: &Node,
+    repo: &Path,
+    state: &Path,
+    base_url: &str,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "run".into(),
         root.agent_type.into(),
@@ -245,6 +251,10 @@ fn marion_argv(root: &Node, repo: &Path, state: &Path, base_url: &str) -> Vec<St
     if let Some(m) = root.model {
         args.push("--model".into());
         args.push(m.into());
+    }
+    // The operator's opt-in, for the pairings whose sandboxed root asks for a less-contained child.
+    if common::needs_uncontained_opt_in(root.agent_type, child.agent_type) {
+        args.push("--uncontained-children".into());
     }
     args
 }
@@ -322,6 +332,7 @@ fn record_kinds(journal: &Path) -> Vec<&'static str> {
             RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
+            RecordKind::UncontainedDelegation(_) => "UncontainedDelegation",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",
@@ -355,7 +366,7 @@ fn drive(root: &Node, child: &Node) -> JournalEvidence {
     })
     .expect("the canned provider binds");
 
-    let args = marion_argv(root, &repo, &state, &server.base_url());
+    let args = marion_argv(root, child, &repo, &state, &server.base_url());
 
     let out = run_bounded(
         Command::new(env!("CARGO_BIN_EXE_marion"))
@@ -873,6 +884,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
             RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
+            RecordKind::UncontainedDelegation(_) => "UncontainedDelegation",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",

@@ -4210,6 +4210,7 @@ mod tests {
         state: marion_core::node::NodeState,
     ) -> marion_core::proto::NodeSummary {
         marion_core::proto::NodeSummary {
+            uncontained: false,
             review_of: None,
             review: None,
             agent_id: AgentId(id.into()),
@@ -4409,6 +4410,7 @@ mod tests {
             RequestId::Number(1),
             &MethodResult::NodeAttach(marion_core::proto::result::NodeAttachResult {
                 node: NodeSummary {
+                    uncontained: false,
                     review_of: None,
                     review: None,
                     agent_id: AgentId("native".into()),

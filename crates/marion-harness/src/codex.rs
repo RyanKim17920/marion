@@ -328,6 +328,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `sandbox_mode = "workspace-write"` on every node marion configures, and `codex exec` has no
     // per-tool knob at all (`SANDBOX_MODE`).
     writes_without_grant: true,
+    // Measured 2026-09-29: `codex sandbox -c sandbox_mode="workspace-write" -- <cmd>` (0.155.1) ran a write in its cwd
+    // and refused one under $HOME ("Operation not permitted"); the same seatbelt that bounds a node.
+    containment: crate::containment::ContainmentRule::HarnessSandbox {
+        verify: &["sandbox", "-c", "sandbox_mode=\"workspace-write\"", "--"],
+    },
 };
 
 /// **The `codex exec` row**: the prompt rides argv, the JSONL stream is read, and a later turn is

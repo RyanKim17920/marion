@@ -75,6 +75,9 @@ struct Args {
     detach: bool,
     /// `--profile <name>`: which of the operator's own logins the root runs on (`profiles.toml`).
     profile: Option<String>,
+    /// `--uncontained-children`: sandboxed nodes in this run's tree may spawn types with no
+    /// sandbox marion can apply, each one journaled. See `root::RootSpec::uncontained_children`.
+    uncontained_children: bool,
 }
 
 /// `marion attach|cancel <id> [--repo <path>] [--state-dir <path>]`: one agent, and which project.
@@ -830,6 +833,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Exit> {
         no_change_record: false,
         pane: false,
         detach: false,
+        uncontained_children: false,
         profile: None,
     };
     while let Some(word) = words.next()? {
@@ -868,6 +872,7 @@ fn apply_run_flag(
         "--no-change-record" => args.no_change_record = cli::switch(flag, inline)?,
         "--pane" => args.pane = cli::switch(flag, inline)?,
         "--detach" => args.detach = cli::switch(flag, inline)?,
+        "--uncontained-children" => args.uncontained_children = cli::switch(flag, inline)?,
         "--prompt" => args.prompt = words.value(flag, inline)?,
         "--model" => args.model = Some(words.value(flag, inline)?),
         "--profile" => args.profile = Some(words.value(flag, inline)?),
@@ -2949,6 +2954,9 @@ fn spawn_root(
 ) -> Result<marion_core::proto::result::AgentSpawnResult, String> {
     let id = supervisor.send(marion_core::proto::Call::AgentSpawn(
         marion_core::proto::params::AgentSpawnParams {
+            // The operator's own flag, and the only way it reaches the supervisor: no MCP tool and
+            // no agent type sets it.
+            uncontained_children: args.uncontained_children.then_some(true),
             review_of: None,
             notify_parent: false,
             agent_type: args.agent_type.clone(),
@@ -4877,6 +4885,7 @@ mod tests {
             "--pane",
             "--detach",
             "--no-change-record",
+            "--uncontained-children",
             "--canned",
             "--base-url",
             "--repo",
@@ -4895,6 +4904,22 @@ mod tests {
         // The escape hatch on the grant gate, and what it costs, since it is a trade and not a
         // bypass: the refusal names it, and so must `--help`.
         assert!(u.contains("no file tools"), "{u}");
+    }
+
+    /// **The containment opt-in is off unless the operator types it**, and it is valueless.
+    #[test]
+    fn uncontained_children_is_off_unless_the_operator_says_so() {
+        let a = parse_args(&argv(&["run", "codex", "--prompt", "p"])).unwrap();
+        assert!(!a.uncontained_children);
+        let b = parse_args(&argv(&[
+            "run",
+            "codex",
+            "--prompt",
+            "p",
+            "--uncontained-children",
+        ]))
+        .unwrap();
+        assert!(b.uncontained_children);
     }
 
     /// **The gate's escape hatch parses, and it is valueless.**

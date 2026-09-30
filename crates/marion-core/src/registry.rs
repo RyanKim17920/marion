@@ -63,6 +63,9 @@ pub struct ReplayedContract {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayedNode {
     pub agent_id: AgentId,
+    /// A less-contained child a sandboxed caller was let spawn by the operator's opt-in
+    /// ([`RecordKind::UncontainedDelegation`]).
+    pub uncontained_opt_in: bool,
     pub intent: Option<SpawnIntent>,
     /// §6.1 step 7's confirmation arrived.
     pub spawn_confirmed: bool,
@@ -175,6 +178,7 @@ impl ReplayedNode {
     fn new(agent_id: AgentId) -> Self {
         Self {
             agent_id,
+            uncontained_opt_in: false,
             intent: None,
             spawn_confirmed: false,
             spawn_generation: 0,
@@ -352,6 +356,7 @@ impl ReplayedNode {
             RecordKind::KillConfirmed(k) => self.fold_kill_confirmed(k),
             RecordKind::ContractPersisted(c) => self.fold_contract_persisted(c),
             RecordKind::PermissionDenied(d) => self.denied_permissions.push(d),
+            RecordKind::UncontainedDelegation(_) => self.uncontained_opt_in = true,
             // Last record wins. A root is snapshotted twice in one run and journalled once, so a
             // second record for one node means a *re*-run of the same agent id, which cannot
             // happen, or a rewrite marion made deliberately — either way the later reading is the

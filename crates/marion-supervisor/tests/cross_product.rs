@@ -659,9 +659,15 @@ fn is_loopback(url: &str) -> bool {
 /// prevent. Every cell in this file is driven at $0.00 against the in-process canned provider, so
 /// every cell **says** it wants the fixture. See
 /// [`argv_that_names_a_loopback_endpoint_always_says_canned`].
-fn marion_argv(root: &Node, repo: &Path, state: &Path, base_url: &str) -> Vec<String> {
+fn marion_argv(
+    root: &Node,
+    repo: &Path,
+    state: &Path,
+    base_url: &str,
+    uncontained_children: bool,
+) -> Vec<String> {
     let prompt = format!("{ROOT_MARKER}: delegate the marker-file task to a child.");
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "run".into(),
         root.agent_type.into(),
         "--prompt".into(),
@@ -683,6 +689,10 @@ fn marion_argv(root: &Node, repo: &Path, state: &Path, base_url: &str) -> Vec<St
         "--model".into(),
         root.model.into(),
     ];
+    // The operator's opt-in, for the cells whose sandboxed root asks for a less-contained child.
+    if uncontained_children {
+        args.push("--uncontained-children".into());
+    }
     args
 }
 
@@ -707,6 +717,7 @@ fn argv_that_names_a_loopback_endpoint_always_says_canned() {
                 Path::new("/tmp/repo"),
                 Path::new("/tmp/state"),
                 base_url,
+                false,
             );
             let url = args
                 .iter()
@@ -750,7 +761,18 @@ fn drive(root: &Node, child: &Node) -> Evidence {
 
 /// [`drive`], with the root's `spawn` also carrying `verification` commands.
 fn drive_with(root: &Node, child: &Node, verification: &[&str]) -> Evidence {
-    let name = format!("{}-{}", root.agent_type, child.child_agent_type);
+    let opt_in = common::needs_uncontained_opt_in(root.agent_type, child.child_agent_type);
+    drive_as(root, child, verification, opt_in)
+}
+
+/// [`drive_with`], stating the operator's containment opt-in rather than deriving it.
+fn drive_as(root: &Node, child: &Node, verification: &[&str], opt_in: bool) -> Evidence {
+    let name = format!(
+        "{}-{}{}",
+        root.agent_type,
+        child.child_agent_type,
+        if opt_in { "" } else { "-contained" }
+    );
     let dir = scratch(&format!("xp-{name}"));
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -763,7 +785,7 @@ fn drive_with(root: &Node, child: &Node, verification: &[&str]) -> Evidence {
     })
     .expect("the canned provider binds");
 
-    let args = marion_argv(root, &repo, &state, &server.base_url());
+    let args = marion_argv(root, &repo, &state, &server.base_url(), opt_in);
 
     let out = run_bounded(
         Command::new(env!("CARGO_BIN_EXE_marion"))
@@ -1350,6 +1372,33 @@ fn d_claude_root_spawns_an_opencode_child_that_verifies_lands_its_branch_and_jou
 #[test]
 fn e_codex_root_spawns_a_claude_child_and_receives_its_contract() {
     cell(&CODEX, &CLAUDE);
+}
+
+/// **Without the operator's opt-in, a codex root cannot start a claude child**: codex runs
+/// sandboxed, claude has no sandbox marion can apply, so the spawn is refused by name — the root
+/// is told why and how to allow it, and no child node exists.
+#[test]
+fn e_codex_root_is_refused_a_claude_child_without_the_opt_in() {
+    for n in [&CODEX, &CLAUDE] {
+        assert!(on_path(n.program), "this cell drives a REAL {}", n.program);
+    }
+    let ev = drive_as(&CODEX, &CLAUDE, &[], false);
+    let told = ev
+        .root_requests()
+        .iter()
+        .any(|r| carries(&r["body"], "codex runs sandboxed here"));
+    assert!(
+        told,
+        "the root is handed the refusal in its own turn:\n{:#?}",
+        ev.requests
+    );
+    let journal = ev.journal.as_ref().expect("the journal replays");
+    assert_eq!(
+        journal.nodes().len(),
+        1,
+        "only the root: the refused child never existed"
+    );
+    assert!(ev.leaked.is_empty(), "{:?}", ev.leaked);
 }
 
 #[test]

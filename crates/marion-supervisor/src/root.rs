@@ -302,6 +302,10 @@ pub struct RootSpec {
     /// `profiles.toml`'s `[default]` — a caller's own choice, or on a resume the profile the
     /// session was recorded under. See [`crate::profiles::Launch::resolve`].
     pub profile: Option<String>,
+    /// **The operator's `marion run --uncontained-children`**: sandboxed nodes in this root's tree
+    /// may spawn less-contained children, each one journaled. Or-ed with their user-level config
+    /// when the root starts ([`crate::user_config`]); nothing in the repository can set it.
+    pub uncontained_children: bool,
 }
 
 /// The base point of the root's change record, or why there is none (§9).
@@ -752,8 +756,20 @@ pub fn prepare_watched(
     // resumed root keeps the table it first started with.
     let snapshot = match crate::types_snapshot::TypesSnapshot::read(agent_dir.path()) {
         Ok(Some(kept)) if spec.resume.is_some() => kept,
-        Ok(_) => crate::types_snapshot::TypesSnapshot::take(&spec.repo, Some(&spec.agent_type))
-            .map_err(RootError::Run)?,
+        Ok(_) => {
+            // The operator's containment opt-in, fixed for the whole tree here: their CLI flag, or
+            // their user-level config — never anything in the repository.
+            let allow = spec.uncontained_children
+                || crate::user_config::allow_uncontained_children().map_err(|error| {
+                    RootError::Run(SpawnError::AgentTypesFile {
+                        path: crate::user_config::path().unwrap_or_default(),
+                        error,
+                    })
+                })?;
+            crate::types_snapshot::TypesSnapshot::take(&spec.repo, Some(&spec.agent_type))
+                .map_err(RootError::Run)?
+                .allowing_uncontained_children(allow)
+        }
         Err(e) => return Err(RootError::Run(e)),
     };
     let agent_type = match snapshot.launch_type(&spec.agent_type) {
@@ -3814,6 +3830,7 @@ mod tests {
 
     fn root_spec(dir: &Path, agent_type: &str) -> RootSpec {
         RootSpec {
+            uncontained_children: false,
             agent_type: agent_type.into(),
             prompt: "delegate it".into(),
             native_launch: None,

@@ -1,7 +1,8 @@
 # marion
 
 Any model, any harness, as any subagent. A Claude Code session can delegate to a codex child,
-and codex can delegate to claude, opencode or pi. Each child runs in its own git worktree,
+and codex can delegate to any harness once you allow uncontained children; by default a
+sandboxed agent only delegates to equally sandboxed ones. Each child runs in its own git worktree,
 marion checks its work, and the result goes back to the parent as a structured contract, not as
 prose.
 

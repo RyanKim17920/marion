@@ -269,6 +269,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     advertised: Advertised::NONE,
     // The default approval mode drops the mutating tools from `functionDeclarations` outright.
     writes_without_grant: false,
+    containment: crate::containment::ContainmentRule::ToolsOnly,
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).

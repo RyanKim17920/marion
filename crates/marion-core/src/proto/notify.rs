@@ -228,6 +228,7 @@ mod tests {
         vec![
             Event::NodeAdded {
                 node: Box::new(NodeSummary {
+                    uncontained: false,
                     review_of: None,
                     review: None,
                     agent_id: AgentId("a".into()),

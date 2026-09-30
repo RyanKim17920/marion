@@ -184,6 +184,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Measured on 1.2.8 (s32): in the default `request-review` mode a headless `write_to_file` is
     // auto-denied; `--mode accept-edits` is what a `write` compiles.
     writes_without_grant: false,
+    containment: crate::containment::ContainmentRule::ToolsOnly,
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).

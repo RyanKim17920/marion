@@ -294,6 +294,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Measured on 0.23.0 (`tests/fixtures/s25/`): `--core-tools` names what the model is offered,
     // and `write_file` is in `tools[]` only when the launch names it.
     writes_without_grant: false,
+    containment: crate::containment::ContainmentRule::ToolsOnly,
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,

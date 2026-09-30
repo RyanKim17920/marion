@@ -223,6 +223,11 @@ pub struct HarnessSpec {
     /// `the_harnesses_that_write_without_a_grant_are_the_ones_that_compile_no_constraint` pins it
     /// against what each row compiles.
     pub writes_without_grant: bool,
+    /// **How this harness contains the node it runs** ([`crate::containment`]): with an OS sandbox
+    /// of its own, or not at all. A caller may spawn only a type at least as contained as itself,
+    /// and a child's verification runs inside its row's sandbox where there is one. Stated by every
+    /// row, so a new harness cannot inherit a sandbox nobody measured.
+    pub containment: crate::containment::ContainmentRule,
 }
 
 /// **The capabilities a row's binary claims**, keyed by version: what every version measured

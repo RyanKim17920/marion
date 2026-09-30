@@ -256,6 +256,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Measured on 3.0.61 (`tests/fixtures/s27/`): `editor` and `run_commands` are among the 26
     // tools every launch offers, and nothing marion compiles withholds them.
     writes_without_grant: true,
+    containment: crate::containment::ContainmentRule::ToolsOnly,
 };
 
 /// How a `cline --json` stream is read (`tests/fixtures/s27/`).

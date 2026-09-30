@@ -105,6 +105,7 @@ fn completion() -> Completion {
         findings: None,
         failure_cause: None,
         usage: None,
+        verification_containment: None,
     }
 }
 

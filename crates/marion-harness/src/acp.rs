@@ -211,6 +211,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Decided, not inherited: ACP has no tool-availability surface, and marion does not know which
     // agent it is until the process exists (see the field's doc).
     writes_without_grant: true,
+    containment: crate::containment::ContainmentRule::ToolsOnly,
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**

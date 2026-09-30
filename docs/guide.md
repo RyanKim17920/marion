@@ -103,6 +103,27 @@ codex mcp add marion -- marion mcp --repo "$PWD"    # Codex
 
 Any other client takes `command: "marion", args: ["mcp", "--repo", "/path/to/repo"]`.
 
+## Sandboxed agents and what they can start
+
+codex runs its tools inside its own sandbox, which keeps its writes and commands to its
+workspace; no other harness has a sandbox marion can apply. So a codex agent can start another
+codex agent, or a read-only one such as `claude-orchestrator`, but not `claude` or any other
+harness whose shell runs as you: that child could do everything its parent was kept from doing,
+and the spawn is refused with the reason and the way to allow it. To let sandboxed agents start
+unsandboxed ones, opt in for one run with `marion run --uncontained-children`, or for every run
+in `~/.config/marion/config.toml`:
+
+```toml
+[containment]
+allow_uncontained_children = true
+```
+
+Only you can set this: never a repository file, an agent type or a model's tool call. Every child
+it lets through is recorded in the journal and marked "uncontained child (operator opt-in)" on
+its row. A child's verification lines run inside codex's sandbox when the child is a codex
+agent, and as you otherwise, which its contract states (`verification_containment`); either way
+they see none of marion's variables or provider keys.
+
 ## Where a child's work lands
 
 A child spawned with `isolation: "worktree"` works in its own git worktree on its own branch,

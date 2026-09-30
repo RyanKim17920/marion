@@ -450,6 +450,11 @@ pub struct AgentSpawnParams {
     /// How a race is judged, over the tree's `[race]` table key by key. Only with `candidates`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub race: Option<crate::race::RawRacePolicy>,
+    /// **The operator's `marion run --uncontained-children`**, for a root only: sandboxed nodes in
+    /// this root's tree may spawn less-contained children, each one journaled. Never set from an
+    /// MCP tool call or an agent type; refused with a `caller`. Absent on the wire otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncontained_children: Option<bool>,
     /// §5.4's write ceiling for the child, as globs. Empty is not "write nothing": `run_spawn`
     /// reads it as `**`, still clipped by the agent type's own `scope_ceiling`.
     #[serde(default)]
@@ -636,6 +641,7 @@ mod tests {
             response: ElicitationResponse::Provided(serde_json::json!({"branch": "main"}))
         });
         rt!(AgentSpawnParams {
+            uncontained_children: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),
@@ -657,6 +663,7 @@ mod tests {
             race: None,
         });
         rt!(AgentSpawnParams {
+            uncontained_children: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),
@@ -774,6 +781,7 @@ mod tests {
         // makes the legacy shape one thing.
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
+                uncontained_children: None,
                 review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),
@@ -799,6 +807,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
+                uncontained_children: None,
                 review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),

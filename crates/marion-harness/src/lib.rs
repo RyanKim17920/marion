@@ -16,6 +16,7 @@ pub mod caps;
 pub mod claude_code;
 pub mod cline;
 pub mod codex;
+pub mod containment;
 pub mod copilot;
 pub mod gemini;
 pub mod goose;

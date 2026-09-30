@@ -599,6 +599,7 @@ fn spawn_params(
     repo: Option<std::path::PathBuf>,
 ) -> marion_core::proto::params::AgentSpawnParams {
     marion_core::proto::params::AgentSpawnParams {
+        uncontained_children: None,
         // A parent asking for its child's review: the same spawn, the supervisor decides the rest.
         review_of: args["review_of"]
             .as_str()
@@ -2692,6 +2693,7 @@ mod tests {
 
         fn node(id: &str, parent: Option<&str>) -> NodeSummary {
             NodeSummary {
+                uncontained: false,
                 review_of: None,
                 review: None,
                 agent_id: AgentId(id.into()),
@@ -2756,6 +2758,7 @@ mod tests {
         use marion_core::proto::model::NodeSummary;
 
         let cyclic = |id: &str, parent: &str| NodeSummary {
+            uncontained: false,
             review_of: None,
 
             review: None,

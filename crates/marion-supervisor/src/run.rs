@@ -500,16 +500,56 @@ pub const VERIFICATION_TIMEOUT: StdDuration = StdDuration::from_secs(300);
 /// ran (a timed-out child gets no verification, see `run_spawn`) — "asked for and never run" and
 /// "never asked for" are the two answers the old hardcoded `verification: vec![]` could not tell
 /// apart.
-pub fn verification_commands(lines: &[String], cwd: &Path) -> Vec<Command> {
+///
+/// `sandbox` is the child's row's own sandbox, where it has one
+/// ([`marion_harness::containment::verify_prefix`]): the line then runs as `<program> <prefix…>
+/// sh -c <line>`, kept to the workspace exactly as the child was, and the contract records that
+/// command. `None` runs it as the operator.
+pub fn verification_commands(
+    lines: &[String],
+    cwd: &Path,
+    sandbox: Option<&(&str, Vec<String>)>,
+) -> Vec<Command> {
     lines
         .iter()
-        .map(|line| Command {
-            program: "sh".into(),
-            args: vec!["-c".into(), line.clone()],
-            cwd: cwd.to_path_buf(),
-            timeout: Duration::from_secs(VERIFICATION_TIMEOUT.as_secs()),
+        .map(|line| {
+            let sh = ["sh".to_string(), "-c".into(), line.clone()];
+            let (program, args) = match sandbox {
+                Some((program, prefix)) => (
+                    program.to_string(),
+                    prefix.iter().cloned().chain(sh).collect(),
+                ),
+                None => (sh[0].clone(), sh[1..].to_vec()),
+            };
+            Command {
+                program,
+                args,
+                cwd: cwd.to_path_buf(),
+                timeout: Duration::from_secs(VERIFICATION_TIMEOUT.as_secs()),
+            }
         })
         .collect()
+}
+
+/// **What a verification process must not inherit**: marion's own variables (a node token, the
+/// state directory, a bridge's identity) and every provider key. A verification line is the
+/// parent's words run over the child's work — a `cargo test` whose `build.rs` the child wrote — so
+/// it runs with none of marion's credentials in reach, contained or not.
+pub fn is_withheld_from_verification(key: &str) -> bool {
+    key.starts_with("MARION_") || key.ends_with("_API_KEY") || key.ends_with("_AUTH_TOKEN")
+}
+
+/// The process one verification [`Command`] runs as: its program, arguments and directory, with
+/// every variable [`is_withheld_from_verification`] names removed from what it inherits.
+pub fn verification_process(command: &Command) -> SysCommand {
+    let mut sys = SysCommand::new(&command.program);
+    sys.args(&command.args).current_dir(&command.cwd);
+    for (key, _) in std::env::vars_os() {
+        if key.to_str().is_some_and(is_withheld_from_verification) {
+            sys.env_remove(&key);
+        }
+    }
+    sys
 }
 
 /// Run `commands` one after another, in order, each through [`run_bounded`] so an expired one is
@@ -525,8 +565,7 @@ pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
         .iter()
         .map(|command| {
             let started = Instant::now();
-            let mut sys = SysCommand::new(&command.program);
-            sys.args(&command.args).current_dir(&command.cwd);
+            let mut sys = verification_process(command);
             let (exit_code, stdout, stderr, timed_out) =
                 match run_bounded(&mut sys, command.timeout.0) {
                     Ok(out) => (
@@ -1753,6 +1792,22 @@ pub fn run_spawn_watched(
         caller.depth,
         caller.live_children,
     )?;
+    // **No escape by delegation**: a sandboxed caller gets only children at least as contained
+    // as itself, before anything exists (see `marion_harness::containment`) — unless the operator
+    // opted this tree in, and then the delegation is journaled below, beside the child's intent.
+    let uncontained_by_opt_in =
+        match marion_harness::containment::check(&caller.agent_type, &agent_type) {
+            Ok(()) => false,
+            Err(_) if snapshot.allows_uncontained_children() => true,
+            Err((caller_is, child_is)) => {
+                return Err(SpawnError::LessContained {
+                    caller_type: caller.agent_type.name.clone(),
+                    caller: caller_is,
+                    child_type: agent_type.name.clone(),
+                    child: child_is,
+                });
+            }
+        };
     let requested = requested_scope(req);
     check_spawn_scope(&agent_type.scope_ceiling, &requested)?;
     // The verification lines ride on the intent below, so a set too large to journal is refused
@@ -1841,6 +1896,18 @@ pub fn run_spawn_watched(
         agent_id: agent_id.clone(),
         source,
     })?;
+    // Every less-contained child the operator's opt-in let a sandboxed caller start is on the
+    // record, so the node can say so wherever it is shown.
+    if uncontained_by_opt_in {
+        crate::journal::record(
+            &env.project_dir,
+            RecordKind::UncontainedDelegation(marion_core::journal::UncontainedDelegation {
+                agent_id: agent_id.clone(),
+                caller_type: caller.agent_type.name.clone(),
+                child_type: agent_type.name.clone(),
+            }),
+        );
+    }
     // **§11 item 28 step 4's first hook, and its position is the argument.** The intent is on disk,
     // so a supervisor that crashes after this line has a record naming the node; and nothing below
     // has happened yet, so the token this returns is decided before the document that carries it is
@@ -2563,7 +2630,11 @@ pub fn run_spawn_watched(
     // child's work, so the measurement is taken first and the commands run over the sealed
     // result. The request itself is always recorded (`verification_commands`), so the contract
     // says what was asked even where `verification_evidence` decides nothing ran.
-    let verification = verification_commands(&req.verification, &wt);
+    // Inside the child's own harness sandbox where its row has one, so a verification line the
+    // child's work can steer (a test's build script) is kept to the workspace as the child was;
+    // as the operator otherwise, which the contract then says (`verification_containment`).
+    let sandbox = marion_harness::containment::verify_prefix(&agent_type);
+    let verification = verification_commands(&req.verification, &wt, sandbox.as_ref());
     // Nothing runs over a killed node's workspace, for `verification_evidence`'s own reason about a
     // timed-out one: it is whatever the kill left.
     let evidence = if ended_by_kill {
@@ -2601,6 +2672,17 @@ pub fn run_spawn_watched(
         verification,
         evidence,
     );
+    // Said plainly beside the evidence it describes: whether those lines were kept to the
+    // workspace, or ran as the operator.
+    if let Some(completion) = contract.completion.as_mut()
+        && !completion.evidence.is_empty()
+    {
+        completion.verification_containment = Some(if sandbox.is_some() {
+            marion_core::contract::VerificationContainment::Sandboxed
+        } else {
+            marion_core::contract::VerificationContainment::Uncontained
+        });
+    }
     note_capture_truncated(&mut contract, run.capture_truncated);
     // The run's cause, and on a usage limit the notice the parent reads — nothing more.
     if contract
@@ -4066,7 +4148,7 @@ mod tests {
     #[test]
     fn verification_runs_for_a_signalled_exit_and_skips_only_marions_own_timeout() {
         let dir = scratch("supervisor-verify-signalled");
-        let cmds = verification_commands(&["echo ok".into()], &dir);
+        let cmds = verification_commands(&["echo ok".into()], &dir, None);
         let shut_down_by_marion = ChildOutcome {
             signal: Some(2),
             timed_out: false,
@@ -4999,7 +5081,8 @@ mod tests {
             &env,
             &req,
             &TaskId("prelaunch".into()),
-            &Caller::root("root", builtin("codex").unwrap()),
+            // Unsandboxed, so the containment gate is not what refuses this spawn.
+            &Caller::root("root", builtin("claude").unwrap()),
             &Unwatched,
         )
         .expect_err("the protocol row with no agent cannot be launched");
@@ -6307,7 +6390,7 @@ mod tests {
     #[test]
     fn a_passing_verification_command_records_exit_zero_and_its_stdout() {
         let scratch = scratch("verif-pass");
-        let cmds = verification_commands(&["echo verified".into()], &scratch);
+        let cmds = verification_commands(&["echo verified".into()], &scratch, None);
         let out = run_verification(&cmds);
         assert_eq!(out.len(), 1);
         assert_eq!(
@@ -6323,7 +6406,7 @@ mod tests {
     #[test]
     fn a_failing_verification_command_records_its_exit_code_and_stderr() {
         let scratch = scratch("verif-fail");
-        let cmds = verification_commands(&["echo broken 1>&2; exit 3".into()], &scratch);
+        let cmds = verification_commands(&["echo broken 1>&2; exit 3".into()], &scratch, None);
         let out = run_verification(&cmds);
         assert_eq!(out[0].exit_code, Some(3));
         assert_eq!(out[0].stderr.value, "broken\n");
@@ -6367,6 +6450,77 @@ mod tests {
 
     /// Sequential and in the parent's order, each in the workspace it was given: a later command
     /// sees what an earlier one wrote, which is what lets `cargo build` precede `cargo test`.
+    /// **A verification process inherits none of marion's variables or provider keys**: every
+    /// such name in the supervisor's environment is removed from the process, and nothing else is.
+    #[test]
+    fn a_verification_process_withholds_marions_variables_and_provider_keys() {
+        for key in [
+            "MARION_NODE_TOKEN",
+            "MARION_STATE_DIR",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+        ] {
+            assert!(is_withheld_from_verification(key), "{key}");
+        }
+        for key in ["PATH", "HOME", "CARGO_HOME", "LANG", "MARIONETTE"] {
+            assert!(!is_withheld_from_verification(key), "{key}");
+        }
+        let cmd = verification_commands(&["true".into()], Path::new("/"), None).remove(0);
+        let sys = verification_process(&cmd);
+        let removed: Vec<String> = sys
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for (key, _) in std::env::vars() {
+            assert_eq!(
+                removed.contains(&key),
+                is_withheld_from_verification(&key),
+                "{key}"
+            );
+        }
+    }
+
+    /// **A codex child's verification runs inside codex's own workspace sandbox**: a line may write
+    /// in the worktree and is refused outside it (codex leaves the temp dir writable as well). Needs a real `codex`, carrying its row's update
+    /// switch; skipped by name where there is none.
+    #[test]
+    fn a_sandboxed_childs_verification_cannot_write_outside_its_workspace() {
+        if !marion_testsupport::harness_available("codex") {
+            return;
+        }
+        let dir = marion_testsupport::scratch("run-verify-sandbox");
+        let wt = dir.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        // Not under the temp dir, which codex's `workspace-write` leaves writable too: a path in
+        // this crate's own directory, removed afterwards whatever happens.
+        let outside = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("verify-sandbox-probe-{}", std::process::id()));
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _gone = Gone(outside.clone());
+        let codex = marion_core::agent_type::builtin("codex").unwrap();
+        let sandbox = marion_harness::containment::verify_prefix(&codex).expect("codex has one");
+        let line = format!(
+            "echo in > inside.txt; echo out > '{}'; true",
+            outside.display()
+        );
+        let cmds = verification_commands(&[line], &wt, Some(&sandbox));
+        assert_eq!(cmds[0].program, "codex");
+        let out = run_verification(&cmds);
+        assert_eq!(out[0].exit_code, Some(0), "{out:?}");
+        assert!(wt.join("inside.txt").exists(), "the workspace is writable");
+        assert!(
+            !outside.exists(),
+            "a write outside the workspace was refused"
+        );
+    }
+
     #[test]
     fn verification_commands_run_in_the_workspace_in_the_parents_order() {
         let scratch = scratch("verif-order");
@@ -6375,7 +6529,7 @@ mod tests {
             "echo second >> order.txt".into(),
             "cat order.txt".into(),
         ];
-        let cmds = verification_commands(&lines, &scratch);
+        let cmds = verification_commands(&lines, &scratch, None);
         assert_eq!(cmds.len(), 3);
         for (c, line) in cmds.iter().zip(&lines) {
             assert_eq!(c.program, "sh");
@@ -6405,6 +6559,7 @@ mod tests {
         let cmds = verification_commands(
             &["yes 0123456789012345678901234567890123456789 | head -n 2000".into()],
             &scratch,
+            None,
         );
         let evidence = run_verification(&cmds);
         let bytes = evidence[0].stdout.value.len();

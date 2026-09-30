@@ -36,6 +36,12 @@ pub struct TypesSnapshot {
     /// The root's agent type, whose `max_depth` bounds the tree. `None` for a table read on behalf
     /// of a caller marion holds no snapshot for (see [`for_caller`]).
     root_type: Option<String>,
+    /// **The operator let sandboxed nodes in this tree spawn less-contained children**: their
+    /// user-level `[containment] allow_uncontained_children`, or `marion run
+    /// --uncontained-children`, read when the root started ([`crate::user_config`]). Never from the
+    /// tree itself.
+    #[serde(default)]
+    allow_uncontained_children: bool,
 }
 
 impl TypesSnapshot {
@@ -50,7 +56,21 @@ impl TypesSnapshot {
             source,
             text,
             root_type: root_type.map(str::to_string),
+            allow_uncontained_children: false,
         })
+    }
+
+    /// This snapshot with the operator's containment opt-in set as stated.
+    pub fn allowing_uncontained_children(self, allow: bool) -> TypesSnapshot {
+        TypesSnapshot {
+            allow_uncontained_children: allow,
+            ..self
+        }
+    }
+
+    /// Whether the operator let sandboxed nodes in this tree spawn less-contained children.
+    pub fn allows_uncontained_children(&self) -> bool {
+        self.allow_uncontained_children
     }
 
     /// The snapshot in `agent_dir`, or `None` where the node has none.
@@ -152,7 +172,13 @@ pub fn for_caller(
             ),
         });
     }
-    TypesSnapshot::take(tree, Some(caller_type))
+    let allow = crate::user_config::allow_uncontained_children().map_err(|error| {
+        SpawnError::AgentTypesFile {
+            path: crate::user_config::path().unwrap_or_default(),
+            error,
+        }
+    })?;
+    Ok(TypesSnapshot::take(tree, Some(caller_type))?.allowing_uncontained_children(allow))
 }
 
 #[cfg(test)]

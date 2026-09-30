@@ -81,6 +81,9 @@ pub fn params(
     timeout_secs: u64,
 ) -> AgentSpawnParams {
     AgentSpawnParams {
+        // A root in these beds is the operator's, opted in: they test delegation, and a codex root
+        // delegating to opencode is exactly that. `containment.rs` tests the gate itself.
+        uncontained_children: repo.map(|_| true),
         review_of: None,
         race: None,
         candidates: vec![],

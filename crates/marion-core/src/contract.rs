@@ -408,6 +408,22 @@ pub struct Completion {
     /// build wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
+    /// **How the verification lines ran, when any did**: inside the child's own harness sandbox,
+    /// kept to its workspace, or uncontained — as the operator, able to write anywhere the operator
+    /// can. Either way marion's own variables and every provider key were withheld from them.
+    /// `None` when nothing ran, and then absent on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_containment: Option<VerificationContainment>,
+}
+
+/// Where a child's verification lines ran. See [`Completion::verification_containment`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerificationContainment {
+    /// Inside the child's harness sandbox, which kept writes and commands to its workspace.
+    Sandboxed,
+    /// As the operator: the child's harness has no sandbox marion can run a command in.
+    Uncontained,
 }
 
 impl Completion {

@@ -140,9 +140,14 @@ pub fn label_of(node: &NodeSummary) -> String {
         Some(e) => format!("{name} {}", e.label()),
         None => name,
     };
-    match review_note(node).or_else(|| race_note(node)) {
+    let label = match review_note(node).or_else(|| race_note(node)) {
         Some(note) => format!("{label} · {note}"),
         None => label,
+    };
+    if node.uncontained {
+        format!("{label} · {UNCONTAINED_NOTE}")
+    } else {
+        label
     }
 }
 
@@ -245,6 +250,8 @@ impl RaceSummary {
         }
     }
 }
+/// What a node's row says when its sandboxed caller was let start it by the operator's opt-in.
+pub const UNCONTAINED_NOTE: &str = "uncontained child (operator opt-in)";
 
 /// **What a reviewer row adds**: that it is a review, and once its report is read, how many
 /// findings it made and how many block. `None` for every node that is not a reviewer. The tree
@@ -866,6 +873,7 @@ mod tests {
 
     fn summary(id: &str, harness: Harness, pane: bool, version: Option<&str>) -> NodeSummary {
         NodeSummary {
+            uncontained: false,
             review_of: None,
             review: None,
             agent_id: AgentId(id.into()),
@@ -1139,6 +1147,18 @@ mod tests {
         assert_eq!(
             row(&n).label,
             "codex-impl rev · review: 3 findings, 2 blocking"
+        );
+    }
+
+    /// **A child the operator's opt-in let a sandboxed caller start says so on its row**.
+    #[test]
+    fn an_uncontained_child_says_so_on_its_row() {
+        let mut n = summary("kid", Harness::ClaudeCode, false, None);
+        assert!(!row(&n).label.contains(UNCONTAINED_NOTE));
+        n.uncontained = true;
+        assert_eq!(
+            row(&n).label,
+            "codex-impl kid · uncontained child (operator opt-in)"
         );
     }
 

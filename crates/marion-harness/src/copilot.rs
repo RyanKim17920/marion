@@ -336,6 +336,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Measured on 1.0.83 (`tests/fixtures/s24/`): `--available-tools` withholds every built-in it
     // does not name, and an ungranted `create` is denied at exit 0.
     writes_without_grant: false,
+    containment: crate::containment::ContainmentRule::ToolsOnly,
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).

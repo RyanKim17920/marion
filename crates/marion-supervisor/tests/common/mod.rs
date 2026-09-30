@@ -221,3 +221,15 @@ pub fn walk(dir: &Path, f: &mut impl FnMut(&Path)) {
         }
     }
 }
+
+/// **Whether a root of type `root` needs the operator's opt-in to start a child of type `child`**:
+/// a sandboxed root (codex) asking for a less-contained type. The matrices pass
+/// `marion run --uncontained-children` exactly then, and a cell of their own asserts the refusal
+/// without it.
+#[allow(dead_code)]
+pub fn needs_uncontained_opt_in(root: &str, child: &str) -> bool {
+    let ty = |n: &str| {
+        marion_core::agent_type::builtin(n).unwrap_or_else(|| panic!("{n} is a built-in type"))
+    };
+    marion_harness::containment::check(&ty(root), &ty(child)).is_err()
+}

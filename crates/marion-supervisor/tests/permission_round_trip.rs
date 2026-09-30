@@ -192,6 +192,7 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
     .expect("the canned provider binds");
 
     let mut node = root::prepare(&RootSpec {
+        uncontained_children: false,
         agent_type: setup.agent_type.into(),
         // The turn every probe in this file drives. It is compiled into the node rather than
         // handed to `launch`, so the prompt that was prepared and the prompt that is written are
