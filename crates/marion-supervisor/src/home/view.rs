@@ -241,10 +241,17 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
             tokens: n
                 .tokens
                 .or_else(|| detail.and_then(|d| d.usage).map(|u| u.total())),
+            subtree: w
+                .rollup
+                .get(&n.agent_id)
+                .and_then(|t| subtree_cell(n, t, w.rollup.has_children(&n.agent_id))),
             doing: doing(n, detail, selected.then_some(&w.stream[..])),
         });
     }
+    let forest = w.rollup.forest(&w.nodes);
     WatchView {
+        total: (forest.claimed > 0)
+            .then(|| format!("Σ{}", marion_tui::home::text::tokens(forest.tokens))),
         supervisor: w.supervisor,
         rows,
         cursor,
@@ -268,6 +275,48 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
             .collect(),
         filter: None,
     }
+}
+
+/// **A row's subtree cell**: a parent's subtree spend (`Σ184k`), and against its tree budget
+/// where it has one (`Σ1.2M/5M`, flagged past the warn line). `None` for a leaf with no budget —
+/// its subtree is itself, already in the tokens column — and where nothing reported a figure.
+fn subtree_cell(
+    n: &NodeSummary,
+    t: &crate::rollup::Totals,
+    has_children: bool,
+) -> Option<(String, bool)> {
+    use marion_tui::home::text::tokens;
+    match crate::rollup::budget_of(n, t) {
+        Some((spent, limit, over)) => Some((format!("Σ{}/{}", tokens(spent), tokens(limit)), over)),
+        None if has_children && t.claimed > 0 => Some((format!("Σ{}", tokens(t.tokens)), false)),
+        None => None,
+    }
+}
+
+/// **The expanded node's subtree line**: tokens, files, wall clock, nodes and how many run, and
+/// its tree budget where it has one — for a node with children or a budget.
+fn subtree_line(home: &Home, n: &NodeSummary) -> Option<(String, bool)> {
+    use marion_tui::home::text::{elapsed, tokens};
+    let t = home.watch.rollup.get(&n.agent_id)?;
+    let budget = crate::rollup::budget_of(n, t);
+    if !home.watch.rollup.has_children(&n.agent_id) && budget.is_none() {
+        return None;
+    }
+    let mut parts = vec![if t.claimed > 0 {
+        format!("Σ{} tokens", tokens(t.tokens))
+    } else {
+        "tokens not reported".to_string()
+    }];
+    parts.push(format!("{} Σ files", t.changed));
+    if let Some(wall) = t.wall_to(std::time::SystemTime::now()) {
+        parts.push(format!("{} wall", elapsed(wall.as_secs())));
+    }
+    parts.push(format!("{} nodes ({} running)", t.nodes, t.live));
+    let over = budget.is_some_and(|(_, _, over)| over);
+    if let Some((spent, limit, _)) = budget {
+        parts.push(format!("budget {} / {}", tokens(spent), tokens(limit)));
+    }
+    Some((parts.join(" · "), over))
 }
 
 /// The row's time: how long a live node has been running, or how long ago an ended one ended.
@@ -326,6 +375,8 @@ fn race_row(
             Some(None) => "no seat won; every seat's branch is kept".into(),
             None => format!("{} of {} seats finished", summary.ended, summary.seats),
         },
+        // The header's figures are already its seats' sum; it heads no subtree of its own.
+        subtree: None,
     }
 }
 
@@ -467,12 +518,14 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
             stream_unread: Some("reading…".into()),
             caps,
             endpoint: endpoint_of(n),
+            subtree: subtree_line(home, n),
             ..Default::default()
         };
     };
     Expanded {
         live,
         endpoint: endpoint_of(n),
+        subtree: subtree_line(home, n),
         task: d.task.as_ref().map(|t| TaskView {
             prompt: t.prompt.clone(),
             // marion's own report instruction, named rather than quoted: the sentence is the same

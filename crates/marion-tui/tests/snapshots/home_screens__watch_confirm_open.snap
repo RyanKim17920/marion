@@ -6,20 +6,20 @@ expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 100, 30)"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · 2 need you
+  NODES   6 · 2 running · Σ2.1M · 2 need you
 
-  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
-❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
+❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
   │    └ TASK             Implement the bucket
   │                       + marion: When you have finished, call the `report` tool of the marion …
   │                       ✓ cargo test passes
   │                       ✓ 100 req/min per key, 429 after
   │                       $ cargo test -q limits
   │      RUNNING          nothing recorded yet
-  ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
-  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
-  └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
-  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+  ├─ ◐ codex impl 91cd               3m02s     41k             asks to write .github/workflows/ci…
+  ├─ ✗ codex impl 7b2e               4m50s    120k             exit 101: 3 tests failed
+  └─ ✓ codex impl 3c33               6m41s    197k             landed marion/t-3c33
+  ✓ claude review 88f2              1h ago     54k             landed marion/t-88f2
 
   ────────────────────────────────────────────────────────────────────────────────────────────────
   ACTIVITY
@@ -37,9 +37,9 @@ expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 100, 30)"
   129  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    37  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexCancelcodexim"
    37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGACTIVITY"
-  743  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  757  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
   212  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s╭─────────"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯y"
     3  Style::new().green().bg(Color::Reset)  "●●●"
    22  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed✗"
-   39  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+   36  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"

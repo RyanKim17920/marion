@@ -29,6 +29,9 @@ pub struct NodeRow {
     /// `2m17s` while it runs, `1h ago` once it has ended: already worded by the caller.
     pub elapsed: String,
     pub tokens: Option<u64>,
+    /// A parent's subtree spend, already worded (`Σ184k`, or `Σ1.2M/5M` against a tree budget),
+    /// and whether it is past the budget's warn line. `None` on a leaf, whose subtree is itself.
+    pub subtree: Option<(String, bool)>,
     /// One line: what it is doing now, or how it ended.
     pub doing: String,
 }
@@ -53,6 +56,9 @@ pub struct Expanded {
     /// Why it is waiting on the operator, when it is.
     pub needs: Option<String>,
     pub tokens: Option<TokenView>,
+    /// A parent's subtree, in one worded line (`Σ1.3M tokens · 14 files · 12m04s wall · 6 nodes
+    /// (2 running)`, and its tree budget), and whether it is past the budget's warn line.
+    pub subtree: Option<(String, bool)>,
     pub result: Option<ResultView>,
     /// Where it works: its worktree, or the operator's checkout for a root.
     pub workspace: Option<String>,
@@ -146,6 +152,9 @@ pub struct FeedRow {
 /// Everything Watch draws.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WatchView {
+    /// The whole forest's spend, already worded (`Σ2.1M`), for the header. `None` where no node
+    /// reported a figure.
+    pub total: Option<String>,
     /// Whether a supervisor answered. `false` is its own empty state: an empty forest would read
     /// as "no agents" rather than as "nothing is running here".
     pub supervisor: bool,
@@ -164,6 +173,8 @@ pub struct WatchView {
 
 /// Below this width the tokens column goes; the expanded block still carries them.
 const WIDE: usize = 90;
+/// The subtree column beside the tokens: `Σ1.2M/5M`.
+const SUBTREE_W: usize = 9;
 /// The expansion's label column.
 const LABEL_W: usize = 17;
 /// The spinner-and-elapsed column: `⠋ 12m04s`.
@@ -201,6 +212,9 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         return;
     }
     let mut note = format!("{} · {} running", v.rows.len(), v.running);
+    if let Some(total) = &v.total {
+        note.push_str(&format!(" · {total}"));
+    }
     if v.attention > 0 {
         note.push_str(&format!(" · {} need you", v.attention));
         if let Some(what) = &v.attention_note {
@@ -230,6 +244,8 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
     // Every line of the list, each with the column it starts at, then a window over them that
     // keeps the selected node and its whole expansion on screen.
     let wide = w >= WIDE;
+    // The subtree column is drawn only where some row has something in it.
+    let sub_col = wide && v.rows.iter().any(|r| r.subtree.is_some());
     let name_w = 30.min(w / 2);
     let mut lines: Vec<(u16, Line)> = Vec::new();
     let mut selected = (0, 0);
@@ -239,7 +255,7 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         let (branch, through) = connectors(&n.prefix);
         lines.push((
             area.x,
-            row(n, &branch, sel, i, frame, name_w, wide, w, theme),
+            row(n, &branch, sel, i, frame, name_w, (wide, sub_col), w, theme),
         ));
         if sel {
             if let Some(e) = &v.expanded {
@@ -329,7 +345,7 @@ fn row<'a>(
     i: usize,
     frame: usize,
     name_w: usize,
-    wide: bool,
+    (wide, sub_col): (bool, bool),
     w: usize,
     theme: Theme,
 ) -> Line<'a> {
@@ -370,6 +386,13 @@ fn row<'a>(
     if wide {
         let t = n.tokens.map(tokens).unwrap_or_default();
         l.push(span(format!("  {}", rpad(&t, 6)), dim()));
+    }
+    if sub_col {
+        let (sub, over) = n.subtree.clone().unwrap_or_default();
+        l.push(span(
+            format!(" {}", rpad(&sub, SUBTREE_W)),
+            if over { warn() } else { dim() },
+        ));
     }
     let doing_style = match n.tone {
         Tone::Blocked => warn(),
@@ -497,6 +520,15 @@ fn expanded_rows<'a>(
             block.push(context_bar(p, bar_w, theme));
         }
         push_block(&mut rows, "Tokens", block);
+    }
+
+    if let Some((line, over)) = &e.subtree {
+        let style = if *over { warn() } else { Style::default() };
+        let block = wrap(line, value_w)
+            .into_iter()
+            .map(|l| vec![span(l, style)])
+            .collect();
+        push_block(&mut rows, "Subtree", block);
     }
 
     if let Some(r) = &e.result {

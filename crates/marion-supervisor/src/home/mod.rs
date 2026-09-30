@@ -312,6 +312,8 @@ pub struct Watch {
     /// What changed in the forest while the screen watched it, newest first, at most
     /// [`FEED_MAX`].
     pub feed: Vec<FeedItem>,
+    /// Every node's subtree totals, rebuilt with the forest ([`crate::rollup`]).
+    pub rollup: crate::rollup::Rollup,
 }
 
 /// One change in the forest, as the feed shows it.
@@ -337,6 +339,7 @@ impl Default for Watch {
             next: None,
             scroll: 0,
             feed: Vec::new(),
+            rollup: crate::rollup::Rollup::default(),
         }
     }
 }
@@ -505,6 +508,7 @@ impl Home {
         }
         let keep = self.watch.tree.selected().map(|n| n.id.clone());
         self.watch.tree = crate::tree::build(&nodes, keep.as_deref());
+        self.watch.rollup = crate::rollup::Rollup::build(&nodes);
         self.watch.nodes = nodes;
         self.watch.supervisor = true;
     }

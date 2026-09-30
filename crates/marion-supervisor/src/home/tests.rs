@@ -1357,3 +1357,39 @@ fn a_race_is_one_header_row_over_its_seats() {
     assert!(h.selected().is_none());
     assert_eq!(h.watch_default(), Effect::None);
 }
+
+/// **A parent's row carries its subtree, against its tree budget where it has one, and the
+/// header the forest's total** — the leaf's row carries nothing, its subtree being itself.
+#[test]
+fn a_parent_row_shows_its_subtree_against_its_budget_and_the_header_the_forest() {
+    let mut h = home();
+    h.tab = Tab::Watch;
+    let mut root = node("root", None, NodeState::Running);
+    root.tokens = Some(1_000);
+    root.changed = Some(2);
+    root.budget = Some(marion_core::budget::Budget {
+        tree_tokens: Some(1_500),
+        ..Default::default()
+    });
+    let mut child = node("child", Some("root"), NodeState::Exited(ExitStatus::Ok));
+    child.tokens = Some(400);
+    child.changed = Some(3);
+    h.set_nodes(vec![root, child]);
+    let f = view::frame(&h, &view::Places::default());
+    assert_eq!(f.watch.total.as_deref(), Some("Σ1.4k"));
+    let rows = &f.watch.rows;
+    assert_eq!(
+        rows[0].subtree,
+        Some(("Σ1.4k/1.5k".to_string(), true)),
+        "past 80% of its tree budget"
+    );
+    assert_eq!(rows[1].subtree, None);
+    let (line, over) = f.watch.expanded.unwrap().subtree.unwrap();
+    assert!(over);
+    assert!(
+        line.starts_with("Σ1.4k tokens · 5 Σ files")
+            && line.contains("2 nodes (1 running)")
+            && line.ends_with("budget 1.4k / 1.5k"),
+        "{line}"
+    );
+}

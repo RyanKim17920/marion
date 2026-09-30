@@ -6,7 +6,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · 2 need you
+  NODES   6 · 2 running · Σ2.1M · 2 need you
 
   ● claude orchestrator 5e1a     ⠋  12m04s   waiting on 2 children
   ├─ ● codex impl a1f0           ⠸   2m17s   editing src/limits/bucket.rs
@@ -31,7 +31,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
    88  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    42  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKNEEDSYOURUNNING"
-  632  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  638  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯K❯"
     2  Style::new().green().bg(Color::Reset)  "●●"
@@ -42,11 +42,11 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · 2 need you
+  NODES   6 · 2 running · Σ2.1M · 2 need you
 
-  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
-  ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
-❯ ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
+  ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
+❯ ├─ ◐ codex impl 91cd               3m02s     41k             asks to write .github/workflows/ci…
   │    └ TASK             Wire the limiter into CI
   │                       + marion: When you have finished, call the `report` tool of the marion …
   │                       ✓ cargo test passes
@@ -58,9 +58,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   │                       14:24:14  “I'll add a token bucket keyed by API key.”
   │                       14:24:21  ~ src/limits/bucket.rs
   │      TOKENS           38k in · 3.1k out · 30k cached
-  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
-  └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
-  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+  ├─ ✗ codex impl 7b2e               4m50s    120k             exit 101: 3 tests failed
+  └─ ✓ codex impl 3c33               6m41s    197k             landed marion/t-3c33
+  ✓ claude review 88f2              1h ago     54k             landed marion/t-88f2
 
 
 
@@ -73,22 +73,22 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   190  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    43  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKNEEDSYOURUNNING"
-  772  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  786  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     2  Style::new().green().bg(Color::Reset)  "●●"
    21  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed"
-   79  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+   76  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
 
 --- 160x50 ---
  ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  NODES   6 · 2 running · 2 need you
+  NODES   6 · 2 running · Σ2.1M · 2 need you
 
-  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
-  ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
-❯ ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k  Σ1.3M/5M   waiting on 2 children
+  ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
+❯ ├─ ◐ codex impl 91cd               3m02s     41k             asks to write .github/workflows/ci.yml
   │    └ TASK             Wire the limiter into CI
   │                       + marion: When you have finished, call the `report` tool of the marion MCP server exactly once.
   │                       ✓ cargo test passes
@@ -100,9 +100,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   │                       14:24:14  “I'll add a token bucket keyed by API key.”
   │                       14:24:21  ~ src/limits/bucket.rs
   │      TOKENS           38k in · 3.1k out · 30k cached
-  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
-  └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
-  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+  ├─ ✗ codex impl 7b2e               4m50s    120k             exit 101: 3 tests failed
+  └─ ✓ codex impl 3c33               6m41s    197k             landed marion/t-3c33
+  ✓ claude review 88f2              1h ago     54k             landed marion/t-88f2
 
   ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ACTIVITY
@@ -135,7 +135,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   211  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    51  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKNEEDSYOURUNNING"
- 1297  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+ 1311  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"

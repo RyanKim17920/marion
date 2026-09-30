@@ -271,6 +271,8 @@ fn rows() -> Vec<NodeRow> {
             tone: *tone,
             elapsed: s(el),
             tokens: *tok,
+            // The root's subtree, measured against its tree budget.
+            subtree: (i == 0).then(|| (s("Σ1.3M/5M"), false)),
             doing: s(doing),
         })
         .collect()
@@ -288,6 +290,7 @@ fn landed() -> Expanded {
         stream_scroll: 0,
         stream_unread: None,
         needs: None,
+        subtree: None,
         tokens: Some(TokenView {
             input: 184_210,
             output: 12_900,
@@ -391,6 +394,7 @@ fn feed() -> Vec<FeedRow> {
 
 fn watch_view(cursor: usize, expanded: Option<Expanded>) -> WatchView {
     WatchView {
+        total: Some(s("Σ2.1M")),
         supervisor: true,
         rows: rows(),
         cursor,
@@ -831,6 +835,25 @@ fn start_blocked_harness_shows_its_fix() {
 fn watch_done_node_with_landed_branch_and_tokens() {
     let v = watch_view(4, Some(landed()));
     let input = command("marion attach 01a093dc-3c33", "same as enter");
+    insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
+}
+
+/// **A parent opens on its subtree**: tokens, files, wall clock and nodes added up, with its
+/// tree budget — flagged once past its warn line.
+#[test]
+fn watch_parent_shows_its_subtree_and_its_budget() {
+    let e = Expanded {
+        live: true,
+        task: Some(task_view("Ship the rate limiter")),
+        stream: stream(3),
+        subtree: Some((
+            s("Σ1.3M tokens · 14 Σ files · 12m04s wall · 6 nodes (2 running) · budget 1.3M / 1.5M"),
+            true,
+        )),
+        ..Default::default()
+    };
+    let v = watch_view(0, Some(e));
+    let input = command("marion attach 01a093dc-5e1a", "same as enter");
     insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
 }
 
