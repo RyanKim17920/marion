@@ -26,12 +26,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion logout openrouter:work                                          x │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key        F1 help
+  j/k move · enter details · r re-check · e edit types · n new type    F1 help
 --- styles ---
   133  Style::new().fg(Color::Reset).bg(Color::Reset)  "opencodecopilotagy~/code"
    16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
    37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
-  517  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+  521  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
    11  Style::new().green().bg(Color::Reset)  "●●●●●●●✓●●●"
@@ -68,12 +68,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion logout openrouter:work                                                              x │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key · x remove key             F1 help
+  j/k move · enter details · r re-check · e edit types · n new type · a add key            F1 help
 --- styles ---
   153  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
    47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
-  728  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+  729  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯ax❯"
    13  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●"
@@ -130,12 +130,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion logout openrouter:work                                                                                                                          x │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key · x remove key                                                                         F1 help
+  j/k move · enter details · r re-check · e edit types · n new type · a add key                                                                        F1 help
 --- styles ---
   161  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
    53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
- 1039  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+ 1040  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    12  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯axaux❯"
    14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"

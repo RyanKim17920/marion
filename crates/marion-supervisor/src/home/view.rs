@@ -862,7 +862,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
     (
         "Setup",
         &[
-            ("enter", "expand", ""),
+            ("enter", "on Harnesses: details and its fix", ""),
             ("r", "re-check", "marion doctor"),
             ("e", "edit agent types", "$EDITOR .marion/agents.toml"),
             ("n", "new agent type, previewed", ".marion/agents.toml"),
@@ -960,20 +960,24 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("m", "merge"),
             ("!", "needs you"),
         ]),
+        // One set per section: what the keys do on the row under the cursor, and nothing that
+        // does something else there.
         (_, Tab::Setup) if home.on_profiles() => h(&[
             ("j/k", "move"),
             ("a", "add login"),
             ("u", "use"),
             ("x", "remove"),
-            ("r", "re-check"),
         ]),
+        (_, Tab::Setup) if home.selected_login().is_some() => {
+            h(&[("j/k", "move"), ("a", "add key"), ("x", "remove key")])
+        }
         (_, Tab::Setup) => h(&[
             ("j/k", "move"),
-            ("enter", "expand"),
+            ("enter", "details"),
             ("r", "re-check"),
+            ("e", "edit types"),
             ("n", "new type"),
             ("a", "add key"),
-            ("x", "remove key"),
         ]),
         (_, Tab::Help) => h(&[("esc", "back"), ("j/k", "scroll"), ("tab", "next screen")]),
     }

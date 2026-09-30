@@ -598,18 +598,17 @@ fn hints(tab: &str) -> Vec<Hint> {
         ]),
         "setup" => h(&[
             ("j/k", "move"),
-            ("enter", "expand"),
+            ("enter", "details"),
             ("r", "re-check"),
+            ("e", "edit types"),
             ("n", "new type"),
             ("a", "add key"),
-            ("x", "remove key"),
         ]),
         "profiles" => h(&[
             ("j/k", "move"),
-            ("a", "add profile"),
+            ("a", "add login"),
             ("u", "use"),
             ("x", "remove"),
-            ("r", "re-check"),
         ]),
         "confirm" => h(&[("y", "yes"), ("any key", "no")]),
         "form" => h(&[

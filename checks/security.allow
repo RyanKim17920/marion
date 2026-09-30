@@ -18,3 +18,4 @@ crates/marion-harness/src/adapter.rs:render_row  formats the header's *name* ("A
 
 # --- verified safe: home-polish (2026-09-27) ---
 crates/marion-supervisor/src/bin/marion.rs:tests::every_home_effect_parses_back_to_itself  parses the home screen's `marion login <id>` / `marion logout <id>` echoes back through the argument parser; runs nothing
+crates/marion-tui/tests/home_screens.rs:hints  safe: "add login" is the Setup hint row's label for adding a profile, drawn in a snapshot and never run

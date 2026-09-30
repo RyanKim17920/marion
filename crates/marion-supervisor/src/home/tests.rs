@@ -670,6 +670,39 @@ fn m_merges_a_landed_branch_after_a_y() {
     assert!(matches!(h.key(Key::Char('c')), Effect::Copy(_)));
 }
 
+/// **Setup's hints are the keys of the section under the cursor**: a harness offers details, the
+/// re-check and the agent-type keys (with `e`); a key row offers add and remove; a login row add,
+/// use and remove. Enter expands only a harness, and on the other rows says what does work.
+#[test]
+fn setup_hints_follow_the_section_under_the_cursor() {
+    let mut h = setup_home();
+    let keys = |h: &Home| {
+        view::frame(h, &view::Places::default())
+            .hints
+            .into_iter()
+            .map(|x| x.key)
+            .collect::<Vec<_>>()
+    };
+    h.setup.cursor = 0;
+    let on_harness = keys(&h);
+    assert!(
+        ["enter", "r", "e", "n"]
+            .iter()
+            .all(|k| on_harness.contains(&k.to_string())),
+        "{on_harness:?}"
+    );
+    h.key(Key::Enter);
+    assert!(h.setup.expanded, "Enter shows a harness's details");
+    h.setup.expanded = false;
+    h.setup.cursor = h.harnesses.len();
+    assert!(h.selected_login().is_some());
+    let on_key = keys(&h);
+    assert_eq!(on_key, ["j/k", "a", "x"]);
+    h.key(Key::Enter);
+    assert!(!h.setup.expanded, "a key has no details");
+    assert!(h.notice.as_deref().unwrap_or("").contains("a adds a key"));
+}
+
 #[test]
 fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
     let id = AgentId("0199-abc".into());

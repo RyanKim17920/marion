@@ -903,7 +903,17 @@ impl Home {
                 self.setup.cursor = (self.setup.cursor + 1).min(n.saturating_sub(1));
             }
             Key::Char('k') | Key::Up => self.setup.cursor = self.setup.cursor.saturating_sub(1),
-            Key::Enter => self.setup.expanded = !self.setup.expanded,
+            // Details are a harness's; a key or a login row has nothing more to show.
+            Key::Enter if self.setup.cursor < self.harnesses.len() => {
+                self.setup.expanded = !self.setup.expanded
+            }
+            Key::Enter => {
+                self.notice = Some(if self.on_profiles() {
+                    "a adds a login · u uses the selected one · x removes it".into()
+                } else {
+                    "a adds a key · x removes the selected one".into()
+                })
+            }
             Key::Char('r') => return Effect::Recheck,
             Key::Char('e') => return Effect::EditTypes,
             Key::Char('n') => {
