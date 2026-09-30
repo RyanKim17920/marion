@@ -61,6 +61,13 @@ pub const VERBS: &[Verb] = &[
         main: super::race::main,
     },
     Verb {
+        name: "workflow",
+        aliases: &[],
+        summary: Some("list, show or check the workflows this project defines"),
+        help: workflow_help,
+        main: super::workflow::main,
+    },
+    Verb {
         name: "attach",
         aliases: &[],
         summary: Some("open an agent's terminal"),
@@ -464,6 +471,25 @@ fn race_help() -> String {
          \n\
          Ties go to fewer tokens, then less time, then the lower seat. It exits 1 when no seat\n\
          passes, and keeps every branch."
+    )
+}
+
+fn workflow_help() -> String {
+    format!(
+        "usage: marion workflow list | show <name> | check <file> [--repo <path>]\n\
+         \n\
+         A workflow is a sequence of steps, each run on the agents it names: an agent, several at\n\
+         once, a race, a review with fixes, and landing the result. It lives in the repository\n\
+         as .marion/workflows/<name>.toml, or in ~/.config/marion/workflows/ as your own.\n\
+         \n\
+         \x20 list          every workflow, where it is, and whether it may run\n\
+         \x20 show <name>   what a workflow runs, step by step\n\
+         \x20 check <file>  check a file and say what it would run\n\
+         \n\
+         A repository's workflow runs only after `marion trust allow <file>`, and any edit to\n\
+         the file revokes that. Your own need no trust.\n\
+         \n\
+         {PLACE_HELP}"
     )
 }
 
