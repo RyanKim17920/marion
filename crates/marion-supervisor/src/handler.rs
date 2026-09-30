@@ -12123,10 +12123,15 @@ mod tests {
             Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             2,
         );
-        assert!(
-            matches!(next_frame(&mut reader), Frame::Response(_)),
-            "legacy evidence failure closed the connection"
-        );
+        // The pane's output can still be arriving after the line the test waited for; the
+        // connection is open if the call is answered after it.
+        let answered = loop {
+            match next_frame(&mut reader) {
+                Frame::Notification(_) => continue,
+                other => break matches!(other, Frame::Response(_)),
+            }
+        };
+        assert!(answered, "legacy evidence failure closed the connection");
     }
 
     /// §5.3's one-writer rule, over the socket and **by name**.
