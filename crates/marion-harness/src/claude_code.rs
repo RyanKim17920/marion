@@ -468,9 +468,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap {
         // Its canned launch keeps `~/.claude`: the session transcript a resume reads is written
         // under the project's own directory there (measured: without it a resume starts over).
-        writes: &[crate::os_sandbox::WritePath::HomeProject(
-            ".claude/projects",
-        )],
+        // Its Bash tool keeps each project's working state in `/tmp/claude-<uid>/<cwd key>`, and
+        // fails every command when it cannot create it (measured by the escape cell).
+        writes: &[
+            crate::os_sandbox::WritePath::HomeProject(".claude/projects"),
+            crate::os_sandbox::WritePath::TmpUserProject("claude"),
+        ],
     },
     // claude's own `--permission-mode plan`: plans and reads, edits nothing.
     read_only_modes: &[crate::authority::ReadOnlyMode {

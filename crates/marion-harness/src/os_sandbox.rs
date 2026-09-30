@@ -41,6 +41,10 @@ pub enum WritePath {
     /// `$HOME/<rel>/<the node's cwd, every byte not ASCII alphanumeric as '-'>` — one project's
     /// directory under a harness home keyed on the working directory (claude's `projects/`).
     HomeProject(&'static str),
+    /// `/tmp/<prefix>-<uid>/<the node's cwd, keyed as for HomeProject>` — one project's directory
+    /// under a harness's per-user scratch root in `/tmp` (claude's Bash tool keeps its working
+    /// state there, not under `$TMPDIR`).
+    TmpUserProject(&'static str),
 }
 
 /// What this host offers marion's sandbox, probed once per process ([`support`]).
@@ -208,6 +212,9 @@ impl SandboxPlan {
             let path = match w {
                 WritePath::Home(rel) => home.join(rel),
                 WritePath::HomeProject(rel) => home.join(rel).join(project_key(&cwd)),
+                WritePath::TmpUserProject(prefix) => PathBuf::from("/tmp")
+                    .join(format!("{prefix}-{}", own_uid()))
+                    .join(project_key(&cwd)),
             };
             std::fs::create_dir_all(&path)
                 .map_err(|e| format!("could not create {}: {e}", path.display()))?;
@@ -297,6 +304,15 @@ fn platform_command(
     let mut cmd = std::process::Command::new("/nonexistent/marion-sandbox-unsupported");
     cmd.arg(program).args(args);
     cmd
+}
+
+/// This process's real uid, as a per-user scratch root in `/tmp` is named.
+fn own_uid() -> u32 {
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    // SAFETY: `getuid` reads the calling process's real uid and cannot fail.
+    unsafe { getuid() }
 }
 
 /// `path` resolved, or why not.
@@ -716,11 +732,19 @@ mod tests {
                 }
             };
             for w in writes {
-                let (WritePath::Home(rel) | WritePath::HomeProject(rel)) = w;
+                let (WritePath::Home(rel)
+                | WritePath::HomeProject(rel)
+                | WritePath::TmpUserProject(rel)) = w;
                 assert!(
                     !rel.starts_with('/') && !rel.contains(".."),
-                    "{h:?}: `{rel}` must stay under the node's home"
+                    "{h:?}: `{rel}` must stay under its root"
                 );
+                if let WritePath::TmpUserProject(prefix) = w {
+                    assert!(
+                        !prefix.contains('/'),
+                        "{h:?}: `{prefix}` names one directory"
+                    );
+                }
             }
         }
         let wrapped = |h| {
