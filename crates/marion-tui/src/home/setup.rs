@@ -101,6 +101,9 @@ pub struct SetupView {
     pub profiles: Vec<ProfileRow>,
     /// One dim line under them: what the keys do, or why they could not be listed.
     pub profiles_note: String,
+    /// Desktop notifications: on or off, and how a notice is shown here. One row, after the
+    /// profiles (or the row that adds the first); `None` until read.
+    pub notify: Option<(bool, String)>,
     /// The agent-type form, drawn in place of everything else while it is open.
     pub form: Option<FormView>,
 }
@@ -373,6 +376,31 @@ fn body_lines<'a>(
     if !v.profiles_note.is_empty() {
         let l = code_spans(&v.profiles_note, dim(), theme);
         out.push((g, Line::from(fit(l, w))));
+    }
+
+    if let Some((on, shown_by)) = &v.notify {
+        blank(&mut out);
+        out.push((g, section("Notifications", "")));
+        let sel = first + v.profiles.len().max(1) == v.cursor;
+        if sel {
+            selected = (out.len(), out.len() + 1);
+        }
+        let (glyph, style, word) = if *on {
+            ("● ", good(), "on")
+        } else {
+            ("○ ", dim(), "off")
+        };
+        let l = vec![
+            span(if sel { CARET } else { " " }, theme.key()),
+            Span::raw(" "),
+            span(glyph, style),
+            span(pad(word, 5), if sel { bold() } else { Style::default() }),
+            span(
+                format!("when an agent ends or needs you · shown by {shown_by}"),
+                dim(),
+            ),
+        ];
+        out.push((0, Line::from(fit(l, w + g as usize))));
     }
     (out, selected)
 }

@@ -60,7 +60,9 @@ you when a node needs you, fails, hits a limit or a root finishes, through `osas
 `notify-send` elsewhere, else as a bell (or OSC 9 or OSC 777, `terminal = "osc9"` in
 `notify.toml`) in an open `marion` screen. A notice names the node's type, short id, harness and
 state, never a prompt or what the model wrote. `marion notify status` says what is set and where
-notices go; `marion notify test` shows one. `MARION_NOTIFY=on|off` overrides the file.
+notices go; `marion notify test` shows one. `on` and `off` apply at once to this project's
+running supervisor, and to any other when it next starts; Setup's NOTIFICATIONS row does the
+same. `MARION_NOTIFY=on|off` overrides the file.
 
 `marion resume` survives the supervisor's own death: `kill -9` it, and `resume` relaunches the
 lost root under the same id against the same harness session, recorded as a second generation.

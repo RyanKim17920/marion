@@ -96,6 +96,9 @@ pub enum Effect {
         harness: String,
         name: String,
     },
+    /// `marion notify on|off`: the operator's notify.toml, and this project's running supervisor at
+    /// once. The row's Enter, turning it to the other state.
+    Notify(bool),
     /// Work out what the form's draft does to the agents file: the session reads the file, applies
     /// the draft, holds the result to the spawn path's loader, and shows the diff for a `y`.
     PreviewType(types_form::Draft),
@@ -151,6 +154,7 @@ impl Effect {
             Effect::Copy(text) => vec![text.clone()],
             Effect::Merge(branch) => v(&["git", "merge", "--no-ff", branch]),
             Effect::Recheck => v(&["marion", "doctor"]),
+            Effect::Notify(on) => v(&["marion", "notify", if *on { "on" } else { "off" }]),
             Effect::EditTypes => {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
                 v(&[&editor, crate::run::AGENT_TYPES_FILE])
@@ -388,6 +392,11 @@ pub struct Setup {
     pub profiles_listed: bool,
     /// Why the profiles could not be listed, when they could not.
     pub profiles_error: Option<String>,
+    /// Whether desktop notifications are on, as `notify.toml` (and `MARION_NOTIFY`) say; `None`
+    /// until read.
+    pub notify: Option<bool>,
+    /// How a notice is shown here (`marion notify status`'s "shown by"), once read.
+    pub notify_shown_by: String,
 }
 
 /// The whole home screen's state.
@@ -979,14 +988,18 @@ impl Home {
             Key::Char('q') => return Effect::Quit,
             Key::Char('?') => self.toggle_help(),
             Key::Char('j') | Key::Down => {
-                // The profiles, or the one row that adds the first while there are none.
-                let n = self.profiles_start() + self.setup.profiles.len().max(1);
-                self.setup.cursor = (self.setup.cursor + 1).min(n.saturating_sub(1));
+                // The profiles (or the one row that adds the first), then the notifications row
+                // once it has been read.
+                let last = self.notify_row() - usize::from(self.setup.notify.is_none());
+                self.setup.cursor = (self.setup.cursor + 1).min(last);
             }
             Key::Char('k') | Key::Up => self.setup.cursor = self.setup.cursor.saturating_sub(1),
             // Details are a harness's; a key or a login row has nothing more to show.
             Key::Enter if self.setup.cursor < self.harnesses.len() => {
                 self.setup.expanded = !self.setup.expanded
+            }
+            Key::Enter if self.on_notify() => {
+                return Effect::Notify(self.setup.notify != Some(true));
             }
             Key::Enter => {
                 self.notice = Some(if self.on_profiles() {
@@ -1060,7 +1073,18 @@ impl Home {
 
     /// Setup's cursor is on the profiles: one of them, or the row that adds the first.
     pub fn on_profiles(&self) -> bool {
-        self.setup.cursor >= self.profiles_start()
+        self.setup.cursor >= self.profiles_start() && !self.on_notify()
+    }
+
+    /// Setup's last row: desktop notifications, after the profiles (or the row that adds the
+    /// first).
+    fn notify_row(&self) -> usize {
+        self.profiles_start() + self.setup.profiles.len().max(1)
+    }
+
+    /// Setup's cursor is on the notifications row, which is there once it has been read.
+    pub fn on_notify(&self) -> bool {
+        self.setup.notify.is_some() && self.setup.cursor == self.notify_row()
     }
 
     /// The profile under Setup's cursor.

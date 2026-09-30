@@ -463,6 +463,7 @@ fn setup_view(checking: bool) -> SetupView {
             "`a` adds one · `u` makes the selected the default · `x` removes it, keeping its \
              directory · marion never logs in for you",
         ),
+        notify: Some((true, "osascript".into())),
         form: None,
     }
 }
@@ -1267,6 +1268,17 @@ fn setup_profiles_listed_with_the_login_command_shown() {
     v.profiles[0].limit = Some(s("last limit allowed_warning (five_hour)"));
     let input = command("marion profile use codex cx", "u");
     insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "profiles")));
+}
+
+/// **The notifications row, last on Setup**: on or off and how a notice is shown here, and the
+/// box echoes the `marion notify` that Enter runs.
+#[test]
+fn setup_notifications_row_turns_them_off_on_enter() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    v.cursor = v.harnesses.len() + v.logins.len() + v.profiles.len();
+    let input = command("marion notify off", "enter");
+    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "notify"), 100, 40));
 }
 
 #[test]

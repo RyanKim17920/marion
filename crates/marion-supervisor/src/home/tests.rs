@@ -1773,3 +1773,33 @@ fn a_race_row_goes_to_its_winner_and_merges_it() {
     assert_eq!(h.mode, Mode::Confirm(Effect::Merge("marion/s2".into())));
     assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/s2".into()));
 }
+
+/// **Setup's last row turns notifications on or off**: past the profiles, Enter runs the `marion
+/// notify` that flips it, the box echoes that command, and the hints say which way it goes.
+#[test]
+fn setup_notifications_row_flips_them_with_enter() {
+    let mut h = home();
+    h.tab = Tab::Setup;
+    h.setup.notify = Some(false);
+    h.setup.notify_shown_by = "osascript".into();
+    for _ in 0..10 {
+        h.key(Key::Char('j'));
+    }
+    assert!(h.on_notify(), "the cursor stops on the last row");
+    assert!(!h.on_profiles(), "which is not a profile row");
+    let f = view::frame(&h, &view::Places::default());
+    assert!(
+        f.hints
+            .iter()
+            .any(|x| x.key == "enter" && x.verb == "turn on"),
+        "{:?}",
+        f.hints
+    );
+    let marion_tui::home::Input::Command { line, .. } = &f.input else {
+        panic!("the box echoes a command");
+    };
+    assert_eq!(line, "marion notify on");
+    assert_eq!(h.key(Key::Enter), Effect::Notify(true));
+    h.setup.notify = None;
+    assert!(!h.on_notify(), "no row until the setting has been read");
+}

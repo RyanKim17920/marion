@@ -675,6 +675,10 @@ fn setup(home: &Home, places: &Places) -> SetupView {
         logins_note: logins_note(home),
         profiles: home.setup.profiles.iter().map(profile_row).collect(),
         profiles_note: profiles_note(home),
+        notify: home
+            .setup
+            .notify
+            .map(|on| (on, home.setup.notify_shown_by.clone())),
         form: form_view(home),
     }
 }
@@ -972,6 +976,17 @@ fn hints(home: &Home) -> Vec<Hint> {
         ]),
         // One set per section: what the keys do on the row under the cursor, and nothing that
         // does something else there.
+        (_, Tab::Setup) if home.on_notify() => h(&[
+            ("j/k", "move"),
+            (
+                "enter",
+                if home.setup.notify == Some(true) {
+                    "turn off"
+                } else {
+                    "turn on"
+                },
+            ),
+        ]),
         (_, Tab::Setup) if home.on_profiles() => h(&[
             ("j/k", "move"),
             ("a", "add login"),
@@ -1085,6 +1100,10 @@ fn input(home: &Home) -> Input {
                         name: p.name.clone(),
                     }),
                     note: "u".into(),
+                },
+                _ if home.on_notify() => Input::Command {
+                    line: line(&Effect::Notify(home.setup.notify != Some(true))),
+                    note: "enter".into(),
                 },
                 _ if home.on_profiles() => Input::Command {
                     line: "marion profile add <harness> <name>".into(),

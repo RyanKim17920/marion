@@ -495,6 +495,31 @@ pub fn show(backend: &Backend, shown: &Shown) {
 
 /// **`marion notify on | off | status | test`**: turn desktop notifications on or off in
 /// `notify.toml`, say what is configured and where notices would go, or show one now.
+/// **Turn notifications on or off in the operator's `notify.toml`**, keeping the rest of it — what
+/// `marion notify on|off` and Setup's row both do. Answers the file written.
+pub fn set_enabled(enabled: bool) -> Result<std::path::PathBuf, String> {
+    let dir = crate::credentials::config_dir().map_err(|e| e.to_string())?;
+    let config = NotifyConfig::load(Some(&dir), None)?;
+    let path = dir.join(CONFIG_FILE);
+    NotifyConfig { enabled, ..config }
+        .save(&dir)
+        .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+/// Whether notifications are on — the file, with `MARION_NOTIFY` over it — and how a notice is
+/// shown here, as `marion notify status` says both.
+pub fn status() -> (bool, String) {
+    let enabled = crate::credentials::config_dir()
+        .ok()
+        .and_then(|dir| {
+            NotifyConfig::load(Some(&dir), std::env::var(NOTIFY_ENV).ok().as_deref()).ok()
+        })
+        .is_some_and(|c| c.enabled);
+    let backend = Backend::resolve(std::env::var(BACKEND_ENV).ok().as_deref());
+    (enabled, backend.name())
+}
+
 pub fn main(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
     let dir = match crate::credentials::config_dir() {
@@ -514,21 +539,16 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
     };
     let backend = Backend::resolve(std::env::var(BACKEND_ENV).ok().as_deref());
     match args.first().map(String::as_str) {
-        Some(verb @ ("on" | "off")) => {
-            let next = NotifyConfig {
-                enabled: verb == "on",
-                ..config
-            };
-            if let Err(e) = next.save(&dir) {
-                eprintln!("marion: writing {}: {e}", dir.join(CONFIG_FILE).display());
-                return ExitCode::FAILURE;
+        Some(verb @ ("on" | "off")) => match set_enabled(verb == "on") {
+            Ok(path) => {
+                println!("marion: notifications {verb}, in {}.", path.display());
+                ExitCode::SUCCESS
             }
-            println!(
-                "marion: notifications {verb}, in {}.",
-                dir.join(CONFIG_FILE).display()
-            );
-            ExitCode::SUCCESS
-        }
+            Err(e) => {
+                eprintln!("marion: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("status") | None => {
             let effective = NotifyConfig::load(Some(&dir), env.as_deref())
                 .map_or(config.enabled, |c| c.enabled);

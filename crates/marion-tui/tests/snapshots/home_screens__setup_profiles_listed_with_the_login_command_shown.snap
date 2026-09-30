@@ -112,8 +112,8 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
   ⠹ opencode  oc        checking…
   a adds one · u makes the selected the default · x removes it, keeping its directory · marion never logs in for you
 
-
-
+  NOTIFICATIONS
+  ● on   when an agent ends or needs you · shown by osascript
 
 
 
@@ -131,12 +131,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                                                                                                            F1 help
 --- styles ---
-  177  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  179  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
- 1064  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   52  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+ 1106  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    82  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
-   14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"
+   15  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●●"
    21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
    27  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐◐logged"

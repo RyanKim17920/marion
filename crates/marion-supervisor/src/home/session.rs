@@ -398,6 +398,7 @@ impl Session {
         let handoff = self.effect(key);
         if self.home.tab == Tab::Setup && !self.profiles_asked {
             self.load_profiles();
+            self.load_notify();
         }
         handoff
     }
@@ -425,6 +426,10 @@ impl Session {
             Effect::ProfileAdd { harness, name } => Some(Handoff::ProfileAdd(harness, name)),
             Effect::ProfileUse { harness, name } => {
                 self.profile_verb(&["use", &harness, &name]);
+                None
+            }
+            Effect::Notify(on) => {
+                self.notify(on);
                 None
             }
             Effect::ProfileRemove { harness, name } => {
@@ -685,6 +690,29 @@ impl Session {
             Err(e) => format!("marion profile did not start: {e}"),
         });
         self.load_profiles();
+    }
+
+    /// Whether notifications are on, for Setup's row: one small file read, so not on a thread.
+    fn load_notify(&mut self) {
+        let (on, shown_by) = crate::notify::status();
+        self.home.setup.notify = Some(on);
+        self.home.setup.notify_shown_by = shown_by;
+    }
+
+    /// Setup's notifications row turned: the operator's file, then this project's running
+    /// supervisor at once — `marion notify on|off`, done here so the screen never leaves.
+    fn notify(&mut self, on: bool) {
+        let word = if on { "on" } else { "off" };
+        self.home.notice = Some(match crate::notify::set_enabled(on) {
+            Ok(_) => {
+                self.home.setup.notify = Some(on);
+                match crate::courier::notify_configure(&self.sock, on) {
+                    Ok(_) => format!("notifications {word}, now and for every supervisor after"),
+                    Err(_) => format!("notifications {word}; a supervisor reads it when it starts"),
+                }
+            }
+            Err(e) => format!("notifications unchanged: {e}"),
+        });
     }
 
     /// List the profiles on a thread, then ask each one's harness whether it is logged in — a
