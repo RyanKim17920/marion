@@ -534,6 +534,10 @@ impl Session<'_> {
     /// The wall clock expired mid-turn: interrupt it — again, unanswered, if it does not close —
     /// then kill what it started. `turn` is `None` when the server never named one.
     fn interrupt(&mut self, node: &mut Driver<'_>, turn: Option<&str>) {
+        // Enumerated **before** the interrupt: ending the turn ends a command's host, and a command
+        // that `setsid`s (codex's `exec_command`) then belongs to pid 1, in a group no walk from the
+        // server reaches any more.
+        let below = crate::kill::groups_below(node.pid);
         if let Some(turn) = turn {
             for _ in 0..INTERRUPTS {
                 let id = self.id();
@@ -552,10 +556,11 @@ impl Session<'_> {
             }
         }
         // P7: the interrupted turn's commands keep running — a command that yielded is still
-        // running after its item completed — so marion kills every process below the server while
-        // the tree is intact, and leaves the server to end its session on stdin EOF (P9). The
-        // commands the turn named are killed too, in case one left the tree.
+        // running after its item completed — so marion kills every process below the server, and
+        // every group that was below it before the interrupt, and leaves the server to end its
+        // session on stdin EOF (P9). The commands the turn named are killed too.
         crate::kill::kill_descendants(node.pid);
+        crate::kill::kill_groups(&below);
         for pid in std::mem::take(&mut node.peer.running) {
             kill_process_tree(pid);
         }
@@ -594,6 +599,11 @@ mod tests {
     /// - `sleep`: the turn starts a `sleep 60` it reports as a command and never completes; an
     ///   interrupt is answered once and closes the turn, **leaving the sleep running** (P7);
     /// - `deaf`: as `sleep`, and an interrupt is never answered;
+    /// - `orphan`: the turn's command host starts a `sleep 60` in a session of its own, as codex's
+    ///   `exec_command` does; the interrupt ends the host before it is answered, so the sleep's
+    ///   parent is pid 1 by the time marion kills (the leak `timeout_kill` found);
+    /// - `leave`: the turn starts a `sleep 60` in a session of its own, as codex does, and completes
+    ///   with it running; the server then ends on stdin EOF and leaves it to pid 1;
     /// - `late`: as `hold`, but the steer is refused as arriving after the turn (P6's error);
     /// - `auth`: the turn reports a provider 401 it is retrying, and never completes;
     /// - `never` / `failed`: marion's MCP server never reports ready / reports failed;
@@ -608,6 +618,8 @@ def note(k, **v):
     log.write(json.dumps(dict(k=k, t=time.monotonic(), **v)) + "\n"); log.flush()
 turn = 0
 answered_interrupt = False
+host = None
+HOST = "import subprocess, time; p = subprocess.Popen(['sleep', '60'], start_new_session=True); print(p.pid, flush=True); time.sleep(60)"
 for line in sys.stdin:
     m = json.loads(line); note("in", msg=m)
     meth = m.get("method"); i = m.get("id")
@@ -634,6 +646,14 @@ for line in sys.stdin:
         elif mode == "auth":
             for n in range(3):
                 out({"method": "error", "params": {"error": {"message": "Reconnecting... %d/5" % (n + 1), "additionalDetails": "unexpected status 401 Unauthorized"}, "threadId": "t-1", "turnId": u, "willRetry": True}})
+        elif mode == "leave":
+            child = subprocess.Popen(["sleep", "60"], start_new_session=True); note("pid", pid=child.pid)
+            out({"method": "item/completed", "params": {"turnId": u, "item": {"type": "agentMessage", "id": "m", "text": "left it running"}}})
+            out({"method": "turn/completed", "params": {"turn": {"id": u, "status": "completed"}}})
+        elif mode == "orphan":
+            host = subprocess.Popen([sys.executable, "-c", HOST], stdout=subprocess.PIPE)
+            note("pid", pid=int(host.stdout.readline()))
+            out({"method": "item/started", "params": {"turnId": u, "item": {"type": "commandExecution", "id": "c1", "processId": str(host.pid), "status": "inProgress"}}})
         elif mode in ("sleep", "deaf"):
             child = subprocess.Popen(["sleep", "60"]); note("pid", pid=child.pid)
             out({"method": "item/started", "params": {"turnId": u, "item": {"type": "commandExecution", "id": "c1", "processId": str(child.pid), "status": "inProgress"}}})
@@ -650,6 +670,8 @@ for line in sys.stdin:
     elif meth == "turn/interrupt":
         if mode == "deaf" or answered_interrupt: continue
         answered_interrupt = True
+        if host is not None:
+            host.kill(); host.wait()
         out({"id": i, "result": {}})
         out({"method": "turn/completed", "params": {"turn": {"id": m["params"]["turnId"], "status": "interrupted"}}})
 "#;
@@ -967,6 +989,41 @@ for line in sys.stdin:
             serde_json::json!({"threadId": "t-1", "turnId": "u-1"})
         );
         assert_eq!(bed.count("turn/interrupt"), 1, "answered, so not repeated");
+    }
+
+    /// **A command that left the tree before the kill dies all the same**: its host ended with the
+    /// interrupted turn, so by the time marion kills, the command's parent is pid 1 and it leads a
+    /// session and group of its own — nothing an ancestry walk from the server can reach. The
+    /// groups below the server are enumerated before the interrupt, while the tree is intact.
+    #[test]
+    fn a_command_orphaned_by_the_interrupt_is_killed_all_the_same() {
+        let bed = Bed::new("as-orphan", "orphan");
+        let run = run_app_server(bed.spec(Duration::from_secs(3), None)).expect("a session");
+        let orphan = bed.pid();
+        let survived = marion_testsupport::alive(orphan);
+        marion_testsupport::kill_hard(orphan);
+        assert!(run.exit.timed_out, "{run:?}");
+        assert!(
+            !survived,
+            "the orphaned command {orphan} survived the timeout"
+        );
+    }
+
+    /// **A finished session leaves no command behind**: the turn completed with a command still
+    /// running in a session of its own, and the server's exit on stdin EOF would hand it to pid 1.
+    /// The groups below the server are enumerated before its stdin closes.
+    #[test]
+    fn a_command_a_finished_session_left_running_is_killed_at_its_end() {
+        let bed = Bed::new("as-leave", "leave");
+        let run = run_app_server(bed.spec(Duration::from_secs(20), None)).expect("a session");
+        let left = bed.pid();
+        let survived = marion_testsupport::alive(left);
+        marion_testsupport::kill_hard(left);
+        assert!(!run.exit.timed_out, "{run:?}");
+        assert!(
+            !survived,
+            "the command {left} outlived its finished session"
+        );
     }
 
     /// **A refused credential ends the session at once** — no retry heals it — with the reason,

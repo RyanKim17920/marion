@@ -381,6 +381,10 @@ impl<'a, P: Peer> Driver<'a, P> {
     /// `marion_cut_it_short` is the caller's own statement that the session did not finish — what
     /// §6.7 calls an attributed kill, not something read off a signal number.
     pub fn finish(&mut self, marion_cut_it_short: bool) -> (RpcRun, usize) {
+        // **Enumerated while the server still lives.** A server that ends on stdin EOF leaves the
+        // commands it started — codex's `exec_command` runs each in a session of its own — to pid 1,
+        // in groups no walk from a reaped server reaches.
+        let below = crate::kill::groups_below(self.pid);
         self.stdin.take();
         if matches!(self.child.try_wait(), Ok(None)) {
             unsafe { kill(self.pid, SIGINT) };
@@ -396,6 +400,7 @@ impl<'a, P: Peer> Driver<'a, P> {
         // but what it started — marion's own MCP bridge, holding both pipes' write ends — is not.
         // The group survives its leader, so `kill(-pgid)` still addresses them.
         kill_process_tree(self.pid);
+        crate::kill::kill_groups(&below);
 
         let drain_deadline = Instant::now() + DRAIN_GRACE;
         let (collected, stdout_complete) = {
@@ -477,12 +482,21 @@ impl<'a, P: Peer> Driver<'a, P> {
 
 impl<P> Drop for Driver<'_, P> {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
+        // Before the server is killed, for `finish`'s reason — and only while it runs: a reaped
+        // server's pid may already name someone else's process.
+        let running = matches!(self.child.try_wait(), Ok(None));
+        let below = if running {
+            crate::kill::groups_below(self.pid)
+        } else {
+            Vec::new()
+        };
+        if running {
             unsafe { kill(self.pid, SIGKILL) };
             let _ = self.child.wait();
         }
         // The group, for the reason `finish` sweeps it: the server's children hold its pipes.
         kill_process_tree(self.pid);
+        crate::kill::kill_groups(&below);
     }
 }
 

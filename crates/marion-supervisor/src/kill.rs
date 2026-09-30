@@ -298,6 +298,27 @@ pub(crate) fn sweep_group(pgid: i32) {
     }
 }
 
+/// **Every process group below `root`, enumerated now**, for a caller about to do something that
+/// breaks the tree before it kills — an app-server's `turn/interrupt` ends the host of a command
+/// that `setsid`s, and the command's parent is pid 1 before [`kill_descendants`] runs. `root`'s
+/// own group is left out, as [`kill_descendants`] leaves it; [`kill_groups`] signals the rest.
+pub(crate) fn groups_below(root: i32) -> Vec<i32> {
+    let rows = ps_rows();
+    let pids = descendant_pids(&rows, root);
+    let root_pgid = rows.iter().find(|r| r.pid == root).map(|r| r.pgid);
+    pgids_of(&rows, &pids)
+        .into_iter()
+        .filter(|g| Some(*g) != root_pgid)
+        .collect()
+}
+
+/// SIGKILL each of `groups` that [`signal_targets`] allows — never 0, 1 or marion's own.
+pub(crate) fn kill_groups(groups: &[i32]) {
+    for pgid in signal_targets(groups, unsafe { getpgrp() }) {
+        let _ = unsafe { kill(-pgid, SIGKILL) };
+    }
+}
+
 /// Apply §6.7's two-step kill and wait until the addressed process is absent or a zombie.
 ///
 /// The journal's confirmation means *observed dead*, not merely "SIGKILL was sent". A zombie is
