@@ -74,6 +74,9 @@ class Redactor:
                 (os.path.realpath(scratch), "<SCRATCH>"),
                 (home, "<HOME>"),
                 (home.replace("/", "-"), "-<HOME>"),
+                # A harness that names its session files after the cwd (pi, claude) spells the
+                # scratch root with every `/` as `-`.
+                (os.path.realpath(scratch).replace("/", "-"), "-<SCRATCH>"),
                 (user, "<USER>"),
             },
             key=lambda p: -len(p[0]),

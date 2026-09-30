@@ -377,10 +377,30 @@ workflow_scenario() {
 	(cd "$dir/repo" && "$BIN" trust deny "$file") >>"$dir/trust.out" 2>&1 ||
 		echo "live-smoke: $id: could not revoke the scratch workflow's trust entry; \`marion trust list\` shows it" >&2
 
-	python3 - "$dir" "$out" "$id" "$TEST_CMD" "$check" $((end - start)) "$timed_out" "$rc" <<-'EOF' ||
-		import json, pathlib, subprocess, sys
-		dir, out, scenario, test_cmd, check, wall, timed_out, rc = sys.argv[1:9]
+	python3 - "$dir" "$out" "$id" "$TEST_CMD" "$check" $((end - start)) "$timed_out" "$rc" "$COLLECT" "$RUN" <<-'EOF' ||
+		import importlib.util, json, pathlib, subprocess, sys
+		dir, out, scenario, test_cmd, check, wall, timed_out, rc, collect, scratch = sys.argv[1:11]
 		dir, out = pathlib.Path(dir), pathlib.Path(out)
+		# The suite's own collector: its redaction, node walk and transcript shape, one copy.
+		spec = importlib.util.spec_from_file_location("collect", collect)
+		c = importlib.util.module_from_spec(spec)
+		spec.loader.exec_module(c)
+		red = c.Redactor(scratch)
+		for f in ["run.out", "trust.out"]:
+		    if (dir / f).exists():
+		        (out / f).write_text(red.text((dir / f).read_text(errors="replace")))
+		pdirs = [p for p in (dir / "state").iterdir() if (p / "journal.jsonl").exists()]
+		walked = c.walk_nodes(pdirs[0])[0] if pdirs else []
+		by_agent = {path.parent.parent.name: k for path, k in c.contracts(pdirs[0])} if pdirs else {}
+		for n in walked:
+		    events = c.read_jsonl(pdirs[0] / "agents" / n["agent_id"] / "events.jsonl")
+		    n["cost_usd"] = c.node_cost_usd(events)
+		    name = f"node{walked.index(n) + 1}-{n['harness']}"
+		    (out / f"{name}.transcript.json").write_text(
+		        json.dumps(c.transcript(events, red), indent=1, ensure_ascii=False) + "\n")
+		    if n["agent_id"] in by_agent:
+		        (out / f"contract-{name}.json").write_text(
+		            json.dumps(red.value(by_agent[n["agent_id"]], cut=False), indent=1, ensure_ascii=False) + "\n")
 		results = sorted((dir / "state").glob("*/workflows/*/result.json"))
 		r = {"scenario": scenario, "workflow": True, "wall_secs": int(wall),
 		     "timed_out": timed_out == "yes", "exit": int(rc)}
@@ -427,10 +447,12 @@ workflow_scenario() {
 		    r["verify"] = "pass" if tests.returncode == 0 and probe.returncode == 0 else "fail"
 		    r["verify_output"] = (tests.stdout + tests.stderr + probe.stderr)[-2000:]
 		    subprocess.run(["git", "-C", str(dir / "repo"), "worktree", "remove", "--force", str(tree)], check=False)
-		(out / "result.json").write_text(json.dumps(r, indent=2) + "\n")
-		for f in ["run.out", "trust.out"]:
-		    if (dir / f).exists():
-		        (out / f).write_text((dir / f).read_text(errors="replace"))
+		r["nodes"] = [{"harness": n["harness"], "agent_type": n["agent_type"], "exit": n["exit"],
+		               "tokens": sum(n["usage"].get(k) or 0 for k in ("input", "output", "cache_read", "cache_write")) if n["usage"] else None,
+		               "cost_usd": n["cost_usd"]} for n in walked]
+		r["tokens"] = sum(n["tokens"] or 0 for n in r["nodes"])
+		r["unrecorded"] = sum(1 for n in r["nodes"] if n["tokens"] is None)
+		(out / "result.json").write_text(json.dumps(red.value(r, cut=False), indent=2) + "\n")
 	EOF
 		echo "live-smoke: $id: collecting results failed (see $dir)" >&2
 	echo "live-smoke: $id done in $((end - start))s (marion workflow run exit $rc)" >&2
@@ -492,7 +514,9 @@ python3 - "$OUT" <<-'EOF' | tee "$OUT/results.md"
 	        seats = "/".join(r.get("race_seats", []))
 	        review = f"reviewers {'/'.join(r.get('reviewers', []))}, other family {yn(r.get('reviewer_family_differs'))}, fixes {r.get('fixes')}"
 	        wall = f"{r['wall_secs']}s" + (" (timed out)" if r["timed_out"] else "")
-	        print(f"| {r['scenario']} | workflow {r['outcome']}: {steps} | race {seats}, won {r.get('winner')} | {review} | {r.get('verify')} | {yn(r.get('branch'))} | {wall} | - | - | - |")
+	        tokens = f"- / {r.get('tokens')}" + (f" (+{r['unrecorded']} unrecorded)" if r.get("unrecorded") else "")
+	        every = ", ".join(f"{n['harness']}: {n['exit']}" for n in r.get("nodes", [])) or "-"
+	        print(f"| {r['scenario']} | workflow {r['outcome']}: {steps} | race {seats}, won {r.get('winner')} | {review} | {r.get('verify')} | {yn(r.get('branch'))} | {wall} | {tokens} | {every} | - |")
 	        continue
 	    kids = r["children"]
 	    expected = f"{r['child_harness_expected']}" + ("" if r["child_harness_matches"] else " (never ran)")
