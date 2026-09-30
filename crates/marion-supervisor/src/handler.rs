@@ -4404,6 +4404,13 @@ impl RegistryHandle {
             seats.push(started);
         }
         drop(decision);
+        // A node that backgrounds its race is owed the decision as a message, and its inbox is held
+        // open for it as for a backgrounded child's end; the seats announce nothing one by one.
+        // Registered before the race can be decided, and only for a race that has a seat running.
+        if let Some(c) = caller_id.filter(|_| p.notify_parent && first.is_some()) {
+            let owed = self.inboxes.owe(&c.agent_id);
+            self.races.announce_to(&race_id, c.agent_id.clone(), owed);
+        }
         self.races.launched(&race_id);
         // A seat may already have ended; and a race with no seat started is decided here.
         self.drive_race(&race_id);
@@ -4533,6 +4540,9 @@ impl RegistryHandle {
                 "marion: could not journal race {}'s decision: {e}",
                 result.race_id.0
             );
+        }
+        if let Some((parent, owed)) = self.races.take_announcement(&result.race_id) {
+            self.announce_race_end(&parent, &result, owed);
         }
         self.races.close(&result.race_id);
     }

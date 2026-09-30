@@ -285,6 +285,9 @@ fn fold_messages(
                         format!("child {} ended {status}", child.0)
                     }
                     MessageSource::ReportRequested => "marion, asking for its report".to_string(),
+                    MessageSource::RaceDecided { race_id, .. } => {
+                        format!("marion: race {} decided", race_id.0)
+                    }
                     MessageSource::BudgetWarning { spent, limit, .. } => {
                         format!("marion: budget {spent}/{limit}")
                     }

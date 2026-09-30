@@ -334,6 +334,15 @@ pub enum Source {
         spent: u64,
         limit: u64,
     },
+    /// Marion itself: a race the recipient backgrounded was decided. The text is the decision as
+    /// a `wait` on the race would return it.
+    RaceDecided {
+        race_id: marion_core::race::RaceId,
+        winner: Option<AgentId>,
+        /// The race's seats: a node that read the decision for itself (`wait`) says so by naming
+        /// one of them ([`Inboxes::received`]), since each is its child.
+        seats: Vec<AgentId>,
+    },
 }
 
 impl Source {
@@ -361,6 +370,12 @@ impl Source {
                 scope: *scope,
                 spent: *spent,
                 limit: *limit,
+            },
+            Source::RaceDecided {
+                race_id, winner, ..
+            } => MessageSource::RaceDecided {
+                race_id: race_id.clone(),
+                winner: winner.clone(),
             },
         }
     }
@@ -441,7 +456,17 @@ pub fn render(msg: &Message) -> String {
         } => child_ended_text(agent_type, *root, &task_id.0, &msg.text),
         Source::ReportRequested => msg.text.clone(),
         Source::BudgetWarning { .. } => msg.text.clone(),
+        Source::RaceDecided { race_id, .. } => race_decided_text(&race_id.0, &msg.text),
     }
+}
+
+/// **A backgrounded race's decision, told to the node that asked for it** — its seats announce
+/// nothing one by one, so this is the one message the race sends.
+pub fn race_decided_text(race_id: &str, body: &str) -> String {
+    format!(
+        "The race you backgrounded as {race_id:?} has been decided; a `wait` on that id returns \
+         the same.\n\n{body}"
+    )
 }
 
 /// **marion's one request for a missing report** ([`Inboxes::request_report`]): a best-effort
@@ -644,9 +669,11 @@ impl Inboxes {
             let Some(inbox) = boxes.get_mut(agent).filter(|b| !b.sealed) else {
                 return false;
             };
-            let at = inbox.queue.iter().position(
-                |m| matches!(&m.source, Source::ChildEnded { child: c, .. } if c == child),
-            );
+            let at = inbox.queue.iter().position(|m| match &m.source {
+                Source::ChildEnded { child: c, .. } => c == child,
+                Source::RaceDecided { seats, .. } => seats.contains(child),
+                _ => false,
+            });
             match at.and_then(|i| inbox.queue.remove(i)) {
                 Some(m) => (Some(m.id), inbox.port.clone()),
                 None => {
@@ -751,6 +778,9 @@ impl Inboxes {
             // An end the node already read for itself is resolved here, never queued.
             let read = match &source {
                 Source::ChildEnded { child, .. } if settles_debt => inbox.received.remove(child),
+                Source::RaceDecided { seats, .. } if settles_debt => {
+                    seats.iter().any(|s| inbox.received.remove(s))
+                }
                 _ => false,
             };
             if !read {
@@ -1370,6 +1400,59 @@ pub(crate) mod tests {
         assert_eq!(
             inboxes.enqueue(&p, TYPED, Source::Operator, "late".into()),
             Err(Refusal::Ended)
+        );
+    }
+
+    /// **A backgrounded race's decision is one held-for message, and a `wait` on the race withdraws
+    /// it**: the node names any seat of the race (each is its child), whichever of the two comes
+    /// first, and the decision renders as the race's.
+    #[test]
+    fn a_race_decision_holds_the_parent_and_a_wait_on_any_seat_withdraws_it() {
+        let decided = || Source::RaceDecided {
+            race_id: marion_core::race::RaceId("r-1".into()),
+            winner: Some(id("seat-2")),
+            seats: vec![id("seat-1"), id("seat-2")],
+        };
+        let (inboxes, _) = recording();
+        let p = id("parent");
+        inboxes.open(&p);
+        inboxes.owe(&p);
+        assert!(inboxes.held(&p), "held for the decision");
+        inboxes
+            .announce(&p, TYPED, decided(), "the board".into())
+            .unwrap();
+        let m = inboxes
+            .take_next(&p)
+            .expect("the decision is the next turn");
+        assert!(render(&m).contains("\"r-1\"") && render(&m).contains("the board"));
+
+        let (inboxes, log) = recording();
+        inboxes.open(&p);
+        inboxes.owe(&p);
+        inboxes
+            .announce(&p, TYPED, decided(), "the board".into())
+            .unwrap();
+        assert!(inboxes.received(&p, &id("seat-1")), "withdrawn by a seat");
+        assert_eq!(inboxes.queued(&p), 0);
+
+        let (inboxes, _) = recording();
+        inboxes.open(&p);
+        inboxes.owe(&p);
+        assert!(
+            !inboxes.received(&p, &id("seat-2")),
+            "read before it is announced"
+        );
+        inboxes
+            .announce(&p, TYPED, decided(), "the board".into())
+            .unwrap();
+        assert_eq!(inboxes.queued(&p), 0, "resolved as it arrives");
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(!inboxes.held(&p), "the debt is settled");
+        assert!(
+            records(&log)
+                .iter()
+                .any(|r| matches!(r, RecordKind::MessageQueued(q) if matches!(q.source, MessageSource::RaceDecided { .. }))),
+            "the journal names the race as the source"
         );
     }
 

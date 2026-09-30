@@ -42,6 +42,9 @@ struct Open {
     deciding: bool,
     /// Seats already told to stop, so a repeated `Stop` step does not stop them twice.
     stopped: HashSet<AgentId>,
+    /// The node owed the decision as a message — a race it backgrounded — and whether its inbox
+    /// was held open for it ([`crate::inbox::Inboxes::owe`]).
+    announce_to: Option<(AgentId, bool)>,
 }
 
 /// Every race this supervisor is driving. See the module doc.
@@ -69,8 +72,23 @@ impl Races {
                 launching: true,
                 deciding: false,
                 stopped: HashSet::new(),
+                announce_to: None,
             },
         );
+    }
+
+    /// The race's decision is owed to `parent` as a message; `owed` is whether its inbox is held.
+    pub fn announce_to(&self, race_id: &RaceId, parent: AgentId, owed: bool) {
+        if let Some(o) = lock(&self.open).get_mut(race_id) {
+            o.announce_to = Some((parent, owed));
+        }
+    }
+
+    /// Who the decided race's announcement is owed to, taken once.
+    pub fn take_announcement(&self, race_id: &RaceId) -> Option<(AgentId, bool)> {
+        lock(&self.open)
+            .get_mut(race_id)
+            .and_then(|o| o.announce_to.take())
     }
 
     /// Every seat has been launched (or refused); the race may now be decided.

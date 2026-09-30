@@ -742,6 +742,12 @@ pub enum MessageSource {
         spent: u64,
         limit: u64,
     },
+    /// Marion itself, announcing that a race the recipient backgrounded was decided, and which
+    /// seat's node won (none where no seat passed).
+    RaceDecided {
+        race_id: crate::race::RaceId,
+        winner: Option<AgentId>,
+    },
 }
 
 /// See [`RecordKind::MessageDelivered`].

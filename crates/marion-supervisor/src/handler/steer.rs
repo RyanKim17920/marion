@@ -260,6 +260,51 @@ impl RegistryHandle {
         );
     }
 
+    /// **A race the parent backgrounded was decided: queue the decision for its next turn**, as a
+    /// `wait` on the race would return it ([`crate::bridge::race_text`]), and settle the debt its
+    /// inbox was held open by. Not relayed: a parent that ended before its race was decided
+    /// abandoned it, and the decision says so on the journal.
+    pub(crate) fn announce_race_end(
+        &self,
+        parent: &AgentId,
+        result: &marion_core::race::RaceResult,
+        owed: bool,
+    ) {
+        self.live.refresh();
+        let Some(env) = self.spawn_env.as_ref() else {
+            return;
+        };
+        let Some(delivery) = self.inbox_delivery(parent) else {
+            if owed {
+                self.inboxes.release(parent);
+            }
+            return;
+        };
+        let (body, _) = crate::bridge::race_text(&env.project_dir, result);
+        let source = Source::RaceDecided {
+            race_id: result.race_id.clone(),
+            winner: result.winner_row().and_then(|r| r.agent_id.clone()),
+            seats: result
+                .seats
+                .iter()
+                .filter_map(|r| r.agent_id.clone())
+                .collect(),
+        };
+        let queued = if owed {
+            self.inboxes.announce(parent, delivery, source, body)
+        } else {
+            self.inboxes.enqueue(parent, delivery, source, body)
+        };
+        if let Err(r) = queued {
+            eprintln!(
+                "marion: race `{}`'s decision was not queued for `{}`: {}",
+                result.race_id.0,
+                parent.0,
+                r.sentence()
+            );
+        }
+    }
+
     /// How `agent` takes a queued message into its next turn, where its row takes one from the
     /// inbox at all ([`announcement_route`]); `None` for a node the registry cannot name a harness
     /// for, or whose row pushes or has no strategy.

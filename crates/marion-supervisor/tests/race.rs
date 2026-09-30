@@ -502,3 +502,47 @@ fn a_first_race_stops_the_seats_still_running_once_one_passes() {
         .any(|k| matches!(k, RecordKind::KillConfirmed(k) if k.agent_id == held));
     assert!(stopped, "marion stopped the held seat itself");
 }
+
+/// **A race its parent backgrounded tells the parent the decision, once, as its next turn** — the
+/// seats announce nothing one by one; the race's decision is the message, queued for the parent
+/// from marion itself and held for, as a backgrounded child's end is.
+#[test]
+fn a_backgrounded_race_tells_its_parent_the_decision_as_one_message() {
+    let Some(ran) = run_race("race-push", script(), &[], |caller| AgentSpawnParams {
+        notify_parent: true,
+        ..race_params(caller)
+    }) else {
+        return;
+    };
+    assert_eq!(ran.result.winner, Some(2), "{}", ran.result.scoreboard());
+    let deadline = std::time::Instant::now() + BOUND;
+    let queued = loop {
+        let queued: Vec<_> = records(&ran.project.journal())
+            .into_iter()
+            .filter_map(|k| match k {
+                RecordKind::MessageQueued(q) if q.agent_id == ran.root => Some(q),
+                _ => None,
+            })
+            .collect();
+        if !queued.is_empty() {
+            break queued;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the decision never reached the parent's inbox"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(
+        queued.len(),
+        1,
+        "one message for the race, none per seat: {queued:?}"
+    );
+    match &queued[0].source {
+        marion_core::journal::MessageSource::RaceDecided { race_id, winner } => {
+            assert_eq!(race_id, &ran.started.race_id);
+            assert_eq!(winner, &ran.started.seats[1].agent_id);
+        }
+        other => panic!("the message is the race's decision, not {other:?}"),
+    }
+}

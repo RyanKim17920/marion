@@ -490,8 +490,8 @@ fn tool_spawn_race(
     );
     params.candidates = string_list(&args["candidates"]);
     params.race = race;
-    // A race's seats announce nothing to the parent one by one: the race is the answer.
-    params.notify_parent = false;
+    // A race's seats announce nothing to the parent one by one: the race is the answer, and a node
+    // that backgrounds it is told the decision (`notify_parent`, as `spawn_params` read it).
     let spawned = courier::spawn(&sock, params).map_err(|e| refuse(format!("the race {e}")))?;
     let Some(started) = spawned.race else {
         return Err(refuse(
@@ -506,6 +506,7 @@ fn tool_spawn_race(
         return Ok(bridge::race_background_result(id, &started));
     }
     Ok(race_delivered(
+        who,
         bg,
         id,
         &sock,
@@ -517,6 +518,7 @@ fn tool_spawn_race(
 
 /// Wait for a race and render its decision, collecting the handle once it is decided.
 fn race_delivered(
+    who: &Principal,
     bg: &background::Background,
     id: &serde_json::Value,
     sock: &SocketPaths,
@@ -527,6 +529,10 @@ fn race_delivered(
     match courier::await_race(sock, project, race_id, bound) {
         Ok(courier::RaceDelivered::Decided(result)) => {
             bg.race_collected(&race_id.0);
+            // The node has the decision, so marion need not announce it too: any seat names it.
+            if let Some(seat) = result.seats.iter().find_map(|r| r.agent_id.as_ref()) {
+                tell_collected(who, sock, seat);
+            }
             let (text, is_error) = bridge::race_text(project, &result);
             bridge::tool_result(id, &text, is_error)
         }
@@ -741,7 +747,9 @@ fn tool_wait(
             ));
         };
         let (sock, project) = paths_or_refuse(who, id)?;
-        return Ok(race_delivered(bg, id, &sock, &project, &race_id, bound));
+        return Ok(race_delivered(
+            who, bg, id, &sock, &project, &race_id, bound,
+        ));
     }
     let task_id = match address(bg, args).map_err(|e| bridge::tool_result(id, &e, true))? {
         Some(Address::Task(t)) => t,
