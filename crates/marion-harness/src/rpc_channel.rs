@@ -117,6 +117,10 @@ pub struct RpcChannel {
     pub cwd: &'static str,
     /// Fields both carry verbatim, as `(name, JSON text)`.
     pub open_fields: &'static [(&'static str, &'static str)],
+    /// What a **read-only** launch (a reviewer's) carries in place of the [`Self::open_fields`] of
+    /// the same name. Where the thread's own request states the sandbox it beats every other
+    /// switch (codex S36 P3), so the row's argv switch alone would be overridden here.
+    pub read_only_fields: &'static [(&'static str, &'static str)],
     /// The thread id, in the answer to either.
     pub thread_id: &'static str,
     /// The gate before the first turn, where marion's MCP server is declared.
@@ -162,10 +166,15 @@ impl RpcChannel {
         self.initialized.map(|m| json!({"method": m}))
     }
 
-    fn open_params(&self, cwd: &str) -> Map<String, Value> {
+    fn open_params(&self, cwd: &str, read_only: bool) -> Map<String, Value> {
         let mut p = Map::new();
         p.insert(self.cwd.into(), Value::String(cwd.into()));
-        for (k, v) in self.open_fields {
+        let over: &[(&str, &str)] = if read_only {
+            self.read_only_fields
+        } else {
+            &[]
+        };
+        for (k, v) in self.open_fields.iter().chain(over) {
             let v = serde_json::from_str(v).expect("open_fields are JSON text");
             p.insert((*k).into(), v);
         }
@@ -173,9 +182,9 @@ impl RpcChannel {
     }
 
     /// The request that opens this launch's thread: [`Self::open`], or [`Self::resume`] of
-    /// `resume`'s thread.
-    pub fn opening(&self, id: u64, cwd: &str, resume: Option<&str>) -> Value {
-        let mut p = self.open_params(cwd);
+    /// `resume`'s thread — with [`Self::read_only_fields`] on a read-only launch.
+    pub fn opening(&self, id: u64, cwd: &str, resume: Option<&str>, read_only: bool) -> Value {
+        let mut p = self.open_params(cwd, read_only);
         let method = match resume {
             Some(thread) => {
                 p.insert(self.resume_id.into(), Value::String(thread.into()));
@@ -321,7 +330,7 @@ pub(crate) mod tests {
     /// Every JSON text in a channel parses, and every answer is an object.
     pub fn assert_well_formed(c: &RpcChannel) {
         assert!(!c.note.is_empty());
-        for (k, v) in c.open_fields {
+        for (k, v) in c.open_fields.iter().chain(c.read_only_fields) {
             serde_json::from_str::<Value>(v).unwrap_or_else(|e| panic!("open field {k}: {e}"));
         }
         for a in c.answers {

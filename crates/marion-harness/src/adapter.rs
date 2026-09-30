@@ -613,6 +613,7 @@ pub trait HarnessAdapter {
                 SESSION_NEW_ID,
                 &spec.cwd.to_string_lossy(),
                 spec.resume.as_deref(),
+                spec.extra.read_only,
             )
         }))
     }
@@ -9710,6 +9711,26 @@ mod tests {
                     compile(&unswitched),
                     compile(&read_only),
                 );
+                // A thread channel's own opening request can state the sandbox and beat argv (codex
+                // S36 P3), so a read-only launch must say it there too, and a writable one never.
+                if let Some(c) = row.surfaces.rpc() {
+                    assert!(
+                        !c.read_only_fields.is_empty() || !ro.blocks_writes(),
+                        "{h}: a row driven over a thread channel that blocks writes must state its \
+                         read-only request fields"
+                    );
+                    let declared = |l: &LaunchSpec| {
+                        a.session_declaration(l, &ctx())
+                            .unwrap_or_else(|e| panic!("{h} ({auth:?}): {e}"))
+                            .unwrap_or_else(|| panic!("{h} ({auth:?}): no opening request"))
+                    };
+                    let (dw, dr) = (declared(&writable), declared(&read_only));
+                    for (k, v) in c.read_only_fields {
+                        let v: serde_json::Value = serde_json::from_str(v).unwrap();
+                        assert_eq!(dr["params"][k], v, "{h} ({auth:?}): read-only `{k}`");
+                        assert_ne!(dw["params"][k], v, "{h} ({auth:?}): writable `{k}`");
+                    }
+                }
                 match ro {
                     ReadOnly::ToolsAxis { .. } => {
                         assert!(writes, "{h}: a tools-axis row must map `write`");

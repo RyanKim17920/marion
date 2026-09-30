@@ -676,7 +676,7 @@ for line in sys.stdin:
                 inv: &self.inv,
                 tmpdir: &self.dir,
                 channel: &APP,
-                opening: APP.opening(1, "/wt", None),
+                opening: APP.opening(1, "/wt", None, false),
                 gate: Some("marion"),
                 mcp_ready: Duration::from_secs(20),
                 prompt: "go",
@@ -802,7 +802,7 @@ for line in sys.stdin:
     fn a_resume_the_server_refuses_is_a_refusal_in_its_words() {
         let bed = Bed::new("as-refuse", "refuse");
         let e = run_app_server(AppServerSpec {
-            opening: APP.opening(1, "/wt", Some("t-old")),
+            opening: APP.opening(1, "/wt", Some("t-old"), false),
             ..bed.spec(Duration::from_secs(20), None)
         })
         .unwrap_err();

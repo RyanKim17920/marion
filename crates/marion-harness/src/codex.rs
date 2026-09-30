@@ -583,6 +583,8 @@ pub const APP: RpcChannel = RpcChannel {
     resume_id: "threadId",
     cwd: "cwd",
     open_fields: &[("ephemeral", "false"), ("sandbox", "\"workspace-write\"")],
+    // The same mode the row's argv pair names (`read_only`), on the request that beats it.
+    read_only_fields: &[("sandbox", READ_ONLY_SANDBOX)],
     thread_id: "/result/thread/id",
     ready: Some(ReadyGate {
         at: &[Cond::Eq("/method", "mcpServer/startupStatus/updated")],
@@ -1736,7 +1738,7 @@ mod tests {
     #[test]
     fn the_app_server_vocabulary_is_well_formed_and_its_sandbox_is_the_one_marion_records() {
         crate::rpc_channel::tests::assert_well_formed(&APP);
-        let open = APP.opening(1, "/wt", None);
+        let open = APP.opening(1, "/wt", None, false);
         assert_eq!(open["method"], "thread/start");
         assert_eq!(open["params"]["cwd"], "/wt");
         assert_eq!(open["params"]["sandbox"], SANDBOX_MODE);
@@ -1745,7 +1747,7 @@ mod tests {
             "a thread marion may resume must be persisted (P8: an ephemeral one is gone)"
         );
         assert!(open.get("jsonrpc").is_none(), "P2: no jsonrpc member");
-        let resume = APP.opening(1, "/wt", Some("t-9"));
+        let resume = APP.opening(1, "/wt", Some("t-9"), false);
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "t-9");
         assert_eq!(
@@ -1754,6 +1756,12 @@ mod tests {
         );
         assert_eq!(APP.opened_by(&open), Some(None));
         assert_eq!(APP.opened_by(&resume), Some(Some("t-9".into())));
+        // A reviewer's thread is read-only on both requests: the request's sandbox beats argv.
+        for thread in [None, Some("t-9")] {
+            let ro = APP.opening(1, "/wt", thread, true);
+            assert_eq!(ro["params"]["sandbox"], "read-only", "{thread:?}");
+            assert_eq!(ro["params"]["ephemeral"], false, "{thread:?}");
+        }
     }
 
     /// The turn requests carry what P6/P7 sent: the thread, the expected turn on a steer, the turn
