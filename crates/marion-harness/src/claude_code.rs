@@ -110,6 +110,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // frame ever reaches marion. Absent from --help.
         Arg::Lit("--permission-prompt-tool"),
         Arg::Lit("stdio"),
+        // The ask above only happens in the mode that asks. 2.1.285 starts `-p` children in
+        // `auto`, whose classifier decides in-process, so no `can_use_tool` frame reaches marion
+        // and a grant marion holds is never consulted. Stated rather than inherited, so the mode is
+        // the row's and not the operator's default. Headless only: a pane keeps the operator's
+        // dialog and a native session keeps its own mode.
+        Arg::Lit("--permission-mode"),
+        Arg::Lit("default"),
         // Only the MCP servers marion declared; never the user's.
         Arg::Lit("--strict-mcp-config"),
         Arg::Flag("--mcp-config", Field::McpConfig),
@@ -867,6 +874,33 @@ mod tests {
             .position(|a| a == "--permission-prompt-tool")
             .expect("without this the CLI auto-denies in-process and marion sees nothing");
         assert_eq!(inv.args[i + 1], "stdio");
+    }
+
+    /// 2.1.285 starts an unflagged `-p` child in `auto` (measured 2026-09-30: the `init` frame's
+    /// `permissionMode` reads `auto`, and `default` with this flag), whose classifier answers
+    /// in-process — so the prompt tool above is never asked. The mode is stated on every headless
+    /// launch, the operator's own login included, and never on the pane, which keeps its dialog.
+    #[test]
+    fn a_headless_node_states_the_mode_that_asks_and_a_pane_does_not() {
+        let live = Fields {
+            auth: Auth::Inherited,
+            ..root()
+        };
+        for f in [root(), child(), live] {
+            let inv = compile(&f);
+            let i = inv
+                .args
+                .iter()
+                .position(|a| a == "--permission-mode")
+                .expect("an unstated mode is auto on 2.1.285, and auto never asks marion");
+            assert_eq!(inv.args[i + 1], "default");
+        }
+        let pane = render(&SPEC, Shape::Pane, &root()).unwrap();
+        assert!(
+            !pane.args.iter().any(|a| a == "--permission-mode"),
+            "{:?}",
+            pane.args
+        );
     }
 
     #[test]

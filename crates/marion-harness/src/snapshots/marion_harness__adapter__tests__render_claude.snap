@@ -20,6 +20,8 @@ args:
   mcp__marion__spawn,mcp__marion__status
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -100,6 +102,8 @@ args:
   mcp__marion__spawn,mcp__marion__status
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -171,6 +175,8 @@ args:
   mcp__marion__spawn,mcp__marion__status
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -258,6 +264,8 @@ args:
   mcp__marion__spawn,mcp__marion__status,Read
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -338,6 +346,8 @@ args:
   mcp__marion__spawn,mcp__marion__status,Write
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -418,6 +428,8 @@ args:
   mcp__marion__spawn,mcp__marion__status,Edit
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -498,6 +510,8 @@ args:
   mcp__marion__spawn,mcp__marion__status,Bash
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -578,6 +592,8 @@ args:
   mcp__marion__spawn,mcp__marion__status,Read,Write,Edit,Bash
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
@@ -658,6 +674,8 @@ args:
   mcp__marion__spawn,mcp__marion__status
   --permission-prompt-tool
   stdio
+  --permission-mode
+  default
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json

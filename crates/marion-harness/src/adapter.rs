@@ -2784,6 +2784,8 @@ mod tests {
                     "mcp__marion__spawn,mcp__marion__status",
                     "--permission-prompt-tool",
                     "stdio",
+                    "--permission-mode",
+                    "default",
                     "--strict-mcp-config",
                     "--mcp-config",
                     "/state/x/config/mcp.json",
