@@ -128,6 +128,12 @@ message chunks.
 operator's installed skills; each name was replaced by a same-length `skillNN…` placeholder. The
 other S38 captures were recorded on relocated homes and carry no inventory.
 
+**2026-09-30, qwen 0.24.7 conformance.** Its transcripts listed the operator's installed skills
+in the `system`/`init` frame; each name was replaced by a same-length `skillNN…` placeholder with
+`scripts/fixture-privacy.py --fix`, so every byte length is unchanged. Two cline 3.0.66 and copilot
+1.0.89 summaries named the scratch npm prefix the releases were installed under; it reads
+`<NPM_PREFIX>`.
+
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
 `TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Four later passes changed fixture
 bytes, all on 2026-08-01:**

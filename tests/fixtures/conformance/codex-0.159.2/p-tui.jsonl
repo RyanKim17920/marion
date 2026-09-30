@@ -1,0 +1,95 @@
+{"dir":"note","msg":{"args":["-c","check_for_update_on_startup=false","-C","<SCRATCH>/p-tui/repo"],"pid":57247,"spawned in a pty":"codex"},"t":0.004}
+{"dir":"raw","msg":"\u001b[?2004h","t":0.119}
+{"dir":"raw","msg":"\u001b[>4;0m\u001b[>5u\u001b[?1004h","t":0.119}
+{"dir":"raw","msg":"\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c","t":0.119}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[?1049h\u001b[>4;0m\u001b[>5u","t":0.38}
+{"dir":"raw","msg":"\u001b[?1007l\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h","t":0.381}
+{"dir":"raw","msg":"\u001b[?25l","t":0.381}
+{"dir":"raw","msg":"\u001b[1;1H\u001b[J","t":0.381}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":0.396}
+{"dir":"raw","msg":"\u001b[2;3H\u001b[38;2;99;168;248;49m>_ \u001b[1m\u001b[39;49mOpenAI Codex\u001b[22m\u001b[2m\u001b[2m (v0.159.2)\u001b[3;6Hloading\u001b[5;3H\u001b[22m\u001b[38;2;99;168;248;49mHow’s life between the brackets?\u001b[12;56H\u001b[2m\u001b[39;49m⣀⣤⣤⣤⣀⣀\u001b[13;53H⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀\u001b[14;51H⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄\u001b[15;50H⣀⣾⣿⣿⠃\u001b[15;56H⣀⣴⣾⣿⣿⡿⠟⠋\u001b[15;65H⣀⡀\u001b[15;68H⠈⠙⢿⣿⣿⣧\u001b[16;47H⣀⣶⣿⣿⣿⣿⡇\u001b[16;55H⢸⣿⣿⡿⠛⠉⢀…[260 more chars]","t":0.396}
+{"dir":"raw","msg":"⣿⣿\u001b[21;69H⣿⣿⡇\u001b[21;74H⣿⣿⣿⠇\u001b[22;47H⢻⣿⣿⣿⣷⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿\u001b[22;69H⣿⣿⡇\u001b[22;73H⣠⣿⣿⣿\u001b[23;47H⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿\u001b[23;69H⣿⣿⣷⣴⣿⣿⣿⠃\u001b[24;47H⠘⣿⣿⣷\u001b[24;52H⠈⠛⢿⣿⣿⣿⠿⠋⠉\u001b[24;62H⣠⣴⣿⣿⣿\u001b[24;69H⣿⣿⣿⣿⣿⠟⠁\u001b[25;48H⠻⣿⣿⣿⣤⣀\u001b[25;55H⠈⠉\u001b[25;58H⢀⣤⣶⣿⣿⣿⠿⠟⠁\u001b[25;68H⣰⣿⣿⡟⠋⠁\u001b[26;49H⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁\u001b[26;66H⣠⣼⣿⣿⡟\u001b[27;52H⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿⣿⡿⠏\u001b[28;59H⠈⠙⠛⠿⠿⠿⠿⠛⠉\u001b[37;1H\u001b[…[175 more chars]","t":0.397}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.401}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.406}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":0.408}
+{"dir":"raw","msg":"\u001b[?2026l","t":0.409}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.411}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.414}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[3;6H\u001b[2m<SCRATCH>/p-tui/repo\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":0.422}
+{"dir":"raw","msg":"\u001b[?2026l","t":0.422}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.424}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.426}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":0.433}
+{"dir":"raw","msg":"\u001b[?2026l","t":0.433}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.456}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.459}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.496}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.502}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.503}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.506}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":0.507}
+{"dir":"raw","msg":"\u001b[?2026l","t":0.507}
+{"dir":"raw","msg":"\u001b[?1006l\u001b[?1015l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1007h","t":0.508}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":0.51}
+{"dir":"raw","msg":"\u001b[2;16H\u001b[0m\u001b[49m\u001b[K\u001b[12;28H\u001b[0m\u001b[49m\u001b[K\u001b[13;2H\u001b[0m\u001b[49m\u001b[K\u001b[14;2H\u001b[0m\u001b[49m\u001b[K\u001b[15;2H\u001b[0m\u001b[49m\u001b[K\u001b[16;2H\u001b[0m\u001b[49m\u001b[K\u001b[17;2H\u001b[0m\u001b[49m\u001b[K\u001b[18;2H\u001b[0m\u001b[49m\u001b[K\u001b[19;2H\u001b[0m\u001b[49m\u001b[K\u001b[20;2H\u001b[0m\u001b[49m\u001b[K\u001b[21;2H\u001b[0m\u001b[49m\u001b[K\u001b[22;2H\u001b[0m\u001b[49m\u001b[K\u001b[23;2H\u001b[0m\u001b[49m\u001b[K\u001b[24;2H\u001b[0m\u001b[49m\u001b[K\u001b[25;2H\u001b[0m\u001b[49m\u001b[K\u001b[26;2H\u001b[0m\u001b[49m\u001b[K\u001b[27;2H\u001b[0m\u001b[49…[704 more chars]","t":0.511}
+{"dir":"raw","msg":";1H\u001b[7m\u001b[1m› 1. Trust and continue                                                                                                 \u001b[10;3H\u001b[27m\u001b[22m2.\u001b[10;6HQuit\u001b[12;3H\u001b[1menter\u001b[22m\u001b[2m\u001b[2m continue · \u001b[22m\u001b[1mesc\u001b[22m\u001b[2m\u001b[2m quit\u001b[37;1H\u001b[22m \u001b[39m\u001b[49m\u001b[0m\u001b[?2026l","t":0.511}
+{"dir":"note","msg":{"first screen":["","  Folder access","  <SCRATCH>/p-tui/repo","","  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings","  can run code automatically, even without a model request. Continue only if you trust these files. Your trust","  decision will be saved.","","› 1. Trust and continue","  2. Quit","","  enter continue · esc quit","","","","","","","","","","","","","","","","","","","","","","","","","","","",""],"quiet":true},"t":2.013}
+{"dir":"c2s","msg":"\r","t":2.014}
+{"dir":"raw","msg":"\u001b[?1007l\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[1;1H\u001b[J","t":2.021}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[2;3H\u001b[38;2;99;168;248;49m>_ \u001b[1m\u001b[39;49mOpenAI Codex\u001b[22m\u001b[2m\u001b[2m (v0.159.2)\u001b[3;6H<SCRATCH>/p-tui/repo\u001b[5;3H\u001b[22m\u001b[38;2;99;168;248;49mHow’s life between the brackets?\u001b[12;56H\u001b[2m\u001b[39;49m⣀⣤⣤⣤⣀⣀\u001b[13;53H⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀\u001b[14;51H⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄\u001b[15;50H⣀⣾⣿⣿⠃\u001b[15;56H⣀⣴⣾⣿⣿⡿⠟⠋\u001b[15;65H⣀⡀\u001b[15;68H⠈⠙⢿⣿⣿⣧\u001b[16;47H⣀…[252 more chars]","t":2.025}
+{"dir":"raw","msg":"45H⠈⢿⣿⣿⣦⡀⠈⠛⠿⣿⣿⣿⣿⣄⡀\u001b[21;62H⢀⣠⣼⣿⣿\u001b[21;69H⣿⣿⡇\u001b[21;74H⣿⣿⣿⠇\u001b[22;47H⢻⣿⣿⣿⣷⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿\u001b[22;69H⣿⣿⡇\u001b[22;73H⣠⣿⣿⣿\u001b[23;47H⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿\u001b[23;69H⣿⣿⣷⣴⣿⣿⣿⠃\u001b[24;47H⠘⣿⣿⣷\u001b[24;52H⠈⠛⢿⣿⣿⣿⠿⠋⠉\u001b[24;62H⣠⣴⣿⣿⣿\u001b[24;69H⣿⣿⣿⣿⣿⠟⠁\u001b[25;48H⠻⣿⣿⣿⣤⣀\u001b[25;55H⠈⠉\u001b[25;58H⢀⣤⣶⣿⣿⣿⠿⠟⠁\u001b[25;68H⣰⣿⣿⡟⠋⠁\u001b[26;49H⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁\u001b[26;66H⣠⣼⣿⣿⡟\u001b[27;52H⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿…[164 more chars]","t":2.025}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.028}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":2.03}
+{"dir":"raw","msg":"\u001b[?2026l","t":2.03}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.035}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.044}
+{"dir":"raw","msg":"\u001b]0;repo\u0007","t":2.051}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":2.054}
+{"dir":"raw","msg":"\u001b[?2026l","t":2.054}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[39;3H\u001b[38;2;246;226;183;49mGPT-6.1-Sol default\u001b[39;23H\u001b[39;49m·\u001b[39;25H\u001b[38;2;171;223;167;49m<SCRATCH>/p-tui/repo\u001b[40;96H\u001b[39;49m⚠\u001b[40;98H\u001b[38;2;196;167;103;49m1 warning\u001b[40;108H\u001b[39;49m·\u001b[40;110H\u001b[1mf2\u001b[40;113H\u001b[22mto\u001b[40;116Hview\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.062}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.069}
+{"dir":"raw","msg":"\u001b]0;⠋ repo\u0007","t":2.076}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.085}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":2.09}
+{"dir":"raw","msg":"\u001b[?2026l","t":2.09}
+{"dir":"raw","msg":"\u001b]0;repo\u0007","t":2.092}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.1}
+{"dir":"note","msg":{"screen after the row's dialog keys":["","  >_ OpenAI Codex (v0.159.2)","     <SCRATCH>/p-tui/repo","","  How’s life between the brackets?","","","","","","","                                                       ⣀⣤⣤⣤⣀⣀","                                                    ⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀","                                                  ⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄","                                                 ⣀⣾⣿⣿⠃ ⣀⣴⣾⣿⣿⡿⠟⠋ ⣀⡀ ⠈⠙⢿⣿⣿⣧","                                              ⣀⣶⣿⣿⣿⣿⡇ ⢸⣿⣿⡿⠛⠉⢀⣠⣴⣿⣿⣿⣷⣦⣀⠈⢻⣿⣿⡇","                                             ⣰⣿⣿⡿⢿⣿⣿⡇ ⢸⣿⣿⢀⣤⣶⣿⣿⣿⠟⠛⠻⣿⣿⣿⣿⣮⣿⣿⡷","                                            ⢰⣿⣿⡟⠁⢸⣿⣿⡇ ⢸⣿⣿⣿⣿⠿⠿⣿⣿⣿⣦⣄⡀⠈⠛⠿⣿⣿⣿⣧⡀","                                            ⣾⣿⣿⠃ ⢸⣿⣿⡇ ⢸⣿⣿⠋⠁  ⠈⠙⢻⣿⣿⣿⣶⣤⡀ ⠹⢿⣿⣷⡄","                                            ⢸⣿⣿⣇ ⠸⣿⣿⣷⣦⣼⣿⣿      ⢸⣿⣿⠻⢿⣿⣿⡇ ⠘⣿⣿⣿","                                            ⠈⢿⣿⣿⣦⡀⠈⠛⠿⣿⣿⣿⣿⣄⡀  ⢀⣠⣼⣿⣿  ⣿⣿⡇  ⣿⣿⣿⠇","                                              ⢻⣿⣿⣿⣷⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿  ⣿⣿⡇ ⣠⣿⣿⣿","                                              ⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿  ⣿⣿⣷⣴⣿⣿⣿⠃","                                              ⠘⣿⣿⣷ ⠈⠛⢿⣿⣿⣿⠿⠋⠉ ⣠⣴⣿⣿⣿  ⣿⣿⣿⣿⣿⠟⠁","                                               ⠻⣿⣿⣿⣤⣀ ⠈⠉ ⢀⣤⣶⣿⣿⣿⠿⠟⠁ ⣰⣿⣿⡟⠋⠁","                                                ⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁  ⣠⣼⣿⣿⡟","                                                   ⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿⣿⡿⠏","                                                          ⠈⠙⠛⠿⠿⠿⠿⠛⠉","","","","","","","","","› Ask Codex to do anything","","  GPT-6.1-Sol default · <SCRATCH>/p-tui/repo","  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view"]},"t":3.611}
+{"dir":"c2s","msg":"\u001b[200~CONFTUI: follow the conformance script.\u001b[201~","t":3.613}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":3.615}
+{"dir":"raw","msg":"\u001b[12;2H\u001b[0m\u001b[49m\u001b[K\u001b[13;2H\u001b[0m\u001b[49m\u001b[K\u001b[14;2H\u001b[0m\u001b[49m\u001b[K\u001b[15;2H\u001b[0m\u001b[49m\u001b[K\u001b[16;2H\u001b[0m\u001b[49m\u001b[K\u001b[17;2H\u001b[0m\u001b[49m\u001b[K\u001b[18;2H\u001b[0m\u001b[49m\u001b[K\u001b[19;2H\u001b[0m\u001b[49m\u001b[K\u001b[20;2H\u001b[0m\u001b[49m\u001b[K\u001b[21;2H\u001b[0m\u001b[49m\u001b[K\u001b[22;2H\u001b[0m\u001b[49m\u001b[K\u001b[23;2H\u001b[0m\u001b[49m\u001b[K\u001b[24;2H\u001b[0m\u001b[49m\u001b[K\u001b[25;2H\u001b[0m\u001b[49m\u001b[K\u001b[26;2H\u001b[0m\u001b[49m\u001b[K\u001b[27;2H\u001b[0m\u001b[49m\u001b[K\u001b[28;2H\u001b[0m\u001b[49m…[126 more chars]","t":3.615}
+{"dir":"c2s","msg":"\r","t":3.667}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;42H\u001b[?25h\u001b[?2026l","t":3.668}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":3.67}
+{"dir":"raw","msg":"\u001b[37;27H\u001b[0m\u001b[49m\u001b[K\u001b[8;1H\u001b[1m\u001b[2m› \u001b[22m\u001b[22mCONFTUI:\u001b[8;12Hfollow\u001b[8;19Hthe\u001b[8;23Hconformance\u001b[8;35Hscript.\u001b[37;3H\u001b[2mAsk Codex to do anything\u001b[40;3H\u001b[22m\u001b[1m?\u001b[40;5H\u001b[22mfor\u001b[40;9Hshortcuts\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.671}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.671}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.68}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.692}
+{"dir":"raw","msg":"\u001b]0;⠦ repo\u0007","t":3.717}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":3.718}
+{"dir":"raw","msg":"\u001b[34;1H\u001b[1m\u001b[38;2;128;128;128;49m•\u001b[34;3H\u001b[22m\u001b[2m\u001b[2m\u001b[39;49mWorking\u001b[34;11H(0s • \u001b[22m\u001b[1mesc\u001b[22m\u001b[2m\u001b[2m to interrupt)\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.718}
+{"dir":"raw","msg":"\u001b]0;⠦ ⠦ | repo\u0007","t":3.738}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[39;90H·\u001b[39;92H\u001b[38;2;245;224;220;49m⠦\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.74}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":false,"req":1,"turn":["CONFTUI",0],"user_texts":["<environment_context>\n  <cwd><SCRATCH>/p-tui/repo</cwd>\n  <shell>zsh</shell>\n  <current_date>2026-09-30</current_date>\n  <timezone>America/Chicago</timezone>\n  <filesystem><workspace_roots><root><SCRATCH>/p-tui/repo</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=…[561 more chars]","CONFTUI: follow the conformance script."],"wire":"responses"},"t":3.745}
+{"dir":"prov","msg":{"resp":"script","wire":"responses"},"t":3.747}
+{"dir":"raw","msg":"\u001b]0;⠧ ⠧ | repo\u0007","t":3.752}
+{"dir":"raw","msg":"\u001b]0;⠧ | repo\u0007","t":3.752}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":3.753}
+{"dir":"raw","msg":"\u001b[34;2H\u001b[0m\u001b[49m\u001b[K\u001b[11;1H\u001b[2m• \u001b[22mconformance\u001b[11;15Htui\u001b[11;19Hdone\u001b[13;1H\u001b[2m  Worked for <1s • 10:48 AM                                                                                             \u001b[34;1H\u001b[22m \u001b[39;92H\u001b[38;2;245;224;220;49m⠧\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.753}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":3.764}
+{"dir":"raw","msg":"\u001b[?2026l","t":3.764}
+{"dir":"prov","msg":{"marion_tools":false,"offers_tools":false,"req":2,"turn":["CONFTUI",0],"user_texts":["<environment_context>\n  <current_date>2026-09-30</current_date>\n  <timezone>America/Chicago</timezone>\n</environment_context>","Generate a concise, single-line task title of at most 36 characters and under five words where possible. Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. Preserve ticket references exactly. Write in the user's language. Do…[132 more chars]"],"wire":"responses"},"t":3.803}
+{"dir":"prov","msg":{"resp":"script","wire":"responses"},"t":3.804}
+{"dir":"raw","msg":"\u001b]0;repo\u0007","t":3.805}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[39;89H\u001b[0m\u001b[49m\u001b[K\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":3.806}
+{"dir":"raw","msg":"\u001b[?2026l","t":3.806}
+{"dir":"note","msg":{"screen after the turn":["","  >_ OpenAI Codex (v0.159.2)","     <SCRATCH>/p-tui/repo","","  How’s life between the brackets?","","","› CONFTUI: follow the conformance script.","","","• conformance tui done","","  Worked for <1s • 10:48 AM","","","","","","","","","","","","","","","","","","","","","","","","› Ask Codex to do anything","","  GPT-6.1-Sol default · <SCRATCH>/p-tui/repo","  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view"]},"t":5.314}
+{"dir":"c2s","msg":"\u001b[200~/mcp\u001b[201~","t":5.316}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":5.319}
+{"dir":"raw","msg":"\u001b[37;7H\u001b[0m\u001b[49m\u001b[K\u001b[40;2H\u001b[0m\u001b[49m\u001b[K\u001b[35;1H\u001b[7m\u001b[1m› /mcp  \u001b[22mlist configured MCP tools; use /mcp verbose for details\u001b[1m                                                         \u001b[37;3H\u001b[27m\u001b[22m/mcp\u001b[39m\u001b[49m\u001b[0m\u001b[37;7H\u001b[?25h\u001b[?2026l","t":5.319}
+{"dir":"c2s","msg":"\r","t":5.369}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":5.372}
+{"dir":"raw","msg":"\u001b[35;2H\u001b[0m\u001b[49m\u001b[K\u001b[15;1H\u001b[1m\u001b[38;2;128;128;128;49m•\u001b[15;3H\u001b[39;49mLoading MCP inventory\u001b[22m\u001b[2m\u001b[2m…\u001b[35;1H\u001b[22m \u001b[37;3H\u001b[2mAsk Codex to do anything\u001b[40;3H\u001b[22m\u001b[1m?\u001b[40;5H\u001b[22mfor\u001b[40;9Hshortcuts\u001b[40;96H⚠\u001b[40;98H\u001b[38;2;196;167;103;49m1 warning\u001b[40;108H\u001b[39;49m·\u001b[40;110H\u001b[1mf2\u001b[40;113H\u001b[22mto\u001b[40;116Hview\u001b[39m\u001b[49m\u001b…[24 more chars]","t":5.372}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":5.42}
+{"dir":"raw","msg":"\u001b[15;5H\u001b[0m\u001b[49m\u001b[K\u001b[15;1H\u001b[38;5;5;49m/mcp\u001b[17;1H\u001b[39;49m🔌\u001b[17;5H\u001b[1mMCP Tools\u001b[19;1H\u001b[38;5;2;49m  • \u001b[39;49mmarion\u001b[22m:\u001b[19;13H\u001b[1m\u001b[38;5;2;49mconnected\u001b[22m\u001b[2m\u001b[2m\u001b[39;49m (7 tools)\u001b[21;1H  Use /mcp verbose for tools and resources.\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":5.421}
+{"dir":"note","msg":{"/mcp screen":["","  >_ OpenAI Codex (v0.159.2)","     <SCRATCH>/p-tui/repo","","  How’s life between the brackets?","","","› CONFTUI: follow the conformance script.","","","• conformance tui done","","  Worked for <1s • 10:48 AM","","/mcp","","🔌  MCP Tools","","  • marion: connected (7 tools)","","  Use /mcp verbose for tools and resources.","","","","","","","","","","","","","","","","› Ask Codex to do anything","","  GPT-6.1-Sol default · <SCRATCH>/p-tui/repo","  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view"]},"t":6.923}

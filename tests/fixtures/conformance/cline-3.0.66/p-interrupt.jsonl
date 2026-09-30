@@ -1,0 +1,10 @@
+{"dir":"note","msg":{"args":["--json","-c","<SCRATCH>/p-interrupt/repo","--config","<SCRATCH>/p-interrupt/node/cfg","--data-dir","<SCRATCH>/p-interrupt/node/data","--auto-approve","true","-m","marion-canned","CONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"pid":83444,"spawned":"cline"},"t":0.002}
+{"dir":"s2c","msg":{"agentId":"agent_1790783424055_yth5i0","hookEventName":"agent_start","parentAgentId":null,"taskId":"conv_1790783424129_4wh5ovm","ts":"2026-09-30T15:50:24.132Z","type":"hook_event"},"t":0.808}
+{"dir":"s2c","msg":{"event":{"iteration":1,"type":"iteration_start"},"ts":"2026-09-30T15:50:24.132Z","type":"agent_event"},"t":0.809}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":1,"turn":["CONFINTERRUPT",0],"user_texts":["CONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"openai"},"t":0.88}
+{"dir":"note","msg":"holding provider request 1","t":0.88}
+{"dir":"note","msg":"signal 2 to process group 83444","t":0.959}
+{"dir":"note","msg":{"code":null,"exited":83444,"signal":2},"t":0.97}
+{"dir":"note","msg":"signal 9 to process group 83444","t":1.842}
+{"dir":"note","msg":"released provider request 1","t":1.986}
+{"dir":"prov","msg":{"resp":"script","wire":"openai"},"t":1.988}

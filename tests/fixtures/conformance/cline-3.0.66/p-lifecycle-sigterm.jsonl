@@ -1,0 +1,22 @@
+{"dir":"note","msg":{"args":["--json","-c","<SCRATCH>/p-lifecycle-sigterm/repo","--config","<SCRATCH>/p-lifecycle-sigterm/node/cfg","--data-dir","<SCRATCH>/p-lifecycle-sigterm/node/data","--auto-approve","true","-m","marion-canned","CONFLIFETERM: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"pid":84812,"spawned":"cline"},"t":0.002}
+{"dir":"s2c","msg":{"agentId":"agent_1790783429832_l1v0qs","hookEventName":"agent_start","parentAgentId":null,"taskId":"conv_1790783429905_o61m7c3","ts":"2026-09-30T15:50:29.908Z","type":"hook_event"},"t":0.84}
+{"dir":"s2c","msg":{"event":{"iteration":1,"type":"iteration_start"},"ts":"2026-09-30T15:50:29.909Z","type":"agent_event"},"t":0.841}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":1,"turn":["CONFLIFETERM",0],"user_texts":["CONFLIFETERM: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"openai"},"t":0.917}
+{"dir":"prov","msg":{"resp":"script","wire":"openai"},"t":0.918}
+{"dir":"s2c","msg":{"event":{"cacheReadTokens":10,"inputTokens":100,"outputTokens":15,"reasoningTokenCount":5,"totalCacheReadTokens":10,"totalCost":0,"totalInputTokens":100,"totalOutputTokens":15,"type":"usage"},"ts":"2026-09-30T15:50:29.990Z","type":"agent_event"},"t":0.922}
+{"dir":"s2c","msg":{"agentId":"agent_1790783429832_l1v0qs","hookEventName":"tool_call","parentAgentId":null,"taskId":"conv_1790783429905_o61m7c3","ts":"2026-09-30T15:50:29.992Z","type":"hook_event"},"t":0.924}
+{"dir":"s2c","msg":{"event":{"contentType":"tool","input":{"narrative":"conformance CONFLIFETERM"},"toolCallId":"call_conflifeterm_00","toolName":"marion__report","type":"content_start"},"ts":"2026-09-30T15:50:29.992Z","type":"agent_event"},"t":0.924}
+{"dir":"err","msg":"(node:84954) Warning: AI SDK Warning System: To turn off warning logging, set the AI_SDK_LOG_WARNINGS global to false.","t":0.924}
+{"dir":"err","msg":"(Use `.cline --trace-warnings ...` to show where the warning was created)","t":0.925}
+{"dir":"s2c","msg":{"agentId":"agent_1790783429832_l1v0qs","hookEventName":"tool_result","parentAgentId":null,"taskId":"conv_1790783429905_o61m7c3","ts":"2026-09-30T15:50:29.992Z","type":"hook_event"},"t":0.925}
+{"dir":"err","msg":"(node:84954) DeprecationWarning: AI SDK Warning (openai-compatible.chat / marion-canned): Deprecated: \"providerOptions key 'openai-compatible'\". Use 'openaiCompatible' instead.","t":0.925}
+{"dir":"err","msg":"(node:84954) DeprecationWarning: AI SDK Warning (openai-compatible.chat / marion-canned): Deprecated: \"providerOptions key 'openai-compatible'\". Use 'openaiCompatible' instead.","t":0.925}
+{"dir":"s2c","msg":{"event":{"contentType":"tool","durationMs":1,"output":{"content":[{"text":"report recorded","type":"text"}],"isError":false},"toolCallId":"call_conflifeterm_00","toolName":"marion__report","type":"content_end"},"ts":"2026-09-30T15:50:29.993Z","type":"agent_event"},"t":0.925}
+{"dir":"s2c","msg":{"event":{"hadToolCalls":true,"iteration":1,"toolCallCount":1,"type":"iteration_end"},"ts":"2026-09-30T15:50:29.993Z","type":"agent_event"},"t":0.926}
+{"dir":"s2c","msg":{"event":{"iteration":2,"type":"iteration_start"},"ts":"2026-09-30T15:50:29.994Z","type":"agent_event"},"t":0.927}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":2,"turn":["CONFLIFETERM",1],"user_texts":["CONFLIFETERM: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"openai"},"t":0.934}
+{"dir":"note","msg":"holding provider request 2","t":0.934}
+{"dir":"note","msg":{"code":null,"exited":84812,"signal":15},"t":1.286}
+{"dir":"note","msg":"signal 9 to process group 84812","t":6.615}
+{"dir":"note","msg":"released provider request 2","t":6.78}
+{"dir":"prov","msg":{"resp":"script","wire":"openai"},"t":6.781}

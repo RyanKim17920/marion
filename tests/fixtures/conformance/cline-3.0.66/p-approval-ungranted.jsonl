@@ -1,0 +1,8 @@
+{"dir":"note","msg":"grant (cli-flag) stripped: argv [\"--json\", \"-c\", \"<SCRATCH>/p-approval-ungranted/repo\", \"--config\", \"<SCRATCH>/p-approval-ungranted/node/cfg\", \"--data-dir\", \"<SCRATCH>/p-approval-ungranted/node/data\", \"true\", \"-m\", \"marion-canned\", \"CONFAPPROVAL: follow the conformance script.\\n\\nWhen you have finished, call the `repor…[185 more chars]","t":0.001}
+{"dir":"note","msg":{"args":["--json","-c","<SCRATCH>/p-approval-ungranted/repo","--config","<SCRATCH>/p-approval-ungranted/node/cfg","--data-dir","<SCRATCH>/p-approval-ungranted/node/data","true","-m","marion-canned","CONFAPPROVAL: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"pid":83246,"spawned":"cline"},"t":0.002}
+{"dir":"err","msg":"\u001b[31merror:\u001b[0m Unknown command or unquoted prompt: true CONFAPPROVAL: follow the conformance script.","t":0.429}
+{"dir":"err","msg":"","t":0.429}
+{"dir":"err","msg":"When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.","t":0.429}
+{"dir":"err","msg":"Prompt text must be passed as a single quoted argument, for example: cline \"fix the tests\". Use \"cline --help\" to see available commands and flags.","t":0.43}
+{"dir":"note","msg":{"code":1,"exited":83246,"signal":null},"t":0.595}
+{"dir":"note","msg":"signal 9 to process group 83246","t":0.788}

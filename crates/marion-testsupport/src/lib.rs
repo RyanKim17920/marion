@@ -654,6 +654,17 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // native_facade_spawn (1), no_git (5), node_attach (2), pane_attach (2),
         // permission_round_trip (9), restart_resume (0), timeout_kill (1), turn_delivery (2),
         // user_agent_types (3), verification (4), worktree_reap (11).
+        // 2.1.285: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
+        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
+        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
+        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
+        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
+        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
+        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
+        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
+        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
+        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
+        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
         accepted: marion_harness::claude_code::SPEC.verified,
     },
     PinnedHarness {
@@ -768,6 +779,17 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // `-c model_catalog_json=<file>` with the entries' `supports_search_tool: false` restores
         // eager tools on 0.155.1: `mcp__marion` in `tools[]` for `gpt-5.5`, and the tools listed
         // in `exec`'s declaration for `gpt-5.6-sol`. marion does not pass that today.
+        // 0.159.2: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
+        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
+        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
+        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
+        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
+        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
+        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
+        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
+        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
+        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
+        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
         accepted: marion_harness::codex::SPEC.verified,
     },
     PinnedHarness {
@@ -843,6 +865,17 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // the `success: false` + `error.message` shape an `isError` MCP result takes, and
         // `session.error` + `exitCode: 1` on a provider 500 after five retries. See
         // `marion_harness::copilot`.
+        // 1.0.89: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
+        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
+        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
+        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
+        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
+        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
+        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
+        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
+        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
+        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
+        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
         accepted: marion_harness::copilot::SPEC.verified,
     },
     PinnedHarness {
@@ -899,6 +932,17 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // nothing under `~/.cline`, `content_end.output.isError` at exit 0, `run_result
         // finishReason: "error"` at exit 1 on a provider 500, and `--id` exiting 1 headless. See
         // `marion_harness::cline`.
+        // 3.0.66: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
+        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
+        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
+        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
+        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
+        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
+        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
+        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
+        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
+        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
+        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
         accepted: marion_harness::cline::SPEC.verified,
     },
     PinnedHarness {
@@ -921,6 +965,17 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // call, `is_error: true` at exit 0 for an MCP `isError`, 28 retries then `success` on a dead
         // provider, and `--resume <session_id>` replaying the session under the same `QWEN_HOME`
         // and cwd. See `marion_harness::qwen`.
+        // 0.24.7: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
+        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
+        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
+        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
+        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
+        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
+        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
+        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
+        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
+        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
+        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
         accepted: marion_harness::qwen::SPEC.verified,
     },
     PinnedHarness {

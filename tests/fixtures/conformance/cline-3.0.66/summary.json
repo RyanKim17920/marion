@@ -1,0 +1,67 @@
+{
+  "result": {
+    "fixtures": "cline-3.0.66",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 200, output: 30, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session none (row: no session rule) ; activity marion__report",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "granted (cli-flag), `report` is answered; ungranted, the harness asks or refuses",
+        "observed": "granted: `report` answered true; ungranted: `report` None, 0 permission ask(s) reached marion",
+        "status": "PASS"
+      },
+      "P-errors": {
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 1.5 s, 1 request(s), exit 1; cause Auth { line: \"{\\\"ts\\\":\\\"2026-09-30T15:50:37.730Z\\\",\\\"type\\\":\\\"error\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\"}\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); no frame reads as a refused credential | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
+        "status": "FAIL"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel ended the turn in 0.0 s (signal 2); 3 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces LaunchOnly) takes one canned turn and ends it at exit 0, with marion's declaration on the route Document",
+        "observed": "turn ended; provider asked for the marker true on {\"openai\"}; exit 0; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(84954, \"<NPM_PREFIX>/lib/node_modules/cline/bin/.cline --json -c <SCRATCH>/cline/p-lifecycle-sigterm/repo --config <SCRATCH>/cline/p-lifecycle-sigterm/node/cfg --data-dir <SCRATCH>/cline/p-lifecycle-sigterm/node/data --auto-approve true -m marion-canned CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.\"), (85706, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+        "status": "FAIL"
+      },
+      "P-midturn": {
+        "expected": "",
+        "observed": "headless delivery None { note: \"S27: cline 3.0.61's `--id <id>` forces interactive mode and exits 1 headless, so there is no headless second turn; not re-measured in S31\" }",
+        "reason": "headless delivery None { note: \"S27: cline 3.0.61's `--id <id>` forces interactive mode and exits 1 headless, so there is no headless second turn; not re-measured in S31\" }",
+        "status": "UNSUPPORTED"
+      },
+      "P-resume": {
+        "expected": "",
+        "observed": "the row states no resume spelling (`resume: None`)",
+        "reason": "the row states no resume spelling (`resume: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-tools": {
+        "expected": "`marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 9.0 s after the spawn and did NOT list marion's tools",
+        "status": "FAIL"
+      },
+      "P-tui": {
+        "expected": "",
+        "observed": "the row has no pane shape (`pane: None`)",
+        "reason": "the row has no pane shape (`pane: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "3.0.66 (admitted in PINNED_HARNESSES); no-self-update env CLINE_NO_AUTO_UPDATE=1 carried",
+        "status": "PASS"
+      }
+    },
+    "version": "3.0.66"
+  },
+  "row": "cline"
+}

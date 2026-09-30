@@ -1,0 +1,64 @@
+{
+  "result": {
+    "fixtures": "codex-0.159.2",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f2ff-9290-7052-a407-417718144414 ; activity report",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "granted (declaration-key), `report` is answered; ungranted, the harness asks or refuses",
+        "observed": "granted: `report` answered true; ungranted: `report` Some(Refused(\"failed: user rejected MCP tool call\")), 0 permission ask(s) reached marion",
+        "status": "PASS"
+      },
+      "P-errors": {
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 6.2 s, 6 request(s), still running; cause Auth { line: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\"); refused credential read off a frame: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" | 429: ended after 0.2 s, 1 request(s), still running; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 24.8 s, 30 request(s), still running; cause Outage { line: \"We’re currently experiencing high demand, which may cause temporary errors.\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
+        "status": "PASS"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel ended the turn in 0.0 s (still running); 2 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces AppServer(RpcChannel { initialize: \"initialize\", initialized: Some(\"initialized\"), opt_out: [\"item/agentMessage/delta\", \"item/commandExecution/outputDelta\", \"account/rateLimits/updated\", \"turn/diff/updated\", \"remoteControl/status/changed\"], open: \"thread/start\", resume: \"thread/resume\", resume_id: \"threadId\", cwd: \"cwd\", open_fields: [(\"ephemeral\", \"false\"), (\"sandbox\", \"\\\"workspace-write\\\"\")], read_only_fields: [(\"sandbox\", \"\\\"read-only\\\"\")], thread_id: \"/result/thread/id\", ready: Some(ReadyGate { at: [Eq(\"/method\", \"mcpServer/startupStatus/updated\")], server: \"/params/name\", status: \"/params/status\", ready: \"ready\", failed: [\"failed\", \"cancelled\"], error: \"/params/error\" }), turns: Turns { start: \"turn/start\", steer: \"turn/steer\", interrupt: \"turn/interrupt\", thread: \"threadId\", input: \"input\", text_item: (\"type\", \"text\", \"text\"), expected: \"expectedTurnId\", turn: \"turnId\", started: [Eq(\"/method\", \"turn/started\")], ended: [Eq(\"/method\", \"turn/completed\")], turn_id: \"/params/turn/id\", answered: [\"/result/turn/id\", \"/result/turnId\"], process: [Eq(\"/method\", \"item/started\"), Eq(\"/params/item/type\", \"commandExecution\")], process_ended: [Eq(\"/method\", \"item/completed\"), Eq(\"/params/item/type\", \"commandExecution\")], pid: \"/params/item/processId\" }, answers: [Answer { method: \"item/commandExecution/requestApproval\", result: \"{\\\"decision\\\":\\\"decline\\\"}\" }, Answer { method: \"item/fileChange/requestApproval\", result: \"{\\\"decision\\\":\\\"decline\\\"}\" }, Answer { method: \"mcpServer/elicitation/request\", result: \"{\\\"action\\\":\\\"decline\\\",\\\"content\\\":null,\\\"_meta\\\":null}\" }], note: \"S36 on codex 0.155.1 (tests/fixtures/app-server-0.155.1): P2 handshake, P3 readiness and sandbox, P5 approvals, P6 steer, P7 interrupt, P8 resume, P10 opt-out\" })) takes one canned turn and ends it, with marion's declaration on the route Document",
+        "observed": "turn ended; provider asked for the marker true on {\"responses\"}; still running; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 0, left []",
+        "status": "PASS"
+      },
+      "P-midturn": {
+        "expected": "row Fold: the write is folded into the running turn or queued as the next; nothing is dropped and every prompt is answered",
+        "observed": "folded into the running turn (1 turn end; requests [3])",
+        "status": "PASS"
+      },
+      "P-resume": {
+        "expected": "the row's resume spelling continues the killed session with its history",
+        "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f2ff-eade-7163-a6e2-911625ae9670 -> 01a0f2ff-eade-7163-a6e2-911625ae9670; resume refusal: none",
+        "status": "PASS"
+      },
+      "P-tools": {
+        "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 1.2 s after the spawn and did NOT list marion's tools (marion gates the first prompt on marion's server being ready)",
+        "status": "PASS"
+      },
+      "P-tui": {
+        "expected": "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys dismiss, a bracketed paste + CR then submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
+        "observed": "DECSET 2004 at boot: true; first screen [\"  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings\", \"  can run code automatically, even without a model request. Continue only if you trust these files. Your trust\", \"  decision will be saved.\", \"› 1. Trust and continue\", \"  2. Quit\", \"  enter continue · esc quit\"]; boot dialog \"› 1. Trust and continue 2. Quit\" (answered with \"\\r\") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
+        "status": "PASS"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "0.159.2 (admitted in PINNED_HARNESSES); no-self-update pair check_for_update_on_startup=false carried",
+        "status": "PASS"
+      }
+    },
+    "version": "0.159.2"
+  },
+  "row": "codex"
+}

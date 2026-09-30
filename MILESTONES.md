@@ -1253,6 +1253,30 @@ attempt failed only `timeout_kill`'s two opencode cells, which passed alone (3/3
 in the admitting run. The conformance cells moved only in their version column. The probes
 under `spikes/` were not re-run.
 
+**claude 2.1.285, codex 0.159.2, copilot 1.0.89, cline 3.0.66 and qwen 0.24.7, admitted
+2026-09-30 via `scripts/admit-harness.sh`, in one run.** The nightly canary installed them and
+went red (issue #2); they were installed side by side in a scratch npm prefix, never over the
+operator's own, and admitted together because `cross_product` drives every pinned harness in one
+binary. Green with only the entries widened: `marion-testsupport` (41), `acp_child` (5),
+`agy_live` (1), `child_events` (1), `child_stream` (1), `client_run` (8), `codex_app_server` (4),
+`continuation` (6), `cross_product` (51), `depth_gate` (4), `descendant_gate` (3),
+`endpoint_matrix` (24), `harness_matrix` (8), `journal_wiring` (11), `m4_fan_in` (1),
+`native_facade_e2e` (4), `native_facade_smoke` (1), `native_facade_spawn` (2), `no_git` (5),
+`node_attach` (2), `node_tmpdir` (2), `os_sandbox_escape` (6), `pane_attach` (2),
+`permission_round_trip` (9), `pi_rpc` (3), `race` (4), `repo_trust` (1), `restart_resume` (0),
+`review` (1), `timeout_kill` (3), `token_off_argv` (3), `top_level_contracted` (5),
+`turn_delivery` (4), `usage_record` (1), `user_agent_types` (3), `verification` (4), `workflow`
+(17), `worktree_reap` (12), `conformance` (1). What moved and what was changed for it: claude
+2.1.285 starts an unflagged `-p` session in `auto`, whose classifier answers in-process, so the
+headless shape now states `--permission-mode default`; codex 0.159.2 writes the shell's whole
+environment to `$CODEX_HOME/shell_snapshots/`, now off on both config routes; codex reworded its
+folder-trust screen (P-tui), now a named boot dialog; and codex runs an MCP tool unasked under
+`approval_policy = "never"`, so P-approval contests the key with an operator's `on-request`,
+which rejects `report` without it. Conformance otherwise moved only in its version columns, plus
+new rows (cline, `acp:cline`, `acp:qwen`) and qwen P-lifecycle FAIL → PASS. gemini 0.62.0 was not
+admitted: the gemini CLI is retired upstream and its real-binary cells are ignored. The probes
+under `spikes/` were not re-run.
+
 **codex 0.155.1, admitted 2026-09-22 via `scripts/admit-harness.sh`.** The installer moved
 `current` to 0.155.1, with 0.153.4 and 0.154.0 between. 0.147.0 was still on disk, so the shim had
 held every suite there and the gate never went red. Widening the entry moved the shim to 0.155.1,

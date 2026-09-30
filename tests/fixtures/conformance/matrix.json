@@ -72,6 +72,78 @@
       },
       "version": "unknown"
     },
+    "acp:cline": {
+      "fixtures": "acp-cline-unknown",
+      "probes": {
+        "P-activity": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-approval": {
+          "expected": "",
+          "observed": "P-activity did not run, so the granted case is unknown",
+          "reason": "P-activity did not run, so the granted case is unknown",
+          "status": "UNSUPPORTED"
+        },
+        "P-errors": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-interrupt": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-launch": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-lifecycle": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-midturn": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-resume": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-tools": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-tui": {
+          "expected": "",
+          "observed": "the row has no pane shape (`pane: None`)",
+          "reason": "the row has no pane shape (`pane: None`)",
+          "status": "UNSUPPORTED"
+        },
+        "P-version": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        }
+      },
+      "version": "unknown"
+    },
     "acp:codex-acp": {
       "fixtures": "acp-codex-acp-unknown",
       "probes": {
@@ -351,6 +423,78 @@
       },
       "version": "OpenCode 1.18.33"
     },
+    "acp:qwen": {
+      "fixtures": "acp-qwen-unknown",
+      "probes": {
+        "P-activity": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-approval": {
+          "expected": "",
+          "observed": "P-activity did not run, so the granted case is unknown",
+          "reason": "P-activity did not run, so the granted case is unknown",
+          "status": "UNSUPPORTED"
+        },
+        "P-errors": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-interrupt": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-launch": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-lifecycle": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-midturn": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-resume": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-tools": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-tui": {
+          "expected": "",
+          "observed": "the row has no pane shape (`pane: None`)",
+          "reason": "the row has no pane shape (`pane: None`)",
+          "status": "UNSUPPORTED"
+        },
+        "P-version": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        }
+      },
+      "version": "unknown"
+    },
     "agy": {
       "fixtures": "agy-unknown",
       "probes": {
@@ -424,11 +568,11 @@
       "version": "unknown"
     },
     "claude-code": {
-      "fixtures": "claude-code-2.1.283",
+      "fixtures": "claude-code-2.1.285",
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session f3e0520a-56c4-449d-942b-a6379d3007a1 ; activity mcp__marion__report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 0d8d801f-771d-4c91-b46d-579c6fab2395 ; activity mcp__marion__report",
           "status": "PASS"
         },
         "P-approval": {
@@ -438,7 +582,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: still running after 46.2 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 45.7 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 46.0 s, 7 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
+          "observed": "401: still running after 45.2 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 45.8 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 45.4 s, 7 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -463,7 +607,7 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session daa37586-7d2f-49e8-8a52-18e69f0101cb -> daa37586-7d2f-49e8-8a52-18e69f0101cb; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session f3d315d2-c2b0-4ff4-b11a-3e4c2fc1139d -> f3d315d2-c2b0-4ff4-b11a-3e4c2fc1139d; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
@@ -473,42 +617,106 @@
         },
         "P-tui": {
           "expected": "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys dismiss, a bracketed paste + CR then submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
-          "observed": "DECSET 2004 at boot: true; first screen [\" project, or work from your team). If not, take a moment to review what's in this folder first.\", \" Claude Code'll be able to read, edit, and execute files here.\", \" Security guide\", \" ❯ No, exit\", \"   Yes, I trust this folder\", \" Enter to confirm · Esc to cancel\"]; boot dialog \"❯ No, exit Yes, I trust this folder\" (answered with \"\\u{1b}[B\\r\") and dismissed, then \"WARNING: Loading development channels\" (S37 2.1.283 (`claude-code-2.1.283-channels.raw`): after folder trust, a claude.ai login shows this for the pane's `--dangerously-load-development-channels`, selection on `1. I am using this for local development`; an acknowledgement the operator gives, never marion. It appears wherever the operator's claude.ai login is present, a canned token beside it included (S37 P-tui); without that login channels are refused and it does not); bracketed paste + CR submitted: only on a second paste — the first-paint screen (above) swallowed the first; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
+          "observed": "DECSET 2004 at boot: true; first screen [\"  1  function greet() {\", \"  2 -  console.log(\\\"Hello, World!\\\");\", \"  2 +  console.log(\\\"Hello, Claude!\\\");\", \"  3  }\", \" ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\", \"  Syntax theme: Monokai Extended (ctrl+t to disable)\"]; boot dialog none of the row's on the first screen; bracketed paste + CR submitted: NO; output quiet 1500 ms after the turn: false; `/mcp` screen names marion: false",
           "status": "FAIL"
         },
         "P-version": {
           "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-          "observed": "2.1.283 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried",
+          "observed": "2.1.285 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried",
           "status": "PASS"
         }
       },
-      "version": "2.1.283"
+      "version": "2.1.285"
     },
-    "codex": {
-      "fixtures": "codex-0.155.1",
+    "cline": {
+      "fixtures": "cline-3.0.66",
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f02c-85c9-72b0-95a1-f638640b1283 ; activity report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 200, output: 30, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session none (row: no session rule) ; activity marion__report",
           "status": "PASS"
         },
         "P-approval": {
-          "expected": "granted (declaration-key), `report` is answered; ungranted, the harness asks or refuses",
-          "observed": "granted: `report` answered true; ungranted: `report` Some(Refused(\"failed: MCP tool call requires approval, but approval policy is never\")), 0 permission ask(s) reached marion",
+          "expected": "granted (cli-flag), `report` is answered; ungranted, the harness asks or refuses",
+          "observed": "granted: `report` answered true; ungranted: `report` None, 0 permission ask(s) reached marion",
           "status": "PASS"
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 6.4 s, 6 request(s), still running; cause Auth { line: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:54907/v1/responses\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:54907/v1/responses\"); refused credential read off a frame: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:54907/v1/responses\" | 429: ended after 0.2 s, 1 request(s), still running; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 25.0 s, 30 request(s), still running; cause Outage { line: \"We’re currently experiencing high demand, which may cause temporary errors.\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
+          "observed": "401: ended after 1.5 s, 1 request(s), exit 1; cause Auth { line: \"{\\\"ts\\\":\\\"2026-09-30T15:50:37.730Z\\\",\\\"type\\\":\\\"error\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\"}\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); no frame reads as a refused credential | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
+          "status": "FAIL"
+        },
+        "P-interrupt": {
+          "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+          "observed": "the cancel ended the turn in 0.0 s (signal 2); 3 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+          "status": "PASS"
+        },
+        "P-launch": {
+          "expected": "the headless launch (surfaces LaunchOnly) takes one canned turn and ends it at exit 0, with marion's declaration on the route Document",
+          "observed": "turn ended; provider asked for the marker true on {\"openai\"}; exit 0; declaration route verified at compile; auth failure line: none",
+          "status": "PASS"
+        },
+        "P-lifecycle": {
+          "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(84954, \"<NPM_PREFIX>/lib/node_modules/cline/bin/.cline --json -c <SCRATCH>/cline/p-lifecycle-sigterm/repo --config <SCRATCH>/cline/p-lifecycle-sigterm/node/cfg --data-dir <SCRATCH>/cline/p-lifecycle-sigterm/node/data --auto-approve true -m marion-canned CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.\"), (85706, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+          "status": "FAIL"
+        },
+        "P-midturn": {
+          "expected": "",
+          "observed": "headless delivery None { note: \"S27: cline 3.0.61's `--id <id>` forces interactive mode and exits 1 headless, so there is no headless second turn; not re-measured in S31\" }",
+          "reason": "headless delivery None { note: \"S27: cline 3.0.61's `--id <id>` forces interactive mode and exits 1 headless, so there is no headless second turn; not re-measured in S31\" }",
+          "status": "UNSUPPORTED"
+        },
+        "P-resume": {
+          "expected": "",
+          "observed": "the row states no resume spelling (`resume: None`)",
+          "reason": "the row states no resume spelling (`resume: None`)",
+          "status": "UNSUPPORTED"
+        },
+        "P-tools": {
+          "expected": "`marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+          "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 9.0 s after the spawn and did NOT list marion's tools",
+          "status": "FAIL"
+        },
+        "P-tui": {
+          "expected": "",
+          "observed": "the row has no pane shape (`pane: None`)",
+          "reason": "the row has no pane shape (`pane: None`)",
+          "status": "UNSUPPORTED"
+        },
+        "P-version": {
+          "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+          "observed": "3.0.66 (admitted in PINNED_HARNESSES); no-self-update env CLINE_NO_AUTO_UPDATE=1 carried",
+          "status": "PASS"
+        }
+      },
+      "version": "3.0.66"
+    },
+    "codex": {
+      "fixtures": "codex-0.159.2",
+      "probes": {
+        "P-activity": {
+          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f2ff-9290-7052-a407-417718144414 ; activity report",
+          "status": "PASS"
+        },
+        "P-approval": {
+          "expected": "granted (declaration-key), `report` is answered; ungranted, the harness asks or refuses",
+          "observed": "granted: `report` answered true; ungranted: `report` Some(Refused(\"failed: user rejected MCP tool call\")), 0 permission ask(s) reached marion",
+          "status": "PASS"
+        },
+        "P-errors": {
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 6.2 s, 6 request(s), still running; cause Auth { line: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\"); refused credential read off a frame: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" | 429: ended after 0.2 s, 1 request(s), still running; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 24.8 s, 30 request(s), still running; cause Outage { line: \"We’re currently experiencing high demand, which may cause temporary errors.\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
           "status": "PASS"
         },
         "P-interrupt": {
           "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
-          "observed": "the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+          "observed": "the cancel ended the turn in 0.0 s (still running); 2 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
           "status": "PASS"
         },
         "P-launch": {
-          "expected": "the headless launch (surfaces AppServer(RpcChannel { initialize: \"initialize\", initialized: Some(\"initialized\"), opt_out: [\"item/agentMessage/delta\", \"item/commandExecution/outputDelta\", \"account/rateLimits/updated\", \"turn/diff/updated\", \"remoteControl/status/changed\"], open: \"thread/start\", resume: \"thread/resume\", resume_id: \"threadId\", cwd: \"cwd\", open_fields: [(\"ephemeral\", \"false\"), (\"sandbox\", \"\\\"workspace-write\\\"\")], thread_id: \"/result/thread/id\", ready: Some(ReadyGate { at: [Eq(\"/method\", \"mcpServer/startupStatus/updated\")], server: \"/params/name\", status: \"/params/status\", ready: \"ready\", failed: [\"failed\", \"cancelled\"], error: \"/params/error\" }), turns: Turns { start: \"turn/start\", steer: \"turn/steer\", interrupt: \"turn/interrupt\", thread: \"threadId\", input: \"input\", text_item: (\"type\", \"text\", \"text\"), expected: \"expectedTurnId\", turn: \"turnId\", started: [Eq(\"/method\", \"turn/started\")], ended: [Eq(\"/method\", \"turn/completed\")], turn_id: \"/params/turn/id\", answered: [\"/result/turn/id\", \"/result/turnId\"], process: [Eq(\"/method\", \"item/started\"), Eq(\"/params/item/type\", \"commandExecution\")], process_ended: [Eq(\"/method\", \"item/completed\"), Eq(\"/params/item/type\", \"commandExecution\")], pid: \"/params/item/processId\" }, answers: [Answer { method: \"item/commandExecution/requestApproval\", result: \"{\\\"decision\\\":\\\"decline\\\"}\" }, Answer { method: \"item/fileChange/requestApproval\", result: \"{\\\"decision\\\":\\\"decline\\\"}\" }, Answer { method: \"mcpServer/elicitation/request\", result: \"{\\\"action\\\":\\\"decline\\\",\\\"content\\\":null,\\\"_meta\\\":null}\" }], note: \"S36 on codex 0.155.1 (tests/fixtures/app-server-0.155.1): P2 handshake, P3 readiness and sandbox, P5 approvals, P6 steer, P7 interrupt, P8 resume, P10 opt-out\" })) takes one canned turn and ends it, with marion's declaration on the route Document",
+          "expected": "the headless launch (surfaces AppServer(RpcChannel { initialize: \"initialize\", initialized: Some(\"initialized\"), opt_out: [\"item/agentMessage/delta\", \"item/commandExecution/outputDelta\", \"account/rateLimits/updated\", \"turn/diff/updated\", \"remoteControl/status/changed\"], open: \"thread/start\", resume: \"thread/resume\", resume_id: \"threadId\", cwd: \"cwd\", open_fields: [(\"ephemeral\", \"false\"), (\"sandbox\", \"\\\"workspace-write\\\"\")], read_only_fields: [(\"sandbox\", \"\\\"read-only\\\"\")], thread_id: \"/result/thread/id\", ready: Some(ReadyGate { at: [Eq(\"/method\", \"mcpServer/startupStatus/updated\")], server: \"/params/name\", status: \"/params/status\", ready: \"ready\", failed: [\"failed\", \"cancelled\"], error: \"/params/error\" }), turns: Turns { start: \"turn/start\", steer: \"turn/steer\", interrupt: \"turn/interrupt\", thread: \"threadId\", input: \"input\", text_item: (\"type\", \"text\", \"text\"), expected: \"expectedTurnId\", turn: \"turnId\", started: [Eq(\"/method\", \"turn/started\")], ended: [Eq(\"/method\", \"turn/completed\")], turn_id: \"/params/turn/id\", answered: [\"/result/turn/id\", \"/result/turnId\"], process: [Eq(\"/method\", \"item/started\"), Eq(\"/params/item/type\", \"commandExecution\")], process_ended: [Eq(\"/method\", \"item/completed\"), Eq(\"/params/item/type\", \"commandExecution\")], pid: \"/params/item/processId\" }, answers: [Answer { method: \"item/commandExecution/requestApproval\", result: \"{\\\"decision\\\":\\\"decline\\\"}\" }, Answer { method: \"item/fileChange/requestApproval\", result: \"{\\\"decision\\\":\\\"decline\\\"}\" }, Answer { method: \"mcpServer/elicitation/request\", result: \"{\\\"action\\\":\\\"decline\\\",\\\"content\\\":null,\\\"_meta\\\":null}\" }], note: \"S36 on codex 0.155.1 (tests/fixtures/app-server-0.155.1): P2 handshake, P3 readiness and sandbox, P5 approvals, P6 steer, P7 interrupt, P8 resume, P10 opt-out\" })) takes one canned turn and ends it, with marion's declaration on the route Document",
           "observed": "turn ended; provider asked for the marker true on {\"responses\"}; still running; declaration route verified at compile; auth failure line: none",
           "status": "PASS"
         },
@@ -524,7 +732,7 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f02c-cb64-7871-b8e9-a0b5a0272368 -> 01a0f02c-cb64-7871-b8e9-a0b5a0272368; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f2ff-eade-7163-a6e2-911625ae9670 -> 01a0f2ff-eade-7163-a6e2-911625ae9670; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
@@ -534,23 +742,23 @@
         },
         "P-tui": {
           "expected": "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys dismiss, a bracketed paste + CR then submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
-          "observed": "DECSET 2004 at boot: true; first screen [\"> You are in <SCRATCH>/p-tui/repo\", \"  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\", \"  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\", \"› 1. Yes, continue\", \"  2. No, quit\", \"  Press enter to continue\"]; boot dialog \"› 1. Yes, continue 2. No, quit\" (answered with \"\\r\") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
+          "observed": "DECSET 2004 at boot: true; first screen [\"  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings\", \"  can run code automatically, even without a model request. Continue only if you trust these files. Your trust\", \"  decision will be saved.\", \"› 1. Trust and continue\", \"  2. Quit\", \"  enter continue · esc quit\"]; boot dialog \"› 1. Trust and continue 2. Quit\" (answered with \"\\r\") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
           "status": "PASS"
         },
         "P-version": {
           "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-          "observed": "0.155.1 (admitted in PINNED_HARNESSES); no-self-update pair check_for_update_on_startup=false carried",
+          "observed": "0.159.2 (admitted in PINNED_HARNESSES); no-self-update pair check_for_update_on_startup=false carried",
           "status": "PASS"
         }
       },
-      "version": "0.155.1"
+      "version": "0.159.2"
     },
     "copilot": {
-      "fixtures": "copilot-1.0.83",
+      "fixtures": "copilot-1.0.89",
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage none (row: no usage rule) (provider sent [(111, 10, 5), (211, 17, 10)]); session 3a4a4b69-f2dc-4c42-b0b7-d2370d34c573 ; activity marion-report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage none (row: no usage rule) (provider sent [(111, 10, 5), (211, 17, 10)]); session 686df913-4388-4a90-9831-6bdc4b967006 ; activity marion-report",
           "status": "PASS"
         },
         "P-approval": {
@@ -560,7 +768,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 2.9 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:55056/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 31.8 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 30.58 seconds) Last error: 500 internal server error\")",
+          "observed": "401: ended after 2.6 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:62009/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY, COPILOT_PROVIDER_API_KEY_COMMAND, or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 17.2 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 16.59 seconds) Last error: 500 internal server error\")",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -575,7 +783,7 @@
         },
         "P-lifecycle": {
           "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
-          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(59154, \"/opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format json -C <SCRATCH>/copilot/p-lifecycle-sigterm/repo --disable-builtin-mcps --no-custom-instructions --model marion-canned --available-tools=marion-report,view,create,edit,apply_patch --allow-tool=marion(report) --allow-tool=write --additional-mcp-config @<SCRATCH>/copilot/p-lifecycle-sigterm/node/mcp.json\"), (59463, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(63844, \"<NPM_PREFIX>/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format json -C <SCRATCH>/copilot/p-lifecycle-sigterm/repo --disable-builtin-mcps --no-custom-instructions --model marion-canned --available-tools=marion-report,marion-spawn,marion-status,marion-wait,marion-list,marion-steer,marion-cancel,view,create,edit,apply_patch,bash --allow-tool=marion(report) --allow-tool=marion(spawn) --allow-tool=marion(status) --allow-tool=marion(wait) --allow-tool=marion(list) --allow-tool=marion(steer) --allow-tool=marion(cancel) --allow-tool=write --allow-tool=shell --additional-mcp-config @<SCRATCH>/copilot/p-lifecycle-sigterm/node/mcp.json\"), (63996, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
           "status": "FAIL"
         },
         "P-midturn": {
@@ -586,12 +794,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 134f9874-cf86-4483-9f4e-46ca70adcc99 -> 134f9874-cf86-4483-9f4e-46ca70adcc99; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session 8dc9ea99-47a1-420e-afc9-687cdc896954 -> 8dc9ea99-47a1-420e-afc9-687cdc896954; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`marion-report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `marion-report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
+          "observed": "first request lists `marion-report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.7 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -602,11 +810,11 @@
         },
         "P-version": {
           "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-          "observed": "1.0.83 (admitted in PINNED_HARNESSES); no-self-update env COPILOT_AUTO_UPDATE=false carried",
+          "observed": "1.0.89 (admitted in PINNED_HARNESSES); no-self-update env COPILOT_AUTO_UPDATE=false carried",
           "status": "PASS"
         }
       },
-      "version": "1.0.83"
+      "version": "1.0.89"
     },
     "gemini": {
       "fixtures": "gemini-0.53.0",
@@ -800,11 +1008,11 @@
       "version": "1.18.33"
     },
     "qwen": {
-      "fixtures": "qwen-0.23.0",
+      "fixtures": "qwen-0.24.7",
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 337, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session 40f58e4d-2dfc-4e43-b0d8-b1f5c2077e93 ; activity mcp__marion__report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 200, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 740422a5-33ed-418a-9385-dd6d0e7b627c ; activity mcp__marion__report",
           "status": "PASS"
         },
         "P-approval": {
@@ -814,12 +1022,12 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 1.2 s, 1 request(s), exit 0; cause Auth { line: \"[API Error: 401 Incorrect API key provided: dummy.]\" }; stream failure Some(\"[API Error: 401 Incorrect API key provided: dummy.]\"); refused credential read off a frame: \"[API Error: 401 Incorrect API key provided: dummy.]\" | 429: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None",
+          "observed": "401: ended after 0.6 s, 1 request(s), exit 1; cause Auth { line: \"[API Error: 401 Incorrect API key provided: dummy.]\" }; stream failure Some(\"error_during_execution\"); refused credential read off a frame: \"[API Error: 401 Incorrect API key provided: dummy.]\" | 429: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {
           "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
-          "observed": "the cancel ended the turn in 0.0 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+          "observed": "the cancel ended the turn in 0.0 s (exit 130); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
           "status": "PASS"
         },
         "P-launch": {
@@ -829,8 +1037,8 @@
         },
         "P-lifecycle": {
           "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
-          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(84776, \"/opt/homebrew/Cellar/node/26.10.0_1/bin/node --expose-gc /opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js --yolo --core-tools mcp__marion__report read_file write_file --exclude-tools agent enter_worktree exit_worktree get_goal list_agents record_artifact report_findings send_message skill task_stop tool_search update_goal -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format stream-json\"), (85384, \"/opt/homebrew/Cellar/node/26.10.0_1/bin/node --expose-gc /opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js --yolo --core-tools mcp__marion__report read_file write_file --exclude-tools agent enter_worktree exit_worktree get_goal list_agents record_artifact report_findings send_message skill task_stop tool_search update_goal -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format stream-json\"), (85575, \"<WORKTREE>/target/debug/marion-supervisor mcp\"), (86227, \"caffeinate -is\")]",
-          "status": "FAIL"
+          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: exit 130, left []",
+          "status": "PASS"
         },
         "P-midturn": {
           "expected": "",
@@ -840,12 +1048,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 9d3b7205-113b-4d1e-8459-98e24206d3ae -> 9d3b7205-113b-4d1e-8459-98e24206d3ae; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session 8e6b9045-37b0-4aad-ad6b-981fae2deca7 -> 8e6b9045-37b0-4aad-ad6b-981fae2deca7; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 7.7 s after the spawn and listed marion's tools",
+          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -856,11 +1064,11 @@
         },
         "P-version": {
           "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-          "observed": "0.23.0 (admitted in PINNED_HARNESSES); no-self-update env QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true carried",
+          "observed": "0.24.7 (admitted in PINNED_HARNESSES); no-self-update env QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true carried",
           "status": "PASS"
         }
       },
-      "version": "0.23.0"
+      "version": "0.24.7"
     }
   },
   "probes": [

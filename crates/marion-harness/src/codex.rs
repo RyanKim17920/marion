@@ -82,7 +82,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     program: Some("codex"),
     // The vendor CLI for its own models.
     vendor: Some("openai"),
-    verified: &["0.146.0", "0.146.1", "0.147.0", "0.155.1"],
+    verified: &["0.146.0", "0.146.1", "0.147.0", "0.155.1", "0.159.2"],
     argv: &[
         Arg::Lit("app-server"),
         // The live route's whole configuration and the no-self-update switch, one `-c key=value`

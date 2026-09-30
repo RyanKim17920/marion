@@ -88,7 +88,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     program: Some("qwen"),
     // Runs any vendor's model.
     vendor: None,
-    verified: &["0.23.0"],
+    verified: &["0.23.0", "0.24.7"],
     argv: &[
         // First, as measured (`qwen-resume-turn-2.argv.json`).
         Arg::Resume,
