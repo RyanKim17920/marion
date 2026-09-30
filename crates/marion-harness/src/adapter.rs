@@ -1280,7 +1280,6 @@ mod tests {
     use crate::claude_code::ClaudeCodeAdapter;
     use crate::cline::ClineAdapter;
     use crate::codex::CodexAdapter;
-    use crate::codex::config_toml;
     use crate::copilot::CopilotAdapter;
     use crate::gemini::GeminiAdapter;
     use crate::goose::GooseAdapter;
@@ -2096,223 +2095,6 @@ mod tests {
         ]
     }
 
-    /// **The property that makes this axis opt-in: a node that declares nothing is launched with
-    /// the bytes marion launched it with before the axis existed.**
-    ///
-    /// The argv strings below were captured off `HEAD` *before* a line of this feature was
-    /// written, by compiling all four adapters from a throwaway test and printing the result — the
-    /// same technique `ae2a18d` used to prove the adapter seam was a pure refactor, and the reason
-    /// they are pinned literally rather than derived: a derivation would move with the code it is
-    /// supposed to be pinning.
-    ///
-    /// **`--tools ""` is the one to watch on claude.** It was a hardcoded empty string and is now
-    /// `spec.tools.join(",")`; an empty `Vec` joins to exactly the same empty string, so the flag
-    /// and its value are both still there and still empty. If that ever compiles to something else
-    /// — a dropped flag, a `[]`, a stray separator — every claude node marion runs changes at once.
-    #[test]
-    fn a_node_that_declares_no_tools_compiles_the_argv_it_always_did() {
-        let expected: Vec<(&str, Vec<&str>)> = vec![
-            (
-                "claude",
-                vec![
-                    "-p",
-                    "--output-format",
-                    "stream-json",
-                    "--input-format",
-                    "stream-json",
-                    "--verbose",
-                    "--tools",
-                    "",
-                    "--allowedTools",
-                    "mcp__marion__spawn,mcp__marion__status",
-                    "--permission-prompt-tool",
-                    "stdio",
-                    "--strict-mcp-config",
-                    "--mcp-config",
-                    "/state/x/config/mcp.json",
-                    "--setting-sources",
-                    "",
-                    "--settings",
-                    r#"{"disableAllHooks":true}"#,
-                    "--model",
-                    "haiku",
-                ],
-            ),
-            // `codex app-server` since S36: the prompt is a turn, and the axis still adds nothing.
-            (
-                "codex",
-                vec!["app-server", "-c", "check_for_update_on_startup=false"],
-            ),
-            (
-                "gemini",
-                vec![
-                    "-m",
-                    "gemini-2.5-flash",
-                    "--output-format",
-                    "stream-json",
-                    "-p",
-                    "do the task",
-                ],
-            ),
-            (
-                "opencode",
-                vec![
-                    "run",
-                    "--pure",
-                    "--format",
-                    "json",
-                    "--title",
-                    "marion-019f-root",
-                    "-m",
-                    "canned/canned-1",
-                    "do the task",
-                ],
-            ),
-            // Pinned at the adapter's birth rather than captured pre-axis: copilot arrived with both
-            // axes already compiled, so this is the argv `tests/fixtures/s24/` measured against
-            // 1.0.83 with an empty declaration — marion's verb on both flags and nothing else.
-            (
-                "copilot",
-                vec![
-                    "-p",
-                    "do the task",
-                    "--output-format",
-                    "json",
-                    "-C",
-                    "/wt",
-                    "--disable-builtin-mcps",
-                    "--no-custom-instructions",
-                    "--model",
-                    "canned-1",
-                    "--available-tools=marion-report",
-                    "--allow-tool=marion(report)",
-                    "--additional-mcp-config",
-                    "@/state/x/config/mcp.json",
-                ],
-            ),
-        ];
-        // The env block, keys and values, in order. Captured from the same pre-axis run: the axis
-        // must be provably invisible in every channel a harness is configured through, not only
-        // the one it happens to compile into on claude.
-        let expected_env: Vec<(&str, Vec<(&str, &str)>)> = vec![
-            (
-                "claude",
-                vec![
-                    // The overlay's own config dir (2026-09-30), ahead of the pre-axis block.
-                    ("CLAUDE_CONFIG_DIR", "/state/x/config/claude-config"),
-                    ("ANTHROPIC_BASE_URL", "http://127.0.0.1:8099"),
-                    ("DISABLE_AUTOUPDATER", "1"),
-                ],
-            ),
-            ("codex", vec![("CODEX_HOME", "/state/x/config")]),
-            (
-                "gemini",
-                vec![
-                    ("GEMINI_CLI_HOME", "/state/x/config"),
-                    (
-                        "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
-                        "/state/x/config/marion-settings.json",
-                    ),
-                    ("GEMINI_CLI_TRUST_WORKSPACE", "true"),
-                    ("GEMINI_FORCE_FILE_STORAGE", "true"),
-                    ("GOOGLE_GEMINI_BASE_URL", "http://127.0.0.1:8099"),
-                    ("GEMINI_API_KEY", "sk-fake"),
-                ],
-            ),
-            (
-                "opencode",
-                vec![
-                    ("HOME", "/state/x/config"),
-                    ("XDG_CONFIG_HOME", "/state/x/config/config"),
-                    ("XDG_DATA_HOME", "/state/x/config/data"),
-                    ("XDG_CACHE_HOME", "/state/x/config/cache"),
-                    ("XDG_STATE_HOME", "/state/x/config/state"),
-                    ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
-                    ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
-                    ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
-                    ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
-                    ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
-                    ("OPENCODE_DISABLE_SHARE", "1"),
-                    ("OPENCODE_DB", "/state/x/config/opencode.db"),
-                    ("PWD", "/wt"),
-                    // The row's update policy, rendered after its `Env` rows.
-                    ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
-                ],
-            ),
-            (
-                "copilot",
-                vec![
-                    ("COPILOT_HOME", "/state/x/config/home"),
-                    ("COPILOT_PROVIDER_BASE_URL", "http://127.0.0.1:8099/v1"),
-                    ("COPILOT_PROVIDER_TYPE", "openai"),
-                    ("COPILOT_PROVIDER_WIRE_API", "completions"),
-                    ("COPILOT_PROVIDER_API_KEY", "sk-fake"),
-                    ("COPILOT_OFFLINE", "true"),
-                    ("COPILOT_AUTO_UPDATE", "false"),
-                ],
-            ),
-        ];
-        for (name, adapter, spec) in adapters_and_specs() {
-            assert!(
-                spec.tools.is_empty(),
-                "{name}: this test is about the default"
-            );
-            let inv = adapter.compile(&spec, &ctx()).unwrap();
-            assert_eq!(
-                inv.args,
-                expected.iter().find(|(n, _)| *n == name).unwrap().1,
-                "{name}: an empty declaration must compile the pre-axis argv byte for byte"
-            );
-            let env: Vec<(&str, &str)> = inv
-                .env
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-            assert_eq!(
-                env,
-                expected_env.iter().find(|(n, _)| *n == name).unwrap().1,
-                "{name}: and the pre-axis env block byte for byte"
-            );
-        }
-    }
-
-    /// The same claim for the generated configuration, which is where **codex's** availability
-    /// axis lives — `sandbox_mode` moved from a literal in `config_toml` to `codex::SANDBOX_MODE`
-    /// so the adapter's `tool_name` and the file cannot disagree, and that is a refactor that has
-    /// to be provably pure.
-    ///
-    /// Lengths are the pre-axis byte counts, captured the same way as the argv above. A length is
-    /// enough here precisely because the other tests in this file already pin these documents'
-    /// *contents* against their free functions: what this adds is that the availability axis did
-    /// not perturb them.
-    #[test]
-    fn a_node_that_declares_no_tools_generates_the_config_it_always_did() {
-        for (name, adapter, spec) in adapters_and_specs() {
-            let files = adapter.config_files(&spec, &ctx()).unwrap();
-            let len: usize = files.iter().map(|(_, c)| c.len()).sum();
-            let want = match name {
-                "claude" => 491,
-                // 1275 pre-axis, + 31 for `omit_tools_from = ["deferred"]\n` (2026-09-27), + 3 since
-                // the provider's `env_key` became `MARION_PROVIDER_KEY`.
-                "codex" => 1309,
-                "gemini" => 718,
-                // +27: `"timeout": 86400000` on marion's server; +47: the `permission` grant for
-                // marion's own tools (both s36).
-                "opencode" => 1036,
-                // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
-                "copilot" => 529,
-                _ => unreachable!(),
-            };
-            assert_eq!(len, want, "{name}: generated config changed size");
-        }
-        let codex = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap();
-        assert!(
-            codex[0].1.contains("sandbox_mode = \"workspace-write\""),
-            "the constant must render the literal the file always carried: {}",
-            codex[0].1
-        );
-    }
-
     /// A `LaunchSpec` declaring marion's one write verb.
     fn writing(spec: LaunchSpec) -> LaunchSpec {
         LaunchSpec {
@@ -2831,58 +2613,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_claude_adapter_emits_byte_identical_mcp_json() {
-        let spec = claude_spec();
-        let files = ClaudeCodeAdapter.config_files(&spec, &ctx()).unwrap();
-        let expected = serde_json::to_string_pretty(&claude_code::mcp_config_json(&BridgeEnv {
-            node_token_file: None,
-            bridge: "/bin/marion-supervisor".into(),
-            args: vec!["mcp".into()],
-            repo: "/repo".into(),
-            state: "/state".into(),
-            // The `/v1` form, which is what the bridge hands a Codex grandchild.
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            auth: Auth::Canned,
-            agent_id: AgentId("019f-root".into()),
-            agent_type: "claude".into(),
-            depth: 0,
-            node_token: None,
-            ready_file: Some("/state/x/mcp-ready".into()),
-        }))
-        .unwrap();
-        assert_eq!(
-            files,
-            vec![(PathBuf::from("/state/x/config/mcp.json"), expected)]
-        );
-    }
-
-    #[test]
-    fn the_codex_adapter_emits_byte_identical_config_toml() {
-        let files = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap();
-        let expected = config_toml(
-            &BridgeEnv {
-                node_token_file: None,
-                bridge: "/bin/marion-supervisor".into(),
-                args: vec!["mcp".into()],
-                repo: "/repo".into(),
-                state: "/state".into(),
-                base_url: Some("http://127.0.0.1:8099/v1".into()),
-                auth: Auth::Canned,
-                agent_id: AgentId("019f-root".into()),
-                agent_type: "claude".into(),
-                depth: 0,
-                node_token: None,
-                ready_file: Some("/state/x/mcp-ready".into()),
-            },
-            "http://127.0.0.1:8099/v1",
-        );
-        assert_eq!(
-            files,
-            vec![(PathBuf::from("/state/x/config/config.toml"), expected)]
-        );
-    }
-
     /// The other half of the closed gap, asserted through the **adapter** rather than the emitter:
     /// whatever `SpawnCtx` carries has to reach the document, or a codex root's `spawn` fails with
     /// `marion: MARION_REPO is not set` and its contract names no agent-dir.
@@ -3059,40 +2789,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn the_gemini_adapter_compiles_the_measured_invocation() {
-        let inv = GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap();
-        assert_eq!(inv.program, "gemini");
-        assert_eq!(
-            inv.args,
-            vec![
-                "-m",
-                "gemini-2.5-flash",
-                "--output-format",
-                "stream-json",
-                "-p",
-                "do the task"
-            ]
-        );
-        assert_eq!(
-            inv.env,
-            vec![
-                ("GEMINI_CLI_HOME".to_string(), "/state/x/config".to_string()),
-                (
-                    "GEMINI_CLI_SYSTEM_SETTINGS_PATH".to_string(),
-                    "/state/x/config/marion-settings.json".to_string()
-                ),
-                ("GEMINI_CLI_TRUST_WORKSPACE".to_string(), "true".to_string()),
-                ("GEMINI_FORCE_FILE_STORAGE".to_string(), "true".to_string()),
-                (
-                    "GOOGLE_GEMINI_BASE_URL".to_string(),
-                    "http://127.0.0.1:8099".to_string()
-                ),
-                ("GEMINI_API_KEY".to_string(), "sk-fake".to_string()),
-            ]
-        );
     }
 
     /// The settings file `compile` names is the one `config_files` writes — the gemini analogue of
@@ -4001,15 +3697,12 @@ mod tests {
         );
     }
 
-    /// **Canned mode is byte-identical to what it produced before the auth axis existed**, on all
-    /// four harnesses, asserted against each harness's own emitter rather than against a snapshot —
-    /// a snapshot would drift with any legitimate change, while this pins the one claim that
-    /// matters: routing through `Auth::Canned` adds nothing and drops nothing.
-    ///
-    /// `Auth::Canned` is also the `Default`, which is what makes "today's behaviour is untouched"
-    /// true of every caller that never mentions the field.
+    /// **Naming canned mode changes nothing**: `Auth::Canned` is the `Default`, so a spec that
+    /// names it and one that never mentions the field compile the same launch and write the same
+    /// documents on every row. The canned bytes themselves are pinned per row by
+    /// `every_row_renders_byte_for_byte`.
     #[test]
-    fn canned_mode_emits_exactly_what_each_harnesss_own_emitter_does() {
+    fn naming_canned_mode_changes_nothing() {
         assert_eq!(Auth::default(), Auth::Canned);
         for h in Harness::ALL {
             let explicit = LaunchSpec {
@@ -4036,63 +3729,6 @@ mod tests {
                 "{h}: naming the default must not change the configuration"
             );
         }
-
-        // gemini and opencode, against their own emitters — the claude and codex equivalences are
-        // asserted above, and these two had none, so the byte-identity claim covered half the matrix.
-        let g = GeminiAdapter.config_files(&gemini_spec(), &ctx()).unwrap();
-        assert_eq!(
-            g,
-            vec![(
-                PathBuf::from("/state/x/config/marion-settings.json"),
-                serde_json::to_string_pretty(&gemini::settings_json(Some(&BridgeEnv {
-                    node_token_file: None,
-                    bridge: "/bin/marion-supervisor".into(),
-                    args: vec!["mcp".into()],
-                    repo: "/repo".into(),
-                    state: "/state".into(),
-                    base_url: Some("http://127.0.0.1:8099/v1".into()),
-                    auth: Auth::Canned,
-                    agent_id: AgentId("019f-root".into()),
-                    agent_type: "claude".into(),
-                    depth: 0,
-                    node_token: None,
-                    ready_file: Some("/state/x/mcp-ready".into()),
-                })))
-                .unwrap()
-            )]
-        );
-        let o = OpenCodeAdapter
-            .config_files(&opencode_spec(), &ctx())
-            .unwrap();
-        assert_eq!(
-            o,
-            vec![(
-                opencode::config_path(&PathBuf::from("/state/x/config")),
-                serde_json::to_string_pretty(&opencode::config_json(
-                    &opencode::ConfigSpec {
-                        model: opencode::ModelRef::parse("canned/canned-1").unwrap(),
-                        base_url: "http://127.0.0.1:8099/v1".into(),
-                        api_key: Some("sk-fake".into()),
-                        key_header: Default::default(),
-                    },
-                    Some(&BridgeEnv {
-                        node_token_file: None,
-                        bridge: "/bin/marion-supervisor".into(),
-                        args: vec!["mcp".into()],
-                        repo: "/repo".into(),
-                        state: "/state".into(),
-                        base_url: Some("http://127.0.0.1:8099/v1".into()),
-                        auth: Auth::Canned,
-                        agent_id: AgentId("019f-root".into()),
-                        agent_type: "claude".into(),
-                        depth: 0,
-                        node_token: None,
-                        ready_file: Some("/state/x/mcp-ready".into()),
-                    })
-                ))
-                .unwrap()
-            )]
-        );
     }
 
     /// **Depth reaches the bridge on all four harnesses, or `max_depth` is inert on the ones it
@@ -4725,51 +4361,6 @@ mod tests {
         assert!(GeminiAdapter.compile(&spec, &ctx()).is_err());
         spec.base_url = Some("https://example.com/v1".into());
         assert!(GeminiAdapter.compile(&spec, &ctx()).is_ok());
-    }
-
-    #[test]
-    fn the_opencode_adapter_compiles_the_measured_invocation() {
-        let inv = OpenCodeAdapter.compile(&opencode_spec(), &ctx()).unwrap();
-        assert_eq!(inv.program, "opencode");
-        assert_eq!(
-            inv.args,
-            vec![
-                "run",
-                "--pure",
-                "--format",
-                "json",
-                "--title",
-                "marion-019f-root",
-                "-m",
-                "canned/canned-1",
-                "do the task"
-            ]
-        );
-        let names: Vec<&str> = inv.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "HOME",
-                "XDG_CONFIG_HOME",
-                "XDG_DATA_HOME",
-                "XDG_CACHE_HOME",
-                "XDG_STATE_HOME",
-                "OPENCODE_DISABLE_CLAUDE_CODE",
-                "OPENCODE_DISABLE_EXTERNAL_SKILLS",
-                "OPENCODE_DISABLE_PROJECT_CONFIG",
-                "OPENCODE_DISABLE_MODELS_FETCH",
-                "OPENCODE_DISABLE_LSP_DOWNLOAD",
-                "OPENCODE_DISABLE_SHARE",
-                "OPENCODE_DB",
-                // Placement, not isolation: opencode resolves its project directory from the
-                // environment and re-enters `$PWD`, so a node given only `cwd` works in the
-                // directory marion was launched from. See
-                // `opencode::tests::the_node_is_placed_in_its_own_cwd_by_pwd_too_not_only_by_chdir`.
-                "PWD",
-                // The row's `UpdatePolicy`, after its `Env` rows.
-                "OPENCODE_DISABLE_AUTOUPDATE",
-            ]
-        );
     }
 
     #[test]
