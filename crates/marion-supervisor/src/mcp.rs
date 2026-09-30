@@ -369,8 +369,8 @@ fn tool_spawn(
     // **The dial. There is no other branch.** A supervisor that does not answer is a
     // refusal in marion's own voice — see [`SpawnError::SupervisorUnreachable`] and
     // [`courier`] for why an in-process fallback is the one thing this must not have.
-    let spawned = courier::spawn(sock.socket(), params)
-        .map_err(|e| bridge::spawn_result(id, &agent_type, Err(e)))?;
+    let spawned =
+        courier::spawn(&sock, params).map_err(|e| bridge::spawn_result(id, &agent_type, Err(e)))?;
     let contract = spawned.task_id.clone();
     let handle = spawn_handle(who, id, &agent_type, &project, &spawned)?;
     let bound = wait_bound(args["timeout_secs"].as_u64());
@@ -408,13 +408,8 @@ fn tool_spawn(
     // because there is no contract to read. A child that ran and failed and a spawn that
     // never launched are the same news to the parent, and [`deliver`] is where that is
     // decided, in one place, so both read alike.
-    let delivered = courier::await_contract(
-        sock.socket(),
-        &project,
-        &spawned.agent_id,
-        contract.as_ref(),
-        bound,
-    );
+    let delivered =
+        courier::await_contract(&sock, &project, &spawned.agent_id, contract.as_ref(), bound);
     Ok(
         deliver(id, &agent_type, &project, &spawned.agent_id, delivered).unwrap_or_else(|| {
             // The bridge stopped holding this caller's turn; the child did not stop. Said as
@@ -519,8 +514,7 @@ fn tool_spawn_race(
     params.race = race;
     // A race's seats announce nothing to the parent one by one: the race is the answer.
     params.notify_parent = false;
-    let spawned =
-        courier::spawn(sock.socket(), params).map_err(|e| refuse(format!("the race {e}")))?;
+    let spawned = courier::spawn(&sock, params).map_err(|e| refuse(format!("the race {e}")))?;
     let Some(started) = spawned.race else {
         return Err(refuse(
             "this project's supervisor answered a race with a single node, so marion cannot say \
@@ -552,7 +546,7 @@ fn race_delivered(
     race_id: &marion_core::race::RaceId,
     bound: Duration,
 ) -> serde_json::Value {
-    match courier::await_race(sock.socket(), project, race_id, bound) {
+    match courier::await_race(sock, project, race_id, bound) {
         Ok(courier::RaceDelivered::Decided(result)) => {
             bg.race_collected(&race_id.0);
             let (text, is_error) = bridge::race_text(project, &result);
@@ -792,12 +786,11 @@ fn tool_wait(
     // root the handle is the node's id and there is no contract, and a `wait` that turned
     // its own handle into a path would go looking for `contracts/<agent-id>.json`.
     let waiting = bg.waiting(task_id);
-    let delivered =
-        courier::await_contract(sock.socket(), &project, &agent_id, contract.as_ref(), bound);
+    let delivered = courier::await_contract(&sock, &project, &agent_id, contract.as_ref(), bound);
     let collected = collect_if_terminal(bg, task_id, &delivered);
     drop(waiting);
     if collected {
-        tell_collected(who, sock.socket(), &agent_id);
+        tell_collected(who, &sock, &agent_id);
     }
     // The agent type for the result line comes from the table, not from these arguments: a
     // `wait` carries no `agent_type`, and inventing one would put a name in an answer that
@@ -865,12 +858,12 @@ fn collect_if_terminal(
 /// this, a parent that waited on its child was later handed the same end as a whole turn of its
 /// own. Best-effort — the parent already has its answer, and a supervisor that did not hear this
 /// costs one redundant turn, never a lost result. A top-level client is announced nothing.
-fn tell_collected(who: &Principal, socket: &std::path::Path, child: &AgentId) {
+fn tell_collected(who: &Principal, sock: &SocketPaths, child: &AgentId) {
     if !matches!(who, Principal::Node) {
         return;
     }
     if let Ok(caller) = node_identity() {
-        let _ = courier::collected(socket, child, caller);
+        let _ = courier::collected(sock, child, caller);
     }
 }
 
@@ -893,7 +886,7 @@ fn tool_status(
 ) -> Result<serde_json::Value, serde_json::Value> {
     if let Some((race_id, _)) = race_of(bg, args) {
         let (sock, _) = paths_or_refuse(who, id)?;
-        return match courier::tree(sock.socket()) {
+        return match courier::tree(&sock) {
             Ok(t) => Ok(bridge::tool_result(
                 id,
                 &race_status(&race_id, &t.nodes),
@@ -922,7 +915,7 @@ fn tool_status(
         return Err(bridge::status_unknown(id, task_id));
     };
     let (sock, project) = paths_or_refuse(who, id)?;
-    match courier::node_get(sock.socket(), &agent_id) {
+    match courier::node_get(&sock, &agent_id) {
         Ok(r) => {
             // **A peek only while the child has not finished**: a finished child's answer is its
             // contract, which `wait` returns, and a stale "last said" beside `finished` would read
@@ -932,7 +925,7 @@ fn tool_status(
                 .then(|| crate::activity::peek(&project.agent(&agent_id).events(), r.node.harness));
             // A caller told its child finished has learnt its end; `wait` has the rest.
             if exited {
-                tell_collected(who, sock.socket(), &agent_id);
+                tell_collected(who, &sock, &agent_id);
             }
             Ok(bridge::status_result(id, task_id, &r.node, peek.as_deref()))
         }
@@ -1000,7 +993,7 @@ fn tool_steer(
     let agent_id = node_address(bg, "steer", "Nothing was queued", args).map_err(|e| refuse(&e))?;
     let (sock, _) = paths_or_refuse(who, id)?;
     let (caller, _) = spawn_identity(who, id)?;
-    match courier::steer(sock.socket(), &agent_id, message, caller) {
+    match courier::steer(&sock, &agent_id, message, caller) {
         Ok(steered) => Ok(bridge::tool_result(
             id,
             &format!("marion: {}", steered.sentence()),
@@ -1051,7 +1044,7 @@ fn tool_cancel(
         node_address(bg, "cancel", "Nothing was cancelled", args).map_err(|e| refuse(&e))?;
     let (sock, _) = paths_or_refuse(who, id)?;
     let (caller, _) = spawn_identity(who, id)?;
-    match courier::cancel_as(sock.socket(), &agent_id, caller) {
+    match courier::cancel_as(&sock, &agent_id, caller) {
         Ok(r) => Ok(bridge::tool_result(
             id,
             &cancelled_text(&agent_id, &r.nodes),
@@ -1093,7 +1086,7 @@ fn tool_list(
 ) -> Result<serde_json::Value, serde_json::Value> {
     let (sock, _) = paths_or_refuse(who, id)?;
     let scope = list_scope(who, id)?;
-    match courier::tree(sock.socket()) {
+    match courier::tree(&sock) {
         Ok(r) => Ok(bridge::list_result(
             id,
             &match scope {
@@ -1583,7 +1576,7 @@ fn start_watchers(who: &Principal, bg: &Arc<background::Background>, push: Push)
             .spawn(move || {
                 let frame = watch(push, &target, &project, || {
                     courier::await_contract(
-                        sock.socket(),
+                        &sock,
                         &project,
                         &target.agent_id,
                         target.contract.as_ref(),
@@ -1718,6 +1711,10 @@ fn write_frame(out: &mut impl Write, frame: &serde_json::Value) -> bool {
 /// `tests/background_spawn.rs`'s `a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing`
 /// is where it is measured rather than argued.
 pub fn serve_stdio(who: Principal) {
+    // A node's bridge speaks for its node on every connection, and never for the operator.
+    if matches!(who, Principal::Node) {
+        crate::client_auth::set_identity(node_identity().map(crate::client_auth::Identity::Node));
+    }
     let bg = Arc::new(background::Background::new());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

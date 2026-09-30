@@ -598,6 +598,25 @@ pub struct SessionQuitParams {
 #[serde(deny_unknown_fields)]
 pub struct NotifyClaimParams {}
 
+/// `session/hello` — **who this connection speaks for**, stated once, before any other call.
+///
+/// Exactly one of the two: the **operator's** capability (the secret in the state root's
+/// `operator.key`, which marion never hands a node), or a **node's** own identity and token, the
+/// pair [`SpawnCaller`] already carries. A connection that has said neither may call nothing but
+/// this, and every later call is authorized against what it said.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionHelloParams {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::secret::serialize_exposed_opt"
+    )]
+    pub operator: Option<Secret>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<SpawnCaller>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

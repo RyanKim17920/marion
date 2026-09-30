@@ -28,7 +28,6 @@
 //! reverted to `new`.
 
 use std::io::{BufRead, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -193,7 +192,7 @@ fn init_repo(dir: &Path) {
 
 /// Send one `agent/spawn` to a running supervisor and hand back what it answered.
 fn agent_spawn(paths: &SocketPaths, p: AgentSpawnParams) -> Result<serde_json::Value, RpcError> {
-    let mut c = UnixStream::connect(paths.socket()).expect("dial the supervisor");
+    let mut c = marion_supervisor::client_auth::dial(paths).expect("dial the supervisor");
     c.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     let frame = Frame::Request(Request::new(RequestId::Number(1), Call::AgentSpawn(p)));
     c.write_all(frame.to_line().as_bytes()).unwrap();

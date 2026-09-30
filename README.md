@@ -159,6 +159,12 @@ and never hides your credentials from the harness.
 - **Secrets are protected.** A stored key is never printed or logged; its type redacts `Debug`,
   and credential files are written `0600`. marion creates its state directory `0700`, and the
   supervisor's socket checks each caller's uid.
+- **A node cannot act as you on the supervisor's socket.** Every connection first says who it
+  speaks for: you, by presenting the key in `<state>/operator.key` (created `0600`, never handed
+  to a node), or one node, by presenting that node's token. A node's connection may read the tree
+  and steer, attach to or end only the nodes below it; starting a root, resuming, quitting and
+  answering permission requests are yours alone. The key is a file of your own user, so a node
+  running with no OS sandbox could still read it.
 - **A repository cannot redirect your keys.** Providers come only from your user-level config;
   a repository's `.marion/` is never read for them.
 - **A repository cannot run its own command, or widen a node, without your consent.** A

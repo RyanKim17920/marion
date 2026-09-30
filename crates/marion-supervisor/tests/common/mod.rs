@@ -109,8 +109,7 @@ impl Supervisor {
     /// Notifications are skipped rather than read as answers: a connection can legitimately carry
     /// them, and a helper that took the next line would report one as the response.
     pub fn call(&self, call: Call) -> Result<Value, String> {
-        let mut c = std::os::unix::net::UnixStream::connect(self.paths.socket())
-            .expect("dial the supervisor");
+        let mut c = marion_supervisor::client_auth::dial(&self.paths).expect("dial the supervisor");
         c.set_read_timeout(Some(BOUND)).unwrap();
         let frame = Frame::Request(Request::new(RequestId::Number(1), call));
         c.write_all(frame.to_line().as_bytes()).unwrap();

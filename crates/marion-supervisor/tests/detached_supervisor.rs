@@ -826,7 +826,7 @@ fn a_finished_node(path: &Path, agent: &str) {
 /// that does not exist is answered (refused) without changing anything.
 fn serving(paths: &SocketPaths) {
     use std::io::{BufRead, Write};
-    let mut c = std::os::unix::net::UnixStream::connect(paths.socket()).expect("dial");
+    let mut c = marion_supervisor::client_auth::dial(paths).expect("dial");
     c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let frame = marion_core::proto::Frame::Request(marion_core::proto::Request::new(
         marion_core::proto::RequestId::Number(1),
@@ -848,7 +848,7 @@ fn serving(paths: &SocketPaths) {
 
 fn session_quit(paths: &SocketPaths) -> marion_core::proto::QuitOutcome {
     use std::io::{BufRead, Write};
-    let mut c = std::os::unix::net::UnixStream::connect(paths.socket()).expect("dial");
+    let mut c = marion_supervisor::client_auth::dial(paths).expect("dial");
     c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let frame = marion_core::proto::Frame::Request(marion_core::proto::Request::new(
         marion_core::proto::RequestId::Number(1),

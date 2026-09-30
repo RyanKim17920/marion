@@ -61,6 +61,7 @@ use marion_core::proto::result::{
 };
 use marion_core::proto::{Call, Frame, MethodResult, Outcome, Request, RequestId};
 
+use crate::socket::SocketPaths;
 use crate::spawn::SpawnError;
 
 /// One connection to this project's supervisor, held for exactly one errand.
@@ -90,9 +91,9 @@ enum Next {
 }
 
 impl Conn {
-    fn dial(socket: &Path) -> Result<Self, SpawnError> {
-        let stream =
-            UnixStream::connect(socket).map_err(|e| unreachable(socket, &e.to_string()))?;
+    fn dial(sock: &SocketPaths) -> Result<Self, SpawnError> {
+        let socket = sock.socket();
+        let stream = crate::client_auth::dial(sock).map_err(|e| unreachable(socket, &e))?;
         let lines = BufReader::new(stream.try_clone().map_err(|e| {
             unreachable(socket, &format!("its connection could not be split: {e}"))
         })?);
@@ -237,10 +238,10 @@ fn unreachable(socket: &Path, why: &str) -> SpawnError {
 /// The answer is `agent/spawn`'s own: an id, a state the supervisor read back off its registry, and
 /// the `task_id` that names the contract file this run will be filed under. Nothing here waits for
 /// the run.
-pub fn spawn(socket: &Path, params: AgentSpawnParams) -> Result<AgentSpawnResult, SpawnError> {
+pub fn spawn(sock: &SocketPaths, params: AgentSpawnParams) -> Result<AgentSpawnResult, SpawnError> {
     // A spawn is answered when the child's process exists (`LAUNCH_BOUND` on the far side), so this
     // is generous by design and is not a bound on the child's run — that is [`await_contract`]'s.
-    match Conn::dial(socket)?.ask(
+    match Conn::dial(sock)?.ask(
         Call::AgentSpawn(params),
         SPAWN_ANSWER_BOUND,
         &format!(
@@ -251,7 +252,7 @@ pub fn spawn(socket: &Path, params: AgentSpawnParams) -> Result<AgentSpawnResult
     )? {
         MethodResult::AgentSpawn(r) => Ok(r),
         _ => Err(unreachable(
-            socket,
+            sock.socket(),
             "it answered `agent/spawn` with a result marion cannot read",
         )),
     }
@@ -267,17 +268,17 @@ pub fn spawn(socket: &Path, params: AgentSpawnParams) -> Result<AgentSpawnResult
 /// A node this project's journal has no record of comes back as the supervisor's own `not_found`
 /// sentence through [`SpawnError::SupervisorRefused`], which already names the id and says how
 /// current the registry is.
-pub fn node_get(socket: &Path, agent_id: &AgentId) -> Result<NodeGetResult, SpawnError> {
-    node_get_with(socket, agent_id, None)
+pub fn node_get(sock: &SocketPaths, agent_id: &AgentId) -> Result<NodeGetResult, SpawnError> {
+    node_get_with(sock, agent_id, None)
 }
 
 /// [`node_get`], with a page of the node's activity stream from `activity` when it is given.
 pub fn node_get_with(
-    socket: &Path,
+    sock: &SocketPaths,
     agent_id: &AgentId,
     activity: Option<marion_core::proto::params::ActivityCursor>,
 ) -> Result<NodeGetResult, SpawnError> {
-    match Conn::dial(socket)?.ask(
+    match Conn::dial(sock)?.ask(
         Call::NodeGet(NodeGetParams {
             agent_id: agent_id.clone(),
             activity,
@@ -291,7 +292,7 @@ pub fn node_get_with(
     )? {
         MethodResult::NodeGet(r) => Ok(r),
         _ => Err(unreachable(
-            socket,
+            sock.socket(),
             "it answered `node/get` with a result marion cannot read",
         )),
     }
@@ -309,12 +310,12 @@ pub fn node_get_with(
 /// authorized the steer, so it tells a caller nothing about a node it may not address; and it is
 /// best-effort, because the message is already queued and a failed read must not report it lost.
 pub fn steer(
-    socket: &Path,
+    sock: &SocketPaths,
     agent_id: &AgentId,
     text: &str,
     caller: Option<marion_core::proto::SpawnCaller>,
 ) -> Result<Steered, SpawnError> {
-    let result = match Conn::dial(socket)?.ask(
+    let result = match Conn::dial(sock)?.ask(
         Call::NodeSteer(NodeSteerParams {
             agent_id: agent_id.clone(),
             text: text.to_string(),
@@ -330,12 +331,12 @@ pub fn steer(
         MethodResult::NodeSteer(r) => r,
         _ => {
             return Err(unreachable(
-                socket,
+                sock.socket(),
                 "it answered `node/steer` with a result marion cannot read",
             ));
         }
     };
-    let agent_type = node_get(socket, agent_id).ok().map(|r| r.node.agent_type);
+    let agent_type = node_get(sock, agent_id).ok().map(|r| r.node.agent_type);
     Ok(Steered {
         agent_id: agent_id.clone(),
         agent_type,
@@ -348,11 +349,11 @@ pub fn steer(
 /// `status` found the child finished, so marion spends no turn of the node announcing it. `true`
 /// iff a queued announcement was withdrawn.
 pub fn collected(
-    socket: &Path,
+    sock: &SocketPaths,
     child: &AgentId,
     caller: marion_core::proto::SpawnCaller,
 ) -> Result<bool, SpawnError> {
-    match Conn::dial(socket)?.ask(
+    match Conn::dial(sock)?.ask(
         Call::NodeCollected(marion_core::proto::params::NodeCollectedParams {
             agent_id: child.clone(),
             caller,
@@ -366,7 +367,7 @@ pub fn collected(
     )? {
         MethodResult::NodeCollected(r) => Ok(r.withdrawn),
         _ => Err(unreachable(
-            socket,
+            sock.socket(),
             "it answered `node/collected` with a result marion cannot read",
         )),
     }
@@ -377,8 +378,8 @@ pub fn collected(
 /// The supervisor decides whether it may and whether there is anything to signal (a node already
 /// ended, or one still spawning with no pid, is refused before anything is signalled); a refusal
 /// is its sentence, carried verbatim.
-pub fn kill(socket: &Path, agent_id: &AgentId) -> Result<NodeKillResult, SpawnError> {
-    match Conn::dial(socket)?.ask(
+pub fn kill(sock: &SocketPaths, agent_id: &AgentId) -> Result<NodeKillResult, SpawnError> {
+    match Conn::dial(sock)?.ask(
         Call::NodeKill(NodeKillParams {
             agent_id: agent_id.clone(),
         }),
@@ -391,7 +392,7 @@ pub fn kill(socket: &Path, agent_id: &AgentId) -> Result<NodeKillResult, SpawnEr
     )? {
         MethodResult::NodeKill(r) => Ok(r),
         _ => Err(unreachable(
-            socket,
+            sock.socket(),
             "it answered `node/kill` with a result marion cannot read",
         )),
     }
@@ -401,18 +402,18 @@ pub fn kill(socket: &Path, agent_id: &AgentId) -> Result<NodeKillResult, SpawnEr
 /// turn is ended by its row's abort, bottom-up, and whatever outlives its grace is killed. The
 /// answer names every node ended and whether it had to be killed. A refusal is the supervisor's
 /// sentence, carried verbatim.
-pub fn cancel(socket: &Path, agent_id: &AgentId) -> Result<NodeCancelResult, SpawnError> {
-    cancel_as(socket, agent_id, None)
+pub fn cancel(sock: &SocketPaths, agent_id: &AgentId) -> Result<NodeCancelResult, SpawnError> {
+    cancel_as(sock, agent_id, None)
 }
 
 /// [`cancel`] as `caller` — a node ending one of its descendants, proved by its token — or as the
 /// operator where `caller` is `None`.
 pub fn cancel_as(
-    socket: &Path,
+    sock: &SocketPaths,
     agent_id: &AgentId,
     caller: Option<marion_core::proto::SpawnCaller>,
 ) -> Result<NodeCancelResult, SpawnError> {
-    match Conn::dial(socket)?.ask(
+    match Conn::dial(sock)?.ask(
         Call::NodeCancel(NodeCancelParams {
             agent_id: agent_id.clone(),
             caller,
@@ -426,7 +427,7 @@ pub fn cancel_as(
     )? {
         MethodResult::NodeCancel(r) => Ok(r),
         _ => Err(unreachable(
-            socket,
+            sock.socket(),
             "it answered `node/cancel` with a result marion cannot read",
         )),
     }
@@ -485,8 +486,8 @@ impl Steered {
 /// one question. Its answer carries the snapshot (`nodes`) and the journal position it was read at,
 /// and the subscription it also opens dies with the connection this courier hangs up — see
 /// [`Conn`]'s own note on why one errand is one connection.
-pub fn tree(socket: &Path) -> Result<TreeSubscribeResult, SpawnError> {
-    match Conn::dial(socket)?.ask(
+pub fn tree(sock: &SocketPaths) -> Result<TreeSubscribeResult, SpawnError> {
+    match Conn::dial(sock)?.ask(
         Call::TreeSubscribe(TreeSubscribeParams {}),
         READ_ANSWER_BOUND,
         &format!(
@@ -497,7 +498,7 @@ pub fn tree(socket: &Path) -> Result<TreeSubscribeResult, SpawnError> {
     )? {
         MethodResult::TreeSubscribe(r) => Ok(r),
         _ => Err(unreachable(
-            socket,
+            sock.socket(),
             "it answered `tree/subscribe` with a result marion cannot read",
         )),
     }
@@ -563,14 +564,14 @@ pub enum Delivered {
 /// as a second function would duplicate the correlation loop, which is the duplication `9a6211a`
 /// removed from the three couriers and which loses a different clause each time it is copied.
 pub fn await_contract(
-    socket: &Path,
+    sock: &SocketPaths,
     project: &ProjectDir,
     agent_id: &AgentId,
     task_id: Option<&TaskId>,
     bound: Duration,
 ) -> Result<Delivered, SpawnError> {
     let deadline = Instant::now() + bound;
-    let mut c = Conn::dial(socket)?;
+    let mut c = Conn::dial(sock)?;
     c.bound(bound)?;
     let attach = c.send(Call::NodeAttach(
         marion_core::proto::params::NodeAttachParams {
@@ -595,7 +596,7 @@ pub fn await_contract(
                 }
                 other => {
                     return Err(unreachable(
-                        socket,
+                        sock.socket(),
                         &format!("it sent an unexpected frame while a node was running: {other:?}"),
                     ));
                 }
@@ -640,7 +641,7 @@ pub enum RaceDelivered {
 /// disk), then the tree is followed until a seat of this race carries a verdict, and the file is
 /// read again. Like [`await_contract`] this is a reader: it starts and stops nothing.
 pub fn await_race(
-    socket: &Path,
+    sock: &SocketPaths,
     project: &ProjectDir,
     race_id: &marion_core::race::RaceId,
     bound: Duration,
@@ -655,7 +656,7 @@ pub fn await_race(
             .is_some_and(|b| &b.race_id == race_id && b.verdict.is_some())
     };
     let deadline = Instant::now() + bound;
-    let mut c = Conn::dial(socket)?;
+    let mut c = Conn::dial(sock)?;
     c.bound(bound)?;
     let sub = c.send(Call::TreeSubscribe(TreeSubscribeParams {}))?;
     loop {
@@ -783,6 +784,15 @@ mod tests {
         );
     }
 
+    /// A supervisor's socket paths under a state root with nothing listening.
+    fn nowhere(dir: &std::path::Path) -> crate::socket::SocketPaths {
+        crate::socket::socket_paths(
+            &dir.join("state"),
+            std::path::Path::new("/canonical/project"),
+            crate::socket::own_uid(),
+        )
+    }
+
     /// **A decided race is answered from its file**, before any dial: the socket here does not
     /// exist, so reaching it would be a refusal.
     #[test]
@@ -799,7 +809,7 @@ mod tests {
         };
         crate::race::write_result(&project, &result).unwrap();
         let got = await_race(
-            &dir.join("absent.sock"),
+            &nowhere(&dir),
             &project,
             &result.race_id,
             Duration::from_secs(1),
@@ -817,7 +827,7 @@ mod tests {
         let dir = marion_testsupport::scratch("courier-race-open");
         let project = ProjectDir::new(&dir.join("state"), &dir.join("repo"));
         let got = await_race(
-            &dir.join("absent.sock"),
+            &nowhere(&dir),
             &project,
             &marion_core::race::RaceId("r-1".into()),
             Duration::from_secs(1),
@@ -837,9 +847,10 @@ mod tests {
     /// to make this function return `Ok` for a path nothing is listening on.
     #[test]
     fn a_spawn_with_no_supervisor_listening_is_refused_and_names_the_socket() {
-        let socket = std::path::Path::new("/tmp/marion-no-such-supervisor.sock");
+        let dir = marion_testsupport::scratch("courier-spawn-no-supervisor");
+        let sock = nowhere(&dir);
         let e = spawn(
-            socket,
+            &sock,
             AgentSpawnParams {
                 wider_children: None,
                 budget_tokens: None,
@@ -870,7 +881,7 @@ mod tests {
         .expect_err("nothing is listening there");
         let msg = e.to_string();
         assert!(
-            msg.contains("marion-no-such-supervisor.sock"),
+            msg.contains(&sock.socket().display().to_string()),
             "the refusal names the socket it could not reach, since that is the whole diagnosis: \
              {msg}"
         );
@@ -892,7 +903,7 @@ mod tests {
         let dir = marion_testsupport::scratch("courier-wait-no-supervisor");
         let project = ProjectDir::new(&dir, std::path::Path::new("/canonical/project"));
         let e = await_contract(
-            std::path::Path::new("/tmp/marion-no-such-supervisor.sock"),
+            &nowhere(&dir),
             &project,
             &AgentId("019f-node".into()),
             Some(&TaskId("task-1".into())),
@@ -908,16 +919,13 @@ mod tests {
     /// A steer with nobody listening is the same typed refusal, and names the socket.
     #[test]
     fn a_steer_with_no_supervisor_listening_is_refused_and_names_the_socket() {
-        let e = steer(
-            std::path::Path::new("/tmp/marion-no-such-supervisor.sock"),
-            &AgentId("019f-node".into()),
-            "use the v2 API",
-            None,
-        )
-        .expect_err("nothing is listening there");
+        let dir = marion_testsupport::scratch("courier-steer-no-supervisor");
+        let sock = nowhere(&dir);
+        let e = steer(&sock, &AgentId("019f-node".into()), "use the v2 API", None)
+            .expect_err("nothing is listening there");
         assert!(matches!(e, SpawnError::SupervisorUnreachable { .. }), "{e}");
         assert!(
-            e.to_string().contains("marion-no-such-supervisor.sock"),
+            e.to_string().contains(&sock.socket().display().to_string()),
             "{e}"
         );
     }

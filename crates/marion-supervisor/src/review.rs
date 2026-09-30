@@ -185,7 +185,7 @@ pub fn verdict(
 /// The same `agent/spawn` a parent model sends through its bridge, so the two client forms share
 /// one spawn path; this adds only the wait a terminal command needs.
 pub fn request(
-    socket: &Path,
+    sock: &crate::socket::SocketPaths,
     project: &marion_core::paths::ProjectDir,
     target: &AgentId,
     agent_type: &str,
@@ -194,7 +194,7 @@ pub fn request(
     bound: Duration,
 ) -> Result<(AgentId, TaskContract), String> {
     let spawned = crate::courier::spawn(
-        socket,
+        sock,
         marion_core::proto::params::AgentSpawnParams {
             wider_children: None,
             budget_tokens: None,
@@ -224,7 +224,7 @@ pub fn request(
     let task = spawned
         .task_id
         .ok_or_else(|| "the supervisor started a reviewer with no contract".to_string())?;
-    match crate::courier::await_contract(socket, project, &reviewer, Some(&task), bound)
+    match crate::courier::await_contract(sock, project, &reviewer, Some(&task), bound)
         .map_err(|e| e.to_string())?
     {
         crate::courier::Delivered::StillRunning => Err(format!(

@@ -372,7 +372,7 @@ fn params() -> AgentSpawnParams {
 impl Bed {
     fn call(&self, call: Call) -> Result<serde_json::Value, String> {
         use std::io::{BufRead, BufReader, Write};
-        let mut c = std::os::unix::net::UnixStream::connect(self.paths.socket()).unwrap();
+        let mut c = marion_supervisor::client_auth::dial(&self.paths).unwrap();
         c.set_read_timeout(Some(BOUND)).unwrap();
         let frame = Frame::Request(Request::new(RequestId::Number(1), call));
         c.write_all(frame.to_line().as_bytes()).unwrap();

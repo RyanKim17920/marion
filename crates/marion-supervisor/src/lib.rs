@@ -28,6 +28,7 @@ pub mod budget;
 /// The operator's `env_passthrough`: variables they hand one agent type's nodes past the inherit
 /// filter, from their own user-level config.
 pub mod child_env;
+pub mod client_auth;
 /// Wall-clock and entropy for minting ids: a leaf both `run` and `journal` stand on.
 pub(crate) mod clock;
 /// Turn delivery's continuation lane: a `LaunchOnly` node's next turn is a relaunch of the same
@@ -112,6 +113,7 @@ pub mod node_detail;
 /// A node's own `TMPDIR`, removed when its process is reaped.
 pub(crate) mod node_tmp;
 pub mod notify;
+pub mod operator_key;
 mod pane_client;
 /// Turn delivery into an interactive node: a bracketed paste into its pty.
 pub mod paste;

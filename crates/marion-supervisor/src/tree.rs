@@ -543,7 +543,7 @@ fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), R
     }
     // No read bound: the subscribe's own reads block until the answer, and a screen that follows
     // the forest waits on [`Subscription::fd`] in its own `poll(2)` with the socket non-blocking.
-    let stream = UnixStream::connect(paths.socket())
+    let stream = crate::client_auth::dial(&paths)
         .map_err(|e| format!("dialling the supervisor for `{}`: {e}", key.display()))?;
     // The status row names the worktree, not its `.git`: §2 keys on the common dir, and an
     // operator with three windows open recognises the directory they ran marion in.

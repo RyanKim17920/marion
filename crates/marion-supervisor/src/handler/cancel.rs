@@ -551,6 +551,7 @@ mod tests {
                     node_token: token.into(),
                 }),
             });
+            self.handle.hello_as_operator(ConnId(7));
             match self.handle.call(ConnId(7), &call, &out)? {
                 MethodResult::NodeCancel(r) => Ok(r),
                 other => panic!("wrong result: {}", other.method().as_str()),
@@ -765,6 +766,7 @@ mod tests {
             let again = fx.cancel("root", None).expect_err("already cancelling");
             assert_eq!(again.kind(), Some(FailureKind::Conflict), "{again}");
             let out = crate::serve::sink(ConnId(8));
+            fx.handle.hello_as_operator(ConnId(8));
             fx.handle
                 .call(
                     ConnId(8),
@@ -822,6 +824,7 @@ mod tests {
             assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
             // End the cancel now rather than after its grace.
             let out = crate::serve::sink(ConnId(8));
+            fx.handle.hello_as_operator(ConnId(8));
             fx.handle
                 .call(
                     ConnId(8),

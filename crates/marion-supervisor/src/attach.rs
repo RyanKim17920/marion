@@ -205,7 +205,7 @@ pub fn run(agent: &str, repo: &Path, state_dir: &Path) -> Result<Leave, Refusal>
             key.display()
         ));
     }
-    let stream = UnixStream::connect(paths.socket()).map_err(|e| {
+    let stream = crate::client_auth::dial(&paths).map_err(|e| {
         format!(
             "the supervisor for `{}` holds its lock but did not answer on {}: {e}",
             key.display(),

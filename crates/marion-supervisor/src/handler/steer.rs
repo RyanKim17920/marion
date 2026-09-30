@@ -365,7 +365,7 @@ fn ancestors_of(tree: &Replay, node: &AgentId) -> Vec<AgentId> {
     chain
 }
 
-fn is_strict_ancestor(tree: &Replay, ancestor: &AgentId, target: &AgentId) -> bool {
+pub(super) fn is_strict_ancestor(tree: &Replay, ancestor: &AgentId, target: &AgentId) -> bool {
     let mut visited = vec![target.clone()];
     let mut cur = tree.get(target).and_then(|n| n.parent_id().cloned());
     while let Some(id) = cur {
@@ -506,6 +506,7 @@ mod tests {
                     node_token: token.into(),
                 }),
             });
+            self.handle.hello_as_operator(ConnId(7));
             match self.handle.call(ConnId(7), &call, &out)? {
                 MethodResult::NodeSteer(r) => Ok(r),
                 other => panic!("wrong result: {}", other.method().as_str()),
@@ -521,6 +522,7 @@ mod tests {
                     node_token: caller.1.into(),
                 },
             });
+            self.handle.hello_as_operator(ConnId(7));
             match self.handle.call(ConnId(7), &call, &out)? {
                 MethodResult::NodeCollected(r) => Ok(r.withdrawn),
                 other => panic!("wrong result: {}", other.method().as_str()),
@@ -1059,6 +1061,7 @@ mod tests {
             agent_id: id("x"),
             text: "hi".into(),
         });
+        fx.handle.hello_as_operator(ConnId(7));
         let e = fx.handle.call(ConnId(7), &call, &out).expect_err("unbuilt");
         assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
         assert!(e.message.contains("node/steer"), "{e}");

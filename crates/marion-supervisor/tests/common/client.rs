@@ -39,7 +39,9 @@ pub struct Client {
 
 impl Client {
     pub fn dial(paths: &SocketPaths) -> Client {
-        let sock = UnixStream::connect(paths.socket()).expect("the supervisor is listening");
+        // The operator's connection, as every marion client opens it: past `session/hello`.
+        let sock =
+            marion_supervisor::client_auth::dial(paths).expect("the supervisor is listening");
         sock.set_read_timeout(Some(BOUND)).unwrap();
         let lines = BufReader::new(sock.try_clone().unwrap());
         Client {

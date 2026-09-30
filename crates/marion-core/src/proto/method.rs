@@ -19,12 +19,14 @@ use crate::proto::params::{
     AgentSpawnParams, DoctorRunParams, ElicitationReplyParams, NodeAttachParams, NodeCancelParams,
     NodeCollectedParams, NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams,
     NodeRenameParams, NodeResumeParams, NodeSteerParams, NotifyClaimParams, POLICY_SET_UNSPECIFIED,
-    PermissionReplyParams, SessionQuitParams, TreeSubscribeParams, UnspecifiedPolicy,
+    PermissionReplyParams, SessionHelloParams, SessionQuitParams, TreeSubscribeParams,
+    UnspecifiedPolicy,
 };
 use crate::proto::result::{
     AgentSpawnResult, DeliveryResult, DoctorRunResult, NodeAttachResult, NodeCancelResult,
     NodeCollectedResult, NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult,
-    NodeResumeResult, NotifyClaimResult, ReplyResult, SessionQuitResult, TreeSubscribeResult,
+    NodeResumeResult, NotifyClaimResult, ReplyResult, SessionHelloResult, SessionQuitResult,
+    TreeSubscribeResult,
 };
 
 /// §2's client↔supervisor method list.
@@ -60,6 +62,8 @@ pub enum Method {
     SessionQuit,
     /// A client's terminal will show desktop notices where no notifier exists.
     NotifyClaim,
+    /// Who a connection speaks for — the operator or one node — stated before any other call.
+    SessionHello,
 }
 
 impl Method {
@@ -85,10 +89,11 @@ impl Method {
             Method::DoctorRun => "doctor/run",
             Method::SessionQuit => "session/quit",
             Method::NotifyClaim => "notify/claim",
+            Method::SessionHello => "session/hello",
         }
     }
 
-    pub const ALL: [Method; 18] = [
+    pub const ALL: [Method; 19] = [
         Method::TreeSubscribe,
         Method::NodeGet,
         Method::NodeAttach,
@@ -107,6 +112,7 @@ impl Method {
         Method::DoctorRun,
         Method::SessionQuit,
         Method::NotifyClaim,
+        Method::SessionHello,
     ];
 
     pub fn from_wire(s: &str) -> Option<Method> {
@@ -152,6 +158,7 @@ impl Method {
             Method::DoctorRun => MethodResult::DoctorRun(take(self, body)?),
             Method::SessionQuit => MethodResult::SessionQuit(take(self, body)?),
             Method::NotifyClaim => MethodResult::NotifyClaim(take(self, body)?),
+            Method::SessionHello => MethodResult::SessionHello(take(self, body)?),
         })
     }
 }
@@ -207,6 +214,8 @@ pub enum Call {
     SessionQuit(SessionQuitParams),
     #[serde(rename = "notify/claim")]
     NotifyClaim(NotifyClaimParams),
+    #[serde(rename = "session/hello")]
+    SessionHello(SessionHelloParams),
 }
 
 impl Call {
@@ -230,6 +239,7 @@ impl Call {
             Call::DoctorRun(_) => Method::DoctorRun,
             Call::SessionQuit(_) => Method::SessionQuit,
             Call::NotifyClaim(_) => Method::NotifyClaim,
+            Call::SessionHello(_) => Method::SessionHello,
         }
     }
 }
@@ -260,6 +270,7 @@ pub enum MethodResult {
     DoctorRun(DoctorRunResult),
     SessionQuit(SessionQuitResult),
     NotifyClaim(NotifyClaimResult),
+    SessionHello(SessionHelloResult),
 }
 
 impl MethodResult {
@@ -283,6 +294,7 @@ impl MethodResult {
             MethodResult::DoctorRun(_) => Method::DoctorRun,
             MethodResult::SessionQuit(_) => Method::SessionQuit,
             MethodResult::NotifyClaim(_) => Method::NotifyClaim,
+            MethodResult::SessionHello(_) => Method::SessionHello,
         }
     }
 
@@ -309,6 +321,7 @@ impl MethodResult {
             MethodResult::DoctorRun(r) => v(r),
             MethodResult::SessionQuit(r) => v(r),
             MethodResult::NotifyClaim(r) => v(r),
+            MethodResult::SessionHello(r) => v(r),
         }
     }
 }
@@ -590,6 +603,18 @@ mod tests {
                     head: true,
                 }),
             ),
+            (
+                Call::SessionHello(SessionHelloParams {
+                    operator: None,
+                    node: Some(SpawnCaller {
+                        agent_id: agent("a"),
+                        node_token: "tok".into(),
+                    }),
+                }),
+                MethodResult::SessionHello(SessionHelloResult {
+                    principal: SessionPrincipal::Node(agent("a")),
+                }),
+            ),
         ]
     }
 
@@ -597,8 +622,9 @@ mod tests {
     fn the_method_list_is_fifteen() {
         assert_eq!(
             Method::ALL.len(),
-            18,
-            "§2's fifteen plus node/resume (plan step 6), node/collected and notify/claim"
+            19,
+            "§2's fifteen plus node/resume (plan step 6), node/collected, notify/claim and \
+             session/hello"
         );
         let mut names: Vec<&str> = Method::ALL.iter().map(|m| m.as_str()).collect();
         assert_eq!(
@@ -622,6 +648,7 @@ mod tests {
                 "doctor/run",
                 "session/quit",
                 "notify/claim",
+                "session/hello",
             ],
             "the list, in §2's order"
         );

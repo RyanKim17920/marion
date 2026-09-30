@@ -3035,7 +3035,7 @@ impl NativeBootstrapService {
                 // Capability authentication has finished. Launch preparation and response delivery
                 // deliberately start a fresh budget rather than inheriting whatever remained of
                 // the descriptor handshake's ten seconds.
-                let prepared = {
+                let (prepared, agent_id) = {
                     let mut transport = DeadlineIo::new(&stream, &result_deadline.0);
                     if write_native_launch_receipt(&mut transport, pending.receipt()).is_err() {
                         self.authority.revoke_connection(id);
@@ -3049,14 +3049,15 @@ impl NativeBootstrapService {
                     let claimed = read_native_claim_request(&mut transport).and_then(|claim| {
                         self.handler
                             .prepare_native_claim(&claim.ticket, &claim.agent_id, claimant)
+                            .map(|prepared| (prepared, claim.agent_id))
                     });
-                    let Ok(prepared) = claimed else {
+                    let Ok((prepared, agent_id)) = claimed else {
                         let _ = transport.write_all(&[WIRE_REFUSED]);
                         let _ = transport.flush();
                         self.authority.revoke_connection(id);
                         return;
                     };
-                    prepared
+                    (prepared, agent_id)
                 };
                 if self.clear_claim_timeouts(&stream).is_err() {
                     let _ = (&stream).write_all(&[WIRE_REFUSED]);
@@ -3089,6 +3090,9 @@ impl NativeBootstrapService {
                 pending.commit();
                 self.authority.revoke_connection(id);
                 drop(stream);
+                // The claim proved this connection is the terminal of node `agent_id`, so it speaks
+                // for that node from its first frame, as a `session/hello` naming it would.
+                relay.claimed_by_native(id, &agent_id);
                 let stopping = AtomicBool::new(false);
                 claimed.run(&stopping);
                 return;

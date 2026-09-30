@@ -205,9 +205,8 @@ pub enum Departure {
 /// authorization keyed on a client-asserted origin field, reachable by any process of the same
 /// user. Peer credentials would not have saved that system, because the attacker was the same user.
 ///
-/// So this is used for exactly one decision — whether a caller may create a **root**, which is a
-/// spawn with no node behind it to prove anything about (see
-/// `handler::root_spawn_authorized`) — and nothing else consults it.
+/// So it is only ever a second check behind the connection's `session/hello`, which is what says
+/// whether a connection speaks for the operator or for one node (`handler::root_spawn_authorized`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Peer {
     /// The kernel answered, and this is the peer's effective uid.
@@ -305,6 +304,10 @@ pub trait Handle: Send + Sync + 'static {
     /// A panic here is caught and answered as `Internal` rather than being allowed to end the
     /// connection or the supervisor.
     fn call(&self, conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError>;
+
+    /// A native claim proved `conn` is node `agent`'s own terminal, before the connection's first
+    /// frame: it speaks for that node, as a `session/hello` naming it would.
+    fn claimed_by_native(&self, _conn: ConnId, _agent: &marion_core::AgentId) {}
 
     /// Deliver one **client→supervisor notification** (§2's inbound table): a keystroke or a
     /// resize for a node with a display plane.

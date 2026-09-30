@@ -562,8 +562,12 @@ fn killing_the_top_level_server_leaves_its_root_running_under_the_supervisor() {
     drop(s);
 
     // A different client entirely, on a connection this test opens itself.
-    let mut c = std::os::unix::net::UnixStream::connect(fx.socket())
-        .expect("the supervisor outlived the client that started it");
+    let mut c = marion_supervisor::client_auth::dial(&socket_paths(
+        &fx.state,
+        &project_root(&fx.repo),
+        own_uid(),
+    ))
+    .expect("the supervisor outlived the client that started it");
     c.set_read_timeout(Some(BOUND)).unwrap();
     let frame = Frame::Request(Request::new(
         RequestId::Number(1),

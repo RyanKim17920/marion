@@ -156,6 +156,9 @@ const START_DEADLINE: Duration = Duration::from_secs(5);
 /// Where the socket, its lock and their directory are, and whether §2's fallback was taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketPaths {
+    /// `<state>`: where the operator's key lives ([`crate::operator_key`]), whichever directory the
+    /// socket itself ended up in.
+    state: PathBuf,
     canonical_project: PathBuf,
     dir: PathBuf,
     socket: PathBuf,
@@ -171,6 +174,10 @@ pub struct SocketPaths {
 }
 
 impl SocketPaths {
+    pub fn state(&self) -> &Path {
+        &self.state
+    }
+
     pub fn canonical_project(&self) -> &Path {
         &self.canonical_project
     }
@@ -255,6 +262,7 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
     let len = primary.as_os_str().as_encoded_bytes().len();
     if len <= MAX_SOCKET_PATH_BYTES {
         return SocketPaths {
+            state: state.to_path_buf(),
             canonical_project: canonical_root.to_path_buf(),
             dir: project.path().to_path_buf(),
             lock: project.path().join("supervisor.lock"),
@@ -268,6 +276,7 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
     let hash = fallback_key(state, canonical_root);
     let dir = PathBuf::from(format!("/tmp/marion-{uid}"));
     SocketPaths {
+        state: state.to_path_buf(),
         canonical_project: canonical_root.to_path_buf(),
         socket: dir.join(format!("{hash}.sock")),
         native_bootstrap: dir.join(format!("{hash}.native.sock")),
@@ -1468,6 +1477,7 @@ mod tests {
 
     fn paths_in(dir: &Path) -> SocketPaths {
         SocketPaths {
+            state: dir.join("state"),
             canonical_project: PathBuf::from("/p"),
             dir: dir.to_path_buf(),
             socket: dir.join("supervisor.sock"),
@@ -1969,6 +1979,7 @@ mod tests {
             .unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777)).unwrap();
         let p = SocketPaths {
+            state: target.join("state"),
             canonical_project: PathBuf::from("/p"),
             socket: target.join("a.sock"),
             native_bootstrap: target.join("a.native.sock"),

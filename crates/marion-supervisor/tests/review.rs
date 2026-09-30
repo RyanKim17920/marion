@@ -195,7 +195,7 @@ fn a_canned_claude_reviews_a_canned_codex_childs_branch_read_only() {
     };
     let reviewer = spawned.agent_id.clone();
     let task = spawned.task_id.clone().expect("a reviewer has a contract");
-    let delivered = await_contract(paths.socket(), &project, &reviewer, Some(&task), BOUND)
+    let delivered = await_contract(&paths, &project, &reviewer, Some(&task), BOUND)
         .expect("the reviewer's end is readable");
     assert!(
         !matches!(delivered, Delivered::StillRunning),
@@ -324,7 +324,7 @@ fn a_canned_claude_reviews_a_canned_codex_childs_branch_read_only() {
         (root.agent_id.0.as_str(), "it is a root"),
     ] {
         let e = marion_supervisor::review::request(
-            paths.socket(),
+            &paths,
             &project,
             &AgentId(target.into()),
             "claude",

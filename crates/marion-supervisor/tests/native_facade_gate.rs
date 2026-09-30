@@ -7,7 +7,6 @@
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -174,7 +173,7 @@ impl Bed {
     }
 
     fn send_line(&self, line: &str) -> Result<serde_json::Value, RpcError> {
-        let mut socket = UnixStream::connect(self.supervisor.paths.socket())
+        let mut socket = marion_supervisor::client_auth::dial(&self.supervisor.paths)
             .expect("the shipped supervisor is listening");
         socket.set_read_timeout(Some(BOUND)).unwrap();
         socket

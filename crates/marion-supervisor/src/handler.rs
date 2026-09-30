@@ -853,6 +853,8 @@ struct Shared {
     claimers: Vec<Outbound>,
     attached: Vec<Attachment>,
     clients: HashSet<ConnId>,
+    /// Whom each connection proved it speaks for — see [`session`].
+    principals: HashMap<ConnId, marion_core::proto::result::SessionPrincipal>,
     told: HashMap<AgentId, Told>,
     unprojectable: usize,
     /// The [`Registry::generation`] and [`crate::usage_tally::Tallies::version`] `collect` last ran
@@ -1163,7 +1165,7 @@ const LAUNCH_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 /// A failure to read `/dev/urandom` yields `None`, and [`RegistryHandle::claim`]'s caller turns
 /// that into a node with no token — which is a node whose bridge can never spawn, and never a node
 /// with a predictable one.
-fn mint_token() -> Secret {
+pub(crate) fn mint_token() -> Secret {
     use std::io::Read;
     let mut bytes = [0u8; 32];
     match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)) {
@@ -1327,17 +1329,15 @@ impl crate::run::SpawnObserver for NodeOwner {
     }
 }
 
-/// **What authorizes `agent/spawn` with no caller — open question 3, decided.**
+/// **The uid half of what authorizes an operator-only call** (a root, a resume, an operator's
+/// steer or kill).
 ///
-/// The answer is: **filesystem permission on the socket, checked against peer credentials, and
-/// deliberately not a token.** The argument, in the order the pieces matter.
-///
-/// *A token cannot be the answer here.* §5.4's capability is *"a per-node capability token bound to
-/// its `AgentId`"*. A spawn with `caller: None` is a client creating a **root**: there is no node
-/// yet, so there is nothing to bind a token to and nothing node-wise to prove. Any durable secret
-/// invented for this path would be a file under `<state>`, readable by exactly the set of processes
-/// that can already `connect(2)` to a socket in the same tree — so it would authenticate the same
-/// set it excludes, at the cost of a secret at rest. It would look like security and be a mode.
+/// *Who the operator is* is decided first and elsewhere: the connection's `session/hello` presented
+/// the operator's key ([`session`]). Open question 3 once answered "filesystem permission and
+/// deliberately not a token", on the argument that a key at rest is readable by every same-uid
+/// process that can reach the socket. The 2026-09-29 audit found that answer made every node's own
+/// shell the operator; a key marion never hands a node, refused besides from any process descending
+/// from a node, excludes exactly the processes the uid cannot. This check stays behind it.
 ///
 /// *Peer credentials are necessary and not sufficient, and both halves are load-bearing.*
 /// `getpeereid` answers **which user**; §5.4's question is **which node**. §11 item 28's open
@@ -1456,6 +1456,21 @@ fn sent_task(req: &crate::run::SpawnRequest) -> Option<marion_core::proto::resul
     ))
 }
 
+/// §5.4's refusal of a node token this supervisor holds no binding for — at `session/hello` and at
+/// every call that re-proves a `caller`.
+fn unminted_token(agent: &AgentId) -> RpcError {
+    RpcError::refused(
+        &agent.0,
+        "this supervisor did not mint that node token, so it cannot tell the caller it claims to \
+         be from any other process that can reach this socket. §5.4 binds a capability token to an \
+         `AgentId`; the supervisor holds the binding and there is no round trip that could \
+         establish one for a node it does not own. A node whose supervisor has restarted is in \
+         this case and it is not a mistake the caller made — its parent is `Orphaned` (§7.2) and \
+         needs an operator, not a retry.",
+        "§5.4, §6.1",
+    )
+}
+
 fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
     let own = crate::socket::own_uid();
     match peer {
@@ -1468,10 +1483,7 @@ fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
                  that starts work rather than describing it, and marion authorizes it by \
                  filesystem permission on the socket: §2's path is under `<state>` (or \
                  `/tmp/marion-<uid>`), created 0700 with the socket 0600, so another user reaching \
-                 it means the permissions are not what marion set. There is deliberately no token \
-                 for this path — §5.4's capability binds to an `AgentId` and a root has none yet, \
-                 and any secret at rest here would be readable by exactly the processes it would \
-                 be excluding (§11 item 28, open question 3)."
+                 it means the permissions are not what marion set."
             ),
             "§2, §5.4",
         )),
@@ -1479,9 +1491,7 @@ fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
             "caller",
             "marion could not read this connection's peer credentials, so it cannot establish that \
              the caller is this supervisor's own user — and a check that could not be made is not \
-             a check that passed. A spawn with no `caller` creates a root, which is authorized by \
-             filesystem permission on the socket and by nothing else (§11 item 28, open question \
-             3), so there is no weaker evidence to fall back to.",
+             a check that passed.",
             "§2, §5.4",
         )),
     }
@@ -1692,6 +1702,7 @@ impl QuitRuntime for SystemQuitRuntime {
 }
 
 /// `node/steer`: authority, the node's delivery strategy, and the inbox. See its module docs.
+mod session;
 mod steer;
 
 /// `node/cancel`: freeze a subtree, abort it bottom-up, kill what outlives its grace.
@@ -1775,6 +1786,10 @@ pub struct RegistryHandle {
     /// [`Self::quit`] uses and for the same reason — it makes a read and the write derived from it
     /// one indivisible decision, not a throughput device.
     spawn_decision: Mutex<()>,
+    /// The operator's capability, from `<state>/operator.key` (in memory only, for a handle that
+    /// serves no state root); `Err` names why there is none, and then no connection can speak for
+    /// the operator. See [`session`].
+    operator_key: Result<Secret, String>,
     /// **The races this supervisor is driving**; empty, and silent, with none open.
     races: crate::race::Races,
     /// **What this supervisor sent each child it started**, for `node/get` to show while the child
@@ -2018,6 +2033,17 @@ impl RegistryHandle {
         } else {
             (Arc::new(spending), None)
         };
+        let operator_key = match &spawn_env {
+            Some(env) => crate::operator_key::ensure(&env.state).map_err(|e| {
+                format!(
+                    "{} could not be read or created: {e}",
+                    crate::operator_key::path(&env.state).display()
+                )
+            }),
+            // A key that exists nowhere but in this process: no client can present it, and a test
+            // in this crate can read it back.
+            None => Ok(mint_token()),
+        };
         Arc::new_cyclic(|me: &std::sync::Weak<RegistryHandle>| {
             if let Some(rx) = crossed {
                 Self::enforce_budgets(me.clone(), rx);
@@ -2042,6 +2068,7 @@ impl RegistryHandle {
                 #[cfg(test)]
                 pane_attach_selection_hook: Mutex::new(None),
                 spawn_decision: Mutex::new(()),
+                operator_key,
                 races: crate::race::Races::default(),
                 sent: Mutex::new(HashMap::new()),
                 spending,
@@ -3652,16 +3679,7 @@ impl RegistryHandle {
         // `.marion/agents.toml` defines the caller's own type, read below, outside the registry lock.
         let repo = self.authenticate(c);
         let Some(repo) = repo else {
-            return Err(RpcError::refused(
-                &c.agent_id.0,
-                "this supervisor did not mint that node token, so it cannot tell the caller it \
-                 claims to be from any other process that can reach this socket. §5.4 binds a \
-                 capability token to an `AgentId`; the supervisor holds the binding and there is \
-                 no round trip that could establish one for a node it does not own. A node whose \
-                 supervisor has restarted is in this case and it is not a mistake the caller made \
-                 — its parent is `Orphaned` (§7.2) and needs an operator, not a retry.",
-                "§5.4, §6.1",
-            ));
+            return Err(unminted_token(&c.agent_id));
         };
         let (type_name, depth) = self.live.read(|r| {
             let node = r.tree().get(&c.agent_id).ok_or_else(|| {
@@ -6129,7 +6147,18 @@ impl Handle for RegistryHandle {
         lock(&self.shared).clients.insert(conn);
     }
 
-    fn call(&self, _conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError> {
+    fn claimed_by_native(&self, conn: ConnId, agent: &AgentId) {
+        lock(&self.shared).principals.insert(
+            conn,
+            marion_core::proto::result::SessionPrincipal::Node(agent.clone()),
+        );
+    }
+
+    fn call(&self, conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError> {
+        if let Call::SessionHello(p) = call {
+            return self.session_hello(conn, p).map(MethodResult::SessionHello);
+        }
+        self.authorize(conn, call)?;
         match call {
             Call::NodeGet(p) => self
                 .node_get(&p.agent_id, p.activity)
@@ -6224,6 +6253,7 @@ impl Handle for RegistryHandle {
         // replay rather than a hole.
         g.attached.retain(|a| a.conn != conn);
         g.clients.remove(&conn);
+        g.principals.remove(&conn);
         drop(g);
         // The display plane's half of the same invariant, and it is the half §7.3.1 is really
         // about: a client that was SIGKILLed while holding a node's keyboard must not leave that
@@ -7134,6 +7164,7 @@ mod tests {
         disposition: marion_core::proto::QuitDisposition,
     ) -> Result<marion_core::proto::result::SessionQuitResult, RpcError> {
         let out = crate::serve::sink(ConnId(9));
+        fx.handle.hello_as_operator(ConnId(9));
         match fx.handle.call(
             ConnId(9),
             &Call::SessionQuit(marion_core::proto::params::SessionQuitParams { disposition }),
@@ -7204,10 +7235,15 @@ mod tests {
             }
         }
 
+        /// The operator's connection, past its `session/hello`.
         fn dial(&self) -> std::os::unix::net::UnixStream {
-            let s = std::os::unix::net::UnixStream::connect(&self.sock).expect("dial");
+            let mut s = std::os::unix::net::UnixStream::connect(&self.sock).expect("dial");
             s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
+            let who = crate::client_auth::Identity::Operator(
+                self.fx.handle.operator_hello().operator.expect("a key"),
+            );
+            crate::client_auth::hello(&mut s, &who).expect("the operator's hello");
             s
         }
     }
@@ -7526,6 +7562,7 @@ mod tests {
             .read(|r| r.tree().get(&id("root")).unwrap().state);
         let out = crate::serve::sink(ConnId(1));
 
+        fx.handle.hello_as_operator(ConnId(1));
         let result = fx
             .handle
             .call(
@@ -7569,6 +7606,7 @@ mod tests {
             state
         );
 
+        fx.handle.hello_as_operator(ConnId(1));
         assert!(matches!(
             fx.handle.call(
                 ConnId(1),
@@ -8566,6 +8604,7 @@ mod tests {
         agent: &str,
     ) -> Result<marion_core::proto::result::NodeKillResult, RpcError> {
         let out = crate::serve::sink(ConnId(9));
+        fx.handle.hello_as_operator(ConnId(9));
         match fx.handle.call(
             ConnId(9),
             &Call::NodeKill(marion_core::proto::params::NodeKillParams {
@@ -12960,6 +12999,7 @@ mod tests {
             p: AgentSpawnParams,
         ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
             let out = crate::serve::sink(ConnId(3));
+            fx.handle.hello_as_operator(ConnId(3));
             match fx.handle.call(ConnId(3), &Call::AgentSpawn(p), &out)? {
                 MethodResult::AgentSpawn(r) => Ok(r),
                 other => panic!("wrong result: {}", other.method().as_str()),
@@ -13134,16 +13174,19 @@ mod tests {
             let (handle, journal) = notified(&dir, crate::notify::Backend::Terminal);
             let (first, first_rx) = crate::serve::capture(ConnId(501));
             let (second, second_rx) = crate::serve::capture(ConnId(502));
-            let claim = |out: &Outbound| match handle
-                .call(
-                    out.conn(),
-                    &Call::NotifyClaim(marion_core::proto::params::NotifyClaimParams {}),
-                    out,
-                )
-                .unwrap()
-            {
-                MethodResult::NotifyClaim(r) => r,
-                other => panic!("{}", other.method().as_str()),
+            let claim = |out: &Outbound| {
+                handle.hello_as_operator(out.conn());
+                match handle
+                    .call(
+                        out.conn(),
+                        &Call::NotifyClaim(marion_core::proto::params::NotifyClaimParams {}),
+                        out,
+                    )
+                    .unwrap()
+                {
+                    MethodResult::NotifyClaim(r) => r,
+                    other => panic!("{}", other.method().as_str()),
+                }
             };
             assert!(claim(&first).head);
             assert!(!claim(&second).head);
@@ -14106,6 +14149,161 @@ mod tests {
             assert_eq!(journal_len(&fx), before, "and nothing was created");
         }
 
+        /// A call as connection `conn` makes it, through the one dispatch every socket call takes.
+        fn call_on(fx: &Owning, conn: ConnId, call: Call) -> Result<MethodResult, RpcError> {
+            fx.handle.call(conn, &call, &crate::serve::sink(conn))
+        }
+
+        fn hello_operator(fx: &Owning, conn: ConnId) -> Result<MethodResult, RpcError> {
+            let state = &fx.handle.spawn_env.as_ref().unwrap().state;
+            let key = crate::operator_key::read(state)
+                .unwrap()
+                .expect("minted at boot");
+            call_on(
+                fx,
+                conn,
+                Call::SessionHello(marion_core::proto::params::SessionHelloParams {
+                    operator: Some(key),
+                    node: None,
+                }),
+            )
+        }
+
+        fn quit_detach() -> Call {
+            Call::SessionQuit(marion_core::proto::params::SessionQuitParams {
+                disposition: marion_core::proto::QuitDisposition::DetachAll,
+            })
+        }
+
+        /// **A connection that has not said who it speaks for may call nothing but `session/hello`**
+        /// — not even a read: node output can be sensitive, and the uid on the socket is shared by
+        /// every process the operator runs, a node's shell included.
+        #[test]
+        fn a_connection_that_names_nobody_is_refused_every_call() {
+            let fx = owning("owns-hello-none", vec![intent("root", None, "claude", 0)]);
+            let conn = ConnId(71);
+            for call in [
+                Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
+                Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
+                quit_detach(),
+            ] {
+                let e = call_on(&fx, conn, call).expect_err("an anonymous call is refused");
+                assert!(e.message.contains("session/hello"), "{}", e.message);
+            }
+        }
+
+        /// **The operator's key opens every method; a wrong key opens none.** A connection says who
+        /// it is once.
+        #[test]
+        fn the_operators_key_opens_every_method_and_a_wrong_one_none() {
+            let fx = owning(
+                "owns-hello-operator",
+                vec![intent("root", None, "claude", 0)],
+            );
+            let wrong = call_on(
+                &fx,
+                ConnId(72),
+                Call::SessionHello(marion_core::proto::params::SessionHelloParams {
+                    operator: Some(Secret::new("0".repeat(64))),
+                    node: None,
+                }),
+            );
+            assert!(wrong.is_err(), "a guessed key is refused");
+            assert!(call_on(&fx, ConnId(72), quit_detach()).is_err());
+
+            assert!(matches!(
+                hello_operator(&fx, ConnId(73)),
+                Ok(MethodResult::SessionHello(_))
+            ));
+            assert!(call_on(&fx, ConnId(73), quit_detach()).is_ok());
+            assert!(
+                hello_operator(&fx, ConnId(73)).is_err(),
+                "a connection says who it speaks for once"
+            );
+        }
+
+        /// **A node's token makes a connection that node**: it reads, and acts about itself and the
+        /// nodes below it, and nothing the operator alone may do — no quit, no root.
+        #[test]
+        fn a_node_connection_acts_only_about_itself_and_the_nodes_below_it() {
+            let fx = owning(
+                "owns-hello-node",
+                vec![
+                    intent("root", None, "claude", 0),
+                    intent("sibling", None, "claude", 0),
+                ],
+            );
+            let token = fx.handle.claim(
+                &id("root"),
+                Some(marion_core::contract::TaskId("t".into())),
+                fx.repo.clone(),
+            );
+            let conn = ConnId(74);
+            let said = call_on(
+                &fx,
+                conn,
+                Call::SessionHello(marion_core::proto::params::SessionHelloParams {
+                    operator: None,
+                    node: Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: token.clone(),
+                    }),
+                }),
+            );
+            assert!(
+                matches!(said, Ok(MethodResult::SessionHello(_))),
+                "{said:?}"
+            );
+            assert!(
+                call_on(
+                    &fx,
+                    conn,
+                    Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {})
+                )
+                .is_ok()
+            );
+            let quit = call_on(&fx, conn, quit_detach()).expect_err("a node cannot quit marion");
+            assert!(quit.message.contains("operator"), "{}", quit.message);
+            let kill = call_on(
+                &fx,
+                conn,
+                Call::NodeKill(marion_core::proto::params::NodeKillParams {
+                    agent_id: id("sibling"),
+                }),
+            )
+            .expect_err("a node cannot end a node outside its subtree");
+            assert!(kill.message.contains("below"), "{}", kill.message);
+            let cancel = call_on(
+                &fx,
+                conn,
+                Call::NodeCancel(marion_core::proto::params::NodeCancelParams {
+                    agent_id: id("sibling"),
+                    caller: Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: token.clone(),
+                    }),
+                }),
+            )
+            .expect_err("a node cannot cancel a node outside its subtree");
+            assert!(cancel.message.contains("below"), "{}", cancel.message);
+            let root = call_on(&fx, conn, Call::AgentSpawn(params(None, 1)))
+                .expect_err("a node cannot start a root");
+            assert!(root.message.contains("operator"), "{}", root.message);
+
+            let forged = call_on(
+                &fx,
+                ConnId(75),
+                Call::SessionHello(marion_core::proto::params::SessionHelloParams {
+                    operator: None,
+                    node: Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: Secret::new("f".repeat(64)),
+                    }),
+                }),
+            );
+            assert!(forged.is_err(), "a forged token names nobody");
+        }
+
         /// **A root that states a check is refused by name, before anything exists.** A root has no
         /// contract (§9), so `verification` or `writable_scope` on it would be checks nobody ran;
         /// each is refused alone, and a child keeps both.
@@ -14232,7 +14430,7 @@ mod tests {
             assert_eq!(fx.handle.owned_nodes(), 0, "the refusal claims no node");
         }
 
-        /// **And it is not a token, deliberately** — the other half of open question 3.
+        /// **Neither the peer check nor the operator's connection stands in for a node token.**
         ///
         /// A caller that *does* name a node still has to prove it, and this asserts the two paths
         /// do not blur: the peer check never stands in for `resolve_caller`. Both calls below come
@@ -14567,6 +14765,7 @@ mod tests {
         fn a_supervisor_that_cannot_spawn_refuses_by_naming_the_build_not_a_missing_directory() {
             let fx = fx("owns-no-env");
             let out = crate::serve::sink(ConnId(4));
+            fx.handle.hello_as_operator(ConnId(4));
             let e = fx
                 .handle
                 .call(
@@ -14819,6 +15018,7 @@ mod tests {
             prompt: &str,
         ) -> Result<marion_core::proto::result::NodeResumeResult, RpcError> {
             let out = crate::serve::sink(ConnId(3));
+            fx.handle.hello_as_operator(ConnId(3));
             match fx.handle.call(
                 ConnId(3),
                 &Call::NodeResume(marion_core::proto::params::NodeResumeParams {
@@ -14845,6 +15045,7 @@ mod tests {
             }
             let fx = orphaning("resume-relaunch", lost_root("sess-relaunch", None, None));
             // The orphan is what a resume is for: fate marked, a session to hand back.
+            fx.handle.hello_as_operator(ConnId(9));
             let before = fx
                 .handle
                 .call(
@@ -15119,6 +15320,7 @@ mod tests {
             let agent_id = spawn_a_real_child(&fx, 120);
 
             let out = crate::serve::sink(ConnId(4));
+            fx.handle.hello_as_operator(ConnId(4));
             let MethodResult::TreeSubscribe(snap) = fx
                 .handle
                 .call(

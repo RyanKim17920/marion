@@ -166,7 +166,7 @@ struct Session {
     /// The project root §2 keys the supervisor on, resolved once: dialling again must not ask git
     /// again.
     key: PathBuf,
-    socket: PathBuf,
+    sock: crate::socket::SocketPaths,
     /// The directory the supervisor's socket appears in (its nearest existing ancestor until it
     /// exists), watched while no supervisor is there.
     socket_dir: crate::wake::Watch,
@@ -200,10 +200,9 @@ struct Session {
 impl Session {
     fn new(opts: &Options) -> Session {
         let key = crate::socket::project_root(&opts.repo);
-        let socket = crate::socket::socket_paths(&opts.state, &key, crate::socket::own_uid())
-            .socket()
-            .to_path_buf();
-        let socket_dir = crate::wake::Watch::new(socket.parent().unwrap_or(&socket));
+        let sock = crate::socket::socket_paths(&opts.state, &key, crate::socket::own_uid());
+        let socket = sock.socket();
+        let socket_dir = crate::wake::Watch::new(socket.parent().unwrap_or(socket));
         let shown = match key.file_name().and_then(|f| f.to_str()) {
             Some(".git") => key.parent().unwrap_or(&key).to_path_buf(),
             _ => key.clone(),
@@ -231,7 +230,7 @@ impl Session {
             repo: opts.repo.clone(),
             state: opts.state.clone(),
             key,
-            socket,
+            sock,
             socket_dir,
             socket_moved: false,
             theme: Theme::from_env(),
@@ -427,12 +426,11 @@ impl Session {
                 None
             }
             Effect::Steer(id, text) => {
-                self.home.notice = Some(
-                    match crate::courier::steer(&self.socket, &id, &text, None) {
+                self.home.notice =
+                    Some(match crate::courier::steer(&self.sock, &id, &text, None) {
                         Ok(s) => s.sentence(),
                         Err(e) => format!("steer refused: {e}"),
-                    },
-                );
+                    });
                 None
             }
             // **On a thread**: a cancel waits out each level's grace, which can be seconds, and the
@@ -442,7 +440,7 @@ impl Session {
                 let (Effect::Cancel(id) | Effect::Kill(id)) = effect else {
                     unreachable!("matched above")
                 };
-                let (socket, tx) = (self.socket.clone(), self.reporter.clone());
+                let (socket, tx) = (self.sock.clone(), self.reporter.clone());
                 let short = crate::tree::short_id(&id.0).to_string();
                 self.home.notice = Some(if force {
                     format!("killing {short}…")
@@ -594,7 +592,7 @@ impl Session {
             (Some((d, _)), Some(next)) if *d == id => ActivityCursor::From(next),
             _ => ActivityCursor::Tail,
         };
-        if let Ok(r) = crate::courier::node_get_with(&self.socket, &id, Some(cursor)) {
+        if let Ok(r) = crate::courier::node_get_with(&self.sock, &id, Some(cursor)) {
             self.home.absorb_detail(id, r.detail);
             self.dirty = true;
         }

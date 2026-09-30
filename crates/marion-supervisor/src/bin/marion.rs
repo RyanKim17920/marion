@@ -521,7 +521,7 @@ fn live_node(
             .ok_or_else(|| format!("no node `{target}` in this project's forest"))?;
         let sock = socket::socket_paths(state, &socket::project_root(repo), socket::own_uid());
         let got = marion_supervisor::courier::node_get_with(
-            sock.socket(),
+            &sock,
             &id,
             Some(marion_core::proto::params::ActivityCursor::Tail),
         )
@@ -751,8 +751,7 @@ fn steer_main(argv: &[String]) -> Result<ExitCode, Exit> {
     };
     let steered = find_node(&args.target, &repo, &state).and_then(|agent_id| {
         let sock = socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
-        marion_supervisor::courier::steer(sock.socket(), &agent_id, &text, None)
-            .map_err(|e| e.to_string())
+        marion_supervisor::courier::steer(&sock, &agent_id, &text, None).map_err(|e| e.to_string())
     });
     Ok(match steered {
         Ok(s) => {
@@ -783,10 +782,9 @@ fn cancel_main(argv: &[String]) -> Result<ExitCode, Exit> {
     let ended = find_node(&args.agent_id, &repo, &state).and_then(|agent_id| {
         let sock = socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
         let answered = if force {
-            marion_supervisor::courier::kill(sock.socket(), &agent_id)
-                .map(|r| (r.state, Vec::new()))
+            marion_supervisor::courier::kill(&sock, &agent_id).map(|r| (r.state, Vec::new()))
         } else {
-            marion_supervisor::courier::cancel(sock.socket(), &agent_id).map(|r| (r.state, r.nodes))
+            marion_supervisor::courier::cancel(&sock, &agent_id).map(|r| (r.state, r.nodes))
         };
         answered
             .map(|(state, nodes)| (agent_id, state, nodes))

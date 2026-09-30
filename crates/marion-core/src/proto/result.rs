@@ -448,6 +448,21 @@ pub struct NotifyClaimResult {
     pub head: bool,
 }
 
+/// `session/hello`: the principal the connection now speaks for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionPrincipal {
+    /// The operator: every method.
+    Operator,
+    /// This node: what a node may do, about itself and the nodes below it.
+    Node(AgentId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHelloResult {
+    pub principal: SessionPrincipal,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

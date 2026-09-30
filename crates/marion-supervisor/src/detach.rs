@@ -212,6 +212,9 @@ pub enum DetachError {
          a socket is dead."
     )]
     NotReachable { path: PathBuf, waited_ms: u128 },
+    /// The supervisor answered and would not take this client's `session/hello`.
+    #[error("{0}")]
+    Hello(String),
     #[error(transparent)]
     Socket(#[from] SocketError),
 }
@@ -219,7 +222,7 @@ pub enum DetachError {
 /// What [`ensure_supervisor`] found or made.
 #[derive(Debug)]
 pub struct Ensured {
-    /// A live connection to the supervisor. Held by the caller, because a client that asked for a
+    /// A live connection to the supervisor, already past its `session/hello`. Held by the caller, because a client that asked for a
     /// supervisor and then threw the connection away would have proved nothing: §5.7's outcome is
     /// *"the loser dials the winner"*, and this **is** the dial.
     pub stream: std::os::unix::net::UnixStream,
@@ -282,7 +285,10 @@ pub fn ensure_supervisor_within(
     let mut last_attempt = Instant::now();
     let mut last_spawn: Option<DetachError> = None;
     loop {
-        if let Some(stream) = dial_live_supervisor(paths)? {
+        if let Some(mut stream) = dial_live_supervisor(paths)? {
+            crate::client_auth::identity_for(paths)
+                .and_then(|who| crate::client_auth::hello(&mut stream, &who))
+                .map_err(DetachError::Hello)?;
             return Ok(Ensured { stream, started });
         }
         if may_start_another(attempts, last_attempt, paths) {
