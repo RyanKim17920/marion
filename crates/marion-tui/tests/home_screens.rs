@@ -590,12 +590,13 @@ fn hints(tab: &str) -> Vec<Hint> {
         ]),
         "watch" => h(&[
             ("j/k", "move"),
-            ("enter", "attach"),
+            ("!", "needs you"),
+            ("enter", "stream"),
             ("s", "steer"),
             ("x", "cancel"),
             ("m", "merge"),
-            ("!", "next attention"),
         ]),
+        "watch-empty" => h(&[("tab", "Start")]),
         "setup" => h(&[
             ("j/k", "move"),
             ("enter", "details"),
@@ -891,7 +892,7 @@ fn watch_empty_forest() {
         ..Default::default()
     };
     let input = command("marion run <type> --prompt <text>", "");
-    let mut sc = screen(Body::Watch(&v), input, "watch");
+    let mut sc = screen(Body::Watch(&v), input, "watch-empty");
     sc.attention = 0;
     insta::assert_snapshot!(report(&sc, 80, 24));
 }
@@ -900,7 +901,7 @@ fn watch_empty_forest() {
 fn watch_no_supervisor() {
     let v = WatchView::default();
     let input = command("marion run <type> --prompt <text>", "");
-    let mut sc = screen(Body::Watch(&v), input, "watch");
+    let mut sc = screen(Body::Watch(&v), input, "watch-empty");
     sc.attention = 0;
     insta::assert_snapshot!(report(&sc, 80, 24));
 }

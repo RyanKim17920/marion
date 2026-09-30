@@ -944,8 +944,13 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("s", "steer"),
             ("x", "cancel"),
         ]),
+        // Nothing to act on: the one key that leads somewhere.
+        (_, Tab::Watch) if home.watch.nodes.is_empty() => h(&[("tab", "Start")]),
+        // `!` second: a narrow row drops hints from its end, and what needs the operator is the
+        // one a narrow screen must keep.
         (_, Tab::Watch) => h(&[
             ("j/k", "move"),
+            ("!", "needs you"),
             (
                 "enter",
                 if home.selected().is_some_and(|n| n.pane) {
@@ -958,7 +963,6 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("x", "cancel"),
             ("u", "resume"),
             ("m", "merge"),
-            ("!", "needs you"),
         ]),
         // One set per section: what the keys do on the row under the cursor, and nothing that
         // does something else there.

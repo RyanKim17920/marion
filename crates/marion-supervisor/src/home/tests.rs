@@ -703,6 +703,26 @@ fn setup_hints_follow_the_section_under_the_cursor() {
     assert!(h.notice.as_deref().unwrap_or("").contains("a adds a key"));
 }
 
+/// **Watch's hint row keeps `!` where a narrow screen cannot drop it**, second; and with nothing
+/// to act on it offers only the key that leads to Start.
+#[test]
+fn watch_hints_put_needs_you_second_and_an_empty_forest_offers_only_start() {
+    let mut h = home();
+    h.tab = Tab::Watch;
+    let keys = |h: &Home| {
+        view::frame(h, &view::Places::default())
+            .hints
+            .into_iter()
+            .map(|x| x.key)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keys(&h)[1], "!");
+    h.lost_supervisor();
+    assert_eq!(keys(&h), ["tab"]);
+    h.set_nodes(vec![]);
+    assert_eq!(keys(&h), ["tab"]);
+}
+
 #[test]
 fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
     let id = AgentId("0199-abc".into());

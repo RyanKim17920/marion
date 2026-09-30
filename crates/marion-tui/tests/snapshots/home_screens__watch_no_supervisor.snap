@@ -26,10 +26,10 @@ expression: "report(&sc, 80, 24)"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion run <type> --prompt <text>                                        │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · m merge               F1 help
+  tab Start                                                            F1 help
 --- styles ---
    42  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionNosupervisorisrunn"
-   13  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "j/kentersxmF1"
-  363  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+    5  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "tabF1"
+  338  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    30  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watchmarionrun<type>--pr"
