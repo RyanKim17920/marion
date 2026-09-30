@@ -1258,6 +1258,8 @@ impl Drop for AcpChild {
 
 /// How long an ACP agent is given to answer `initialize`. It is a process start plus one frame.
 const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
+/// How long an agent whose stdin refused the first write is given to be seen exiting.
+const WRITE_REFUSED_GRACE: Duration = Duration::from_secs(2);
 /// How long `session/new` is given. Longer than the handshake because S20 measured it reaching a
 /// vendor over the network before answering — including to say no.
 const SESSION_BUDGET: Duration = Duration::from_secs(60);
@@ -1283,7 +1285,15 @@ fn acp_handshake(
         }
     };
     if !agent.send(&acp::initialize_request(0)) {
-        notes.push("initialize: FAILED — could not write to the agent's stdin".into());
+        // A write the agent's stdin refused is, almost always, an agent that already exited — on
+        // Linux it can be gone before the first byte. Its stdout closing says so within a moment,
+        // and its stderr says why, exactly as for an agent that exits after the write.
+        let _ = agent.response(0, WRITE_REFUSED_GRACE);
+        notes.push(format!(
+            "initialize: FAILED — could not write to the agent's stdin: {}",
+            agent.silence(WRITE_REFUSED_GRACE)
+        ));
+        agent.finish();
         return None;
     }
     let frame = agent.response(0, HANDSHAKE_BUDGET);
