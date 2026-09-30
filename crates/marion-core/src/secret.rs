@@ -9,16 +9,36 @@
 //! * the plaintext comes out only through [`Secret::expose`], a name a reviewer (and the security
 //!   check) can find at every place a secret leaves marion.
 //!
-//! Serialization is `#[serde(transparent)]`: a secret that has to cross a wire (a node token in
-//! JSON-RPC params, a key in a harness's config document) is the same bare JSON string it was
-//! before it had a type, so every pinned wire shape is unchanged.
+//! * there is **no** `Serialize`, so a struct holding a secret cannot be written to a record, a
+//!   log or a reply by deriving it. A field that must carry one across a wire (a node token in
+//!   JSON-RPC params) says so with `#[serde(serialize_with = "…::serialize_exposed")]` — the
+//!   explicit wrapper, and a name the security check finds like [`Secret::expose`]. The value is
+//!   the same bare JSON string it was before it had a type, so every pinned wire shape is
+//!   unchanged. Deserializing is always allowed: reading a secret in exposes nothing.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-/// A key, token or bearer. `Debug` prints `Secret(***)`; there is no `Display`.
-#[derive(Clone, Serialize, Deserialize)]
+/// A key, token or bearer. `Debug` prints `Secret(***)`; there is no `Display` and no `Serialize`.
+#[derive(Clone, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
+
+/// **The one way a secret is serialized**: `#[serde(serialize_with = "serialize_exposed")]` on a
+/// field that must carry its plaintext across a wire, as a bare string.
+pub fn serialize_exposed<S: serde::Serializer>(s: &Secret, ser: S) -> Result<S::Ok, S::Error> {
+    ser.serialize_str(&s.0)
+}
+
+/// [`serialize_exposed`] for an optional secret: absent is `null`, as it always was.
+pub fn serialize_exposed_opt<S: serde::Serializer>(
+    s: &Option<Secret>,
+    ser: S,
+) -> Result<S::Ok, S::Error> {
+    match s {
+        Some(s) => ser.serialize_some(&s.0),
+        None => ser.serialize_none(),
+    }
+}
 
 impl Secret {
     /// Wraps a value marion minted or was handed. No validation: what a valid key looks like is
@@ -92,11 +112,31 @@ mod tests {
         assert_eq!(Secret::from(PLAIN).expose(), PLAIN);
     }
 
+    /// **A secret serializes only through the explicit wrapper**, and there as the bare string it
+    /// was before it had a type. `Secret` itself has no `Serialize`, so a struct that derives it
+    /// around a secret without saying so does not compile.
     #[test]
-    fn serializes_as_the_bare_string_it_was_before_it_had_a_type() {
-        let json = serde_json::to_string(&Secret::new(PLAIN)).unwrap();
-        assert_eq!(json, serde_json::to_string(PLAIN).unwrap());
-        let back: Secret = serde_json::from_str(&json).unwrap();
+    fn serializes_only_through_the_explicit_wrapper_as_the_bare_string() {
+        #[derive(serde::Serialize)]
+        struct Wire {
+            #[serde(serialize_with = "serialize_exposed")]
+            token: Secret,
+            #[serde(serialize_with = "serialize_exposed_opt")]
+            maybe: Option<Secret>,
+            #[serde(serialize_with = "serialize_exposed_opt")]
+            none: Option<Secret>,
+        }
+        let json = serde_json::to_value(Wire {
+            token: Secret::new(PLAIN),
+            maybe: Some(Secret::new(PLAIN)),
+            none: None,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"token": PLAIN, "maybe": PLAIN, "none": null})
+        );
+        let back: Secret = serde_json::from_str(&serde_json::to_string(PLAIN).unwrap()).unwrap();
         assert_eq!(back, Secret::new(PLAIN));
         assert!(serde_json::from_str::<Secret>("7").is_err());
     }

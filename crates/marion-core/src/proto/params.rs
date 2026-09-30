@@ -349,6 +349,7 @@ pub struct SpawnCaller {
     ///
     /// **No `#[serde(default)]`.** An omitted token must be a deserialization failure rather than
     /// the empty string, or the credential becomes one every process on the machine already has.
+    #[serde(serialize_with = "crate::secret::serialize_exposed")]
     pub node_token: Secret,
 }
 

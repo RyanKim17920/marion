@@ -464,7 +464,7 @@ pub fn providers_json(p: &ProviderSpec) -> Value {
             PROVIDER: {
                 "settings": {
                     "provider": PROVIDER,
-                    "apiKey": p.api_key,
+                    "apiKey": p.api_key.expose(),
                     "model": p.model,
                     "baseUrl": p.base_url,
                 },

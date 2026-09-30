@@ -605,9 +605,11 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
         "headerTimeout": PROVIDER_HEADER_TIMEOUT_MS,
     });
     match (&spec.api_key, spec.key_header) {
-        (Some(k), marion_core::provider::KeyHeader::Bearer) => options["apiKey"] = json!(k),
+        (Some(k), marion_core::provider::KeyHeader::Bearer) => {
+            options["apiKey"] = json!(k.expose())
+        }
         (Some(k), marion_core::provider::KeyHeader::XApiKey) => {
-            options["headers"] = json!({ "x-api-key": k });
+            options["headers"] = json!({ "x-api-key": k.expose() });
         }
         (None, _) => {}
     }
