@@ -1435,12 +1435,29 @@ fn c_claude_root_spawns_a_gemini_child_and_receives_its_contract() {
 #[test]
 fn d_claude_root_spawns_an_opencode_child_that_verifies_lands_its_branch_and_journals_its_session()
 {
-    for n in [&CLAUDE, &OPENCODE] {
+    verifies_lands_and_journals_its_session(&OPENCODE, |s| s.starts_with("ses_"));
+}
+
+/// **The same parity cell for a pi child** (opencode's s36 cell, row for row): the spawn's
+/// verification passes in the child's worktree, its write lands on its branch, and the session
+/// pi's `get_state` handshake named (a UUID, the id `--session` takes) is journaled.
+#[test]
+fn zzt_claude_root_spawns_a_pi_child_that_verifies_lands_its_branch_and_journals_its_session() {
+    verifies_lands_and_journals_its_session(&PI, |s| {
+        s.len() == 36 && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    });
+}
+
+/// A claude root's `child` with every feature a child has: the eleven assertions [`cell`] makes,
+/// the spawn's verification recorded and passing, the write on the child's own branch at a commit
+/// marion read back, and a harness session id `session_shape` accepts journaled for a resume.
+fn verifies_lands_and_journals_its_session(child_node: &Node, session_shape: fn(&str) -> bool) {
+    for n in [&CLAUDE, child_node] {
         assert!(on_path(n.program), "this cell drives a REAL {}", n.program);
     }
     let verify = format!("grep -q 'cross-product marker' {CHILD_FILE}");
-    let ev = drive_with(&CLAUDE, &OPENCODE, &[&verify]);
-    assert_cell(&CLAUDE, &OPENCODE, &ev);
+    let ev = drive_with(&CLAUDE, child_node, &[&verify]);
+    assert_cell(&CLAUDE, child_node, &ev);
 
     let contract: TaskContract = serde_json::from_value(ev.persisted[0].clone()).unwrap();
     let comp = contract.completion.as_ref().unwrap();
@@ -1472,11 +1489,9 @@ fn d_claude_root_spawns_an_opencode_child_that_verifies_lands_its_branch_and_jou
         .find(|n| n.depth() == Some(1))
         .expect("the child is journaled");
     assert!(
-        child
-            .harness_session
-            .as_deref()
-            .is_some_and(|s| s.starts_with("ses_")),
-        "the child's opencode session is journaled for a resume: {:?}",
+        child.harness_session.as_deref().is_some_and(session_shape),
+        "the child's {} session is journaled for a resume: {:?}",
+        child_node.program,
         child.harness_session
     );
 }
