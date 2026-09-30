@@ -75,6 +75,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Copilot,
     surfaces: Surfaces::LaunchOnly,
     program: Some("copilot"),
+    // Runs any vendor's model.
+    vendor: None,
+    verified: &["1.0.83"],
     argv: &[
         // The prompt is the **argument to `-p`**: `-p` is what selects non-interactive mode at
         // all, and a bare positional would open the TUI.

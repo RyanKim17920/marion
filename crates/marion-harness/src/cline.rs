@@ -87,6 +87,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Cline,
     surfaces: Surfaces::LaunchOnly,
     program: Some("cline"),
+    // Runs any vendor's model.
+    vendor: None,
+    verified: &["3.0.61"],
     argv: &[
         Arg::Lit("--json"),
         Arg::Flag("-c", Field::Cwd),

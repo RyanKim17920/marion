@@ -82,6 +82,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // would mint a `PtyWitness` for a process that has none (§11 item 1).
     surfaces: Surfaces::Headless(TypedKind::Acp),
     program: None,
+    // Runs any vendor's model.
+    vendor: None,
+    // The version is the agent's, not this row's.
+    verified: &[],
     argv: &[Arg::Items(Field::AgentArgs)],
     pane: None,
     env: &[],

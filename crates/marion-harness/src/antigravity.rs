@@ -63,6 +63,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Antigravity,
     surfaces: Surfaces::LaunchOnly,
     program: Some("agy"),
+    // Runs any vendor's model.
+    vendor: None,
+    verified: &["1.2.8"],
     argv: &[
         // `--conversation <id>`, first: a flag like every other, and an unknown id is read back
         // off the stream's `init` frame rather than trusted.

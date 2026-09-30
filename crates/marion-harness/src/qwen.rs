@@ -86,6 +86,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Qwen,
     surfaces: Surfaces::LaunchOnly,
     program: Some("qwen"),
+    // Runs any vendor's model.
+    vendor: None,
+    verified: &["0.23.0"],
     argv: &[
         // First, as measured (`qwen-resume-turn-2.argv.json`).
         Arg::Resume,

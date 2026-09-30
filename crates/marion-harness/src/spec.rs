@@ -64,6 +64,18 @@ pub struct HarnessSpec {
     /// The binary, or `None` where the launch itself names it — ACP, whose program is the agent's
     /// own and arrives in [`Fields::program`].
     pub program: Option<&'static str>,
+    /// **The vendor whose models this harness is the own CLI of** (`anthropic` for claude-code), or
+    /// `None` for a harness that runs any vendor's model. It is the family a node is judged by
+    /// when its model is unnamed or unrecognised, so a default reviewer can come from another
+    /// family (`marion_core::review::model_family`).
+    pub vendor: Option<&'static str>,
+    /// **The versions marion verified this harness against**: the first is the pin its measured
+    /// behaviours were taken from, the rest were observed green since, in the order they were
+    /// admitted (`scripts/admit-harness.sh` appends; the evidence for each is beside its program
+    /// in `marion_testsupport::PINNED_HARNESSES`). The test gate admits exactly these, and doctor
+    /// notes an installed version newer than the newest. Empty where the version is not the row's
+    /// own — an ACP agent's.
+    pub verified: &'static [&'static str],
     /// The headless argv, in order.
     pub argv: &'static [Arg],
     /// The argv of the pane shape, where the harness has one (§3.4's `opaque`). `None` is a

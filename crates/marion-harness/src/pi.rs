@@ -75,6 +75,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Pi,
     surfaces: Surfaces::JsonlRpc(&RPC),
     program: Some("pi"),
+    // Runs any vendor's model.
+    vendor: None,
+    verified: &["0.80.2"],
     argv: &[
         Arg::Lit("--mode"),
         Arg::Lit("rpc"),

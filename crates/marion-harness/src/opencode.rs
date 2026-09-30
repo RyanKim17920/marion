@@ -84,6 +84,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::OpenCode,
     surfaces: Surfaces::LaunchOnly,
     program: Some("opencode"),
+    // Runs any vendor's model.
+    vendor: None,
+    verified: &["1.17.3", "1.18.29", "1.18.30", "1.18.32", "1.18.33"],
     argv: &[
         Arg::Lit("run"),
         // `-s, --session  session id to continue` (1.17.3 `run --help`).

@@ -10054,6 +10054,47 @@ mod tests {
         }
     }
 
+    /// **Every row states its vendor, and only a vendor's own CLI has one**: the family a node is
+    /// judged by when its model is unnamed. The three below were the core table this replaced;
+    /// every other row runs any vendor's model.
+    #[test]
+    fn every_row_states_its_vendor_and_only_a_vendors_own_cli_has_one() {
+        for h in Harness::ALL {
+            let want = match h {
+                Harness::ClaudeCode => Some("anthropic"),
+                Harness::Codex => Some("openai"),
+                Harness::Gemini => Some("google"),
+                _ => None,
+            };
+            assert_eq!(harness_spec(h).vendor, want, "{h}");
+        }
+    }
+
+    /// **Every row that names its own program states the versions it was verified against**, pin
+    /// first, each a dotted number and none repeated; a row whose version is not its own (ACP's)
+    /// states none.
+    #[test]
+    fn every_row_with_its_own_program_states_its_verified_versions() {
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            match row.program {
+                None => assert!(row.verified.is_empty(), "{h}"),
+                Some(_) => {
+                    assert!(!row.verified.is_empty(), "{h} states no verified version");
+                    for v in row.verified {
+                        assert!(
+                            !v.is_empty() && v.split('.').all(|p| p.parse::<u64>().is_ok()),
+                            "{h}: {v:?}"
+                        );
+                    }
+                    let mut seen = row.verified.to_vec();
+                    seen.dedup();
+                    assert_eq!(seen.len(), row.verified.len(), "{h}: a version repeats");
+                }
+            }
+        }
+    }
+
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to
     /// answer in six hand-written impls, stated as data and checked once.
     ///

@@ -67,6 +67,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::ClaudeCode,
     surfaces: Surfaces::Headless(TypedKind::StreamJson),
     program: Some("claude"),
+    // The vendor CLI for its own models.
+    vendor: Some("anthropic"),
+    verified: &[
+        "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261", "2.1.263",
+        "2.1.268", "2.1.269", "2.1.280", "2.1.283",
+    ],
     argv: &[
         Arg::Lit("-p"),
         Arg::Lit("--output-format"),

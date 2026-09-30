@@ -70,6 +70,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Goose,
     surfaces: Surfaces::LaunchOnly,
     program: Some("goose"),
+    // Runs any vendor's model.
+    vendor: None,
+    verified: &["1.49.0", "1.50.0", "1.51.0", "1.52.0"],
     argv: &[
         Arg::Lit("run"),
         Arg::Flag("-t", Field::Prompt),

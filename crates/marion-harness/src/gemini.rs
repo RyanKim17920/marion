@@ -48,6 +48,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Gemini,
     surfaces: Surfaces::LaunchOnly,
     program: Some("gemini"),
+    // The vendor CLI for its own models.
+    vendor: Some("google"),
+    verified: &["0.53.0"],
     argv: &[
         // Never omitted and never `auto`: the adapter refuses a launch without one.
         Arg::Flag("-m", Field::Model),

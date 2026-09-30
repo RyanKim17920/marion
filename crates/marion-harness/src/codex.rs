@@ -80,6 +80,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Typed turns over `codex app-server` ([`APP`]); `exec` is kept as [`EXEC`].
     surfaces: Surfaces::AppServer(&APP),
     program: Some("codex"),
+    // The vendor CLI for its own models.
+    vendor: Some("openai"),
+    verified: &["0.146.0", "0.146.1", "0.147.0", "0.155.1"],
     argv: &[
         Arg::Lit("app-server"),
         // The live route's whole configuration and the no-self-update switch, one `-c key=value`
