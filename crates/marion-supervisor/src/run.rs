@@ -1591,31 +1591,8 @@ pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
     }
 }
 
-/// The type a **launch** runs: `name` resolved through the tree's table, and refused unless every
-/// command the row names has the operator's consent ([`crate::trust::require`]).
-///
-/// The one seam both launch paths — `run_spawn_watched` and `root::prepare_watched` — resolve
-/// through, so a repository's `acp:<command>` row cannot reach a process by any other route. The
-/// digest is of the very text parsed here, never of a second read.
-pub fn launch_type(tree: &Path, name: &str) -> Result<AgentType, SpawnError> {
-    let file = read_agent_types(tree)?;
-    let types = match &file {
-        Some((path, text)) => agent_types_text(path.clone(), text)?,
-        None => AgentTypes::builtins_only(),
-    };
-    let ty = types
-        .resolve(name)
-        .ok_or_else(|| SpawnError::UnknownAgentType(name.to_string()))?;
-    if let Some((path, text)) = &file
-        && types.user().iter().any(|u| u.name == ty.name)
-    {
-        crate::trust::require(path, text, &ty)?;
-    }
-    Ok(ty)
-}
-
 /// [`AGENT_TYPES_FILE`]'s path and text, or `None` where the tree has none.
-fn read_agent_types(tree: &Path) -> Result<Option<(PathBuf, String)>, SpawnError> {
+pub(crate) fn read_agent_types(tree: &Path) -> Result<Option<(PathBuf, String)>, SpawnError> {
     let path = tree.join(AGENT_TYPES_FILE);
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(Some((path, text))),
@@ -1710,9 +1687,18 @@ pub fn run_spawn_watched(
     caller: &Caller,
     observer: &dyn SpawnObserver,
 ) -> Result<TaskContract, SpawnError> {
-    // The tree's own table, read now: the file is the operator's and may have changed since the
-    // last spawn, and a type it no longer defines is refused here, before the intent is journaled.
-    let agent_type = launch_type(&req.repo, &req.agent_type)?;
+    // **The table the caller's tree started with**, never the file in the tree the caller runs in:
+    // a child's worktree is its own to edit, and what it writes there must not decide what its
+    // descendants are (see [`crate::types_snapshot`]). A type the table does not define is refused
+    // here, before the intent is journaled.
+    let caller_id = AgentId(caller.agent_id.clone());
+    let snapshot = crate::types_snapshot::for_caller(
+        &env.project_dir,
+        &caller_id,
+        &req.repo,
+        &caller.agent_type.name,
+    )?;
+    let agent_type = snapshot.launch_type(&req.agent_type)?;
     // The type's standing instruction and marion's report instruction, once, here — and `req` is
     // the child's full request from this line on, so the four places that read its prompt read
     // one value.
@@ -1741,7 +1727,13 @@ pub fn run_spawn_watched(
     // depth half was live. It is now the caller's real count (see [`Caller::live_children`]), so a
     // parent that backgrounds more children than its type allows is refused here — before the
     // worktree, before the process — rather than served.
-    check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)?;
+    // The caller's type bounded by its root's `max_depth`, so no type in the tree extends
+    // delegation past what the root was started with.
+    check_spawn_gates(
+        &snapshot.bounded(caller.agent_type.clone())?,
+        caller.depth,
+        caller.live_children,
+    )?;
     let requested = requested_scope(req);
     check_spawn_scope(&agent_type.scope_ceiling, &requested)?;
     // The verification lines ride on the intent below, so a set too large to journal is refused
@@ -1847,6 +1839,8 @@ pub fn run_spawn_watched(
     let agent_dir = env.project_dir.agent(&agent_id);
     let ch = agent_dir.config_dir();
     crate::private_fs::create_dir_all(&ch)?;
+    // The child's children resolve through the same table: handed down before the child exists.
+    snapshot.write(agent_dir.path())?;
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
     let (workspace, base, cwd_claim, mut prelaunch) = select_workspace(

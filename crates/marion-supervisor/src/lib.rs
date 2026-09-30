@@ -159,6 +159,7 @@ pub mod spending;
 pub mod tool;
 /// Consent for the commands a repository's `.marion/agents.toml` names: `marion trust`.
 pub mod trust;
+pub mod types_snapshot;
 /// Event-driven waiting: self-pipes, change signals and file watches that long-lived loops block
 /// on instead of sleeping.
 pub mod wake;

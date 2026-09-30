@@ -1489,15 +1489,25 @@ fn tree_types(repo: &Path) -> Result<marion_core::agent_type::AgentTypes, RpcErr
 /// row is the operator's and may have been edited since; a row that now names another harness
 /// would relaunch a session that harness has never seen, under a node claiming to be the same
 /// one. The built-ins cannot move, so this only ever fires on a user row.
+///
+/// With `project`, the node's own recorded table ([`crate::types_snapshot`]) where it has one, so a
+/// resumed child is the type its tree started with, not whatever its parent's worktree now says.
 fn recorded_type(
+    project: Option<&marion_core::paths::ProjectDir>,
     repo: &Path,
     intent: &SpawnIntent,
 ) -> Result<marion_core::agent_type::AgentType, RpcError> {
-    let ty = tree_types(repo)?
-        .resolve(&intent.agent_type)
-        .ok_or_else(|| {
-            Unprojectable::UnknownAgentType(intent.agent_type.clone()).as_error(&intent.agent_id)
-        })?;
+    let resolved = match project {
+        Some(project) => {
+            crate::types_snapshot::for_caller(project, &intent.agent_id, repo, &intent.agent_type)
+                .and_then(|s| s.resolve(&intent.agent_type))
+                .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))?
+        }
+        None => tree_types(repo)?.resolve(&intent.agent_type),
+    };
+    let ty = resolved.ok_or_else(|| {
+        Unprojectable::UnknownAgentType(intent.agent_type.clone()).as_error(&intent.agent_id)
+    })?;
     if ty.harness != intent.harness {
         return Err(RpcError::refused(
             "agent_type",
@@ -3402,9 +3412,17 @@ impl RegistryHandle {
                 .ok_or_else(|| Unprojectable::NoIntent.as_error(&c.agent_id))?;
             Ok::<_, RpcError>((intent.agent_type.clone(), intent.depth))
         })?;
-        let agent_type = tree_types(&repo)?.resolve(&type_name).ok_or_else(|| {
-            Unprojectable::UnknownAgentType(type_name.clone()).as_error(&c.agent_id)
-        })?;
+        let agent_type = match self.spawn_env.as_ref() {
+            // The table the caller's tree started with, bounded by its root's `max_depth`: never
+            // the caller's worktree, which it can edit (see `crate::types_snapshot`).
+            Some(env) => {
+                crate::types_snapshot::for_caller(&env.project_dir, &c.agent_id, &repo, &type_name)
+                    .and_then(|s| s.resolve(&type_name))
+                    .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))?
+            }
+            None => tree_types(&repo)?.resolve(&type_name),
+        }
+        .ok_or_else(|| Unprojectable::UnknownAgentType(type_name.clone()).as_error(&c.agent_id))?;
         Ok(crate::run::Caller {
             agent_id: c.agent_id.0.clone(),
             agent_type,
@@ -4832,7 +4850,7 @@ impl RegistryHandle {
         let agent_type = node
             .intent
             .as_ref()
-            .map(|i| recorded_type(&repo, i))
+            .map(|i| recorded_type(Some(&env.project_dir), &repo, i))
             .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         let spec = crate::root::RootSpec {
@@ -5001,13 +5019,13 @@ impl RegistryHandle {
         let parent_type = parent
             .intent
             .as_ref()
-            .map(|i| recorded_type(&repo, i))
+            .map(|i| recorded_type(Some(&env.project_dir), &repo, i))
             .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         let agent_type = node
             .intent
             .as_ref()
-            .map(|i| recorded_type(&repo, i))
+            .map(|i| recorded_type(Some(&env.project_dir), &repo, i))
             .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         // **The task this run is still under**, from the node's own intent (§9: one contract per
@@ -6584,17 +6602,17 @@ mod tests {
         };
         std::fs::write(&file, row("codex")).unwrap();
         assert_eq!(
-            recorded_type(&repo, &intent).unwrap().harness,
+            recorded_type(None, &repo, &intent).unwrap().harness,
             Harness::Codex
         );
         std::fs::write(&file, row("gemini")).unwrap();
-        let e = recorded_type(&repo, &intent).unwrap_err();
+        let e = recorded_type(None, &repo, &intent).unwrap_err();
         assert!(
             e.message.contains("journaled as codex") && e.message.contains("now says gemini"),
             "{e}"
         );
         std::fs::remove_file(&file).unwrap();
-        let e = recorded_type(&repo, &intent).unwrap_err();
+        let e = recorded_type(None, &repo, &intent).unwrap_err();
         assert_eq!(e.kind(), Some(FailureKind::NotFound), "{e}");
         // A built-in is resolved regardless of the file, and the file's own refusal is its own.
         let builtin = SpawnIntent {
@@ -6603,11 +6621,11 @@ mod tests {
             ..intent.clone()
         };
         assert_eq!(
-            recorded_type(&repo, &builtin).unwrap().harness,
+            recorded_type(None, &repo, &builtin).unwrap().harness,
             Harness::ClaudeCode
         );
         std::fs::write(&file, "[[agent]\n").unwrap();
-        let e = recorded_type(&repo, &builtin).unwrap_err();
+        let e = recorded_type(None, &repo, &builtin).unwrap_err();
         assert!(e.message.contains("agents.toml"), "{e}");
     }
 

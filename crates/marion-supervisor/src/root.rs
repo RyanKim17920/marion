@@ -746,10 +746,21 @@ pub fn prepare_watched(
     //
     // Through the tree's own table (`run::agent_types`), so a `.marion/agents.toml` row runs as a
     // root exactly as a built-in does; the file's own refusal arrives as `RootError::Run`.
-    let agent_type = match crate::run::launch_type(&spec.repo, &spec.agent_type) {
+    //
+    // **Read once, here, and kept**: the table this root's tree starts with is written into its
+    // agent directory and every descendant resolves through it (see [`crate::types_snapshot`]). A
+    // resumed root keeps the table it first started with.
+    let snapshot = match crate::types_snapshot::TypesSnapshot::read(agent_dir.path()) {
+        Ok(Some(kept)) if spec.resume.is_some() => kept,
+        Ok(_) => crate::types_snapshot::TypesSnapshot::take(&spec.repo, Some(&spec.agent_type))
+            .map_err(RootError::Run)?,
+        Err(e) => return Err(RootError::Run(e)),
+    };
+    let agent_type = match snapshot.launch_type(&spec.agent_type) {
         Err(SpawnError::UnknownAgentType(name)) => Err(RootError::UnknownAgentType(name)),
         other => other.map_err(RootError::Run),
     }?;
+    snapshot.write(agent_dir.path()).map_err(RootError::Run)?;
     // The type's standing instruction, once, exactly where `run_spawn_watched` applies it; `spec`
     // is the prefixed spec from this line on, so the node and the record read one prompt.
     let spec = &RootSpec {

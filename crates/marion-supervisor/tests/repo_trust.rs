@@ -18,9 +18,10 @@ use std::time::{Duration, Instant};
 use marion_core::contract::{Isolation, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_supervisor::root::{RootError, RootSpec, prepare};
-use marion_supervisor::run::{AGENT_TYPES_FILE, Caller, Env, SpawnRequest, launch_type, run_spawn};
+use marion_supervisor::run::{AGENT_TYPES_FILE, Caller, Env, SpawnRequest, run_spawn};
 use marion_supervisor::spawn::SpawnError;
 use marion_supervisor::trust::TrustError;
+use marion_supervisor::types_snapshot::TypesSnapshot;
 use marion_testsupport::{fixture_repo, scratch};
 
 fn agents_toml(script: &Path) -> String {
@@ -174,7 +175,9 @@ fn a_repositorys_command_runs_only_while_its_exact_bytes_are_allowed() {
 
     // Built-in rows in the same untrusted file need no trust.
     for name in ["reviewer", "pilot", "codex", "acp-copilot"] {
-        launch_type(&repo, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        TypesSnapshot::take(&repo, None)
+            .and_then(|s| s.launch_type(name))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
     }
 
     // Allowed: shown, recorded, and the command runs.
