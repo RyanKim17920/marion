@@ -1428,10 +1428,13 @@ fn an_aborted_spawn_does_not_keep_the_supervisor_resident_but_an_outstanding_one
             }),
         ],
     );
-    let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
-        quit(&aborted, marion_core::proto::QuitDisposition::DetachAll)
-            .unwrap()
-            .outcome
+    let marion_core::proto::QuitOutcome::Detached {
+        supervisor,
+        detached,
+        ..
+    } = quit(&aborted, marion_core::proto::QuitDisposition::DetachAll)
+        .unwrap()
+        .outcome
     else {
         panic!("DetachAll answers Detached")
     };
@@ -1439,6 +1442,13 @@ fn an_aborted_spawn_does_not_keep_the_supervisor_resident_but_an_outstanding_one
         supervisor,
         marion_core::proto::SupervisorDisposition::Exiting,
         "an abandoned spawn strands nothing, so §5.7's exclusion list does not name it"
+    );
+    // Measured 2026-09-30: `marion run` printed "still running in the background: <id>" for a
+    // child whose launch failed before any process existed, beside "no node holds this supervisor".
+    assert_eq!(
+        detached,
+        Vec::<AgentId>::new(),
+        "and it is not reported as a node left running in the background"
     );
     assert!(
         aborted.handle.idle_exit_eligible(),

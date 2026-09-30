@@ -418,7 +418,11 @@ impl RegistryHandle {
     fn active(nodes: &[marion_core::registry::ReplayedNode]) -> Vec<AgentId> {
         nodes
             .iter()
-            .filter(|n| !n.state.is_exited() && n.reap_state == ReapState::Live)
+            // An abandoned spawn never had a process ([`Self::abandoned`]), so it is not running
+            // anywhere, in the background or otherwise.
+            .filter(|n| {
+                !n.state.is_exited() && n.reap_state == ReapState::Live && !Self::abandoned(n)
+            })
             .map(|n| n.agent_id.clone())
             .collect()
     }
