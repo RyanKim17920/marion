@@ -31,7 +31,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test worktree_reap
+//! cargo test -p marion-supervisor --test it_live worktree_reap::
 //! ```
 //!
 //! It needs a real `codex` on `PATH` and does not skip when that is missing: §9's rule is that a

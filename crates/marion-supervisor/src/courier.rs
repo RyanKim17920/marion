@@ -11,8 +11,9 @@
 //!
 //! Now the bridge dials §2's socket and sends `agent/spawn`. It carries a request and brings back
 //! an answer; the node belongs to the supervisor for the whole of its life. Killing the bridge
-//! kills a **courier**, which is what this module is named for, and `tests/background_spawn.rs`
-//! measures it: the node keeps running and its stream keeps growing after the bridge is gone.
+//! kills a **courier**, which is what this module is named for, and
+//! `tests/it_canned/background_spawn.rs` measures it: the node keeps running and its stream keeps
+//! growing after the bridge is gone.
 //!
 //! # Three decisions, each of which had a cheaper alternative
 //!

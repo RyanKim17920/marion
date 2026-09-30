@@ -41,7 +41,7 @@
 //! it was not told.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test auth_mode
+//! cargo test -p marion-supervisor --test it_canned auth_mode::
 //! ```
 
 use std::path::PathBuf;

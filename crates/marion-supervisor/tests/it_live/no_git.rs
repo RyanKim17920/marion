@@ -26,7 +26,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test no_git
+//! cargo test -p marion-supervisor --test it_live no_git::
 //! ```
 //!
 //! Tests 1 and 4 need a real `codex` (and 4 a real `claude`) on `PATH`, at the pinned versions.

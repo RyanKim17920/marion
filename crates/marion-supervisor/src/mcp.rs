@@ -1975,8 +1975,9 @@ fn write_frame(out: &mut impl Write, frame: &serde_json::Value) -> bool {
 /// after that, all pid-targeted, and **no EOF at all** — so the hold never ran in production, and a
 /// bridge that ignored SIGTERM would have bought ~450 ms and died anyway. The child outliving the
 /// bridge was §11 item 30's runaway; it is now the ordinary case, and
-/// `tests/background_spawn.rs`'s `a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing`
-/// is where it is measured rather than argued.
+/// `tests/it_canned/background_spawn.rs`'s
+/// `a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing` is where it is
+/// measured rather than argued.
 pub fn serve_stdio(who: Principal) {
     // A node's bridge speaks for its node on every connection, and never for the operator.
     if matches!(who, Principal::Node) {
@@ -2238,7 +2239,7 @@ mod tests {
     /// changed rather than accommodated.
     ///
     /// It needs no `MARION_REPO` and starts no child, so it is a unit test rather than the
-    /// end-to-end control in `tests/background_spawn.rs`.
+    /// end-to-end control in `tests/it_canned/background_spawn.rs`.
     /// **A model on either surface cannot run a program by naming it**, and is no longer invited
     /// to: the `spawn` schema offers no free-form `acp:<command>`, and one asked for anyway is
     /// refused before anything is dialed, naming the operator's allowlist.
@@ -2600,10 +2601,10 @@ mod tests {
 
     /// **§5.4's `report` row as a table, so every row is stated rather than implied.**
     ///
-    /// The end-to-end witness is `tests/report_on_a_root.rs`, which drives this binary the way a
-    /// `LaunchOnly` node's MCP client does. This is the decision underneath it. The rows where the
-    /// depth cannot be read at all are the test below's: they are a different refusal, because they
-    /// are a different fact about the world.
+    /// The end-to-end witness is `tests/it_canned/report_on_a_root.rs`, which drives this binary
+    /// the way a `LaunchOnly` node's MCP client does. This is the decision underneath it. The rows
+    /// where the depth cannot be read at all are the test below's: they are a different refusal,
+    /// because they are a different fact about the world.
     #[test]
     fn only_a_node_that_is_known_to_be_the_root_has_its_report_refused() {
         assert_eq!(

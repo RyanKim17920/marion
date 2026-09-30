@@ -31,7 +31,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test permission_round_trip
+//! cargo test -p marion-supervisor --test it_live permission_round_trip::
 //! ```
 //!
 //! Needs real `claude` (2.1.220) on `PATH`. No `codex` child is involved and no model is called.

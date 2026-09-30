@@ -20,7 +20,7 @@
 //! test knows which pids belong to which node without asking marion.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test node_kill
+//! cargo test -p marion-supervisor --test it_canned node_kill::
 //! ```
 //!
 //! It needs no harness binary, no network and no credential.

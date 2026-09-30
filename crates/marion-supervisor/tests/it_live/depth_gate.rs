@@ -76,7 +76,7 @@
 //! repeatable, and each asserts that no verbatim credential reached it.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test depth_gate
+//! cargo test -p marion-supervisor --test it_live depth_gate::
 //! ```
 //!
 //! It needs real `claude` (2.1.220), `codex` (0.146.0), `gemini` (0.53.0) and `opencode` (1.17.3)

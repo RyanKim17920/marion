@@ -29,7 +29,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test harness_matrix
+//! cargo test -p marion-supervisor --test it_live harness_matrix::
 //! ```
 //!
 //! It needs real `claude`, `codex`, `gemini`, `opencode` and `copilot` on `PATH`, **at the versions

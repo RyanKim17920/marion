@@ -33,7 +33,7 @@
 //! of the real binary on its `PATH`, and every wait a fact in the journal.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test continuation
+//! cargo test -p marion-supervisor --test it_live continuation::
 //! ```
 //!
 //! It needs a real `codex` and `opencode` on `PATH`. Every model call is the canned server's: no paid

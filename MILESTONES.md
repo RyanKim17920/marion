@@ -487,24 +487,25 @@ live recording removed), `activity::tests`.
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:
-`cargo test -p marion-supervisor --test native_facade_e2e` (per enabled lane; needs the harness on
-`PATH` and a real PTY). Delegation **from** a native root:
-`cargo test -p marion-supervisor --test native_facade_spawn` (the shipped `marion claude` on a real
+`cargo test -p marion-supervisor --test it_live native_facade_e2e::` (per enabled lane; needs the
+harness on `PATH` and a real PTY). Delegation **from** a native root:
+`cargo test -p marion-supervisor --test it_live native_facade_spawn::` (the shipped `marion claude` on a real
 PTY calls `spawn` through marion's injected MCP server and gets a real codex child's `TaskContract`
 back as its own tool result; needs `claude` and `codex` on `PATH`, spends nothing — both nodes talk
 to the canned provider, the child through the supervisor's declaration and the root through
 `ANTHROPIC_BASE_URL` in the operator's own environment, which is a native node's environment).
-Restart and resume: `cargo test -p marion-supervisor --test
-restart_resume -- --ignored` (real codex, detached supervisor; **two** tests since 2026-09-10, one
+Restart and resume: `cargo test -p marion-supervisor --test it_live
+restart_resume:: -- --ignored` (real codex, detached supervisor; **two** tests since 2026-09-10, one
 per depth — a root and a depth-1 child each resumed into its own id after their shared supervisor
 is SIGKILLed. Since 2026-09-06 the root arc asserts the resumed process's own turn — a
 post-relaunch provider request carrying the resume prompt and the first life's transcript — and its
 code-0 exit, so a relaunch codex rejects at argv is red in seconds with the exit quoted; the pre-fix
 row fails it at exit 2. The child arc adds the facts only a child has: depth 1 and the same
 `parent_id` on the second life, the recorded worktree still the directory it runs in, and the root
-left at generation 1 so the relaunch is the child's own and not the tree's). Live ACP: `--test acp_child --
---ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
-`--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
+left at generation 1 so the relaunch is the child's own and not the tree's). Live ACP: `--test it_live acp_child:: --
+--ignored` spends Copilot tokens. Cross-harness: `--test it_live harness_matrix::`, `cross_product::`,
+`journal_wiring::`, `m4_fan_in::`. Panes: `--test it_live pane_attach::`. Every suite that drives
+a real harness is a module of the `it_live` binary, so `<suite>::` names it.
 
 **Published and CI green (2026-09-12, `c1c1a6d`).** `main` and `harness-generality` are pushed;
 release v0.1.0 carries the 8-minute demo; `.github/workflows/ci.yml` passes fmt, clippy and the

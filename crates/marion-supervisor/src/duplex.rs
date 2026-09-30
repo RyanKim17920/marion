@@ -370,7 +370,7 @@ fn decided_permission(depth: u32, tool: &str) -> Option<&'static str> {
 /// `is_error` `tool_result` carrying `message` verbatim, tagged it
 /// `non_execution_kind: "permission-rule"`, listed the call under the run's `permission_denials`,
 /// and **finished the turn normally** (`terminal_reason: "completed"`, exit 0).
-/// `crates/marion-supervisor/tests/permission_round_trip.rs` re-runs it.
+/// `crates/marion-supervisor/tests/it_live/permission_round_trip.rs` re-runs it.
 ///
 /// The corresponding allow is `{"behavior":"allow"}` with an **optional** `updatedInput`; S9
 /// measured a bare allow running the tool with the model's original input. marion does not send

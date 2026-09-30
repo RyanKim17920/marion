@@ -35,7 +35,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test node_attach
+//! cargo test -p marion-supervisor --test it_live node_attach::
 //! ```
 //!
 //! Needs real `claude` and `codex` on `PATH` and does **not** skip when they are missing, for the

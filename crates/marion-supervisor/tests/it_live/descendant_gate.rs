@@ -39,7 +39,7 @@
 //! never an elapsed time.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test descendant_gate
+//! cargo test -p marion-supervisor --test it_live descendant_gate::
 //! ```
 //!
 //! It needs a real `opencode` on `PATH` and, like every end-to-end file here, does not skip when it

@@ -2377,9 +2377,9 @@ mod tests {
 
     /// **The fifth agent, from the operator's own command.** `--acp-command` adds one ACP row to
     /// the table's, bound the generic way, and its capability column comes from that agent's own
-    /// `initialize` — here the fake agent `tests/acp_child.rs` runs, so this spends nothing and
-    /// proves the row is keyed on what the agent said (`fake-acp-agent 0.1.0`) rather than on any
-    /// row marion carries. A selector with no program is refused at the flag.
+    /// `initialize` — here the fake agent `tests/it_live/acp_child.rs` runs, so this spends nothing
+    /// and proves the row is keyed on what the agent said (`fake-acp-agent 0.1.0`) rather than on
+    /// any row marion carries. A selector with no program is refused at the flag.
     #[test]
     fn an_acp_command_gets_its_own_doctor_row_keyed_on_its_own_handshake() {
         if !marion_testsupport::on_path("python3") {

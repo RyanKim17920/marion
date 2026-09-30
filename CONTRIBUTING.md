@@ -26,6 +26,26 @@ release nobody measured.
 Suites that drive a real `claude`/`codex`/… skip loudly when the binary is absent. The
 `--ignored` suites (`restart_resume`, `acp_child`) cost real tokens and stay opt-in.
 
+`marion-supervisor`'s integration suites are modules of a few test binaries rather than one binary
+each, so the crate links once per binary instead of once per suite:
+
+- `it_live` (`tests/it_live/`): every suite that drives a real harness, i.e. gates on
+  `on_path`, `harness_available` or `require_claude_and_codex`.
+- `it_canned` (`tests/it_canned/`): every suite that needs no harness.
+- binaries of their own: `endpoint_matrix`, `repo_trust`, `token_off_argv` and
+  `user_agent_types`, which set process environment variables and so cannot share a process;
+  `l45_tree`, the commit hook's target; and `conformance`, the opt-in battery.
+
+A suite in a merged binary is named by its module path:
+
+```sh
+cargo test -p marion-supervisor --test it_canned journal::        # one suite
+cargo test -p marion-supervisor --test it_live restart_resume:: -- --ignored
+```
+
+A new suite goes in `tests/it_live/` or `tests/it_canned/` with a `mod <suite>;` line in that
+directory's `main.rs`, and reaches the shared bed as `crate::common`.
+
 ## When a pinned harness drifts
 
 The version gate is `marion_testsupport::PINNED_HARNESSES`. When a harness auto-updates, the

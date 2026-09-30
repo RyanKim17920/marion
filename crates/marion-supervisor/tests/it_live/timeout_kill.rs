@@ -22,7 +22,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test timeout_kill
+//! cargo test -p marion-supervisor --test it_live timeout_kill::
 //! ```
 //!
 //! It needs a real `codex` and `opencode` on `PATH` at versions

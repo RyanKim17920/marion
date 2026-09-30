@@ -82,7 +82,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test pane_attach
+//! cargo test -p marion-supervisor --test it_live pane_attach::
 //! ```
 //!
 //! Needs a real `claude` **and** a real `codex` on `PATH` and does **not** skip when either is

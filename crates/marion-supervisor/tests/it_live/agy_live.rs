@@ -11,7 +11,7 @@
 //! # Running it
 //!
 //! ```sh
-//! MARION_LIVE_AGY=1 cargo test -p marion-supervisor --test agy_live
+//! MARION_LIVE_AGY=1 cargo test -p marion-supervisor --test it_live agy_live::
 //! ```
 //!
 //! **Spends the operator's own agy quota** (one short turn on the row's cheapest model), which is

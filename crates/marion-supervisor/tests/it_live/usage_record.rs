@@ -18,7 +18,7 @@
 //! to it.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test usage_record
+//! cargo test -p marion-supervisor --test it_live usage_record::
 //! ```
 //!
 //! It needs a real `codex` on `PATH`. Every model call is the canned server's: no paid tokens.

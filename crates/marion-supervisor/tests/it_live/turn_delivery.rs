@@ -19,7 +19,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test turn_delivery
+//! cargo test -p marion-supervisor --test it_live turn_delivery::
 //! ```
 //!
 //! It drives the installed `claude`, `opencode` and `codex` through the suite's version gate, so

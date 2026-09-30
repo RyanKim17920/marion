@@ -24,7 +24,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test top_level_mcp
+//! cargo test -p marion-supervisor --test it_canned top_level_mcp::
 //! ```
 //!
 //! It needs **no harness binary, no network and no credential**: a shim replaces `codex`, and the

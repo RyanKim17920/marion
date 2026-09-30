@@ -37,7 +37,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test client_run
+//! cargo test -p marion-supervisor --test it_live client_run::
 //! ```
 //!
 //! The five tests that start a `marion run` need real `claude` and `codex` on `PATH`, and they say

@@ -20,7 +20,7 @@
 //! * **`join_all` and §5.7's EOF hold** — there is nothing left in this process for an exiting
 //!   bridge to hold *for*. The hold was correct while a child lived here and is now a hold over
 //!   nothing; a bridge that leaves while its children run is the whole point of the move, and
-//!   `tests/background_spawn.rs` asserts it rather than the reverse;
+//!   `tests/it_canned/background_spawn.rs` asserts it rather than the reverse;
 //! * **`live_children`** — §6.1 step 2's concurrency gate reads
 //!   `handler::RegistryHandle::live_children_of`, which counts the caller's non-terminal children
 //!   out of the registry. That is exact where this table was merely local: this one is per bridge

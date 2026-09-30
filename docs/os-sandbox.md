@@ -18,7 +18,7 @@
 - **Containment.** `containment::on(t, Host)` counts marion's sandbox by the same decision, so a
   contained parent may start any child the sandbox also contains without the operator's opt-in.
 - **Tests.** `os_sandbox` unit tests (the profile, the plan, a real process kept to its dirs, codex's
-  replaced field) and `tests/os_sandbox_escape.rs` (a real child per row tries to write the
+  replaced field) and `tests/it_live/os_sandbox_escape.rs` (a real child per row tries to write the
   operator's home). gemini and copilot deny their shell in a headless canned run, so their cells
   are ignored until a write-tool cell exists.
 

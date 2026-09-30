@@ -60,7 +60,7 @@ use crate::tool::{ContentBlock, ToolOutcome};
 ///
 /// If any of those moved, the version does **not** go in this list until the code moves with it.
 /// Then add a fixture under `tests/fixtures/protocol/` — one file per claimed version, named for
-/// it — and it will be picked up automatically by `tests/mcp_conformance.rs`'s
+/// it — and it will be picked up automatically by `tests/it_canned/mcp_conformance.rs`'s
 /// `every_claimed_protocol_version_has_a_fixture_and_is_echoed`, which fails if a claimed version
 /// has no fixture or a fixture names no claimed version.
 ///

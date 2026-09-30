@@ -26,7 +26,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test journal_wiring
+//! cargo test -p marion-supervisor --test it_live journal_wiring::
 //! ```
 //!
 //! It needs real `claude` and `codex` on `PATH` and it does **not** skip when they are missing, for

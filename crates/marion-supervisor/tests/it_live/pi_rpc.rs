@@ -15,7 +15,7 @@
 //!    process as its next turn, once, `jsonl-rpc:next-turn`.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test pi_rpc
+//! cargo test -p marion-supervisor --test it_live pi_rpc::
 //! ```
 
 use std::path::PathBuf;

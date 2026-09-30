@@ -344,7 +344,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // S36 on 0.155.1, over `codex app-server`: `turn/steer` folds a message into the running
     // turn (P6), `turn/interrupt` ends it at once (P7), and `thread/tokenUsage/updated` reports
     // the thread's running total after every response (P4) — marion has driven all three
-    // (`tests/codex_app_server.rs`). Nothing earlier than that version is claimed. [`EXEC`]
+    // (`tests/it_live/codex_app_server.rs`). Nothing earlier than that version is claimed. [`EXEC`]
     // inherits the claim and its `LaunchOnly` ceiling clips it.
     advertised: Advertised {
         always: Capabilities::NONE,

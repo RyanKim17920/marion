@@ -2,7 +2,7 @@
 //! `notify.toml`, and `test` shown through the resolved backend — here the `record:` fake.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test notify_cli
+//! cargo test -p marion-supervisor --test it_canned notify_cli::
 //! ```
 
 use std::path::Path;

@@ -39,7 +39,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test background_spawn
+//! cargo test -p marion-supervisor --test it_canned background_spawn::
 //! ```
 //!
 //! It needs **no harness binary, no network and no credential**: the shim replaces `codex` for the

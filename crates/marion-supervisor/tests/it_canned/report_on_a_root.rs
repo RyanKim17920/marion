@@ -32,7 +32,7 @@
 //! uses.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test report_on_a_root
+//! cargo test -p marion-supervisor --test it_canned report_on_a_root::
 //! ```
 //!
 //! Nothing is launched but marion's own bridge: no harness binary, no model, no provider.

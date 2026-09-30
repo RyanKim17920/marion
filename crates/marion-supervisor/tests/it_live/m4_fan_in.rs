@@ -33,7 +33,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test m4_fan_in
+//! cargo test -p marion-supervisor --test it_live m4_fan_in::
 //! ```
 //!
 //! It needs real `codex` and `claude` on `PATH` at the versions

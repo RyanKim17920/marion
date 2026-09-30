@@ -119,7 +119,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test cross_product
+//! cargo test -p marion-supervisor --test it_live cross_product::
 //! ```
 //!
 //! It needs real `claude` (2.1.220), `codex` (0.146.0), `gemini` (0.53.0) and `opencode` (1.17.3)

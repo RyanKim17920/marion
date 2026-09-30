@@ -145,12 +145,12 @@ fn scrollback_survives_codex_resize() {
 /// * on the capture that restores, the grid comes **back**;
 /// * on the capture that does not, the grid stays — it does not guess.
 ///
-/// Why this lives here and not in `marion-supervisor/tests/pane_attach.rs` with the rest of C1:
-/// **claude 2.1.225 no longer takes the switch at all.** Probed on 2026-08-08 under a marion pane
-/// and again bare, at 100x30 through a boot, a trust dialog, a submitted turn and a resize: zero
-/// `?1049h`, zero mouse modes, and only `?1004`, `?2004`, `?2026` and `?2031`. §5.3's reading is a
-/// 2.1.220 reading and this corpus is where it is still live, so the clause is pinned against the
-/// bytes it was measured from. The live test asserts the other half — that marion's grid agrees
+/// Why this lives here and not in `marion-supervisor/tests/it_live/pane_attach.rs` with the rest of
+/// C1: **claude 2.1.225 no longer takes the switch at all.** Probed on 2026-08-08 under a marion
+/// pane and again bare, at 100x30 through a boot, a trust dialog, a submitted turn and a resize:
+/// zero `?1049h`, zero mouse modes, and only `?1004`, `?2004`, `?2026` and `?2031`. §5.3's reading
+/// is a 2.1.220 reading and this corpus is where it is still live, so the clause is pinned against
+/// the bytes it was measured from. The live test asserts the other half — that marion's grid agrees
 /// with whichever screen the node's own bytes put it on.
 #[test]
 fn the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives() {

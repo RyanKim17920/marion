@@ -2124,8 +2124,8 @@ mod tests {
     // -----------------------------------------------------------------------------------------
 
     /// Every byte a node is told: argv, env, and each generated config file. The same surface
-    /// `tests/auth_mode.rs` searches, for the same reason — a flag that reached the harness
-    /// reached one of these three.
+    /// `tests/it_canned/auth_mode.rs` searches, for the same reason — a flag that reached the
+    /// harness reached one of these three.
     fn everything_the_node_is_told(adapter: &dyn HarnessAdapter, spec: &LaunchSpec) -> String {
         let inv = adapter.compile(spec, &ctx()).expect("the spec compiles");
         let mut blob = format!("{:?}\n{:?}\n", inv.args, inv.env);

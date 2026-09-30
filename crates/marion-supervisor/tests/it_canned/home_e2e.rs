@@ -14,7 +14,7 @@
 //! hint row; `x` asks before it cancels; and Enter on a pane node attaches, `^] d` comes back.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test home_e2e
+//! cargo test -p marion-supervisor --test it_canned home_e2e::
 //! ```
 
 use std::path::{Path, PathBuf};

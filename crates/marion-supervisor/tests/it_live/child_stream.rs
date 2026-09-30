@@ -19,7 +19,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test child_stream
+//! cargo test -p marion-supervisor --test it_live child_stream::
 //! ```
 //!
 //! It needs real `claude` and `codex` on `PATH` and does **not** skip when they are missing, for

@@ -2861,8 +2861,8 @@ fn a_childs_bridge_is_told_a_depth_one_below_its_callers() {
 /// What it pins now: the gate reads a *field*, so the caller's count is whatever the bridge
 /// measured, and the bound refuses at exactly `max_concurrent_children` on every built-in —
 /// refuses, never queues (§3.1). The end-to-end witness that a second **backgrounded** spawn
-/// is refused is `tests/background_spawn.rs`; this is the unit that would catch an off-by-one
-/// in the bound itself, which no end-to-end test could localize.
+/// is refused is `tests/it_canned/background_spawn.rs`; this is the unit that would catch an
+/// off-by-one in the bound itself, which no end-to-end test could localize.
 #[test]
 fn the_concurrency_gate_refuses_at_the_bound_and_admits_below_it() {
     for name in marion_core::agent_type::builtin_names() {

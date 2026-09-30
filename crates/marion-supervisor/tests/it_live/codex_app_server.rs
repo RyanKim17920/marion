@@ -18,7 +18,7 @@
 //!    life's `thread/resume` carries the first life's history to the provider (P8).
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test codex_app_server
+//! cargo test -p marion-supervisor --test it_live codex_app_server::
 //! ```
 
 use std::path::{Path, PathBuf};

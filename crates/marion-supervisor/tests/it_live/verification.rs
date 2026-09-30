@@ -19,7 +19,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test verification
+//! cargo test -p marion-supervisor --test it_live verification::
 //! ```
 //!
 //! Needs a real `codex` on `PATH`; a runner declared to have no harnesses skips loudly by name.

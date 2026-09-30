@@ -1043,8 +1043,8 @@ fn is_loopback_url(url: &str) -> bool {
 ///    `GOOGLE_GEMINI_BASE_URL` push gated on `Canned`, codex's and opencode's `config_files` early
 ///    returns). So an operator pointed marion at a corporate gateway, got no error, and the node
 ///    reached the vendor directly with a real credential — traffic leaving the perimeter the
-///    gateway existed to hold, logged nowhere they could see. `tests/auth_mode.rs` pins each
-///    adapter's drop, which is now defence in depth behind this gate.
+///    gateway existed to hold, logged nowhere they could see. `tests/it_canned/auth_mode.rs` pins
+///    each adapter's drop, which is now defence in depth behind this gate.
 ///
 /// **Refusing rather than implementing is the deliberate, reversible direction**, exactly as with
 /// `isolation: "remote"` in `spawn::SpawnError`. Honouring a gateway is a real feature —
@@ -2708,7 +2708,7 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     // rather than after the turn returns; and SIGKILLing **this** process now kills a client. The
     // node keeps running, keeps writing `events.jsonl`, and a second client attaching to the same
     // supervisor is handed the whole tree — which is §9's M2 criterion 1, and
-    // `tests/client_run.rs` is where it is measured.
+    // `tests/it_live/client_run.rs` is where it is measured.
     //
     // **And one thing moved with it that step 6's design did not name: the root's process
     // environment.** The root is `fork`/`exec`ed by the supervisor, so it inherits the
@@ -2718,8 +2718,9 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     // invocation is also the one that started the supervisor. `marion run` still passes `--auth`,
     // `--base-url` and `--repo` explicitly for exactly this reason, and everything else that used
     // to arrive by inheritance no longer does. This is a real narrowing, not a detail:
-    // `tests/concurrent_projects.rs`'s same-repo bed had to stop shipping a per-run stub on
-    // `PATH` because of it, and `tasks/todo.md`'s finding (d) is where it is filed for a decision.
+    // `tests/it_canned/concurrent_projects.rs`'s same-repo bed had to stop shipping a per-run stub
+    // on `PATH` because of it, and `tasks/todo.md`'s finding (d) is where it is filed for a
+    // decision.
     //
     // What this file does from here is: ensure the supervisor, send `agent/spawn` with
     // `caller: None`, attach to the root it names, and render. Two processes writing one journal is
@@ -2799,13 +2800,14 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     let project = marion_core::paths::ProjectDir::new(&state, &project_key);
 
     // **The live view, on stderr.** Deliberately not stdout, and checked rather than assumed:
-    // marion's stdout is a machine surface with a live consumer — `tests/launch_only_root.rs` reads
-    // it back with `adapter.marion_tool_calls(&run.stdout)`, and says why in as many words ("the
-    // frame it emitted must survive onto marion's own stdout, still readable as the marion call it
-    // was"). A root has no `TaskContract` to return (§9), so that frame stream *is* its result, and
-    // prose interleaved into it would be prose in somebody's parse. stderr already carries every
-    // other line marion says to a person — the banner, the denials, the refusals — so the stream
-    // joins them, and `2>/dev/null` still leaves clean frames on stdout.
+    // marion's stdout is a machine surface with a live consumer —
+    // `tests/it_canned/launch_only_root.rs` reads it back with
+    // `adapter.marion_tool_calls(&run.stdout)`, and says why in as many words ("the frame it
+    // emitted must survive onto marion's own stdout, still readable as the marion call it was"). A
+    // root has no `TaskContract` to return (§9), so that frame stream *is* its result, and prose
+    // interleaved into it would be prose in somebody's parse. stderr already carries every other
+    // line marion says to a person — the banner, the denials, the refusals — so the stream joins
+    // them, and `2>/dev/null` still leaves clean frames on stdout.
     //
     // Errors are dropped rather than escalated: a closed stderr must not be what ends a run that is
     // otherwise working, and there is nowhere left to report it to anyway.
@@ -3017,9 +3019,10 @@ fn report_watched(
 
 /// The root's frames, one JSON line each, onto `out` — **unless `out` is a terminal.**
 ///
-/// stdout is `marion run`'s machine surface (`tests/launch_only_root.rs` parses it), so a pipe gets
-/// every frame. A terminal already watched the same frames rendered on stderr by the live view;
-/// printing them again raw dumped ~20 KB of stream-json over the screen when a picker run ended.
+/// stdout is `marion run`'s machine surface (`tests/it_canned/launch_only_root.rs` parses it), so a
+/// pipe gets every frame. A terminal already watched the same frames rendered on stderr by the live
+/// view; printing them again raw dumped ~20 KB of stream-json over the screen when a picker run
+/// ended.
 fn write_transcript(frames: &[Value], out: &mut dyn Write, is_terminal: bool) -> io::Result<()> {
     if is_terminal {
         return Ok(());

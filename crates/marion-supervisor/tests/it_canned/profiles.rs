@@ -20,7 +20,7 @@
 //! 6. codex: `CODEX_HOME`, and its usage-limit error is a notice, never a failover.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test profiles
+//! cargo test -p marion-supervisor --test it_canned profiles::
 //! ```
 
 use std::path::{Path, PathBuf};

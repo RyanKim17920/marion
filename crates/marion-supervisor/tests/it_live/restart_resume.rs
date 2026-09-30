@@ -32,7 +32,7 @@
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test restart_resume
+//! cargo test -p marion-supervisor --test it_live restart_resume::
 //! ```
 //!
 //! The lost-child arc runs again on an **opencode** root and child (s36): the second life is

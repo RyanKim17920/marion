@@ -11,7 +11,7 @@
 //! inner process — and the child it spawned — are gone.
 //!
 //! ```sh
-//! cargo test -p marion-supervisor --test node_tmpdir
+//! cargo test -p marion-supervisor --test it_live node_tmpdir::
 //! ```
 //!
 //! Needs a real `opencode` on `PATH` at the version `marion_testsupport::PINNED_HARNESSES` lists,

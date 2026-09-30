@@ -480,10 +480,10 @@ fn now() -> SystemTime {
 ///
 /// **MEASURED, and the measurement corrected the reason.** This comment used to name
 /// `index.lock` — *"Unable to create '…/index.lock': File exists"* — and to say that the guard had
-/// no failing witness, because removing it did not fail `tests/background_spawn.rs` over ten runs.
-/// Both halves were wrong, and `tests/fixtures/s17/README.md` is the run that says so
-/// (darwin 25.5.0, git 2.50.1, `spikes/s17/run.sh`, six repetitions at two, four and six
-/// concurrent writers).
+/// no failing witness, because removing it did not fail `tests/it_canned/background_spawn.rs` over
+/// ten runs. Both halves were wrong, and `tests/fixtures/s17/README.md` is the run that says so
+/// (darwin 25.5.0, git 2.50.1, `spikes/s17/run.sh`, six repetitions at two, four and six concurrent
+/// writers).
 ///
 /// 1. **`index.lock` is never the failure.** It does not appear once in any recorded run. Every
 ///    observed failure is `.git/worktrees/` bookkeeping: *"could not create directory of
@@ -858,7 +858,7 @@ fn git_indexed(wt: Tree<'_>, index: &ScratchIndex, args: &[&str]) -> Result<Stri
 /// file git does not track is simply absent. A child that *created* a file therefore produced an
 /// empty diff, and since `run_spawn` drops an empty one, §6.7's audit record carried
 /// `changed_paths: ["the/file"]` with no bytes anywhere — and `cleanup` then removed the worktree
-/// holding the only copy. Measured, and now pinned by `tests/worktree_reap.rs`.
+/// holding the only copy. Measured, and now pinned by `tests/it_live/worktree_reap.rs`.
 ///
 /// The intent-to-add pass is what puts those bytes in the patch, and it is the reason the scratch
 /// index exists: `git add -N` records "this path is about to be tracked" so `git diff` will emit it

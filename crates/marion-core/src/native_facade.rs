@@ -740,7 +740,7 @@ fn executable_error(executable: &str) -> Result<(), NativeFacadeExecutableError>
 ///
 /// * `claude`, `codex` — the row's TUI shape was measured with its declaration flag
 ///   (`--mcp-config`, `-c mcp_servers.marion.*`) for M3's pane work, and again through the shipped
-///   facade by `tests/native_facade_e2e.rs` (2026-09-05).
+///   facade by `tests/it_live/native_facade_e2e.rs` (2026-09-05).
 /// * `gemini` — enabled 2026-09-10, on measurement of the question that kept it dark: the
 ///   system-settings layer the declaration rides **outranks the operator's own**, and a native
 ///   node that silently lost the operator's servers would be §6.4's failure. gemini 0.53.0 merges
@@ -754,7 +754,7 @@ fn executable_error(executable: &str) -> Result<(), NativeFacadeExecutableError>
 ///   collision: the system layer's entry wins, so an operator-owned server named `marion` is
 ///   shadowed for the node's life (`s30/mcp-list.collision.txt`).
 /// * `opencode`, `copilot` — enabled 2026-09-05, on measurement of the TUI's own reading of the
-///   declaration through the shipped facade (`tests/native_facade_e2e.rs` fixture, darwin
+///   declaration through the shipped facade (`tests/it_live/native_facade_e2e.rs` fixture, darwin
 ///   25.5.0). opencode 1.17.3 with `OPENCODE_CONFIG_CONTENT`: its `/mcp` dialog lists
 ///   `marion connected ✓ Enabled` **beside the operator's own servers**, so
 ///   the inline document merges rather than replaces; the status bar counts marion in `⊙ 2 MCP`.
