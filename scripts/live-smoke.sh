@@ -13,6 +13,9 @@
 #   s3  claude root -> opencode child  fix an off-by-one it has to read the file to find
 #   s4  claude root -> codex child     add average(nums); the operator steers the running child
 #                                      with "also handle empty input" (`marion steer`)
+#   s5  claude root -> pi child        fix the same off-by-one as s3
+#   s6  opencode root -> codex child   add word_count(s), as s1, from an opencode root
+#   s7  pi root -> codex child         add char_frequency(s), as s2, from a pi root
 #   s39 a workflow, no root: plan on claude (haiku, read-only) -> race codex / opencode / pi ->
 #       review on another model family -> at most two fixes -> land on its branch. Fix the
 #       last_n_lines off-by-one. Runs only when named (`scripts/live-smoke.sh s39`): it starts
@@ -41,7 +44,9 @@
 # MARION_LIVE_SMOKE_OUT); read them against tests/fixtures/REVIEW.md before committing.
 #
 # MARION_LIVE_SMOKE_OPENCODE_MODEL names the model s3's prompt asks for, for an operator whose
-# opencode default model is one their account cannot use (a subscription-only provider).
+# opencode default model is one their account cannot use (a subscription-only provider); s6's
+# opencode root runs on it too. MARION_LIVE_SMOKE_PI_MODEL does the same for pi (s5's child, s7's
+# root). Either unset leaves that harness on the operator's own default.
 
 set -euo pipefail
 
@@ -59,6 +64,7 @@ OUT=${MARION_LIVE_SMOKE_OUT:-$REPO_ROOT/tests/fixtures/live-smoke-$DATE}
 ONLY=${1:-}
 CANNED=${MARION_LIVE_SMOKE_CANNED:+1}
 OPENCODE_MODEL=${MARION_LIVE_SMOKE_OPENCODE_MODEL:-}
+PI_MODEL=${MARION_LIVE_SMOKE_PI_MODEL:-}
 
 export CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only
 
@@ -140,8 +146,10 @@ prune_folder_records() {
 
 cleanup() {
 	prune_folder_records || echo "live-smoke: could not prune harness folder records; backups in $RUN" >&2
-	# Worktrees a killed child left behind point into $RUN; drop the scratch repos with them.
-	find "$RUN" -mindepth 1 -maxdepth 1 -type d -name 's[0-9]*' -exec rm -rf {} + 2>/dev/null || true
+	# Worktrees a killed child left behind point into $RUN; drop the scratch repos with them, unless
+	# MARION_LIVE_SMOKE_KEEP=1 asks to keep each scenario's repo and state dir for a diagnosis.
+	[ "${MARION_LIVE_SMOKE_KEEP:-}" = 1 ] ||
+		find "$RUN" -mindepth 1 -maxdepth 1 -type d -name 's[0-9]*' -exec rm -rf {} + 2>/dev/null || true
 	echo "live-smoke: scratch kept at $RUN (config backups and moved claude session history)" >&2
 }
 trap cleanup EXIT
@@ -149,7 +157,8 @@ trap cleanup EXIT
 # ---- login status, read with each harness's own probe, never a login ----------------------------
 
 logged_in() {
-	case "$1" in
+	# An agent type names its harness first: `pi-orchestrator` runs pi.
+	case "${1%-orchestrator}" in
 		claude) DISABLE_AUTOUPDATER=1 claude auth status --json 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("loggedIn") else 1)' ;;
 		codex) codex -c check_for_update_on_startup=false login status >/dev/null 2>&1 ;;
 		# opencode's status probe is a file (the README's profile table); no binary launch at all.
@@ -317,13 +326,26 @@ scenario s2 codex - claude \
 	"" wider
 
 scenario s3 claude haiku opencode \
-	"Delegate this to an opencode agent${OPENCODE_MODEL:+ on the $OPENCODE_MODEL model}: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	"Delegate this to an opencode agent (agent_type \"opencode\")${OPENCODE_MODEL:+ with model \"$OPENCODE_MODEL\", spelled exactly so}: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
 	'from textutil import last_n_lines as l; assert l("a\nb\nc", 2) == ["b", "c"], l("a\nb\nc", 2); assert l("a\nb\nc", 1) == ["c"]; assert l("a\nb\nc", 3) == ["a", "b", "c"]'
 
 scenario s4 claude haiku codex \
 	"Delegate this to a codex agent: add an average(nums) function to textutil.py that returns the arithmetic mean of a list of numbers, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
 	'from textutil import average as a; assert a([1, 2, 3]) == 2; assert a([]) == 0.0, "empty input was not handled"' \
 	"Also handle empty input: average([]) must return 0.0 instead of raising. Add a test for it."
+
+scenario s5 claude haiku pi \
+	"Delegate this to a pi agent (agent_type \"pi\")${PI_MODEL:+ with model \"$PI_MODEL\", spelled exactly so}: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	'from textutil import last_n_lines as l; assert l("a\nb\nc", 2) == ["b", "c"], l("a\nb\nc", 2); assert l("a\nb\nc", 1) == ["c"]; assert l("a\nb\nc", 3) == ["a", "b", "c"]'
+
+# The roots that are not claude or codex: each delegates to codex, on the model its operator names.
+scenario s6 opencode "${OPENCODE_MODEL:--}" codex \
+	"Delegate this to a codex agent: add a word_count(s) function to textutil.py that returns the number of whitespace-separated words in s, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	'from textutil import word_count as w; assert w("a  b\nc") == 3, w("a  b\nc"); assert w("") == 0; assert w("   ") == 0'
+
+scenario s7 pi-orchestrator "${PI_MODEL:--}" codex \
+	"Delegate this to a codex agent: add a char_frequency(s) function to textutil.py that returns a dict mapping each character of s to how many times it occurs, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	'from textutil import char_frequency as f; assert f("aab") == {"a": 2, "b": 1}, f("aab"); assert f("") == {}'
 
 # ---- a workflow scenario ----------------------------------------------------------------------------
 
