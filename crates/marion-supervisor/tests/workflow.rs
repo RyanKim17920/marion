@@ -453,3 +453,68 @@ fn marion_workflow_run_prints_the_scoreboard_and_exits_with_the_outcome() {
         "{stdout}"
     );
 }
+
+/// **(b) A race step decides its winner and the next step builds on the winner's work**: three
+/// seats, seat two writes the file the verification wants and wins; the next step's worktree is cut
+/// at the winner's commit, so its own verification finds the file without writing it, and its
+/// prompt names the winner's branch.
+#[test]
+fn a_race_steps_winner_is_what_the_next_step_builds_on() {
+    let script = Script {
+        nodes: vec![
+            node("wf-race-one", &["wrong-1.txt"], "seat one"),
+            node("wf-race-two", &["ok"], "seat two wrote ok"),
+            node("wf-race-three", &["wrong-3.txt"], "seat three"),
+            node("NEXTMARK", &[], "checked"),
+        ],
+        ..Script::default()
+    };
+    let Some(bed) = bed("wf-race", script) else {
+        return;
+    };
+    bed.user_workflow(
+        "raced",
+        r#"schema = 1
+name = "raced"
+
+[[step]]
+id = "impl"
+kind = "race"
+on = ["claude:wf-race-one", "claude:wf-race-two", "claude:wf-race-three"]
+prompt = "Create the file the task needs at the repository root."
+verify = ["test -f ok"]
+
+[[step]]
+id = "next"
+kind = "agent"
+on = "claude"
+prompt = "NEXTMARK: build on {impl.branch}"
+verify = ["test -f ok"]
+"#,
+    );
+    let result = bed.run_to_close("raced", &[]);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Succeeded,
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(result.steps[0].nodes.len(), 3, "three seats");
+    let winner_branch = result.steps[0].branch.clone().expect("the winner's branch");
+    let next = bed.requests_with("NEXTMARK");
+    assert!(
+        next[0].contains(&winner_branch),
+        "the next prompt names the winner's branch {winner_branch}"
+    );
+    let journal = records(&bed.project.journal());
+    assert!(
+        journal
+            .iter()
+            .any(|k| matches!(k, RecordKind::RaceDecided(_)))
+    );
+    let seats = journal
+        .iter()
+        .filter(|k| matches!(k, RecordKind::SpawnIntent(i) if i.race.is_some() && i.workflow.as_ref().is_some_and(|s| s.step == 0)))
+        .count();
+    assert_eq!(seats, 3, "each seat carries its race and its workflow step");
+}

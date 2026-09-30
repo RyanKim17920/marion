@@ -248,7 +248,10 @@ An `agent` step runs one agent; a `parallel` step runs the same read-only task o
 `{step.report}`, `{step.branch}` or `{step.diffstat}` is what an earlier step left, handed to the
 next agent marked as another agent's output. `when = "build:failed"` runs a step only if an earlier
 one ended that way; a step that fails with nothing gated on it ends the run. Each step's agents are
-top-level agents in worktrees of their own, like `marion race`'s seats.
+top-level agents in worktrees of their own, like `marion race`'s seats. A `race` step
+(`on = [...]`, `verify = [...]`, optionally `first` and `prune`) races its candidates, and the step
+after it builds on the winner's work: each step that changes files is cut at the commit of the
+last step before it that did.
 
 ```sh
 marion workflow list                      # every workflow, and whether it may run
@@ -257,7 +260,7 @@ marion workflow run ship --task "add rate limiting"  # watch it; exits 1 unless 
 ```
 
 A repository's workflow runs only after `marion trust allow <file>`, which shows every step, agent
-and verification command first; any edit revokes it. Race, review and land steps are coming.
+and verification command first; any edit revokes it. Review and land steps are coming.
 
 ## Sharing a run
 

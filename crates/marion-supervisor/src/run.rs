@@ -226,7 +226,15 @@ pub struct SpawnRequest {
     /// writable scope — without a reviewed node to read.
     pub read_only: bool,
     /// The workflow step this node runs, journaled on its intent ([`SpawnIntent::workflow`]).
-    pub workflow: Option<marion_core::workflow::WorkflowSeat>,
+    pub workflow: Option<StepLaunch>,
+}
+
+/// **A workflow step's node, as launched**: its seat (journaled on its intent) and the commit its
+/// worktree is cut at — the earlier step's work it builds on — or the repository's `HEAD`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepLaunch {
+    pub seat: marion_core::workflow::WorkflowSeat,
+    pub base: Option<marion_core::contract::Oid>,
 }
 
 impl SpawnRequest {
@@ -2090,7 +2098,7 @@ pub fn run_spawn_watched(
             // A seat keeps its seat across a resume: the resume rebuilds this request from the
             // intent.
             race: req.race.clone(),
-            workflow: req.workflow.clone(),
+            workflow: req.workflow.as_ref().map(|w| w.seat.clone()),
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {
@@ -3179,7 +3187,12 @@ fn select_workspace(
             let wt = agent_dir.worktree();
             crate::private_fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
             // A reviewer's tree is the reviewed work as it landed, so it reads what it judges.
-            let at = req.review.as_ref().and_then(|t| t.commit.as_ref());
+            // A workflow step's tree is the earlier step's work it builds on.
+            let at = req
+                .review
+                .as_ref()
+                .and_then(|t| t.commit.as_ref())
+                .or_else(|| req.workflow.as_ref().and_then(|w| w.base.as_ref()));
             // A caller in a worktree marion made (under this project's agent dirs) hands its child
             // its current state; the operator's own checkout is never committed to. See
             // `make_worktree`.

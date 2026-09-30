@@ -40,15 +40,14 @@ impl RegistryHandle {
         )
         .map_err(|e| refuse(e.to_string()))?;
         let wf = &loaded.workflow;
-        if let Some(step) = wf.steps.iter().find(|s| {
-            matches!(
-                s.kind,
-                StepKind::Race { .. } | StepKind::Review { .. } | StepKind::Land { .. }
-            )
-        }) {
+        if let Some(step) = wf
+            .steps
+            .iter()
+            .find(|s| matches!(s.kind, StepKind::Review { .. } | StepKind::Land { .. }))
+        {
             return Err(refuse(format!(
-                "step `{}` is a {} step, which this build does not run yet; agent and parallel \
-                 steps run",
+                "step `{}` is a {} step, which this build does not run yet; agent, parallel and \
+                 race steps run",
                 step.id,
                 step.kind.word()
             )));
@@ -127,14 +126,15 @@ impl RegistryHandle {
         };
         loop {
             self.live.refresh();
-            let Some((run, nodes)) = self.live.read(|r| {
+            let Some((run, nodes, races)) = self.live.read(|r| {
                 let run = r.tree().workflow(wf_id)?.clone();
-                Some((run, r.tree().nodes().to_vec()))
+                Some((run, r.tree().nodes().to_vec(), r.tree().races().to_vec()))
             }) else {
                 return;
             };
             let wf = &spec.workflow;
-            let (state, earned) = crate::workflow::state(&env.project_dir, wf, &run, &nodes);
+            let (state, earned) =
+                crate::workflow::state(&env.project_dir, wf, &run, &nodes, &races);
             if !earned.is_empty() {
                 for (step, verdict) in earned {
                     let ids = run
@@ -152,7 +152,14 @@ impl RegistryHandle {
                     self.decide_step(wf_id, step, StepVerdict::Skipped, Vec::new())
                 }
                 Next::Launch { step } => {
-                    if !self.launch_step(wf_id, spec, &env, &run, &nodes, step) {
+                    let values = crate::workflow::RunValues {
+                        spec,
+                        project: &env.project_dir,
+                        run: &run,
+                        nodes: &nodes,
+                        races: &races,
+                    };
+                    if !self.launch_step(wf_id, &env, &values, step) {
                         // Nothing started: the step failed where it stood.
                         self.decide_step(wf_id, step, StepVerdict::Failed, Vec::new());
                         continue;
@@ -166,6 +173,7 @@ impl RegistryHandle {
                         wf_id,
                         &run,
                         &nodes,
+                        &races,
                         outcome,
                     );
                     if let Err(e) = crate::workflow::write_result(&env.project_dir, &result) {
@@ -217,22 +225,79 @@ impl RegistryHandle {
     fn launch_step(
         &self,
         wf_id: &WorkflowId,
-        spec: &crate::workflow::Spec,
         env: &crate::run::Env,
-        run: &marion_core::registry::ReplayedWorkflow,
-        nodes: &[marion_core::registry::ReplayedNode],
+        values: &crate::workflow::RunValues<'_>,
         step: usize,
     ) -> bool {
         let Some(me) = self.me.upgrade() else {
             return false;
         };
+        let spec = values.spec;
         let def = &spec.workflow.steps[step];
-        let values = crate::workflow::RunValues {
-            spec,
-            project: &env.project_dir,
-            run,
-            nodes,
+        let base = values.base_for(step);
+        let launch = |part: usize| crate::run::StepLaunch {
+            seat: WorkflowSeat {
+                wf_id: wf_id.clone(),
+                step: u8::try_from(step).unwrap_or(u8::MAX),
+                round: 0,
+                part: u8::try_from(part).unwrap_or(u8::MAX),
+            },
+            base: base.clone(),
         };
+        if let StepKind::Race {
+            on,
+            prompt,
+            verify,
+            first,
+            prune,
+        } = &def.kind
+        {
+            let p = marion_core::proto::params::AgentSpawnParams {
+                wider_children: None,
+                budget_tokens: None,
+                review_of: None,
+                notify_parent: false,
+                agent_type: String::new(),
+                prompt: prompt.render(values),
+                native_launch: None,
+                caller: None,
+                repo: Some(spec.repo.clone()),
+                acceptance_criteria: vec![],
+                verification: verify.clone(),
+                writable_scope: vec![],
+                timeout_secs: def.timeout_secs,
+                model: None,
+                no_change_record: None,
+                pane: None,
+                isolation: None,
+                allow_concurrent_writes: None,
+                profile: None,
+                candidates: on.iter().map(|c| c.label()).collect(),
+                race: Some(marion_core::race::RawRacePolicy {
+                    first: first.then_some(true),
+                    losers: prune.then_some(marion_core::race::Losers::Prune),
+                    ..Default::default()
+                }),
+            };
+            let first_seat = launch(0);
+            return match self.spawn_race(
+                me,
+                env.clone(),
+                &p,
+                None,
+                spec.repo.clone(),
+                Some(&first_seat),
+            ) {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!(
+                        "marion: workflow {}'s race step `{}` could not start: {}",
+                        wf_id.0, def.id, e.message
+                    );
+                    false
+                }
+            };
+        }
         let (agents, prompt, read_only, verify): (Vec<_>, _, bool, Vec<String>) = match &def.kind {
             StepKind::Agent {
                 on,
@@ -243,15 +308,9 @@ impl RegistryHandle {
             StepKind::Parallel { on, prompt } => (on.clone(), prompt, true, Vec::new()),
             _ => return false,
         };
-        let text = prompt.render(&values);
+        let text = prompt.render(values);
         let mut started = 0;
         for (part, agent) in agents.iter().enumerate() {
-            let seat = WorkflowSeat {
-                wf_id: wf_id.clone(),
-                step: u8::try_from(step).unwrap_or(u8::MAX),
-                round: 0,
-                part: u8::try_from(part).unwrap_or(u8::MAX),
-            };
             let req = crate::run::SpawnRequest {
                 budget: None,
                 review: None,
@@ -269,7 +328,7 @@ impl RegistryHandle {
                 resume: None,
                 profile: None,
                 read_only,
-                workflow: Some(seat),
+                workflow: Some(launch(part)),
             };
             let decision = lock(&self.spawn_decision);
             let launched = mint_task_id().and_then(|task_id| {
@@ -326,6 +385,6 @@ impl RegistryHandle {
 }
 
 /// A step's own node ended: drive its run.
-pub(super) fn after_step_node(handle: &Arc<RegistryHandle>, seat: &WorkflowSeat) {
-    handle.drive_workflow(&seat.wf_id);
+pub(super) fn after_step_node(handle: &Arc<RegistryHandle>, step: &crate::run::StepLaunch) {
+    handle.drive_workflow(&step.seat.wf_id);
 }

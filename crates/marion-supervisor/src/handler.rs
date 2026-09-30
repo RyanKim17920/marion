@@ -4073,7 +4073,7 @@ impl RegistryHandle {
                 })?;
                 check_project(&env, &repo)?;
                 return if racing {
-                    self.spawn_race(me, env, p, None, repo)
+                    self.spawn_race(me, env, p, None, repo, None)
                 } else {
                     self.spawn_contracted(me, env, p, repo)
                 };
@@ -4086,7 +4086,7 @@ impl RegistryHandle {
         };
         if racing {
             let repo = self.caller_repo(caller_id)?;
-            return self.spawn_race(me, env, p, Some(caller_id), repo);
+            return self.spawn_race(me, env, p, Some(caller_id), repo, None);
         }
 
         // **Held from here to the child's durable intent, and no further.** See
@@ -4263,6 +4263,7 @@ impl RegistryHandle {
         p: &marion_core::proto::params::AgentSpawnParams,
         caller_id: Option<&marion_core::proto::SpawnCaller>,
         repo: PathBuf,
+        step: Option<&crate::run::StepLaunch>,
     ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
         use marion_core::proto::result::{RaceStarted, SeatStarted};
         use marion_core::race::{self, RacePolicy, RaceRole, RaceSeat};
@@ -4388,7 +4389,7 @@ impl RegistryHandle {
                 refused: None,
             };
             let launched = mint_task_id().and_then(|task_id| {
-                let req = child_request(
+                let mut req = child_request(
                     p,
                     repo.clone(),
                     candidate.agent_type.clone(),
@@ -4405,6 +4406,14 @@ impl RegistryHandle {
                     ),
                     wall,
                 );
+                // A workflow's race: each seat carries the step, as its own part.
+                req.workflow = step.map(|s| crate::run::StepLaunch {
+                    seat: marion_core::workflow::WorkflowSeat {
+                        part: seat - 1,
+                        ..s.seat.clone()
+                    },
+                    base: s.base.clone(),
+                });
                 let sent = sent_task(&req);
                 let (agent_id, state) = self.launch_child(
                     me.clone(),
@@ -4571,6 +4580,17 @@ impl RegistryHandle {
             self.announce_race_end(&parent, &result, owed);
         }
         self.races.close(&result.race_id);
+        // A workflow's race step is decided by its race: step the run on.
+        let run = self.live.read(|r| {
+            result
+                .seats
+                .iter()
+                .filter_map(|row| row.agent_id.as_ref())
+                .find_map(|id| r.tree().get(id)?.intent.as_ref()?.workflow.clone())
+        });
+        if let Some(seat) = run {
+            self.drive_workflow(&seat.wf_id);
+        }
     }
 
     /// **The one seam through which marion stops a node it decided to stop itself** — a race's
@@ -5705,7 +5725,12 @@ impl RegistryHandle {
             // A resumed seat keeps its seat.
             race: node.intent.as_ref().and_then(|i| i.race.clone()),
             read_only: false,
-            workflow: None,
+            // A resumed step node keeps its step; its recorded tree is where it resumes.
+            workflow: node
+                .intent
+                .as_ref()
+                .and_then(|i| i.workflow.clone())
+                .map(|seat| crate::run::StepLaunch { seat, base: None }),
         };
         // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.
         self.launch_child(

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use marion_core::contract::{AgentId, ExitStatus, TaskContract};
 use marion_core::paths::ProjectDir;
-use marion_core::registry::{ReplayedNode, ReplayedWorkflow};
+use marion_core::registry::{ReplayedNode, ReplayedRace, ReplayedWorkflow};
 use marion_core::workflow::{
     Field, StepKind, StepRow, StepState, StepVerdict, Values, WfState, Workflow, WorkflowId,
     WorkflowResult,
@@ -142,6 +142,7 @@ pub fn observe(
     wf: &Workflow,
     run: &ReplayedWorkflow,
     nodes: &[ReplayedNode],
+    races: &[ReplayedRace],
     step: usize,
 ) -> Observed {
     let Ok(s) = u8::try_from(step) else {
@@ -158,6 +159,17 @@ pub fn observe(
     if launched.is_empty() {
         return Observed::State(StepState::Pending);
     }
+    // A race step is decided by its race, which may stop a seat or wait for every one.
+    if matches!(wf.steps[step].kind, StepKind::Race { .. }) {
+        return match race_of(&launched, races).and_then(|r| r.decided.as_ref()) {
+            Some(d) => Observed::Earned(if d.winner.is_some() {
+                StepVerdict::Succeeded
+            } else {
+                StepVerdict::Failed
+            }),
+            None => Observed::State(StepState::Running { round: 0 }),
+        };
+    }
     if launched.len() < expected_nodes(&wf.steps[step].kind) || !launched.iter().all(|n| ended(n)) {
         return Observed::State(StepState::Running { round: 0 });
     }
@@ -171,6 +183,15 @@ pub fn observe(
     } else {
         StepVerdict::Failed
     })
+}
+
+/// The race a race step's seats belong to.
+fn race_of<'a>(seats: &[&ReplayedNode], races: &'a [ReplayedRace]) -> Option<&'a ReplayedRace> {
+    let id = seats
+        .iter()
+        .find_map(|n| n.intent.as_ref()?.race.as_ref())
+        .map(|r| &r.race_id)?;
+    races.iter().find(|r| &r.race_id == id)
 }
 
 /// How many nodes a step starts.
@@ -188,11 +209,12 @@ pub fn state(
     wf: &Workflow,
     run: &ReplayedWorkflow,
     nodes: &[ReplayedNode],
+    races: &[ReplayedRace],
 ) -> (WfState, Vec<(usize, StepVerdict)>) {
     let mut state = WfState::new(wf);
     let mut earned = Vec::new();
     for i in 0..wf.steps.len() {
-        state.steps[i] = match observe(project, wf, run, nodes, i) {
+        state.steps[i] = match observe(project, wf, run, nodes, races, i) {
             Observed::State(s) => s,
             Observed::Earned(v) => {
                 earned.push((i, v));
@@ -210,19 +232,56 @@ pub struct RunValues<'a> {
     pub project: &'a ProjectDir,
     pub run: &'a ReplayedWorkflow,
     pub nodes: &'a [ReplayedNode],
+    pub races: &'a [ReplayedRace],
 }
 
 impl RunValues<'_> {
+    /// The contracts a step's fields are read from: each of its nodes', or a race's winner's.
     fn contracts(&self, step: usize) -> Vec<(AgentId, TaskContract)> {
         let Ok(s) = u8::try_from(step) else {
             return Vec::new();
         };
-        self.run
+        let launched: Vec<&ReplayedNode> = self
+            .run
             .step_nodes(s, 0)
             .into_iter()
             .filter_map(|id| self.nodes.iter().find(|n| &n.agent_id == id))
+            .collect();
+        let chosen: Vec<&ReplayedNode> = match self.spec.workflow.steps.get(step).map(|d| &d.kind) {
+            Some(StepKind::Race { .. }) => {
+                let winner = race_of(&launched, self.races)
+                    .and_then(|r| r.decided.as_ref())
+                    .and_then(|d| d.winner.clone());
+                launched
+                    .into_iter()
+                    .filter(|n| Some(&n.agent_id) == winner.as_ref())
+                    .collect()
+            }
+            _ => launched,
+        };
+        chosen
+            .into_iter()
             .filter_map(|n| contract_of(self.project, n).map(|c| (n.agent_id.clone(), c)))
             .collect()
+    }
+
+    /// **The commit a step builds on**: the work of the latest earlier step that left a branch and
+    /// passed, or `None` for the repository's `HEAD`.
+    pub fn base_for(&self, step: usize) -> Option<marion_core::contract::Oid> {
+        (0..step).rev().find_map(|i| {
+            let def = self.spec.workflow.steps.get(i)?;
+            let passed = matches!(
+                self.run.decision(u8::try_from(i).ok()?).map(|d| d.verdict),
+                Some(StepVerdict::Succeeded | StepVerdict::Clean)
+            );
+            if !def.kind.makes_a_branch() || !passed {
+                return None;
+            }
+            match self.contracts(i).as_slice() {
+                [(_, c)] => c.completion.as_ref()?.commit.clone(),
+                _ => None,
+            }
+        })
     }
 }
 
@@ -276,6 +335,7 @@ pub fn result(
     id: &WorkflowId,
     run: &ReplayedWorkflow,
     nodes: &[ReplayedNode],
+    races: &[ReplayedRace],
     outcome: marion_core::workflow::Outcome,
 ) -> WorkflowResult {
     let values = RunValues {
@@ -283,6 +343,7 @@ pub fn result(
         project,
         run,
         nodes,
+        races,
     };
     let steps = spec
         .workflow
