@@ -34,6 +34,11 @@ marion cancel <id> [--force]              # end it and its subtree gracefully; -
 marion steer <id> <text…>                 # `-` reads the message from stdin
 ```
 
+A pane runs the harness as it runs in your own terminal, its own screen mode included. Codex
+0.159 and later draw full-screen, so a codex pane keeps no scrollback of its own: its transcript
+scrolls inside codex. Earlier codex releases, and claude, draw inline, and a pane keeps their
+scrollback across a resize.
+
 An `<id>` is an agent's whole id, the short id its tree row shows, or a unique start of its id.
 
 A plain `marion run` works in your checkout. With `--worktree` or `--verify <command>` it runs the

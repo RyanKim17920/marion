@@ -70,6 +70,14 @@ use crate::spec::{
 /// per-harness property — codex enters one transiently for `/diff` — so the emulator must handle
 /// the switch either way, and a flag here would only hide whether it does.
 ///
+/// **From 0.159 the default is full-screen, and marion keeps it.** Measured on 0.159.2
+/// (2026-09-30, `pane_attach`'s C2 test): codex enters the alternate screen at boot
+/// (`ESC[?1049h`, with mouse tracking) and stays, so its transcript lives in its own screen and a
+/// codex pane gives the operator **no scrollback** — `/status` panels and turns scroll inside
+/// codex, not into the pane's history. The flag would bring the inline transcript back, and it is
+/// still not passed: a harness behaves in a marion pane as it does in the operator's own terminal.
+/// An operator who wants the inline one sets it in their own codex configuration.
+///
 /// **`-s/--sandbox` and `-a/--ask-for-approval`.** Neither flag is used. A canned node sets both
 /// in the generated [`config_toml`] (`sandbox_mode`, `approval_policy`); a live node carries the
 /// sandbox as the `-c sandbox_mode=…` pair ([`live_sandbox_override`]), the same key the document
