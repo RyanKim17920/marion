@@ -1,0 +1,18 @@
+[
+ {
+  "ts": "2026-09-30T18:23:48.761Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:37.179Z",
+  "marion": {
+   "Lifecycle": {
+    "Aborted": {
+     "reason": "driving the child over its control plane: the node exited before answering marion's initialize control request"
+    }
+   }
+  }
+ }
+]

@@ -1,0 +1,23 @@
+[
+ {
+  "ts": "2026-09-30T18:42:58.073Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:43:02.840Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Unreported",
+     "exit": {
+      "code": 1,
+      "signal": null,
+      "description": "Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google; child exited with code 1; stderr: Warning: --allowed-tools cli argument and tools.allowed in settings.json are deprecated and will be removed in 1.0: Migrate to Policy Engine:…[371 more chars]"
+     }
+    }
+   }
+  }
+ }
+]

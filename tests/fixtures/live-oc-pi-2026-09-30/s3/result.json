@@ -1,0 +1,61 @@
+{
+ "scenario": "s3",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.285 (Claude Code)",
+  "usage": {
+   "input": 18,
+   "output": 893,
+   "cache_read": 25771,
+   "cache_write": 9229,
+   "reasoning": 0,
+   "total": 35911
+  },
+  "cost_usd": 0.0255181,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "opencode",
+   "agent_type": "opencode",
+   "depth": 1,
+   "version": "1.18.33",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 111130,
+    "output": 2412,
+    "cache_read": 188024,
+    "cache_write": 0,
+    "reasoning": 1069,
+    "total": 301566
+   },
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "opencode",
+ "child_harness_matches": true,
+ "child_model": "google/gemini-3.1-flash-lite",
+ "reported": true,
+ "status": "Ok",
+ "failure_cause": null,
+ "narrative": "I fixed the off-by-one bug in the `last_n_lines` function in `textutil.py` and added a regression test in `test_textutil.py` to prevent future occurrences, verifying the fix with all tests passing.",
+ "declared_verification": [],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": true,
+ "changed_paths": [
+  "test_textutil.py",
+  "textutil.py"
+ ],
+ "scope_violations": [],
+ "verify": "pass",
+ "steer": null,
+ "wider_children": false,
+ "steer_records": [],
+ "wall_secs": 99,
+ "timed_out": false
+}

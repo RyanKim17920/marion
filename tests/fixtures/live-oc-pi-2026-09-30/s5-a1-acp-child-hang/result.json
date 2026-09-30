@@ -1,0 +1,51 @@
+{
+ "scenario": "s5",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.285 (Claude Code)",
+  "usage": {
+   "input": 10,
+   "output": 3,
+   "cache_read": 0,
+   "cache_write": 16382,
+   "reasoning": 0,
+   "total": 16395
+  },
+  "cost_usd": null,
+  "exit": null,
+  "marion_tools": [
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "acp",
+   "agent_type": "acp-opencode",
+   "depth": 1,
+   "version": "unknown",
+   "generations": 1,
+   "exit": null,
+   "usage": null,
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "pi",
+ "child_harness_matches": false,
+ "child_model": null,
+ "reported": false,
+ "status": null,
+ "failure_cause": null,
+ "narrative": null,
+ "declared_verification": [],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": false,
+ "changed_paths": null,
+ "scope_violations": null,
+ "verify": "none",
+ "steer": null,
+ "wider_children": false,
+ "steer_records": [],
+ "wall_secs": 420,
+ "timed_out": true
+}

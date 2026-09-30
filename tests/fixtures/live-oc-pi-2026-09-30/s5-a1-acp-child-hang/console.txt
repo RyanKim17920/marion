@@ -1,0 +1,23 @@
+marion: root <UUID> (claude) in <SCRATCH>/s5/state/fdd5c2978f18/agents/<UUID>
+stdout    [withheld: a `control_response` frame of 59113 bytes, body not kept]
+session   model claude-haiku-4-5-20251001, 10 tools, mcp: marion=connected
+frame     system/thinking_tokens
+frame     system/thinking_tokens
+think     (0 characters of reasoning)
+MARION    spawn  acceptance_criteria=[4 items] agent_type="acp-opencode" model="deepseek-v4-flash" prompt="Fix the off-by-one bug in `last_n_lines` function in textutil.py. Then a…" verification=[1 items]
+frame     rate_limit_event
+CHILD     acp-opencode started (acp, depth 1)
+FAILED    acp-opencode never started: marion left the spawn path before the child reached a terminal record; the error was returned to the caller (§7.2: a node marion decided the fate of is never one marion lost)
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress
+frame     tool_progress

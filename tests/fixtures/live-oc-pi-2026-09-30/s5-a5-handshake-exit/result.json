@@ -1,0 +1,72 @@
+{
+ "scenario": "s5",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.285 (Claude Code)",
+  "usage": {
+   "input": 26,
+   "output": 1399,
+   "cache_read": 42857,
+   "cache_write": 10120,
+   "reasoning": 0,
+   "total": 54402
+  },
+  "cost_usd": 0.0315467,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn",
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "pi",
+   "agent_type": "pi",
+   "depth": 1,
+   "version": "0.80.2",
+   "generations": 1,
+   "exit": null,
+   "usage": null,
+   "cost_usd": null
+  },
+  {
+   "harness": "claude-code",
+   "agent_type": "claude",
+   "depth": 1,
+   "version": "2.1.285 (Claude Code)",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 10,
+    "output": 1715,
+    "cache_read": 58749,
+    "cache_write": 7794,
+    "reasoning": 0,
+    "total": 68268
+   },
+   "cost_usd": 0.1084418
+  }
+ ],
+ "child_harness_expected": "pi",
+ "child_harness_matches": false,
+ "child_model": "claude-opus-5-5[1m]",
+ "reported": true,
+ "status": "Ok",
+ "failure_cause": null,
+ "narrative": "Fixed the off-by-one bug in textutil.last_n_lines. The slice now starts at max(len(lines) - n, 0), so the function returns exactly n lines (it used to return n+1) and doesn't wrap when n is larger than the line count. I added LastNLinesTest regression tests to test_textutil.py; 4 of them fail against the old code, and all 8 tests pass with `python3 -m unittest -q`. Committed as 19b0d9c.",
+ "declared_verification": [],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": true,
+ "changed_paths": [
+  "test_textutil.py",
+  "textutil.py"
+ ],
+ "scope_violations": [],
+ "verify": "pass",
+ "steer": null,
+ "wider_children": false,
+ "steer_records": [],
+ "wall_secs": 87,
+ "timed_out": false
+}

@@ -1,0 +1,4211 @@
+[
+ {
+  "ts": "2026-09-30T18:49:09.190Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:09.528Z",
+  "key": "",
+  "frame": {
+   "id": 0,
+   "result": "<dropped: output of a call that read operator config>"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.108Z",
+  "key": "",
+  "frame": {
+   "id": 1,
+   "result": "<dropped: output of a call that read operator config>"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.116Z",
+  "key": "thread/started",
+  "frame": {
+   "emittedAtMs": 1790794150105,
+   "method": "thread/started",
+   "params": {
+    "thread": {
+     "agentNickname": null,
+     "agentRole": null,
+     "canAcceptDirectInput": true,
+     "cliVersion": "0.155.1",
+     "createdAt": 1790794150,
+     "daybreakEnabled": null,
+     "environments": [
+      {
+       "environmentId": "local",
+       "runtimeWorkspaceRoots": [
+        "<SCRATCH>/s6/state/532ff8e59976/agents/<UUID>/worktree"
+       ]
+      }
+     ],
+     "ephemeral": false,
+     "extra": null,
+     "forkedFromId": null,
+     "gitInfo": null,
+     "historyMode": "paginated",
+     "id": "<UUID>",
+     "model": "gpt-6-astra",
+     "modelProvider": "openai",
+     "name": null,
+     "originator": "marion",
+     "parentThreadId": null,
+     "path": "<HOME>/.codex/sessions/2026/09/30/rollout-2026-09-30T13-49-09-<UUID>.jsonl",
+     "preview": "",
+     "projectId": null,
+     "reasoningEffort": "medium",
+     "recencyAt": 1790794150,
+     "section": null,
+     "sectionEnteredAt": null,
+     "source": "vscode",
+     "status": {
+      "type": "idle"
+     },
+     "threadSource": null,
+     "turns": [],
+     "updatedAt": 1790794150
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.116Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794150107,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "marion",
+    "status": "starting",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.116Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794150108,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "tool03xxx",
+    "status": "starting",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.116Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794150108,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "codex_apps",
+    "status": "starting",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.125Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794150125,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "marion",
+    "status": "ready",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.147Z",
+  "key": "",
+  "frame": {
+   "id": 2,
+   "result": "<dropped: output of a call that read operator config>"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.189Z",
+  "key": "thread/status/changed",
+  "frame": {
+   "emittedAtMs": 1790794150189,
+   "method": "thread/status/changed",
+   "params": {
+    "status": {
+     "activeFlags": [],
+     "type": "active"
+    },
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.194Z",
+  "key": "turn/started",
+  "frame": {
+   "emittedAtMs": 1790794150189,
+   "method": "turn/started",
+   "params": {
+    "threadId": "<UUID>",
+    "turn": {
+     "completedAt": null,
+     "durationMs": null,
+     "error": null,
+     "id": "<UUID>",
+     "items": [],
+     "itemsView": "notLoaded",
+     "startedAt": 1790794150,
+     "status": "inProgress"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:10.270Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794150270,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "tool03xxx",
+    "status": "ready",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:11.252Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794151252,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "codex_apps",
+    "status": "ready",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:12.688Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794152688,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 9,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "sessionStart",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "session-start:9:<HOME>/.codex/hooks.json",
+     "scope": "thread",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794152,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:12.737Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794152737,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794152,
+     "displayOrder": 9,
+     "durationMs": 52,
+     "entries": [
+      {
+       "kind": "context",
+       "text": "This project is indexed by cymbal. Use cymbal for structural code navigation when you know (or can guess) the symbol name.\n\nTypical flow: `cymbal search <name>` to locate -> `cymbal context/show/investigate <sym>` to read -> `cymbal impact/trace/impls <sym>` to follow callers, dependencies, and implementations.\n\nOrientation (new repo or file):\n  - `cymbal structure` for entry points, hotspots, and…[2002 more chars]"
+      }
+     ],
+     "eventName": "sessionStart",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "session-start:9:<HOME>/.codex/hooks.json",
+     "scope": "thread",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794152,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:12.744Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794152743,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 10,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "userPromptSubmit",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "user-prompt-submit:10:<HOME>/.codex/hooks.json",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794152,
+     "status": "running",
+     "statusMessage": "Injecting subagent reminder"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:12.748Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794152748,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794152,
+     "displayOrder": 10,
+     "durationMs": 8,
+     "entries": [
+      {
+       "kind": "context",
+       "text": "Use subagents as much as possible logically."
+      }
+     ],
+     "eventName": "userPromptSubmit",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "user-prompt-submit:10:<HOME>/.codex/hooks.json",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794152,
+     "status": "completed",
+     "statusMessage": "Injecting subagent reminder"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:12.752Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794152749,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "clientId": null,
+     "content": "<dropped: output of a call that read operator config>",
+     "id": "<UUID>",
+     "type": "userMessage"
+    },
+    "startedAtMs": 1790794152749,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:12.756Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794152755,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794152749,
+    "item": {
+     "clientId": null,
+     "content": "<dropped: output of a call that read operator config>",
+     "id": "<UUID>",
+     "type": "userMessage"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:14.745Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794154744,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "delivery": null,
+     "id": "msg_05c98debf0a51a9d016abd59aabb8887d1a2985824b1268806",
+     "memoryCitation": null,
+     "phase": "commentary",
+     "questions": null,
+     "text": "",
+     "type": "agentMessage"
+    },
+    "startedAtMs": 1790794154743,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:15.780Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794155780,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794155775,
+    "item": {
+     "delivery": null,
+     "id": "msg_05c98debf0a51a9d016abd59aabb8887d1a2985824b1268806",
+     "memoryCitation": null,
+     "phase": "commentary",
+     "questions": null,
+     "text": "I’ll check for existing files, add `word_count` and its tests, then run the requested unittest command.",
+     "type": "agentMessage"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.141Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794158141,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.150Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794158141,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.151Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794158141,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.151Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794158141,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.152Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794158141,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 6,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.152Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794158141,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 7,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.812Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794158812,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794158,
+     "displayOrder": 1,
+     "durationMs": 322,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.817Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794158812,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794158,
+     "displayOrder": 2,
+     "durationMs": 330,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.817Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794158812,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794158,
+     "displayOrder": 3,
+     "durationMs": 654,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.818Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794158812,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794158,
+     "displayOrder": 4,
+     "durationMs": 37,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.818Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794158812,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794158,
+     "displayOrder": 6,
+     "durationMs": 52,
+     "entries": [
+      {
+       "kind": "error",
+       "text": "PreToolUse hook returned updatedInput without permissionDecision:allow"
+      }
+     ],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "failed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.818Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794158812,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794158,
+     "displayOrder": 7,
+     "durationMs": 28,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.925Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794158925,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "aggregatedOutput": null,
+     "command": "/bin/zsh -lc 'pwd; git status --short; git branch --show-current; command -v cymbal; ls textutil.py test_textutil.py tasks/lessons.md 2>/dev/null'",
+     "commandActions": [
+      {
+       "command": "pwd; git status --short; git branch --show-current; command -v cymbal; ls textutil.py test_textutil.py tasks/lessons.md 2>/dev/null",
+       "type": "unknown"
+      }
+     ],
+     "durationMs": null,
+     "exitCode": null,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "processId": "91656",
+     "scriptPath": null,
+     "source": "unifiedExecStartup",
+     "status": "inProgress",
+     "type": "commandExecution"
+    },
+    "startedAtMs": 1790794158922,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.933Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794158926,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794158923,
+    "item": {
+     "aggregatedOutput": "<SCRATCH>/s6/state/532ff8e59976/agents/<UUID>/worktree\nmarion/2ced-add-a-word-count-s\n/opt/homebrew/bin/cymbal\ntest_textutil.py\ntextutil.py\n",
+     "command": "/bin/zsh -lc 'pwd; git status --short; git branch --show-current; command -v cymbal; ls textutil.py test_textutil.py tasks/lessons.md 2>/dev/null'",
+     "commandActions": [
+      {
+       "command": "pwd; git status --short; git branch --show-current; command -v cymbal; ls textutil.py test_textutil.py tasks/lessons.md 2>/dev/null",
+       "type": "unknown"
+      }
+     ],
+     "durationMs": 0,
+     "exitCode": 1,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "processId": "91656",
+     "scriptPath": null,
+     "source": "unifiedExecStartup",
+     "status": "failed",
+     "type": "commandExecution"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.934Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794158930,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.977Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794158977,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794158,
+     "displayOrder": 8,
+     "durationMs": 48,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794158,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:18.989Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794158989,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 0,
+      "inputTokens": 25515,
+      "outputTokens": 110,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 25625
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 0,
+      "inputTokens": 25515,
+      "outputTokens": 110,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 25625
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:21.596Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794161595,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:21.600Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794161595,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:21.600Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794161595,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:21.600Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794161595,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:21.601Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794161595,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 6,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:21.601Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794161595,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 7,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.216Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794162215,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794161,
+     "displayOrder": 1,
+     "durationMs": 293,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.219Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794162215,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794161,
+     "displayOrder": 2,
+     "durationMs": 40,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.219Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794162215,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794162,
+     "displayOrder": 3,
+     "durationMs": 628,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.219Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794162215,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794161,
+     "displayOrder": 4,
+     "durationMs": 36,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.220Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794162215,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794161,
+     "displayOrder": 6,
+     "durationMs": 48,
+     "entries": [
+      {
+       "kind": "error",
+       "text": "PreToolUse hook returned updatedInput without permissionDecision:allow"
+      }
+     ],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "failed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.220Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794162215,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794161,
+     "displayOrder": 7,
+     "durationMs": 22,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794161,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.308Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794162307,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "aggregatedOutput": null,
+     "command": "/bin/zsh -lc 'cymbal outline textutil.py; cymbal outline test_textutil.py; cat textutil.py test_textutil.py'",
+     "commandActions": [
+      {
+       "command": "cymbal outline textutil.py; cymbal outline test_textutil.py; cat textutil.py test_textutil.py",
+       "type": "unknown"
+      }
+     ],
+     "durationMs": null,
+     "exitCode": null,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "processId": "47477",
+     "scriptPath": null,
+     "source": "unifiedExecStartup",
+     "status": "inProgress",
+     "type": "commandExecution"
+    },
+    "startedAtMs": 1790794162307,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.311Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794162310,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794162307,
+    "item": {
+     "aggregatedOutput": "Error: refreshing index: creating db directory: mkdir <HOME>/Library/Caches/cymbal/repos/3abb561e5ac458ab: operation not permitted\nError: refreshing index: creating db directory: mkdir <HOME>/Library/Caches/cymbal/repos/3abb561e5ac458ab: operation not permitted\n\"\"\"Small text helpers.\"\"\"\n\n\ndef count_lines(s):\n    \"\"\"Return the number of lines in s.\"\"\"\n    return len(s.splitlines())\n\n\ndef last_n_lin…[428 more chars]",
+     "command": "/bin/zsh -lc 'cymbal outline textutil.py; cymbal outline test_textutil.py; cat textutil.py test_textutil.py'",
+     "commandActions": [
+      {
+       "command": "cymbal outline textutil.py; cymbal outline test_textutil.py; cat textutil.py test_textutil.py",
+       "type": "unknown"
+      }
+     ],
+     "durationMs": 0,
+     "exitCode": 0,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "processId": "47477",
+     "scriptPath": null,
+     "source": "unifiedExecStartup",
+     "status": "completed",
+     "type": "commandExecution"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.317Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794162316,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794162,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.363Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794162362,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794162,
+     "displayOrder": 8,
+     "durationMs": 50,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794162,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:22.371Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794162370,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 25344,
+      "inputTokens": 25793,
+      "outputTokens": 50,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 25843
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 25344,
+      "inputTokens": 51308,
+      "outputTokens": 160,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 51468
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.428Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794167427,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.433Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794167427,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.434Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794167427,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.434Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794167427,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.654Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794167654,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794167,
+     "displayOrder": 1,
+     "durationMs": 226,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.657Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794167654,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794167,
+     "displayOrder": 2,
+     "durationMs": 23,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.658Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794167654,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794167,
+     "displayOrder": 3,
+     "durationMs": 21,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.658Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794167654,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794167,
+     "displayOrder": 4,
+     "durationMs": 21,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.754Z",
+  "key": "thread/status/changed",
+  "frame": {
+   "emittedAtMs": 1790794167752,
+   "method": "thread/status/changed",
+   "params": {
+    "status": {
+     "type": "idle"
+    },
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.758Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794167752,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "agentPath": "/root/tests",
+     "agentThreadId": "<UUID>",
+     "id": "call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "kind": "started",
+     "type": "subAgentActivity"
+    },
+    "startedAtMs": 1790794167752,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.758Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794167754,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "codex_apps",
+    "status": "starting",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.758Z",
+  "key": "thread/status/changed",
+  "frame": {
+   "emittedAtMs": 1790794167757,
+   "method": "thread/status/changed",
+   "params": {
+    "status": {
+     "activeFlags": [],
+     "type": "active"
+    },
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.758Z",
+  "key": "turn/started",
+  "frame": {
+   "emittedAtMs": 1790794167757,
+   "method": "turn/started",
+   "params": {
+    "threadId": "<UUID>",
+    "turn": {
+     "completedAt": null,
+     "durationMs": null,
+     "error": null,
+     "id": "<UUID>",
+     "items": [],
+     "itemsView": "notLoaded",
+     "startedAt": 1790794167,
+     "status": "inProgress"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.770Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794167769,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794167752,
+    "item": {
+     "agentPath": "/root/tests",
+     "agentThreadId": "<UUID>",
+     "id": "call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "kind": "started",
+     "type": "subAgentActivity"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.775Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794167775,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.826Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794167826,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794167,
+     "displayOrder": 8,
+     "durationMs": 54,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:call_2cwJtEA8Fq2vLEwEufHu0gCl",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794167,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:27.835Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794167834,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 25600,
+      "inputTokens": 26161,
+      "outputTokens": 104,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 26265
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 50944,
+      "inputTokens": 77469,
+      "outputTokens": 264,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 77733
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:29.418Z",
+  "key": "mcpServer/startupStatus/updated",
+  "frame": {
+   "emittedAtMs": 1790794169418,
+   "method": "mcpServer/startupStatus/updated",
+   "params": {
+    "error": null,
+    "failureReason": null,
+    "name": "codex_apps",
+    "status": "ready",
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:32.421Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794172420,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794172,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:32.425Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794172420,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794172,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:32.426Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794172420,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794172,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:32.426Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794172420,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794172,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:32.426Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794172420,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 6,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794172,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:32.426Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794172420,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 7,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794172,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:33.533Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794173533,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794172,
+     "displayOrder": 1,
+     "durationMs": 470,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794172,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "elided_frames": 62
+ },
+ {
+  "ts": "2026-09-30T18:49:47.174Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794187174,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794187,
+     "displayOrder": 8,
+     "durationMs": 44,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794187,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:47.177Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794187177,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 25216,
+      "inputTokens": 25572,
+      "outputTokens": 357,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 25929
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 25216,
+      "inputTokens": 50966,
+      "outputTokens": 388,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 51354
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:51.927Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794191926,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:51.936Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794191926,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:51.936Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794191926,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:51.937Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794191926,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:52.623Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794192605,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794192534,
+    "item": {
+     "agentsStates": {},
+     "id": "call_Np0RpZ2lmrcvRauvsukDQuKF",
+     "model": null,
+     "prompt": null,
+     "reasoningEffort": null,
+     "receiverThreadIds": [],
+     "senderThreadId": "<UUID>",
+     "status": "completed",
+     "tool": "wait",
+     "type": "collabAgentToolCall"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:52.684Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794192605,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:call_Np0RpZ2lmrcvRauvsukDQuKF",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794192,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:53.837Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794193822,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794193,
+     "displayOrder": 8,
+     "durationMs": 1189,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:call_Np0RpZ2lmrcvRauvsukDQuKF",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794192,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.005Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794194000,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 26368,
+      "inputTokens": 26610,
+      "outputTokens": 21,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 26631
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 129408,
+      "inputTokens": 156847,
+      "outputTokens": 507,
+      "reasoningOutputTokens": 11,
+      "totalTokens": 157354
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.590Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794194590,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794194,
+     "displayOrder": 1,
+     "durationMs": 2694,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.596Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794194590,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794191,
+     "displayOrder": 2,
+     "durationMs": 50,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.597Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794194590,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794191,
+     "displayOrder": 3,
+     "durationMs": 47,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.599Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794194590,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794191,
+     "displayOrder": 4,
+     "durationMs": 44,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794191,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.601Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794194591,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "agentPath": "/root",
+     "agentThreadId": "<UUID>",
+     "id": "call_RnbajCyupN793JqGcQ9oDdc9",
+     "kind": "interacted",
+     "type": "subAgentActivity"
+    },
+    "startedAtMs": 1790794194590,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.602Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794194601,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794194590,
+    "item": {
+     "agentPath": "/root",
+     "agentThreadId": "<UUID>",
+     "id": "call_RnbajCyupN793JqGcQ9oDdc9",
+     "kind": "interacted",
+     "type": "subAgentActivity"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.636Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794194635,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794194,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.792Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794194792,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794194,
+     "displayOrder": 8,
+     "durationMs": 175,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:call_RnbajCyupN793JqGcQ9oDdc9",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794194,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:54.798Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794194797,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 25344,
+      "inputTokens": 25953,
+      "outputTokens": 80,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 26033
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 50560,
+      "inputTokens": 76919,
+      "outputTokens": 468,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 77387
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:55.244Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794195242,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "content": [],
+     "id": "rs_05c98debf0a51a9d016abd59d33c1c87d1ab50b288e5c2eb12",
+     "summary": [],
+     "type": "reasoning"
+    },
+    "startedAtMs": 1790794195241,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:56.091Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794196090,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794196083,
+    "item": {
+     "content": [],
+     "id": "rs_05c98debf0a51a9d016abd59d33c1c87d1ab50b288e5c2eb12",
+     "summary": [],
+     "type": "reasoning"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:56.100Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794196100,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 26368,
+      "inputTokens": 26610,
+      "outputTokens": 21,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 26631
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 129408,
+      "inputTokens": 156847,
+      "outputTokens": 507,
+      "reasoningOutputTokens": 11,
+      "totalTokens": 157354
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:56.571Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794196561,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "delivery": null,
+     "id": "msg_04b4eb1cbe3287ce016abd59d4851c87d1bab37dd3f61ed4c5",
+     "memoryCitation": null,
+     "phase": "final_answer",
+     "questions": null,
+     "text": "",
+     "type": "agentMessage"
+    },
+    "startedAtMs": 1790794196561,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:57.596Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794197595,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794197592,
+    "item": {
+     "delivery": null,
+     "id": "msg_04b4eb1cbe3287ce016abd59d4851c87d1bab37dd3f61ed4c5",
+     "memoryCitation": null,
+     "phase": "final_answer",
+     "questions": null,
+     "text": "Added seven `word_count` unit tests in `test_textutil.py`, preserving existing line-count tests. No commit made; ready for verification.",
+     "type": "agentMessage"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:57.642Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794197641,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 25728,
+      "inputTokens": 26045,
+      "outputTokens": 33,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 26078
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 76288,
+      "inputTokens": 102964,
+      "outputTokens": 501,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 103465
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:57.703Z",
+  "key": "thread/status/changed",
+  "frame": {
+   "emittedAtMs": 1790794197702,
+   "method": "thread/status/changed",
+   "params": {
+    "status": {
+     "type": "idle"
+    },
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:57.708Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794197702,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "agentPath": "/root/tests",
+     "agentThreadId": "<UUID>",
+     "id": "subagent-completed-<UUID>",
+     "kind": "completed",
+     "type": "subAgentActivity"
+    },
+    "startedAtMs": 1790794197702,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:57.708Z",
+  "key": "turn/completed",
+  "frame": {
+   "emittedAtMs": 1790794197702,
+   "method": "turn/completed",
+   "params": {
+    "threadId": "<UUID>",
+    "turn": {
+     "completedAt": 1790794197,
+     "durationMs": 29897,
+     "error": null,
+     "id": "<UUID>",
+     "items": [
+      {
+       "delivery": null,
+       "id": "msg_04b4eb1cbe3287ce016abd59d4851c87d1bab37dd3f61ed4c5",
+       "memoryCitation": null,
+       "phase": "final_answer",
+       "questions": null,
+       "text": "Added seven `word_count` unit tests in `test_textutil.py`, preserving existing line-count tests. No commit made; ready for verification.",
+       "type": "agentMessage"
+      }
+     ],
+     "itemsView": "summary",
+     "startedAt": 1790794167,
+     "status": "completed"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:49:57.747Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794197745,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794197702,
+    "item": {
+     "agentPath": "/root/tests",
+     "agentThreadId": "<UUID>",
+     "id": "subagent-completed-<UUID>",
+     "kind": "completed",
+     "type": "subAgentActivity"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.112Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794202111,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.120Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794202111,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.120Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794202111,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.121Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794202111,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.121Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794202111,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 6,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.121Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794202111,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 7,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.798Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794202798,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794202,
+     "displayOrder": 1,
+     "durationMs": 329,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.804Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794202798,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794202,
+     "displayOrder": 2,
+     "durationMs": 337,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.804Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794202798,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794202,
+     "displayOrder": 3,
+     "durationMs": 689,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.804Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794202798,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794202,
+     "displayOrder": 4,
+     "durationMs": 43,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.804Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794202798,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794202,
+     "displayOrder": 6,
+     "durationMs": 59,
+     "entries": [
+      {
+       "kind": "error",
+       "text": "PreToolUse hook returned updatedInput without permissionDecision:allow"
+      }
+     ],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "failed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.805Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794202798,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794202,
+     "displayOrder": 7,
+     "durationMs": 34,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.951Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794202951,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "aggregatedOutput": null,
+     "command": "/bin/zsh -lc 'python3 -m unittest -q; git diff --check; git diff -- test_textutil.py textutil.py'",
+     "commandActions": [
+      {
+       "command": "python3 -m unittest -q; git diff --check; git diff -- test_textutil.py textutil.py",
+       "type": "unknown"
+      }
+     ],
+     "durationMs": null,
+     "exitCode": null,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "processId": "45444",
+     "scriptPath": null,
+     "source": "unifiedExecStartup",
+     "status": "inProgress",
+     "type": "commandExecution"
+    },
+    "startedAtMs": 1790794202951,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.960Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794202960,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794202958,
+    "item": {
+     "aggregatedOutput": "diff --git a/test_textutil.py b/test_textutil.py\nindex 4b5ccdb..e6def50 100644\n--- a/test_textutil.py\n+++ b/test_textutil.py\n@@ -1,6 +1,6 @@\n import unittest\n \n-from textutil import count_lines\n+from textutil import count_lines, word_count\n \n \n class CountLinesTest(unittest.TestCase):\n@@ -11,5 +11,28 @@ class CountLinesTest(unittest.TestCase):\n         self.assertEqual(count_lines(\"\"), 0)\n \n \n+cla…[1167 more chars]",
+     "command": "/bin/zsh -lc 'python3 -m unittest -q; git diff --check; git diff -- test_textutil.py textutil.py'",
+     "commandActions": [
+      {
+       "command": "python3 -m unittest -q; git diff --check; git diff -- test_textutil.py textutil.py",
+       "type": "unknown"
+      }
+     ],
+     "durationMs": 7,
+     "exitCode": 0,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "processId": "45444",
+     "scriptPath": null,
+     "source": "unifiedExecStartup",
+     "status": "completed",
+     "type": "commandExecution"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:02.970Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794202970,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:03.009Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794203009,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794203,
+     "displayOrder": 8,
+     "durationMs": 41,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794202,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:03.016Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794203016,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 26496,
+      "inputTokens": 26762,
+      "outputTokens": 49,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 26811
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 155904,
+      "inputTokens": 183609,
+      "outputTokens": 556,
+      "reasoningOutputTokens": 11,
+      "totalTokens": 184165
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:05.994Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794205994,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:05.999Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794205994,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:05.999Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794205994,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:05.999Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794205994,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.000Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794205994,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 6,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.000Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794205994,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 7,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.587Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794206587,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794206,
+     "displayOrder": 1,
+     "durationMs": 289,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.592Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794206587,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794206,
+     "displayOrder": 2,
+     "durationMs": 299,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.592Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794206587,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794206,
+     "displayOrder": 3,
+     "durationMs": 596,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.592Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794206587,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794206,
+     "displayOrder": 4,
+     "durationMs": 164,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.592Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794206587,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794206,
+     "displayOrder": 6,
+     "durationMs": 41,
+     "entries": [
+      {
+       "kind": "error",
+       "text": "PreToolUse hook returned updatedInput without permissionDecision:allow"
+      }
+     ],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:6:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "failed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.592Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794206587,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794206,
+     "displayOrder": 7,
+     "durationMs": 15,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:7:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794205,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.666Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794206666,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794206,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.704Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794206704,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794206,
+     "displayOrder": 8,
+     "durationMs": 40,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794206,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:06.707Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794206707,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 26624,
+      "inputTokens": 27481,
+      "outputTokens": 53,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 27534
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 182528,
+      "inputTokens": 211090,
+      "outputTokens": 609,
+      "reasoningOutputTokens": 11,
+      "totalTokens": 211699
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.168Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794210167,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 1,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.177Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794210167,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 2,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.177Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794210167,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 3,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.177Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794210167,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 4,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.338Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794210338,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794210,
+     "displayOrder": 1,
+     "durationMs": 177,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:1:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.342Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794210338,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794210,
+     "displayOrder": 2,
+     "durationMs": 18,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:2:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.343Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794210338,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794210,
+     "displayOrder": 3,
+     "durationMs": 18,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:3:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.343Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794210338,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794210,
+     "displayOrder": 4,
+     "durationMs": 17,
+     "entries": [],
+     "eventName": "preToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "pre-tool-use:4:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.343Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794210338,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "appContext": null,
+     "arguments": {
+      "narrative": "Implemented word_count(s) using whitespace splitting and added seven unit tests, verified all nine tests pass with python3 -m unittest -q, and left the changes uncommitted because sandbox permissions blocked Git index writes."
+     },
+     "durationMs": null,
+     "error": null,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "readOnlyHint": null,
+     "result": null,
+     "server": "marion",
+     "status": "inProgress",
+     "tool": "report",
+     "type": "mcpToolCall"
+    },
+    "startedAtMs": 1790794210336,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.345Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794210345,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794210339,
+    "item": {
+     "appContext": null,
+     "arguments": {
+      "narrative": "Implemented word_count(s) using whitespace splitting and added seven unit tests, verified all nine tests pass with python3 -m unittest -q, and left the changes uncommitted because sandbox permissions blocked Git index writes."
+     },
+     "durationMs": 2,
+     "error": null,
+     "id": "exec-<UUID>",
+     "pluginId": null,
+     "readOnlyHint": null,
+     "result": {
+      "_meta": null,
+      "content": [
+       {
+        "text": "report recorded",
+        "type": "text"
+       }
+      ],
+      "structuredContent": null
+     },
+     "server": "marion",
+     "status": "completed",
+     "tool": "report",
+     "type": "mcpToolCall"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.349Z",
+  "key": "hook/started",
+  "frame": {
+   "emittedAtMs": 1790794210349,
+   "method": "hook/started",
+   "params": {
+    "run": {
+     "completedAt": null,
+     "displayOrder": 8,
+     "durationMs": null,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "running",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.389Z",
+  "key": "hook/completed",
+  "frame": {
+   "emittedAtMs": 1790794210389,
+   "method": "hook/completed",
+   "params": {
+    "run": {
+     "completedAt": 1790794210,
+     "displayOrder": 8,
+     "durationMs": 43,
+     "entries": [],
+     "eventName": "postToolUse",
+     "executionMode": "sync",
+     "handlerType": "command",
+     "id": "post-tool-use:8:<HOME>/.codex/hooks.json:exec-<UUID>",
+     "scope": "turn",
+     "source": "user",
+     "sourcePath": "<HOME>/.codex/hooks.json",
+     "startedAt": 1790794210,
+     "status": "completed",
+     "statusMessage": null
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:10.393Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794210393,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 27264,
+      "inputTokens": 27645,
+      "outputTokens": 69,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 27714
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 209792,
+      "inputTokens": 238735,
+      "outputTokens": 678,
+      "reasoningOutputTokens": 11,
+      "totalTokens": 239413
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:11.568Z",
+  "key": "item/started",
+  "frame": {
+   "emittedAtMs": 1790794211568,
+   "method": "item/started",
+   "params": {
+    "item": {
+     "delivery": null,
+     "id": "msg_05c98debf0a51a9d016abd59e3900c87d180b61cf5f7539ee0",
+     "memoryCitation": null,
+     "phase": "final_answer",
+     "questions": null,
+     "text": "",
+     "type": "agentMessage"
+    },
+    "startedAtMs": 1790794211568,
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:12.706Z",
+  "key": "item/completed",
+  "frame": {
+   "emittedAtMs": 1790794212706,
+   "method": "item/completed",
+   "params": {
+    "completedAtMs": 1790794212705,
+    "item": {
+     "delivery": null,
+     "id": "msg_05c98debf0a51a9d016abd59e3900c87d180b61cf5f7539ee0",
+     "memoryCitation": null,
+     "phase": "final_answer",
+     "questions": null,
+     "text": "Added `word_count(s)` and seven unit tests. All nine tests pass with `python3 -m unittest -q`.\n\nReport submitted. Commit blocked by sandbox permissions.",
+     "type": "agentMessage"
+    },
+    "threadId": "<UUID>",
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:12.757Z",
+  "key": "thread/tokenUsage/updated",
+  "frame": {
+   "emittedAtMs": 1790794212756,
+   "method": "thread/tokenUsage/updated",
+   "params": {
+    "threadId": "<UUID>",
+    "tokenUsage": {
+     "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 27520,
+      "inputTokens": 27756,
+      "outputTokens": 38,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 27794
+     },
+     "modelContextWindow": 258400,
+     "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 237312,
+      "inputTokens": 266491,
+      "outputTokens": 716,
+      "reasoningOutputTokens": 11,
+      "totalTokens": 267207
+     }
+    },
+    "turnId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:12.770Z",
+  "key": "thread/status/changed",
+  "frame": {
+   "emittedAtMs": 1790794212769,
+   "method": "thread/status/changed",
+   "params": {
+    "status": {
+     "type": "idle"
+    },
+    "threadId": "<UUID>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:12.775Z",
+  "key": "turn/completed",
+  "frame": {
+   "emittedAtMs": 1790794212769,
+   "method": "turn/completed",
+   "params": {
+    "threadId": "<UUID>",
+    "turn": {
+     "completedAt": 1790794212,
+     "durationMs": 62630,
+     "error": null,
+     "id": "<UUID>",
+     "items": [
+      {
+       "delivery": null,
+       "id": "msg_05c98debf0a51a9d016abd59e3900c87d180b61cf5f7539ee0",
+       "memoryCitation": null,
+       "phase": "final_answer",
+       "questions": null,
+       "text": "Added `word_count(s)` and seven unit tests. All nine tests pass with `python3 -m unittest -q`.\n\nReport submitted. Commit blocked by sandbox permissions.",
+       "type": "agentMessage"
+      }
+     ],
+     "itemsView": "summary",
+     "startedAt": 1790794150,
+     "status": "completed"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:50:13.358Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Ok",
+     "exit": {
+      "code": 0,
+      "signal": null,
+      "description": "child exited with code 0"
+     }
+    }
+   }
+  }
+ }
+]
