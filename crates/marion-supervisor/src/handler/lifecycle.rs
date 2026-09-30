@@ -211,7 +211,7 @@ impl RegistryHandle {
     /// A managed node's entry is finished by the thread that ran it ([`Self::mark_finished`] from
     /// `run_spawn`'s return). A native node has no such thread — the supervisor owns its pane, not
     /// its turn — so its recorder closes the entry instead, at the same two moments the journal
-    /// gets a terminal record. Without this, [`Self::idle_exit_eligible`]'s second guard would read
+    /// gets a terminal record. Without this, [`Self::idle_exit_eligible`](crate::serve::Handle::idle_exit_eligible)'s second guard would read
     /// a native session that ended hours ago as a running node and no supervisor with a native
     /// launch in its history could ever leave.
     ///
@@ -321,7 +321,7 @@ impl RegistryHandle {
     ///
     /// Only *finished* nodes, so this can never block: a handle whose `outcome` is set has had
     /// `run_spawn` return on that thread, so the join is a formality. A running node is not joined
-    /// here because [`Handle::idle_exit_eligible`] has already refused to exit while one exists.
+    /// here because [`Handle::idle_exit_eligible`](crate::serve::Handle::idle_exit_eligible) has already refused to exit while one exists.
     pub(super) fn join_finished_nodes(&self) {
         let joins: Vec<_> = lock(&self.nodes)
             .values_mut()

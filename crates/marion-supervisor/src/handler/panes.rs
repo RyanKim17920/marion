@@ -14,12 +14,12 @@ use crate::serve::{ConnId, Outbound};
 
 /// One client following one node's `events.jsonl`.
 ///
-/// The [`EventReader`](crate::events::EventReader) is owned here rather than shared, because a
+/// The [`EventReader`](crate::events::EventReader)(crate::events::EventReader) is owned here rather than shared, because a
 /// cursor is per subscription: two clients attaching to one node at different moments have
 /// different read points, and a shared reader would make the second one's replay depend on when
 /// the first attached. The file is the shared thing; the position in it is not.
 ///
-/// `conn` is kept alongside `out` so [`Handle::gone`] can drop this without asking the transport
+/// `conn` is kept alongside `out` so [`Handle::gone`](crate::serve::Handle::gone) can drop this without asking the transport
 /// anything — the same bookkeeping `subs` gets, for the same reason.
 ///
 /// `watch` is what makes the cursor advance: it wakes the accept loop when the file changes, and
@@ -37,7 +37,7 @@ pub(super) struct Attachment {
 ///
 /// A thread blocked on a [`crate::wake::Watch`] of the file (kqueue `EVFILT_VNODE` / inotify, so
 /// it sees every writer, in this process or not) that notifies the handler's
-/// [`LiveRegistry::changes`] — the signal the accept loop's wake pipe is attached to — whenever the
+/// [`LiveRegistry::changes`](crate::registry::LiveRegistry::changes) — the signal the accept loop's wake pipe is attached to — whenever the
 /// file is written. An idle attached node therefore costs nothing; a node that is speaking costs a
 /// wake per write burst rather than one every few milliseconds whether or not it spoke.
 ///
@@ -91,7 +91,7 @@ impl Drop for AttachWatch {
 
 /// **Every node this supervisor holds a pty for, and who is typing into each.**
 ///
-/// Separate from [`Shared`] rather than a field of it, for the reason [`RegistryHandle::nodes`]
+/// Separate from [`Shared`](super::Shared) rather than a field of it, for the reason [`RegistryHandle::nodes`]
 /// gives: `shared` is taken and released inside one call, and writing a keystroke is a `write(2)`
 /// on a pty master. Folding them together would put an operator's keyboard inside the lock every
 /// `tree/subscribe` waits on — and a node whose harness has stopped reading its stdin would then
@@ -534,7 +534,7 @@ impl RegistryHandle {
     /// §2's `node/attach` — §7.3.3's re-attach, **both legs and no seam between them**.
     ///
     /// `events.rs` argues the shape and this is where it is spent: replay and subscribe are one
-    /// [`EventReader`] cursor over one file, so *"replay to the journal's own read point, then
+    /// [`EventReader`](crate::events::EventReader) cursor over one file, so *"replay to the journal's own read point, then
     /// subscribe from there"* is not a procedure anybody has to implement correctly — the reader
     /// returns the intact prefix and its own byte offset in a single read, this method sends that
     /// prefix, and every later poll continues from that same offset. **A gap or a duplicate at the

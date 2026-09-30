@@ -272,7 +272,7 @@ impl Extra {
 /// The tree, as summaries, counting what could not be described.
 ///
 /// `panes` is the set of nodes this supervisor holds a pty for, read **before** the shared lock was
-/// taken — see [`RegistryHandle::pane_ids`] for why it is a snapshot passed in rather than a map
+/// taken — see [`RegistryHandle::pane_ids`](super::RegistryHandle::pane_ids) for why it is a snapshot passed in rather than a map
 /// consulted here.
 pub(super) fn project(
     tree: &Replay,

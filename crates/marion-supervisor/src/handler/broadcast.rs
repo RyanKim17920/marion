@@ -6,7 +6,7 @@ use crate::registry::LiveRegistry;
 
 /// Send to every subscriber, dropping the ones that have gone.
 ///
-/// [`Outbound::send`] never blocks, so this cannot be slowed by a client — see `serve.rs`: a full
+/// [`Outbound::send`](crate::serve::Outbound::send) never blocks, so this cannot be slowed by a client — see `serve.rs`: a full
 /// queue is a verdict about that client, and §5.7 is what makes it the right one.
 /// What the operator's `notify.toml` and `MARION_NOTIFY` ask for, titled with the project's
 /// directory name: the notifier's seed, whether notices start on or off.

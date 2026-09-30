@@ -200,7 +200,7 @@ impl RegistryHandle {
     /// Returns how many events were read — per event, not per delivery, for the reason
     /// [`Self::flush`] gives.
     ///
-    /// One `open` and one `stat` per attachment per call, which is [`EventReader::poll`]'s stated
+    /// One `open` and one `stat` per attachment per call, which is [`EventReader::poll`](crate::events::EventReader::poll)'s stated
     /// cost when there is nothing new, and nothing new is the common case. §11 item 27 is the entry
     /// that makes this cheaper; nothing here depends on it landing.
     pub fn pump_attached(&self) -> usize {

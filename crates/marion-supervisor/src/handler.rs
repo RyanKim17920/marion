@@ -130,7 +130,7 @@ struct Shared {
     principals: HashMap<ConnId, marion_core::proto::result::SessionPrincipal>,
     told: HashMap<AgentId, Told>,
     unprojectable: usize,
-    /// The [`Registry::generation`] and [`crate::usage_tally::Tallies::version`] `collect` last ran
+    /// The [`Registry::generation`](crate::registry::Registry::generation) and [`crate::spending::Spending::version`] `collect` last ran
     /// against. See [`RegistryHandle::flush`].
     collected_at: Option<(u64, u64)>,
     /// When `collect` last ran: a figure that moved with no journal record is told at most every
@@ -701,7 +701,7 @@ impl RegistryHandle {
     /// [`Handle::next_deadline`].
     ///
     /// Journal changes, connections, node completions, a followed node's `events.jsonl`
-    /// ([`AttachWatch`]) and a moved token figure ([`crate::spending::Spending::notifying`]) wake
+    /// ([`AttachWatch`](panes::AttachWatch)) and a moved token figure ([`crate::spending::Spending::notifying`]) wake
     /// the loop through [`LiveRegistry::changes`], so what is left is the work that is still
     /// *time*-driven: a figure deferred by [`TOKEN_PUSH_DELAY`] is due when it ends, and a
     /// Completed pane expires at its TTL or is evicted at once when the cache is over budget.

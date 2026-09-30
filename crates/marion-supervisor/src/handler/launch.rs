@@ -89,8 +89,8 @@ pub(crate) fn validate_native_launch_boundary(
 ///
 /// Neither node thread had this, and the hole it left is the worst shape §5.7 has: a panic after
 /// `SpawnObserver::identified` has claimed the node, but before `mark_finished`, left
-/// [`NodeHandle::outcome`] `None` **for ever**. `None` means *still running*, so
-/// [`RegistryHandle::running_nodes`] counted the node, [`RegistryHandle::idle_exit_eligible`]
+/// [`NodeHandle::outcome`](super::NodeHandle::outcome) `None` **for ever**. `None` means *still running*, so
+/// [`RegistryHandle::running_nodes`] counted the node, [`RegistryHandle::idle_exit_eligible`](crate::serve::Handle::idle_exit_eligible)
 /// refused, [`RegistryHandle::join_finished_nodes`] never reaped the thread, and the supervisor
 /// could not exit for the rest of its life. Not a lost result — a permanent phantom.
 ///
@@ -102,7 +102,7 @@ pub(crate) fn validate_native_launch_boundary(
 /// true is better than deleting the claim and much better than adding a third `NodeOutcome` arm:
 /// the two arms exist to keep a root's and a child's *vocabularies* apart (§9 gives them different
 /// results), and a panic is a failure **within** each vocabulary, not a third kind of node. A third
-/// arm would force every reader — [`RegistryHandle::owned_failure`], [`NodeHandle::running`] — to
+/// arm would force every reader — [`RegistryHandle::owned_failure`], [`NodeHandle::running`](super::NodeHandle::running) — to
 /// grow a case for something both can already say.
 ///
 /// **The payload is printed rather than folded into the sentence.** `SpawnError::Panicked`'s
@@ -228,10 +228,10 @@ pub(super) enum Progress {
 /// The supervisor, watching one of its own nodes launch. See [`crate::run::SpawnObserver`].
 pub(super) struct NodeOwner {
     pub(super) handle: Arc<RegistryHandle>,
-    /// `None` for a root — see [`NodeHandle::task_id`].
+    /// `None` for a root — see [`NodeHandle::task_id`](super::NodeHandle::task_id).
     pub(super) task_id: Option<TaskId>,
     /// The tree this node is being launched in, carried so [`RegistryHandle::claim`] can record it
-    /// on the entry the node's *own* children will inherit from. See [`NodeHandle::repo`].
+    /// on the entry the node's *own* children will inherit from. See [`NodeHandle::repo`](super::NodeHandle::repo).
     pub(super) repo: PathBuf,
     pub(super) tx: std::sync::mpsc::Sender<Progress>,
     /// The id this spawn minted, once it has one — read by the thread body after `run_spawn`
@@ -358,7 +358,7 @@ impl crate::run::SpawnObserver for NodeOwner {
 /// steer or kill).
 ///
 /// *Who the operator is* is decided first and elsewhere: the connection's `session/hello` presented
-/// the operator's key ([`session`]). Open question 3 once answered "filesystem permission and
+/// the operator's key ([`session`](super::session)). Open question 3 once answered "filesystem permission and
 /// deliberately not a token", on the argument that a key at rest is readable by every same-uid
 /// process that can reach the socket. The 2026-09-29 audit found that answer made every node's own
 /// shell the operator; a key marion never hands a node, refused besides from any process descending
@@ -1282,7 +1282,7 @@ impl RegistryHandle {
     /// **The child's tree is its caller's tree**, read off the entry `resolve_caller` has just
     /// proved this caller owns. Not derived from `<project-hash>` — that is the git common dir
     /// shared by every linked worktree of this repository, so deriving it would branch a
-    /// feature-worktree node's children off the main tree's HEAD. See [`NodeHandle::repo`].
+    /// feature-worktree node's children off the main tree's HEAD. See [`NodeHandle::repo`](super::NodeHandle::repo).
     fn caller_repo(
         &self,
         caller_id: &marion_core::proto::SpawnCaller,
@@ -2038,7 +2038,7 @@ impl RegistryHandle {
     ///   derived from it indivisible; with no gate there is nothing to serialize, and holding it
     ///   across a root's `prepare` — which snapshots a working tree — would block every child spawn
     ///   in the fleet on one `git` walk.
-    /// * **No task id.** §9: a root has no `TaskContract`. See [`NodeHandle::task_id`].
+    /// * **No task id.** §9: a root has no `TaskContract`. See [`NodeHandle::task_id`](super::NodeHandle::task_id).
     /// * **The outcome is filed on every exit path**, including a `prepare` that failed before the
     ///   `SpawnIntent` was journaled. A root is claimed *before* its intent (see
     ///   `root::prepare_watched`), so a thread that returned without filing one would leave a
@@ -2096,14 +2096,14 @@ impl RegistryHandle {
             state,
             agent_id,
             // §9: a root has no `TaskContract`, so there is no file to name. See
-            // [`NodeHandle::task_id`], which is `None` here for the same reason.
+            // [`NodeHandle::task_id`](super::NodeHandle::task_id), which is `None` here for the same reason.
             task_id: None,
             note: None,
             race: None,
         })
     }
 
-    /// **The root launcher, driven from a fully-built [`RootSpec`]** — spawn and resume are one
+    /// **The root launcher, driven from a fully-built [`RootSpec`](crate::root::RootSpec)** — spawn and resume are one
     /// launch path, differing only in the spec (`agent/spawn` builds a fresh one, `node/resume`
     /// reconstructs a node's own with an id and a session on it). The thread owns the node for its
     /// whole life through [`NodeOwner`]; `repo` is the tree its children branch from. Returns once
@@ -2252,7 +2252,7 @@ impl RegistryHandle {
     /// §8's rule is that a lost session is *relaunched*, never re-opened: the process died with the
     /// supervisor that held it, and every harness's resume starts a **new** process against the
     /// single-writer transcript. So this is not `node/prompt` reaching a live channel — there is
-    /// none — it is `agent/spawn`'s own launch path fed a [`RootSpec`] rebuilt from the node's
+    /// none — it is `agent/spawn`'s own launch path fed a [`RootSpec`](crate::root::RootSpec) rebuilt from the node's
     /// journal, with the node's own id and the session its stream named carried onto it.
     ///
     /// The preflight is in the order §7.2 and §6.7 impose, each refusal naming the node rather than
