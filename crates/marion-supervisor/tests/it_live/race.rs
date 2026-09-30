@@ -546,3 +546,95 @@ fn a_backgrounded_race_tells_its_parent_the_decision_as_one_message() {
         other => panic!("the message is the race's decision, not {other:?}"),
     }
 }
+
+/// **A pi seat races a claude seat, and wins by verification** — pi's row in a race: its seat is
+/// launched over its `--mode rpc` channel on the model the candidate names, writes the file
+/// through pi's own `write`, reports through marion's extension, and its worktree passes the
+/// race's line while the claude seat's does not.
+#[test]
+fn a_pi_seat_races_a_claude_seat_and_wins_by_verification() {
+    if !marion_testsupport::harness_available("pi") {
+        return;
+    }
+    let claude = marion_harness::adapter_for(marion_core::harness::Harness::ClaudeCode)
+        .expect("claude has an adapter");
+    let pi =
+        marion_harness::adapter_for(marion_core::harness::Harness::Pi).expect("pi has an adapter");
+    let script = Script {
+        nodes: vec![
+            NodeScript {
+                marker: ROOT_MARKER.into(),
+                call_prefix: "root".into(),
+                turns: vec![],
+                final_text: "Waiting on the race.".into(),
+            },
+            NodeScript {
+                marker: MODELS[0].into(),
+                call_prefix: "seat0".into(),
+                turns: vec![
+                    ScriptedCall::new(
+                        "Write",
+                        json!({"file_path": "wrong-0.txt", "content": "seat work\n"}),
+                    ),
+                    ScriptedCall::new(
+                        claude.marion_tool_name("report"),
+                        json!({"narrative": "wrote wrong-0.txt"}),
+                    ),
+                ],
+                final_text: "Done.".into(),
+            },
+            NodeScript {
+                marker: MODELS[1].into(),
+                call_prefix: "seat1".into(),
+                turns: vec![
+                    ScriptedCall::new(
+                        "write",
+                        json!({"path": WINNER_FILE, "content": "seat work\n"}),
+                    ),
+                    ScriptedCall::new(
+                        pi.marion_tool_name("report"),
+                        json!({"narrative": format!("wrote {WINNER_FILE}")}),
+                    ),
+                ],
+                final_text: "Done.".into(),
+            },
+        ],
+        ..Script::default()
+    };
+    let Some(Ran {
+        result,
+        started,
+        _dir,
+        _server,
+        _sup,
+        ..
+    }) = run_race("race-pi", script, &[], |caller| AgentSpawnParams {
+        candidates: vec![format!("claude:{}", MODELS[0]), format!("pi:{}", MODELS[1])],
+        ..race_params(caller)
+    })
+    else {
+        return;
+    };
+    assert!(
+        started
+            .seats
+            .iter()
+            .all(|s| s.agent_id.is_some() && s.refused.is_none()),
+        "both seats started: {:?}",
+        started.seats
+    );
+    assert_eq!(result.winner, Some(2), "{}", result.scoreboard());
+    assert_eq!(result.decided_by, DecidedBy::Verification);
+    assert_eq!(
+        result.seats.iter().map(|r| r.verdict).collect::<Vec<_>>(),
+        vec![SeatVerdict::Failed, SeatVerdict::Won],
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(result.seats[1].verified, (1, 1));
+    assert!(
+        result.seats[1].branch.is_some(),
+        "the pi seat's work landed on its branch: {}",
+        result.scoreboard()
+    );
+}
