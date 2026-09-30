@@ -123,6 +123,29 @@ pub fn is_provider_key(name: &str) -> bool {
             .any(|p| p.import_env == Some(name))
 }
 
+/// Whether `name`'s value is itself a secret — a key, a token, a password — rather than a path, a
+/// switch or an endpoint that merely belongs to a login (`SSH_AUTH_SOCK`, `AWS_REGION`,
+/// `ANTHROPIC_BASE_URL`), which a recording keeps.
+pub fn holds_secret(name: &str) -> bool {
+    ["_KEY", "_TOKEN", "_SECRET", "_PASSWORD"]
+        .iter()
+        .any(|s| name.ends_with(s))
+}
+
+/// The values among `env` a recording must never keep: every variable's that holds a secret
+/// ([`holds_secret`]: its own key, the operator's login token, the node token), deduplicated. A
+/// value too short to be a key (under 8 bytes) is left out, as the redaction rule leaves it alone.
+pub fn credential_values(env: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
+    let mut values: Vec<String> = Vec::new();
+    for (name, value) in env {
+        let secret = holds_secret(&name);
+        if secret && value.len() >= 8 && !values.contains(&value) {
+            values.push(value);
+        }
+    }
+    values
+}
+
 /// **The filter one launch applies to what it inherits**: the row's login, the launch's auth mode
 /// and the operator's passthrough for its agent type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +352,31 @@ mod tests {
         assert_eq!(
             kept(&on_login(Harness::OpenCode), &["ANTHROPIC_BASE_URL"]),
             ["ANTHROPIC_BASE_URL"]
+        );
+    }
+
+    /// A recording scrubs every credential-shaped value and the node token's, once each, and
+    /// never a runtime value or a value too short to be a key.
+    #[test]
+    fn credential_values_are_the_secrets_a_recording_must_scrub() {
+        let env = [
+            ("PATH", "/usr/bin:/bin:/opt/homebrew/bin"),
+            ("ANTHROPIC_API_KEY", "sk-ant-operator-000"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "oauth-operator-111"),
+            ("MARION_NODE_TOKEN", "node-token-222"),
+            ("GH_TOKEN", "sk-ant-operator-000"),
+            ("NPM_TOKEN", "short"),
+            ("SSH_AUTH_SOCK", "/var/run/launchd/Listeners"),
+            ("ANTHROPIC_BASE_URL", "http://127.0.0.1:8099"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        assert_eq!(
+            credential_values(env),
+            [
+                "sk-ant-operator-000",
+                "oauth-operator-111",
+                "node-token-222"
+            ]
         );
     }
 

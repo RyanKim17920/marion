@@ -1458,6 +1458,9 @@ fn launch_inner(
         for key in node.held_keys() {
             es.scrub_key(key);
         }
+        for key in node.invocation.credential_values() {
+            es.scrub_key(&key);
+        }
         es.publishing_to(&node.agent_id, node.spending.clone())
     });
     if let Some(es) = &events {
@@ -1588,6 +1591,9 @@ fn launch_inner(
         if let Some(es) = &events {
             for key in next.held_keys() {
                 es.scrub_key(key);
+            }
+            for key in next.invocation.credential_values() {
+                es.scrub_key(&key);
             }
         }
         crate::run::clear_ready_marker(next.ready_file.as_deref());
@@ -2851,6 +2857,13 @@ fn launch_terminal(
         PANE_TERM,
         std::time::Instant::now(),
     )?);
+    host.scrub_cast(
+        node.invocation
+            .credential_values()
+            .into_iter()
+            .chain(node.held_keys().map(str::to_string))
+            .collect(),
+    );
 
     let inv = &node.invocation;
     let mut cmd = inv.command(tmpdir);

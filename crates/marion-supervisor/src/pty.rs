@@ -777,6 +777,12 @@ pub struct CastWriter {
     file: File,
     origin: Instant,
     prev_ns: u128,
+    /// Credentials the node's process holds, replaced by `***` in every `o` record
+    /// ([`Self::scrubbing`]).
+    scrub: Vec<String>,
+    /// The tail of the output so far that could still be the start of a key: held until the next
+    /// output decides it, so a key split across two reads is scrubbed too.
+    held: String,
 }
 
 impl CastWriter {
@@ -806,7 +812,47 @@ impl CastWriter {
             file,
             origin,
             prev_ns: 0,
+            scrub: Vec::new(),
+            held: String::new(),
         })
+    }
+
+    /// Scrub `keys` from every output record from now on — the credentials the node's process
+    /// holds, which a harness can echo to its terminal. The rule is [`crate::endpoint::redact`]'s,
+    /// so a key under 8 bytes is left alone as it is everywhere else.
+    pub fn scrubbing(&mut self, keys: Vec<String>) {
+        self.scrub = keys.into_iter().filter(|k| k.len() >= 8).collect();
+    }
+
+    /// `text` after what was held, scrubbed, with any tail that could begin a key held back.
+    fn scrubbed(&mut self, text: &str) -> String {
+        let mut out = std::mem::take(&mut self.held);
+        out.push_str(text);
+        for key in &self.scrub {
+            out = crate::endpoint::redact(&out, key);
+        }
+        let hold = self
+            .scrub
+            .iter()
+            .flat_map(|key| {
+                (1..key.len())
+                    .rev()
+                    .filter(|n| key.is_char_boundary(*n))
+                    .find(|n| out.ends_with(&key[..*n]))
+            })
+            .max()
+            .unwrap_or(0);
+        self.held = out.split_off(out.len() - hold);
+        out
+    }
+
+    /// Write what is held as output, before a record of another kind.
+    fn release(&mut self) -> io::Result<()> {
+        if self.held.is_empty() {
+            return Ok(());
+        }
+        let held = std::mem::take(&mut self.held);
+        self.record("o", &held)
     }
 
     fn record(&mut self, code: &str, data: &str) -> io::Result<()> {
@@ -825,20 +871,30 @@ impl CastWriter {
     }
 
     pub fn output(&mut self, text: &str) -> io::Result<()> {
-        self.record("o", text)
+        if self.scrub.is_empty() {
+            return self.record("o", text);
+        }
+        let text = self.scrubbed(text);
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.record("o", &text)
     }
 
     pub fn input(&mut self, text: &str) -> io::Result<()> {
+        self.release()?;
         self.record("i", text)
     }
 
     /// asciicast's `m` (marker): a label at this instant. Marion writes one ahead of every input it
     /// types itself, so the cast says whose keys the following `i` records are.
     pub fn marker(&mut self, label: &str) -> io::Result<()> {
+        self.release()?;
         self.record("m", label)
     }
 
     pub fn resize(&mut self, size: WinSize) -> io::Result<()> {
+        self.release()?;
         self.record("r", &size.as_cast())?;
         // **Flushed before the ioctl can run.** `resize_with_hook` writes this record first
         // precisely so that no output produced by the new size can precede it, and a record sitting
@@ -849,6 +905,7 @@ impl CastWriter {
     }
 
     pub fn exit(&mut self, status: &str) -> io::Result<()> {
+        self.release()?;
         self.record("x", status)?;
         self.file.sync_data()
     }
@@ -2924,6 +2981,18 @@ impl PtyHost {
 
     pub fn master(&self) -> &PtyMaster {
         &self.master
+    }
+
+    /// Scrub `keys` — the credentials the node's process holds — from the cast's output records
+    /// from now on ([`CastWriter::scrubbing`]). The binary session stream stays byte-exact: it is
+    /// what a reattaching terminal replays, and it lives 0600 in the node's own directory.
+    pub fn scrub_cast(&self, keys: Vec<String>) {
+        self.shared
+            .recorders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cast
+            .scrubbing(keys);
     }
 
     /// Has the adopted child exited, without reaping it?

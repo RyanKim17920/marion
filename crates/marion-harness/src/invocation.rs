@@ -82,6 +82,17 @@ impl Invocation {
     pub fn inherited_removals(&self) -> Vec<OsString> {
         removals_for(self.inherit.as_ref(), &self.env)
     }
+
+    /// **The credentials this launch's process will hold**, as values a recording of it must
+    /// scrub: the credential-shaped variables it sets and those it inherits past its filter — the
+    /// operator's own login key a live node runs on, above all ([`crate::env_filter::credential_values`]).
+    pub fn credential_values(&self) -> Vec<String> {
+        let gone = self.inherited_removals();
+        let inherited = std::env::vars_os()
+            .filter(|(k, _)| !gone.contains(k) && !self.env.iter().any(|(n, _)| OsStr::new(n) == k))
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+        crate::env_filter::credential_values(self.env.iter().cloned().chain(inherited))
+    }
 }
 
 /// What a process launched from this one removes from what it would inherit, `set` being what the
@@ -202,6 +213,38 @@ mod tests {
         assert_eq!(
             inherited_marion_names(inherited.into_iter(), &set),
             ["MARION_NODE_TOKEN", "MARION_STATE_DIR"].map(OsString::from)
+        );
+    }
+
+    /// A launch's credentials, as a recording must scrub them, include every credential-shaped
+    /// variable it sets itself (an endpoint key, the canned run token) and none of its plumbing.
+    #[test]
+    fn credential_values_name_what_the_launch_sets_that_is_a_secret() {
+        let inv = Invocation {
+            program: "claude".into(),
+            args: vec![],
+            env: vec![
+                (
+                    "ANTHROPIC_AUTH_TOKEN".into(),
+                    "marion-run-SENTINEL-01".into(),
+                ),
+                ("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:8099".into()),
+                ("DISABLE_AUTOUPDATER".into(), "1".into()),
+            ],
+            env_remove: vec![],
+            cwd: "/repo".into(),
+            model: None,
+            session_mode: None,
+            inherit: None,
+        };
+        let values = inv.credential_values();
+        assert!(
+            values.contains(&"marion-run-SENTINEL-01".to_string()),
+            "{values:?}"
+        );
+        assert!(
+            !values.iter().any(|v| v.starts_with("http") || v == "1"),
+            "{values:?}"
         );
     }
 

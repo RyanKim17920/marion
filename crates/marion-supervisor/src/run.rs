@@ -2266,6 +2266,13 @@ pub fn run_spawn_watched(
         // one sentence on this path a reader of the journal needs verbatim, so it is filed for the
         // abort record on the way out rather than replaced by the guard's generic reason.
         let inv = resolution.filed(declare_and_compile(adapter.as_ref(), &launch, &ctx))?;
+        // And of every credential the process will hold — the operator's own login key on a live
+        // node — which a harness can echo into a frame.
+        if let Some(es) = &events {
+            for key in inv.credential_values() {
+                es.scrub_key(&key);
+            }
+        }
         profiles.used(at);
         // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
         // asked for after the child had been run and reaped, which was the only place it *could* be

@@ -989,6 +989,54 @@ fn the_supervisor_and_not_the_client_holds_the_master() {
 /// The comparison is on *decoded* values, not bytes: `extract.py` used Python's `json.dumps`, which
 /// escapes every non-ASCII character, while `serde_json` emits UTF-8 directly. Both are valid JSON
 /// for the same string, and pinning the byte spelling would pin Python's defaults.
+/// **No credential the node holds reaches its cast**: a key echoed whole, a key split across two
+/// reads, and a key's first bytes held until an exit are all written `***`; text that only began
+/// like a key is released as it was; input and other records are untouched.
+#[test]
+fn the_cast_scrubs_every_key_the_node_holds_even_split_across_reads() {
+    const KEY: &str = "sk-ant-SENTINEL-4f1e9c";
+    let dir = marion_testsupport::scratch("pty-cast-scrub");
+    let path = dir.join("pty.cast");
+    let mut w = CastWriter::create(
+        &path,
+        WinSize::new(80, 24),
+        "xterm-256color",
+        Instant::now(),
+    )
+    .unwrap();
+    w.scrubbing(vec![KEY.into(), "short".into()]);
+    w.output(&format!("error: key {KEY} refused\r\n")).unwrap();
+    w.output("export ANTHROPIC_API_KEY=sk-ant-SEN").unwrap();
+    w.output("TINEL-4f1e9c\r\n").unwrap();
+    w.output("sk-ant-S").unwrap();
+    w.input("y").unwrap();
+    w.output("tail sk-an").unwrap();
+    w.output("t-SENTINEL-4f1e9c").unwrap();
+    w.output("short and sk-").unwrap();
+    w.exit("0").unwrap();
+    drop(w);
+    let (_, records) = read_cast(&path);
+    let text: String = records
+        .iter()
+        .filter(|(_, c, _)| c == "o")
+        .map(|(_, _, d)| d.as_str())
+        .collect();
+    assert!(!text.contains("SENTINEL"), "{text:?}");
+    assert_eq!(text.matches("***").count(), 3, "{text:?}");
+    assert!(
+        text.contains("sk-ant-S"),
+        "a prefix that went nowhere is released: {text:?}"
+    );
+    assert!(
+        text.ends_with("short and sk-"),
+        "released before the exit: {text:?}"
+    );
+    assert!(
+        records.iter().any(|(_, c, d)| c == "i" && d == "y"),
+        "input is recorded as typed"
+    );
+}
+
 #[test]
 fn the_cast_header_and_record_shape_match_the_committed_captures() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))

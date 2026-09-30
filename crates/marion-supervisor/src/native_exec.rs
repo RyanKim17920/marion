@@ -154,6 +154,13 @@ impl NativeCommandLauncher {
             term,
             std::time::Instant::now(),
         )?);
+        // The session's environment is whole here: every credential in it, the operator's own
+        // login included, is scrubbed from the recording.
+        host.scrub_cast(marion_harness::env_filter::credential_values(
+            invocation.env.iter().filter_map(|(k, v)| {
+                Some((k.clone().into_string().ok()?, v.clone().into_string().ok()?))
+            }),
+        ));
         let witness = ExecutionSurfaces::opaque()
             .display_plane()
             .expect("opaque native execution always declares a PTY");
