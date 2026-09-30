@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskId};
-use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
+use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall, TurnGate};
 use marion_supervisor::kill::last_kill_sweep;
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{
@@ -135,6 +135,10 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         None,
         "Start the long-running command and keep it running.",
         Expiry::Driver,
+        // **codex's second request is held open**, so marion's bound always fires first: codex
+        // ends its own session about 30 s into a code-mode `exec` it cannot finish, and a bound
+        // longer than that (the row's boot budget is) let the child exit before it expired.
+        Some(TurnGate::holding_from("responses", 2)),
         |runaway, pidfile| Script {
             child_exec_js: Some(case_b_js(runaway, pidfile)),
             ..Script::default()
@@ -163,6 +167,7 @@ fn a_timed_out_opencode_child_leaves_no_surviving_tool_call_descendant() {
         Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
         &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
         Expiry::TwoStepSweep,
+        None,
         opencode_bash_script,
     );
 }
@@ -182,6 +187,7 @@ fn a_timed_out_acp_opencode_child_leaves_no_surviving_tool_call_descendant() {
         None,
         &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
         Expiry::Driver,
+        None,
         opencode_bash_script,
     );
 }
@@ -231,6 +237,7 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     model: Option<String>,
     prompt: &str,
     expiry: Expiry,
+    hold: Option<std::sync::Arc<TurnGate>>,
     script: impl FnOnce(&Path, &Path) -> Script,
 ) {
     // `last_kill_sweep` is one process-wide record, and every cell here expires at about the same
@@ -244,11 +251,15 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     let runaway = root_dir.join("runaway.sh");
     runaway_script(&runaway, &pidfile);
 
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: root_dir.join("provider-requests.jsonl"),
-        script: script(&runaway, &pidfile),
-    })
+    let server = CannedServer::start_held(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: root_dir.join("provider-requests.jsonl"),
+            script: script(&runaway, &pidfile),
+        },
+        hold.clone()
+            .map(|g| g as std::sync::Arc<dyn marion_provider::Hold>),
+    )
     .expect("the canned provider binds");
 
     // Unsandboxed: the tool call records its runaway pids in the scratch dir, outside the node's
@@ -285,6 +296,10 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     let contract = run_spawn(&env, &req, &TaskId(tag.into()), &caller)
         .expect("the spawn path runs to a contract");
     let elapsed = started.elapsed();
+    // The child is gone; nothing may stay parked on the provider it left.
+    if let Some(gate) = &hold {
+        gate.release();
+    }
 
     // What marion enumerated in step 1 of its own two-step kill, plus what the tool call recorded.
     let enumerated = match expiry {
