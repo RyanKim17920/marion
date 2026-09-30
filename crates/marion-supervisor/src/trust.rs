@@ -285,6 +285,50 @@ fn toml_string(s: &str) -> String {
     toml_edit::Value::from(s).to_string().trim().to_string()
 }
 
+/// What recording the operator's own edit did ([`allow_own_edit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnEdit {
+    /// The new bytes need no trust: nothing to record.
+    NotNeeded,
+    /// The new bytes are trusted.
+    Trusted,
+    /// The file already asked for trust the operator never gave, so their edit does not vouch for
+    /// the rest of it: `marion trust allow` is still theirs to run.
+    Unvouched,
+}
+
+/// **Record trust for the bytes the operator's own edit wrote**, from marion's own form: `old` was
+/// the file before, `new` is what was written. The operator reviewed their change, not the rest of
+/// the file, so this vouches for `new` only where `old` asked for nothing that needs trust or was
+/// itself trusted; otherwise the file stays untrusted and [`OwnEdit::Unvouched`] says so.
+pub fn allow_own_edit(file: &Path, old: &str, new: &str) -> Result<OwnEdit, TrustError> {
+    allow_own_edit_in(store_path().ok_or(TrustError::NoStore)?, file, old, new)
+}
+
+/// [`allow_own_edit`] against the store at `store`.
+pub fn allow_own_edit_in(
+    store: PathBuf,
+    file: &Path,
+    old: &str,
+    new: &str,
+) -> Result<OwnEdit, TrustError> {
+    let asks = |text: &str| AgentTypes::parse(text).map(|t| !commands(&t).is_empty());
+    if !asks(new).unwrap_or(true) {
+        return Ok(OwnEdit::NotNeeded);
+    }
+    let mut store = Store::open(store)?;
+    let file = canonical(file)?;
+    let old_asked = !old.trim().is_empty() && asks(old).unwrap_or(true);
+    if old_asked
+        && store.verdict(&file, &crate::inbox::sha256_hex(old.as_bytes())) != Verdict::Trusted
+    {
+        return Ok(OwnEdit::Unvouched);
+    }
+    store.allow(file, crate::inbox::sha256_hex(new.as_bytes()));
+    store.save()?;
+    Ok(OwnEdit::Trusted)
+}
+
 /// `$XDG_DATA_HOME/marion/trusted.toml`, else `~/.local/share/marion/trusted.toml`.
 pub fn store_path() -> Option<PathBuf> {
     store_path_from(|k| std::env::var(k).ok())
@@ -771,6 +815,46 @@ mod tests {
             require_in(store, &file, &text, &user_type(&text, "w"))
                 .unwrap_or_else(|e| panic!("{text} widens nothing: {e}"));
         }
+    }
+
+    /// **The operator's own edit through marion's form is trusted for exactly the bytes written**,
+    /// so their own type runs without a separate `allow`; but an edit to a file that already asked
+    /// for trust nobody gave vouches for nothing, and a later hand edit revokes as ever.
+    #[test]
+    fn the_operators_own_form_edit_is_trusted_but_never_vouches_for_the_rest() {
+        let mine = "[[agent]]\nname = \"w\"\nharness = \"codex\"\ndescription = \"d\"\n\
+                    tools = [\"write\"]\n";
+        let (_, file, store) = repo("own-edit", mine);
+        assert_eq!(
+            allow_own_edit_in(store.clone(), &file, "", mine).unwrap(),
+            OwnEdit::Trusted
+        );
+        require_in(store.clone(), &file, mine, &user_type(mine, "w")).unwrap();
+        let edited = format!("{mine}# by hand\n");
+        assert!(require_in(store.clone(), &file, &edited, &user_type(&edited, "w")).is_err());
+
+        let plain = "[[agent]]\nname = \"p\"\nharness = \"codex\"\ndescription = \"d\"\n";
+        assert_eq!(
+            allow_own_edit_in(store.clone(), &file, "", plain).unwrap(),
+            OwnEdit::NotNeeded
+        );
+
+        let (_, hostile_file, hostile_store) = repo("own-edit-hostile", CUSTOM);
+        let both = format!("{CUSTOM}\n{mine}");
+        assert_eq!(
+            allow_own_edit_in(hostile_store.clone(), &hostile_file, CUSTOM, &both).unwrap(),
+            OwnEdit::Unvouched,
+            "the cloned row the operator never reviewed stays untrusted"
+        );
+        assert!(
+            require_in(
+                hostile_store,
+                &hostile_file,
+                &both,
+                &user_type(&both, "mine")
+            )
+            .is_err()
+        );
     }
 
     #[test]

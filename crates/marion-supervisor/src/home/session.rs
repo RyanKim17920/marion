@@ -742,8 +742,22 @@ impl Session {
         match super::types_form::write(&path, text) {
             Ok(()) => {
                 self.validate_types();
-                self.home.notice =
-                    Some(format!("wrote {name} to {}", crate::run::AGENT_TYPES_FILE));
+                // The write is the operator's own action, so it vouches for the bytes it wrote;
+                // never for a file that already asked for trust they had not given.
+                let old = base.unwrap_or_default();
+                let trust = match crate::trust::allow_own_edit(&path, &old, text) {
+                    Ok(crate::trust::OwnEdit::Unvouched) => format!(
+                        "; the file asks for trust you have not given, so review it with: marion \
+                         trust allow {}",
+                        crate::run::AGENT_TYPES_FILE
+                    ),
+                    Ok(_) => String::new(),
+                    Err(e) => format!("; not trusted: {e}"),
+                };
+                self.home.notice = Some(format!(
+                    "wrote {name} to {}{trust}",
+                    crate::run::AGENT_TYPES_FILE
+                ));
             }
             Err(e) => self.home.notice = Some(format!("not written: {e}")),
         }
