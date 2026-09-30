@@ -848,8 +848,12 @@ impl EventReader {
         use std::io::{Read, Seek, SeekFrom};
         use std::os::unix::fs::MetadataExt;
         let was = self.ino?;
-        let now = std::fs::metadata(&self.path).ok()?.ino();
-        if now == was {
+        let meta = std::fs::metadata(&self.path).ok()?;
+        let now = meta.ino();
+        // The file only grows, so one shorter than the cursor at the same inode number is another
+        // file: two rotations can free the old inode and hand its number to the fresh file (ext4
+        // does), and the number alone would then hide the rotation — and every frame after it.
+        if now == was && meta.len() >= self.offset {
             return None;
         }
         self.ino = Some(now);
