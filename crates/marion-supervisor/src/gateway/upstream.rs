@@ -12,7 +12,7 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 
 use marion_core::provider::KeyHeader;
 
@@ -57,9 +57,17 @@ pub struct Answer {
     pub body: BufReader<ChildStdout>,
 }
 
-/// Start curl for `url`, hand it the header lines and the body, and read the response head. The
-/// child is returned so its owner can kill it (the gateway, stopping) and must reap it.
-pub fn post(url: &str, auth: &Auth, body: &[u8]) -> io::Result<(Child, Result<Answer, String>)> {
+/// Start curl for `url`, hand it the header lines and the body, and read the response head.
+///
+/// **The child is handed to `hold` before a byte is written to it**, its pipes already taken, so
+/// its owner can kill it (the gateway, stopping) while this blocks on the write or the head —
+/// the kill closes both pipes and ends the wait — and must reap it.
+pub fn post(
+    url: &str,
+    auth: &Auth,
+    body: &[u8],
+    hold: impl FnOnce(Child),
+) -> io::Result<Result<Answer, String>> {
     let (header_r, mut header_w) = std::io::pipe()?;
     // A few hundred bytes: the pipe holds them, so writing before curl exists cannot block.
     header_w.write_all(header_lines(auth).as_bytes())?;
@@ -104,23 +112,25 @@ pub fn post(url: &str, auth: &Auth, body: &[u8]) -> io::Result<(Child, Result<An
     }
     let mut child = cmd.spawn()?;
     drop(header_r);
-    if let Some(mut stdin) = child.stdin.take() {
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take();
+    hold(child);
+    if let Some(mut stdin) = stdin {
         // curl reads all of stdin before it sends, so this write completes once curl is reading;
         // an error means curl already exited, which its stderr explains below.
         let _ = stdin.write_all(body);
     }
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let answer = match read_head(BufReader::new(stdout)) {
+    Ok(match read_head(BufReader::new(stdout)) {
         Ok(a) => Ok(a),
-        Err(_) => Err(curl_words(&mut child)),
-    };
-    Ok((child, answer))
+        Err(_) => Err(curl_words(stderr)),
+    })
 }
 
 /// What curl said on stderr, where it could not produce a response at all.
-fn curl_words(child: &mut Child) -> String {
+fn curl_words(stderr: Option<ChildStderr>) -> String {
     let mut words = String::new();
-    if let Some(mut e) = child.stderr.take() {
+    if let Some(mut e) = stderr {
         let _ = e.by_ref().take(4096).read_to_string(&mut words);
     }
     let words = words.trim();

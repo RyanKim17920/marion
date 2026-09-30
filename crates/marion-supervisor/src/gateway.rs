@@ -546,14 +546,27 @@ fn forward(shared: &Shared, conn: &Conn, req: &http::Request, w: &TcpStream) {
         extra: t.upstream_headers(),
     };
     let request = t.request(&body, &up.model).to_string();
-    let (child, answer) =
-        match upstream::post(&t.upstream_url(&up.base_url), &auth, request.as_bytes()) {
-            Ok(x) => x,
-            Err(e) => {
-                return error_response(t, w, 502, &format!("marion gateway: cannot run curl: {e}"));
-            }
-        };
-    *conn.child.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
+    // Held before curl is written to, so a gateway stopping mid-request kills it wherever it
+    // blocks. Stored, then `stopping` read, under the lock `Drop` takes after setting `stopping`:
+    // either `Drop` finds this child or this sees `stopping`.
+    let hold = |child: Child| {
+        let mut slot = conn.child.lock().unwrap_or_else(|p| p.into_inner());
+        let child = slot.insert(child);
+        if shared.stopping.load(Ordering::SeqCst) {
+            let _ = child.kill();
+        }
+    };
+    let answer = match upstream::post(
+        &t.upstream_url(&up.base_url),
+        &auth,
+        request.as_bytes(),
+        hold,
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            return error_response(t, w, 502, &format!("marion gateway: cannot run curl: {e}"));
+        }
+    };
     if shared.stopping.load(Ordering::SeqCst) {
         reap(conn);
         return;

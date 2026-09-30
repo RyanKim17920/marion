@@ -346,6 +346,44 @@ fn a_dropped_gateway_is_gone() {
     let _ = half.read_to_end(&mut rest);
 }
 
+/// **A gateway dropped mid-request kills the curl it started**, though curl is blocked waiting on a
+/// provider that never answers: the drop returns well inside its drain bound and the provider sees
+/// its connection close. Mutation: hand the child over only after the head is read; the drop then
+/// waits out `DRAIN` and curl outlives it, so the provider's read times out.
+#[test]
+fn a_gateway_dropped_mid_request_kills_its_curl() {
+    let provider = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gw = gateway_for(&format!("http://{}/v1", provider.local_addr().unwrap()));
+    let (addr, bearer) = (gw.addr.to_string(), gw.bearer().expose().to_string());
+    let body = anthropic_turn(false, vec![]).to_string();
+    let harness = std::thread::spawn(move || {
+        let mut s = TcpStream::connect(&addr).unwrap();
+        let _ = write!(
+            s,
+            "POST /v1/messages HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {bearer}\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = s.read_to_end(&mut Vec::new());
+    });
+    let (mut upstream, _) = provider.accept().expect("curl reaches the provider");
+    let dropped = Instant::now();
+    drop(gw);
+    assert!(
+        dropped.elapsed() < DRAIN,
+        "the drop waited out its bound: {:?}",
+        dropped.elapsed()
+    );
+    upstream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let mut seen = Vec::new();
+    upstream
+        .read_to_end(&mut seen)
+        .expect("curl is gone, so the provider's connection ends");
+    harness.join().unwrap();
+}
+
 #[test]
 fn the_bearer_is_random_per_gateway_and_redacted_in_debug() {
     let a = gateway_for("http://127.0.0.1:9/v1");
