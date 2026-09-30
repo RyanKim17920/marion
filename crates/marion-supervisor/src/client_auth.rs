@@ -90,14 +90,17 @@ impl std::fmt::Display for HelloError {
 /// `Err` is the supervisor's refusal, a stream that could not carry the exchange, or silence, as a
 /// sentence.
 pub fn hello(stream: &mut UnixStream, identity: &Identity) -> Result<(), HelloError> {
+    // The connection outlives its hello, and keeps whatever bound its owner gave its reads.
+    let before = stream
+        .read_timeout()
+        .map_err(|e| HelloError::Failed(format!("reading the connection's read bound: {e}")))?;
     stream
-        .set_read_timeout(Some(HELLO_WAIT))
+        .set_read_timeout(Some(before.map_or(HELLO_WAIT, |b| b.min(HELLO_WAIT))))
         .map_err(|e| HelloError::Failed(format!("bounding marion's hello: {e}")))?;
     let answered = exchange(stream, identity);
-    // The connection outlives its hello, and its later reads keep their own bounds.
-    stream.set_read_timeout(None).map_err(|e| {
-        HelloError::Failed(format!("unbounding the connection after its hello: {e}"))
-    })?;
+    stream
+        .set_read_timeout(before)
+        .map_err(|e| HelloError::Failed(format!("restoring the connection's read bound: {e}")))?;
     answered
 }
 
