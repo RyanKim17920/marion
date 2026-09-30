@@ -209,6 +209,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // auto-denied; `--mode accept-edits` is what a `write` compiles.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Unsupported {
+        why: "agy has no canned route to measure under the profile, and its tools may run in an \
+              IDE process outside the tree marion launches",
+    },
     read_only_modes: &[],
 };
 

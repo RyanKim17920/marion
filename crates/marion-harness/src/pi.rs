@@ -266,6 +266,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // and `--tools ""` offers nothing at all.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap { writes: &[] },
     read_only_modes: &[],
 };
 

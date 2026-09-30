@@ -362,6 +362,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // does not name, and an ungranted `create` is denied at exit 0.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap { writes: &[] },
     read_only_modes: &[],
 };
 

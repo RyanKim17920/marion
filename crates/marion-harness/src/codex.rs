@@ -358,6 +358,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     containment: crate::containment::ContainmentRule::HarnessSandbox {
         verify: &["sandbox", "-c", "sandbox_mode=\"workspace-write\"", "--"],
     },
+    os_sandbox: crate::os_sandbox::OsSandboxRule::ReplaceOwn {
+        writes: &[],
+        // Its Seatbelt cannot apply inside marion's (`sandbox_apply: EPERM`, measured), and the
+        // thread's own `sandbox` beats every other switch (S36 P3).
+        off: &[("sandbox", "\"danger-full-access\"")],
+    },
     // codex's own `-s/--sandbox read-only`: its sandbox refuses every write.
     read_only_modes: &[crate::authority::ReadOnlyMode {
         flags: &["-s", "--sandbox"],

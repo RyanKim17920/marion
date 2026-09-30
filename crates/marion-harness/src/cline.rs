@@ -276,6 +276,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // tools every launch offers, and nothing marion compiles withholds them.
     writes_without_grant: true,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Unsupported {
+        why: "cline has not been run under marion's sandbox profile yet",
+    },
     read_only_modes: &[],
 };
 

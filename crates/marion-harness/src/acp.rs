@@ -241,6 +241,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // agent it is until the process exists (see the field's doc).
     writes_without_grant: true,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Unsupported {
+        why: "each ACP agent is its own program, and none has been run under marion's sandbox \
+              profile yet",
+    },
     read_only_modes: &[],
 };
 

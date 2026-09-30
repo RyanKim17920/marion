@@ -28,6 +28,7 @@ pub mod jsonl_channel;
 pub mod mcp_bridge;
 pub mod native;
 pub mod opencode;
+pub mod os_sandbox;
 pub mod pi;
 pub mod probe;
 pub mod profile;

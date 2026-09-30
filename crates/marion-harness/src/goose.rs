@@ -288,6 +288,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // marion's tools and nothing else; `write` arrives with `--with-builtin developer`.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap {
+        // Its log appender aborts the start when it cannot open `~/.local/state/goose` (measured).
+        writes: &[crate::os_sandbox::WritePath::Home(".local/state/goose")],
+    },
     read_only_modes: &[],
 };
 

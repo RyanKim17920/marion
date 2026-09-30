@@ -253,6 +253,10 @@ pub struct HarnessSpec {
     /// and a child's verification runs inside its row's sandbox where there is one. Stated by every
     /// row, so a new harness cannot inherit a sandbox nobody measured.
     pub containment: crate::containment::ContainmentRule,
+    /// **How marion's own OS sandbox meets this harness** ([`crate::os_sandbox`]): wrapped,
+    /// replacing a sandbox of its own, or not applied and why. Stated by every row, so a new
+    /// harness is never run under a profile nobody measured it under.
+    pub os_sandbox: crate::os_sandbox::OsSandboxRule,
     /// **The launch flags that put this harness in a read-only mode** ([`crate::authority`]): a
     /// session the operator started that way is a read-only node that delegates nothing that
     /// writes. Empty where no read-only mode is measured.
