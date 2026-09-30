@@ -22,7 +22,45 @@
   operator's home). gemini and copilot deny their shell in a headless canned run, so their cells
   are ignored until a write-tool cell exists.
 
-## Phase 2 (design notes only)
+## Linux
+
+Run for real in an OrbStack container (Landlock ABI 8, aarch64): the Landlock unit test (a real
+child kept to its dirs), the escape cells for claude, codex, opencode, pi and qwen, and five
+cross_product cells all passed; `marion doctor` reports `Linux Landlock ABI 8`.
+
+## Phase 2: the operator's own login
+
+Built, with nothing admitted yet:
+
+- **Row data.** A wrapped or replaced row carries a `Live` list: session and state directories in
+  the operator's real home, and single files it rewrites (a credential a login refresh replaces, a
+  history it appends to), each writable alone, never its directory. `admitted` names the passing
+  admission run; until it is set the row does not cover `Inherited`, and its live nodes keep the
+  containment their row has without the sandbox.
+- **Expected lists** (from each harness's layout, to be confirmed by its run):
+  - claude: `~/.claude/projects/<cwd key>`, `/tmp/claude-<uid>/<cwd key>`, `~/.claude/todos`,
+    `~/.claude/statsig`, `~/.claude/shell-snapshots`, `~/.claude/session-env`; the credential file
+    under `~/.claude/` a Linux login refreshes (macOS keeps it in the Keychain). Not
+    `~/.claude.json`, which holds its MCP and project settings.
+  - codex: `~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.codex/log`; files
+    `~/.codex/auth.json`, `~/.codex/history.jsonl`. Not `config.toml`.
+  - opencode: `~/.local/share/opencode/storage`, `~/.local/share/opencode/log`,
+    `~/.local/state/opencode`, `~/.cache/opencode`; file `~/.local/share/opencode/auth.json`.
+  - pi: `~/.pi/agent/sessions`; file `~/.pi/agent/auth.json`.
+  - gemini, copilot, goose, qwen: none stated yet.
+- **An admission run** is `scripts/sandbox-admit.sh <harness>` (plan only) and then
+  `MARION_SANDBOX_ADMIT_RUN=1 scripts/sandbox-admit.sh <harness>`: one short live task under the
+  profile (`MARION_SANDBOX_ADMIT=1` puts the unadmitted row's node under it without counting it
+  contained), on the operator's existing login, with a before/after `$HOME` mtime diff checked
+  against `marion-supervisor sandbox-plan <harness>`. `scripts/sandbox-admit-apply.py <result>`
+  turns a pass into the row's `admitted` note; a failed run, a missing `hello.txt` or a write
+  outside the list is refused.
+- **Known limit.** A credential refresh that writes a temporary file and renames it over the old
+  one needs its directory writable, which a single-file grant refuses; the admission run shows
+  whether a row's login refresh does that.
+
+## Phase 2 notes still open
+
 
 Goal: the same containment on the operator's own login (`Auth::Inherited`), where a harness uses
 its real home.
