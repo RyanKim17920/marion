@@ -85,17 +85,28 @@ Everything below is dated. Re-verify before relying on any harness fact.
 `[partial]` on clause 3 alone (`NodeSummary` names a harness, not an ACP agent's handshake). The
 dated audit under "Status convention" names the test behind each.
 
-**Harnesses.** Eleven rows in `Harness::ALL` (`marion-core/src/harness.rs`): ten terminal
-harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen`, `agy`, `pi` — as
+**Harnesses.** Ten rows in `Harness::ALL` (`marion-core/src/harness.rs`): nine terminal
+harnesses — `claude`, `codex`, `opencode`, `copilot`, `goose`, `cline`, `qwen`, `agy`, `pi` — as
 `HarnessSpec` rows plus measured hooks, and `acp`, one adapter over any ACP agent. Headless: every
 one runs as a child and a root through `run_spawn` (`harness_matrix` 9 cells; `cross_product` 64
 cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
 with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
-(`acp_root.rs`: `marion run acp:<command>`, frames teed live), with fifteen refinement rows in `acp::AGENTS` (S33, 2026-09-27; `docs/guide.md` lists them) — and `marion doctor --acp-command "<cmd>"` probes one by its
+(`acp_root.rs`: `marion run acp:<command>`, frames teed live), with fourteen refinement rows in `acp::AGENTS` (S33, 2026-09-27; `docs/guide.md` lists them) — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269, 2.1.280 and 2.1.283; codex 0.146.0/0.146.1/0.147.0/0.155.1;
-gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0, 1.51.0 and 1.52.0; cline 3.0.61;
+opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0, 1.51.0 and 1.52.0; cline 3.0.61;
 qwen 0.23.0; agy 1.2.8; pi 0.80.2. *(Row count, ACP rows and agy's pin brought current
-2026-09-27 at the docs refresh; the rest of this section is as of its heading's date.)*
+2026-09-27 at the docs refresh, and the gemini CLI row's removal on 2026-09-30; the rest of this
+section is as of its heading's date.)*
+
+**The gemini CLI row is retired (2026-09-30).** Google discontinued the CLI in favour of
+Antigravity, which marion runs as `agy`, so `Harness::Gemini`, its row, its built-in types, its
+native lane and its ACP refinement row are gone. The Gemini `generateContent` wire stays — a
+provider or endpoint can still speak it. A journal written while the row existed still replays:
+`journal::decode` reads a record naming a retired harness (`harness::RETIRED`) as
+`RecordKind::RetiredHarness`, the node keeps its place in the tree, and with no `Harness` it is never
+relaunched, resumed or steered (`registry.rs`,
+`a_journal_naming_a_retired_harness_replays_whole_and_the_node_cannot_be_relaunched`). Mentions of
+gemini below this line are dated history.
 
 **User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
 `harness` — a `Harness` spelling or `acp:<command>` — optional `model`, `tools` in marion's
@@ -114,8 +125,7 @@ unit tests, `mcp_conformance.rs`, and `tests/user_agent_types.rs` (a real codex 
 harness, dir`, the dir stored as the exact exported string) and `marion profile add|list|use|remove`
 (`profile_cli.rs`). Each `HarnessSpec` states a `ProfileCarrier` or `None` (`profile.rs`, sweep
 `every_row_states_its_profile_carrier_or_why_not`): claude `CLAUDE_CONFIG_DIR` with
-`CLAUDE_SECURESTORAGE_CONFIG_DIR` removed, codex `CODEX_HOME`, opencode `XDG_DATA_HOME`, gemini
-`GEMINI_CLI_HOME`; copilot `None` — measured on 1.0.83 that a fresh empty `COPILOT_HOME` still reached
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` removed, codex `CODEX_HOME`, opencode `XDG_DATA_HOME`; copilot `None` — measured on 1.0.83 that a fresh empty `COPILOT_HOME` still reached
 the authenticated model check, so the login is not per home; goose, cline, qwen and ACP `None`,
 unmeasured. Measured the same day: a fresh `CLAUDE_CONFIG_DIR` answers `claude auth status --json`
 `loggedIn: false` on 2.1.283 and a fresh `CODEX_HOME` answers `codex login status` `Not logged in` on
@@ -143,10 +153,10 @@ below) and API-key rotation.
 relay as a journaled root, **and that root can now delegate**: since 2026-09-11 the supervisor
 mints §5.4's capability for a native node at the instant its `SpawnIntent` is durable and declares
 it beside the node's identity, so `spawn`/`wait`/`status` from the operator's own session are
-authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`, `pi`.
+authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `opencode`, `copilot`, `pi`.
 Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
 row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen, pi);
-gemini, goose, cline and ACP refuse by name. TUI: the home screen (below; it replaced the
+goose, cline and ACP refuse by name. TUI: the home screen (below; it replaced the
 44-column `marion tree` screen, whose name is kept as an alias of `marion ls`) and `marion attach`.
 2026-09-22: a read-only attach — `marion tree` → Enter on a native root, whose keyboard the
 facade's connection holds — now runs the keyboard reader too, forwarding nothing and detaching on

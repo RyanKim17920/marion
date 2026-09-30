@@ -160,7 +160,7 @@ allow it. marion reads a session's mode from the flags it was launched with; a m
 inside the session (claude's shift-tab) or set in the harness's own config is not visible to it.
 
 **Where marion's own sandbox applies.** On a canned or endpoint tree, where marion owns the
-environment, a node on claude, codex, gemini, opencode, copilot, goose, qwen or pi runs under
+environment, a node on claude, codex, opencode, copilot, goose, qwen or pi runs under
 marion's OS sandbox and writes only its workspace, its `TMPDIR` and its agent dir; such a node
 counts as contained, so a codex agent may start any of them there. On your own login a node runs
 exactly as its harness normally does, in its own permission or auto mode, with nothing of marion's
@@ -447,7 +447,6 @@ only; canned runs keep marion's own isolation.
 | `claude` | `CLAUDE_CONFIG_DIR` (and `CLAUDE_SECURESTORAGE_CONFIG_DIR` removed) | `claude auth status --json` | `settings.json`, `CLAUDE.md`, `skills`, `agents`, `commands`, `keybindings.json` (links) |
 | `codex` | `CODEX_HOME` | `codex login status` | `config.toml`, `AGENTS.md` (links; never `auth.json`) |
 | `opencode` | `XDG_DATA_HOME` | `opencode/auth.json` exists | — |
-| `gemini` | `GEMINI_CLI_HOME` | `.gemini/oauth_creds.json` exists | — |
 | `pi` | `PI_CODING_AGENT_DIR` | `auth.json` exists | `settings.json` (link) |
 | `copilot` | none: a fresh `COPILOT_HOME` still authenticates (1.0.83), so a directory cannot choose an account | | |
 | `goose`, `cline`, `qwen`, `agy`, `acp:` | none yet: unmeasured | | |
@@ -465,7 +464,6 @@ doctor` measures whatever is installed at runtime.
 | `opencode` | 1.17.3 – 1.18.32 | `run --format json` | `--session` | next generation (native: pasted) | yes |
 | `pi` | 0.80.2 | `--mode rpc`; marion's tools through its own `-e` extension | `--session` | folded into the running turn | yes |
 | `copilot` | 1.0.83 | `-p` | `--resume=` | next generation (native: pasted) | yes |
-| `gemini` | 0.53.0 | `-p` | no | no | yes |
 | `qwen` | 0.23.0 | `-p` stream-json | `--resume` | next generation | disabled: interactive surface unmeasured |
 | `goose` | 1.49.0 – 1.52.0 | `run -t` | no | no | disabled: interactive surface unmeasured |
 | `cline` | 3.0.61 | prompt + `--json` | no | no | disabled: interactive surface unmeasured |
@@ -513,7 +511,6 @@ once pointed at a model provider through its own configuration. **Refused** rows
 | `fast-agent` | `fast-agent-acp -x` | `acp-fast-agent` | opened, *provider* | real bridge call against a local endpoint |
 | `vibe` | `vibe-acp` | `acp-vibe` | opened, *provider* | no turn run |
 | `vtcode` | `vtcode acp` | `acp-vtcode` | opened | needs `VT_ACP_ENABLED=1` or `[acp]` in its config; no turn run |
-| `gemini` | `gemini --acp` | — | **refused** | Gemini Code Assist ineligibility |
 | `auggie` | `auggie --acp` | — | **refused** | `auggie login` (account) |
 | `qoder` | `qodercli --acp` | — | **refused** | `qodercli login` (account) |
 | `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |

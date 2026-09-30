@@ -4,8 +4,8 @@
 
 - **Who is sandboxed.** A node whose row states `Wrap` or `ReplaceOwn` (`HarnessSpec::os_sandbox`),
   on a canned or endpoint tree, on a host where the sandbox is on (`MARION_SANDBOX` is not `off`)
-  and supported (`marion_harness::os_sandbox::support`). claude, gemini, opencode, copilot, goose,
-  qwen and pi are wrapped; codex replaces its own Seatbelt (it cannot nest) with marion's and opens
+  and supported (`marion_harness::os_sandbox::support`). claude, opencode, copilot, goose, qwen
+  and pi are wrapped; codex replaces its own Seatbelt (it cannot nest) with marion's and opens
   its thread `danger-full-access` inside it. cline, acp and agy are `Unsupported`, each with why.
 - **What it may write.** Its agent dir, its working directory, its git worktree's admin dir, its
   `TMPDIR`, and its row's measured paths (claude: `~/.claude/projects/<cwd key>` and
@@ -19,8 +19,8 @@
   contained parent may start any child the sandbox also contains without the operator's opt-in.
 - **Tests.** `os_sandbox` unit tests (the profile, the plan, a real process kept to its dirs, codex's
   replaced field) and `tests/it_live/os_sandbox_escape.rs` (a real child per row tries to write the
-  operator's home). gemini and copilot deny their shell in a headless canned run, so their cells
-  are ignored until a write-tool cell exists.
+  operator's home). copilot denies its shell in a headless canned run, so its cell is ignored
+  until a write-tool cell exists.
 
 ## Linux
 

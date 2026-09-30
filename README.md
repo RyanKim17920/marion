@@ -122,7 +122,6 @@ endpoints and where work lands.
 | opencode | yes | yes, in all three shapes | one ACP child on a free model (2026-09-22) |
 | pi | yes | yes | none |
 | Copilot CLI (`copilot`) | yes | yes | ACP child (2026-09-05), child (2026-09-22) |
-| Gemini CLI (`gemini`) | yes | yes | none: blocked by Google for individual accounts |
 | Qwen Code (`qwen`) | no | yes | none |
 | goose | no | yes | none |
 | Cline (`cline`) | no | yes | none |
@@ -132,9 +131,8 @@ endpoints and where work lands.
 Every row's launch shape was measured against a real install, and the test suite drives the
 real harness binaries with only the model replaced. **Live coverage with paid models is thin.**
 The last column lists every live run on record, so a green canned test means the plumbing
-works, not that a vendor's endpoint accepts what marion sends. Gemini CLI fails with
-`IneligibleTierError` on an individual account before it reaches the model, with or without
-marion. Versions, steer and resume behaviour per harness, and the ACP agents table are in
+works, not that a vendor's endpoint accepts what marion sends. Google's Gemini CLI is no longer
+a harness: Google retired it in favour of Antigravity, which marion runs as `agy`. Versions, steer and resume behaviour per harness, and the ACP agents table are in
 [docs/guide.md](docs/guide.md#harness-detail).
 
 ## Logins
@@ -184,7 +182,7 @@ and never hides your credentials from the harness.
 - **Canned and endpoint nodes run in marion's own sandbox.** A node writes only its workspace,
   its `TMPDIR`, its agent dir and the few paths its harness measured it needs (macOS Seatbelt
   through `sandbox-exec`; Linux Landlock ABI 2 or later). Reads, commands and the network are
-  unchanged. This covers claude, codex, gemini, opencode, copilot, goose, qwen and pi; cline,
+  unchanged. This covers claude, codex, opencode, copilot, goose, qwen and pi; cline,
   ACP agents and agy are not yet measured under it. On your own login a node runs exactly as its
   harness normally does, in that harness's own permission or auto mode; marion adds no sandbox
   there, since the home and the login are yours. `marion doctor` says whether this host can
