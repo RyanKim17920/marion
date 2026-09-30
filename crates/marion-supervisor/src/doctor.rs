@@ -248,6 +248,7 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
 /// Probe, in the order [`Harness::ALL`] declares — one row per `(harness, version, surfaces)` key,
 /// so a harness with a pane surface contributes two.
 pub fn run(opts: &Options) -> Vec<Row> {
+    sweep_stale_probe_dirs(&std::env::temp_dir());
     Harness::ALL
         .into_iter()
         .filter(|h| opts.harness.is_none_or(|only| only == *h))
@@ -904,11 +905,14 @@ fn live_turn(
         cmd.env_remove::<std::ffi::OsString>(k);
     }
     cmd.env(marion_harness::TMPDIR_ENV, tmp.path());
+    // A session of its own, so everything the probe starts is ended with it before `tmp` goes.
+    crate::kill::lead_own_session(&mut cmd);
     let mut child = match crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd) {
         Ok(c) => c,
         Err(e) => return not_spawned(&e),
     };
     let pid = child.id() as i32;
+    let _session = ProbeSession(pid);
     // Drained from the start: a pipe nobody reads blocks the child once it fills, and stderr is
     // where a harness that could not authenticate puts its whole diagnosis.
     let stderr = drain(child.stderr.take());
@@ -1107,9 +1111,28 @@ struct AcpChild {
     /// What the driver's shutdown left: the agent's stderr, and whether SIGINT alone ended it.
     /// Taken once, by whichever of [`Self::silence`] and [`Self::finish`] needs it first.
     ended: Option<(String, bool)>,
-    /// The probe's own `TMPDIR`, removed after the driver has killed the agent (fields drop in
-    /// order).
+    /// The agent's whole session, ended and waited for after the driver's kill and before the
+    /// temp dir goes (fields drop in order).
+    _session: ProbeSession,
+    /// The probe's own `TMPDIR`, removed last.
     _tmp: NodeTmp,
+}
+
+/// **A probe's process session, ended and waited for when this drops** ([`crate::kill::end_session`]).
+/// A probe's process leads a session of its own, and everything it starts stays in it unless it
+/// leaves; this is what keeps an ACP agent's descendant (an npx/tsx cache writer) from writing into
+/// the probe's temp dir after the dir is removed. Declared before the [`NodeTmp`] it guards, so it
+/// drops first.
+struct ProbeSession(i32);
+
+/// How long a probe's session is given to be seen ended. SIGKILL has no grace; this is only the
+/// bound on observing it.
+const SESSION_END_BOUND: Duration = Duration::from_secs(5);
+
+impl Drop for ProbeSession {
+    fn drop(&mut self) {
+        let _ = crate::kill::end_session(self.0, SESSION_END_BOUND);
+    }
 }
 
 /// The probe's ACP client, which serves nothing: §8's probe is a contract test of the agent, and a
@@ -1165,13 +1188,49 @@ fn probe_launch(
     Ok((inv, tmp))
 }
 
+/// The prefix of every probe's private temp dir; the rest is `<doctor pid>-<n>` ([`probe_tmp`]).
+const PROBE_TMP_PREFIX: &str = "marion-doctor-tmp-";
+
+/// **Remove the probe temp dirs under `root` whose doctor is gone**: named for a pid that no longer
+/// runs, so no probe of it can still be using one. Before [`probe_session`]'s wait, an agent's
+/// descendant could recreate a dir after its removal, and those stayed behind. A dir of this
+/// process, or of a doctor still running, is left alone; a pid now worn by an unrelated process
+/// keeps its dir, which errs toward leaving one. Answers how many were removed.
+///
+/// [`probe_session`]: ProbeSession
+fn sweep_stale_probe_dirs(root: &Path) -> usize {
+    let own = std::process::id();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(PROBE_TMP_PREFIX))
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let gone = pid != own
+            && i32::try_from(pid)
+                .is_ok_and(|p| crate::procid::run_state(p) == crate::procid::RunState::Gone);
+        if gone && e.path().is_dir() && std::fs::remove_dir_all(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// A fresh private temp dir for one probe's process, for [`crate::node_tmp`]'s reason: a probe of
 /// a Bun-built harness unpacks its native libraries into `$TMPDIR` exactly as a node does. Unique
 /// per probe, since one `doctor` run may probe several harnesses.
 fn probe_tmp() -> std::io::Result<NodeTmp> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    NodeTmp::at(std::env::temp_dir().join(format!("marion-doctor-tmp-{}-{n}", std::process::id())))
+    NodeTmp::at(std::env::temp_dir().join(format!("{PROBE_TMP_PREFIX}{}-{n}", std::process::id())))
 }
 
 impl AcpChild {
@@ -1189,6 +1248,7 @@ impl AcpChild {
         };
         let driver = crate::rpc::Driver::spawn(&inv, tmp.path(), None, ProbeClient)?;
         Ok(Self {
+            _session: ProbeSession(driver.pid),
             driver,
             ended: None,
             _tmp: tmp,
@@ -2091,6 +2151,65 @@ mod tests {
         let binding = acp::Binding::refined(acp::OPENCODE);
         let adapter = adapter_for_type(Harness::Acp, Some(binding.selector())).unwrap();
         (adapter, binding)
+    }
+
+    /// **A probe's temp dir stays gone once the probe has ended**, even where the agent left a
+    /// process of its session running that writes into `$TMPDIR` — as an npx/tsx descendant of an
+    /// ACP agent did, recreating `tsx-501` in some forty removed probe dirs. The probe ends its
+    /// whole session and waits for it before the dir is removed.
+    #[test]
+    fn a_probes_temp_dir_stays_gone_after_its_session_is_ended() {
+        let tmp = probe_tmp().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let inv = Invocation {
+            sandbox: None,
+            inherit: None,
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                // A writer that keeps forking into groups of their own, left behind in the
+                // agent's session when its leader exits: a child forked after one `ps` snapshot
+                // is in no group that snapshot named.
+                "set -m; (while :; do (mkdir -p \"$TMPDIR/tsx-501\"; sleep 0.3) & sleep 0.005; \
+                 done) & sleep 0.2; exit 0"
+                    .into(),
+            ],
+            env: vec![],
+            env_remove: vec![],
+            cwd: std::env::temp_dir(),
+            model: None,
+            session_mode: None,
+        };
+        let child = AcpChild::spawn(Path::new("/bin/sh"), &inv, tmp).expect("sh");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(dir.join("tsx-501").is_dir(), "the writer ran");
+        drop(child);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !dir.exists(),
+            "{} was recreated after the probe ended: its session outlived it",
+            dir.display()
+        );
+    }
+
+    /// **Only a probe dir whose doctor is gone is swept**: one named for an exited pid goes, one of
+    /// this process stays, and nothing else under the root is touched.
+    #[test]
+    fn stale_probe_dirs_are_swept_only_where_their_doctor_is_gone() {
+        let root = marion_testsupport::scratch("doctor-stale-sweep");
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        let dead = exited.id();
+        exited.wait().unwrap();
+        let stale = root.join(format!("{PROBE_TMP_PREFIX}{dead}-7"));
+        let ours = root.join(format!("{PROBE_TMP_PREFIX}{}-7", std::process::id()));
+        let other = root.join("marion-doctor");
+        for d in [&stale, &ours, &other] {
+            std::fs::create_dir_all(d.join("tsx-501")).unwrap();
+        }
+        assert_eq!(sweep_stale_probe_dirs(&root), 1);
+        assert!(!stale.exists(), "the exited doctor's dir is swept");
+        assert!(ours.exists(), "a running doctor's dir is kept");
+        assert!(other.exists(), "a dir of another name is not the sweep's");
     }
 
     /// **A launched probe's agent dir exists, inside its own temp dir, and goes with it** — so

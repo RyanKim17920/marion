@@ -319,6 +319,58 @@ pub(crate) fn kill_groups(groups: &[i32]) {
     }
 }
 
+/// **End every process of session `sid` and wait until none is left**, for a caller about to
+/// remove what the session writes into — a probe's private `TMPDIR`, above all.
+///
+/// [`kill_process_tree`] enumerates once and signals: a process forked after its `ps` snapshot, in
+/// a group of its own, outlives it, and its parent's death leaves it under pid 1 in the same
+/// session. So this reads the session afresh each round — every process whose session is `sid`,
+/// with their descendants while their parents live — SIGKILLs what is still running, and repeats
+/// until a round finds nothing, or `bound` passes (`false`). A zombie counts as ended. Refuses
+/// marion's own session, and 0 or 1, returning `false` having signalled nothing.
+pub(crate) fn end_session(sid: i32, bound: Duration) -> bool {
+    // SAFETY: `getsid(0)` reads this process's own session id.
+    let own = unsafe { getsid(0) };
+    if sid <= 1 || sid == own {
+        return false;
+    }
+    let deadline = Instant::now() + bound;
+    let mut pause = Duration::from_millis(1);
+    loop {
+        let rows = ps_rows();
+        let mut pids: Vec<i32> = Vec::new();
+        // SAFETY: `getsid` reads one process's session id; -1 for one already gone.
+        for r in rows.iter().filter(|r| unsafe { getsid(r.pid) } == sid) {
+            for p in descendant_pids(&rows, r.pid) {
+                if !pids.contains(&p) {
+                    pids.push(p);
+                }
+            }
+        }
+        let live: Vec<i32> = pids
+            .into_iter()
+            .filter(|p| {
+                !matches!(
+                    crate::procid::run_state(*p),
+                    crate::procid::RunState::Gone | crate::procid::RunState::Zombie
+                )
+            })
+            .collect();
+        if live.is_empty() {
+            return true;
+        }
+        for pid in live {
+            let _ = unsafe { kill(pid, SIGKILL) };
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(pause.min(left));
+        pause = (pause * 2).min(OBSERVE_PAUSE_MAX);
+    }
+}
+
 /// Apply §6.7's two-step kill and wait until the addressed process is absent or a zombie.
 ///
 /// The journal's confirmation means *observed dead*, not merely "SIGKILL was sent". A zombie is

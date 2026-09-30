@@ -15,6 +15,7 @@ crates/marion-supervisor/src/acp_child.rs:prompt_session  bounded: the held-inbo
 crates/marion-supervisor/src/native_bootstrap.rs:exchange_native_claim  bounded: one claim exchange under LAUNCH_RESULT_TIMEOUT, then reset to blocking
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::request_detach_all  bounded: one request/response under SUPERVISOR_REPLY_WAIT
 crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads a killed process's state with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until it is gone or the kill deadline passes, so the kill confirmation is earned; never runs idle
+crates/marion-supervisor/src/kill.rs:end_session  bounded one-shot wait: re-reads a killed session with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until nothing in it runs or its bound passes (SESSION_END_BOUND, 5 s), once per probe at teardown; never runs idle
 
 # --- home-polish (2026-09-27): the event-driven home loop ---------------------------------------
 crates/marion-supervisor/src/home/session.rs:TICK  bounded: the home screen wakes on it only while something on the tab moves (a running node's elapsed time, a harness being checked); an idle screen has no timeout at all
