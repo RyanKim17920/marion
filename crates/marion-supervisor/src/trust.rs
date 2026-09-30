@@ -344,7 +344,7 @@ pub fn allow_own_edit_in(
     if !asks(new).unwrap_or(true) {
         return Ok(OwnEdit::NotNeeded);
     }
-    let mut store = Store::open(store)?;
+    let mut store = Store::edit(store)?;
     let file = canonical(file)?;
     let old_asked = !old.trim().is_empty() && asks(old).unwrap_or(true);
     if old_asked
@@ -396,6 +396,9 @@ struct Entry {
 pub struct Store {
     path: PathBuf,
     files: Vec<Entry>,
+    /// Held from [`Self::edit`] to drop: the store's lock, so two changes at once cannot each read
+    /// the old list and the later save drop the other's entry.
+    _lock: Option<std::fs::File>,
 }
 
 impl Store {
@@ -408,6 +411,7 @@ impl Store {
                 return Ok(Self {
                     path,
                     files: Vec::new(),
+                    _lock: None,
                 });
             }
             Err(e) => return Err(TrustError::Io(format!("{}: {e}", path.display()))),
@@ -418,7 +422,22 @@ impl Store {
         Ok(Self {
             path,
             files: file.files,
+            _lock: None,
         })
+    }
+
+    /// The store at `path`, read under its lock for a change: the lock (`<store>.lock` beside it,
+    /// `0600`) is held until the returned store drops, after its [`Self::save`].
+    pub fn edit(path: PathBuf) -> Result<Self, TrustError> {
+        let io = |e: std::io::Error| TrustError::Io(format!("{}: {e}", path.display()));
+        let mut lock_path = path.clone().into_os_string();
+        lock_path.push(".lock");
+        let lock = crate::private_fs::open_append(Path::new(&lock_path)).map_err(io)?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+            .map_err(|e| io(e.into()))?;
+        let mut store = Self::open(path.clone())?;
+        store._lock = Some(lock);
+        Ok(store)
     }
 
     /// Whether `file` (canonical) is trusted with the digest `sha256`.
@@ -593,7 +612,7 @@ pub fn run(
             }
             let sha256 = crate::inbox::sha256_hex(text.as_bytes());
             w(describe(out, &canonical, &sha256, &found))?;
-            let mut store = Store::open(store).map_err(err)?;
+            let mut store = Store::edit(store).map_err(err)?;
             store.allow(canonical.clone(), sha256);
             store.save().map_err(err)?;
             w(writeln!(
@@ -604,7 +623,7 @@ pub fn run(
         }
         [verb, rest @ ..] if verb == "deny" => {
             let file = canonical(&file_arg(rest)?).map_err(err)?;
-            let mut store = Store::open(store).map_err(err)?;
+            let mut store = Store::edit(store).map_err(err)?;
             if store.deny(&file) {
                 store.save().map_err(err)?;
                 w(writeln!(out, "denied {}", file.display()))
@@ -663,7 +682,7 @@ fn allow_workflow(
     for line in crate::workflow_file::describe(&workflow) {
         w(writeln!(out, "  {line}"))?;
     }
-    let mut store = Store::open(store).map_err(|e| Some(e.to_string()))?;
+    let mut store = Store::edit(store).map_err(|e| Some(e.to_string()))?;
     store.allow(file.to_path_buf(), sha256);
     store.save().map_err(|e| Some(e.to_string()))?;
     w(writeln!(
@@ -1001,6 +1020,35 @@ mod tests {
             e.to_string().contains("changed since you allowed it"),
             "{e}"
         );
+    }
+
+    /// **Allows made at once all land.** Each reads the store and writes it back whole, so without
+    /// the store's lock the later save drops the entry an earlier one added.
+    #[test]
+    fn allows_made_at_once_each_keep_their_entry() {
+        let (_, _, store) = repo("allow-at-once-0", CUSTOM);
+        let repos: Vec<_> = (0..8)
+            .map(|i| repo(&format!("allow-at-once-{i}"), CUSTOM))
+            .collect();
+        std::thread::scope(|s| {
+            for (repo, _, _) in &repos {
+                let store = store.clone();
+                s.spawn(move || allow(repo, &store));
+            }
+        });
+        let kept = Store::open(store).unwrap();
+        for (_, file, _) in &repos {
+            let text = std::fs::read_to_string(file).unwrap();
+            assert_eq!(
+                kept.verdict(
+                    &canonical(file).unwrap(),
+                    &crate::inbox::sha256_hex(text.as_bytes())
+                ),
+                Verdict::Trusted,
+                "{} was allowed and its entry lost",
+                file.display()
+            );
+        }
     }
 
     #[test]
