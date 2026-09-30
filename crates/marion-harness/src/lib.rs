@@ -36,6 +36,7 @@ pub mod rpc_channel;
 pub mod spec;
 pub mod stream;
 pub mod surfaces;
+pub mod sweep;
 
 pub use acp::AcpAdapter;
 pub use acp::{AcpError, AgentHandshake};

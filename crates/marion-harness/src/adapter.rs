@@ -3019,29 +3019,6 @@ mod tests {
         }
     }
 
-    /// **Every row's endpoint recipes are well-formed data**: a note on each, no wire twice, and
-    /// no recipe variable that is also an isolation row's — a recipe selects a wire, it never moves
-    /// where the harness keeps its state.
-    #[test]
-    fn every_rows_wire_recipes_are_noted_distinct_and_touch_no_isolation() {
-        for h in Harness::ALL {
-            let row = launch_adapter(h).unwrap().spec();
-            let mut seen = Vec::new();
-            for r in row.wires {
-                assert!(!r.note.trim().is_empty(), "{h}: {:?} has no note", r.wire);
-                assert!(!seen.contains(&r.wire), "{h}: {:?} twice", r.wire);
-                seen.push(r.wire);
-                for (k, _) in r.env {
-                    let isolation = row
-                        .env
-                        .iter()
-                        .any(|e| e.key == *k && matches!(e.val, crate::spec::Val::Under(_)));
-                    assert!(!isolation, "{h}: recipe variable {k} relocates state");
-                }
-            }
-        }
-    }
-
     /// **An endpoint launch with no recipe for its wire is refused, never rendered half-aimed.**
     #[test]
     fn an_endpoint_launch_on_a_wire_the_row_cannot_render_is_refused() {
@@ -3961,26 +3938,8 @@ mod tests {
     /// refinement row. A carrier inside the declaration is fine on a document, a variable or
     /// marion's own ACP pipe; on argv it is the leak.
     #[test]
-    fn every_argv_declaration_withholds_the_node_token() {
-        use crate::spec::McpRoute;
-
-        for h in Harness::ALL {
-            let row = harness_spec(h);
-            for (mode, route, carrier) in [
-                ("canned", row.mcp.canned, row.token.canned),
-                ("live", row.mcp.live, row.token.live),
-            ] {
-                if matches!(route, McpRoute::Argv(_)) {
-                    assert!(
-                        carrier.withholds(),
-                        "{h} ({mode}): the declaration rides argv and carries the token"
-                    );
-                }
-            }
-            if let Some(declaration) = row.live_declaration {
-                assert_eq!(declaration.route(), row.mcp.live, "{h}");
-            }
-        }
+    fn every_acp_agents_argv_declaration_withholds_the_node_token() {
+        // The rows are held to it by `sweep::validate`; an ACP agent's declaration is its own.
         for agent in acp::AGENTS {
             if let acp::Declaration::Argv { token, .. } = agent.declaration {
                 assert!(
@@ -8672,177 +8631,15 @@ mod tests {
         );
     }
 
-    /// **Every row's turn delivery is one its surfaces can carry, and says what measured it.**
-    ///
-    /// The same shape of sweep as the push one above: a strategy is row data, and each variant has
-    /// exactly one precondition on the rest of the row, so a row cannot claim a channel it has no
-    /// way to take:
-    ///
-    /// * `TypedTurn` needs a typed control channel (`Surfaces::Headless(_)` or a row's JSONL
-    ///   channel), and is headless only.
-    /// * `Continuation` needs a launch-only row with a resume grammar in its headless argv — the
-    ///   next turn is a relaunch of the same session.
-    /// * `McpChannel` needs the row to push over Claude Code's channel, and is interactive only
-    ///   (headless `-p` never enqueues a channel event).
-    /// * `TerminalPaste` needs a terminal marion can type into — a pane shape or a native lane —
-    ///   and is interactive only, with a non-empty submit sequence.
-    /// * Every note is non-empty, `None` included: an absence says what was searched.
+    /// **The launch-only fallback of a channel row does not inherit the channel's abort** — the
+    /// per-row abort invariants are `sweep::validate`'s.
     #[test]
-    fn every_row_states_a_turn_delivery_its_surfaces_can_carry() {
-        use crate::spec::{Arg, NodeShape, Push, Surfaces, TurnDelivery, delivery_for};
-        for h in Harness::ALL {
-            let row = harness_spec(h);
-            for shape in [NodeShape::Headless, NodeShape::Interactive] {
-                let d = delivery_for(row, shape);
-                assert!(
-                    !d.note().trim().is_empty(),
-                    "{h} {shape:?}: a turn delivery without the measurement behind it"
-                );
-                let headless = shape == NodeShape::Headless;
-                match d {
-                    TurnDelivery::TypedTurn { .. } => assert!(
-                        headless
-                            && matches!(
-                                row.surfaces,
-                                Surfaces::Headless(_)
-                                    | Surfaces::JsonlRpc(_)
-                                    | Surfaces::AppServer(_)
-                            ),
-                        "{h} {shape:?}: a typed turn needs a typed control channel"
-                    ),
-                    TurnDelivery::Continuation { .. } => assert!(
-                        headless
-                            && row.surfaces == Surfaces::LaunchOnly
-                            && row.resume.is_some()
-                            && row.argv.contains(&Arg::Resume),
-                        "{h} {shape:?}: a continuation is a headless relaunch by resume"
-                    ),
-                    TurnDelivery::McpChannel { .. } => assert!(
-                        !headless && matches!(row.push, Push::Channel(_)),
-                        "{h} {shape:?}: the channel is Claude Code's, and interactive only"
-                    ),
-                    TurnDelivery::TerminalPaste { submit, .. } => {
-                        assert!(
-                            !headless && (row.pane.is_some() || row.live_declaration.is_some()),
-                            "{h} {shape:?}: a paste needs a terminal marion can type into"
-                        );
-                        assert!(!submit.is_empty(), "{h}: a paste that never submits");
-                    }
-                    TurnDelivery::None { .. } => {}
-                }
-            }
-        }
-    }
-
-    /// **Every row states how a running turn is ended early, for both shapes**, and each verb has
-    /// exactly one precondition on the rest of the row, so a row cannot claim an interrupt it has
-    /// no way to send:
-    ///
-    /// * `Channel` needs a typed channel with an interrupt of its own — a JSONL channel (its
-    ///   `abort` command), ACP (`session/cancel`) or codex's app-server (`turn/interrupt`) — and
-    ///   is headless only. Stream-json joins once its `interrupt` is measured.
-    /// * `Keys` needs a terminal marion can type into, is interactive only, and sends something.
-    /// * Every grace is within [`crate::spec::MAX_CANCEL_GRACE_MS`], and above zero where a verb
-    ///   is sent at all.
-    /// * Every note is non-empty, `None` included.
-    #[test]
-    fn every_row_states_its_abort_verb_for_both_shapes() {
-        use crate::spec::{AbortVerb, MAX_CANCEL_GRACE_MS, NodeShape, Surfaces, abort_for};
-        use crate::surfaces::TypedKind;
-        for h in Harness::ALL {
-            let row = harness_spec(h);
-            for shape in [NodeShape::Headless, NodeShape::Interactive] {
-                let verb = abort_for(row, shape);
-                assert!(
-                    !verb.note().trim().is_empty(),
-                    "{h} {shape:?}: an abort verb without the measurement behind it"
-                );
-                assert!(
-                    verb.grace_ms() <= MAX_CANCEL_GRACE_MS,
-                    "{h} {shape:?}: a grace past the cancel bound"
-                );
-                let headless = shape == NodeShape::Headless;
-                match verb {
-                    AbortVerb::Channel { grace_ms, .. } => {
-                        assert!(
-                            headless
-                                && matches!(
-                                    row.surfaces,
-                                    Surfaces::JsonlRpc(_)
-                                        | Surfaces::Headless(TypedKind::Acp | TypedKind::AppServer)
-                                ),
-                            "{h} {shape:?}: a channel abort needs a typed channel with an interrupt"
-                        );
-                        assert!(grace_ms > 0, "{h}: a channel abort with no time to land");
-                    }
-                    AbortVerb::Keys { keys, grace_ms, .. } => {
-                        assert!(
-                            !headless && (row.pane.is_some() || row.live_declaration.is_some()),
-                            "{h} {shape:?}: keys need a terminal marion can type into"
-                        );
-                        assert!(
-                            !keys.is_empty() && keys.iter().all(|k| !k.is_empty()),
-                            "{h}: an abort that types nothing"
-                        );
-                        assert!(grace_ms > 0, "{h}: a keyed abort with no time to land");
-                    }
-                    AbortVerb::None { .. } => {}
-                }
-            }
-        }
-        // The launch-only fallback of a channel row must not inherit the channel's abort.
+    fn a_channel_rows_launch_only_fallback_has_no_channel_abort() {
+        use crate::spec::AbortVerb;
         assert!(matches!(
             crate::pi::LAUNCH_ONLY.abort.headless,
             AbortVerb::None { .. }
         ));
-    }
-
-    /// **Every row states the dialogs its TUI shows before the composer**, with the measurement —
-    /// an empty list included, whose note says what was searched. A needle is written the way the
-    /// pty host reads a screen (one space between words, nothing leading or trailing), or it could
-    /// never match; answer keys are never empty; and a row that answers a dialog also names the
-    /// dialog marker-free as `Hold`, so a release that moves the selection is held, not answered
-    /// with keys measured for another selection. Whether each needle is on its measured screen is
-    /// the supervisor's test (`pty::input`), which owns the reader.
-    #[test]
-    fn every_row_states_its_boot_dialogs_as_the_pty_host_reads_them() {
-        use crate::spec::DialogAnswer;
-        for h in Harness::ALL {
-            let row = harness_spec(h).boot_dialogs;
-            assert!(
-                !row.note.trim().is_empty(),
-                "{h}: boot dialogs without the measurement behind them"
-            );
-            for d in row.dialogs {
-                assert!(!d.note.trim().is_empty(), "{h}: {:?} has no note", d.needle);
-                assert!(
-                    !d.action.trim().is_empty(),
-                    "{h}: {:?} names no action for the operator it is held for",
-                    d.needle
-                );
-                let normal = d.needle.split_whitespace().collect::<Vec<_>>().join(" ");
-                assert!(
-                    !d.needle.is_empty() && d.needle == normal,
-                    "{h}: needle {:?} is not written as the host reads a screen",
-                    d.needle
-                );
-                if let DialogAnswer::Keys(keys) = d.answer {
-                    assert!(!keys.is_empty(), "{h}: {:?} answers with nothing", d.needle);
-                }
-            }
-            if row
-                .dialogs
-                .iter()
-                .any(|d| matches!(d.answer, DialogAnswer::Keys(_)))
-            {
-                assert!(
-                    row.dialogs
-                        .last()
-                        .is_some_and(|d| d.answer == DialogAnswer::Hold),
-                    "{h}: an answered dialog needs a held, marker-free needle after it"
-                );
-            }
-        }
     }
 
     /// **A JSONL command channel is selected only with its vocabulary.** `TypedKind::JsonlRpc` is
@@ -9546,31 +9343,6 @@ mod tests {
                 _ => None,
             };
             assert_eq!(harness_spec(h).vendor, want, "{h}");
-        }
-    }
-
-    /// **Every row that names its own program states the versions it was verified against**, pin
-    /// first, each a dotted number and none repeated; a row whose version is not its own (ACP's)
-    /// states none.
-    #[test]
-    fn every_row_with_its_own_program_states_its_verified_versions() {
-        for h in Harness::ALL {
-            let row = harness_spec(h);
-            match row.program {
-                None => assert!(row.verified.is_empty(), "{h}"),
-                Some(_) => {
-                    assert!(!row.verified.is_empty(), "{h} states no verified version");
-                    for v in row.verified {
-                        assert!(
-                            !v.is_empty() && v.split('.').all(|p| p.parse::<u64>().is_ok()),
-                            "{h}: {v:?}"
-                        );
-                    }
-                    let mut seen = row.verified.to_vec();
-                    seen.dedup();
-                    assert_eq!(seen.len(), row.verified.len(), "{h}: a version repeats");
-                }
-            }
         }
     }
 

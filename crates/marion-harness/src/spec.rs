@@ -49,7 +49,7 @@ use crate::surfaces::{ExecutionSurfaces, TypedKind};
 pub const MCP_ALIAS: &str = "marion";
 
 /// One harness, as a row: what its launch looks like, stated as data.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct HarnessSpec {
     /// Documents an overlaying launch (canned, endpoint) writes under its own config dir before
     /// the harness starts, `(path relative to the config dir, body)`: what a harness home the row
@@ -114,7 +114,7 @@ pub struct HarnessSpec {
     /// How the node's capability token reaches the bridge, under each auth mode — inside the
     /// declaration, or withheld from it and carried on the harness's own environment. A
     /// declaration that rides argv must withhold it, because `ps` shows argv to every user on the
-    /// machine; the sweep `every_argv_declaration_withholds_the_node_token` holds every row to it.
+    /// machine; [`crate::sweep::validate`] holds every row to it.
     pub token: TokenCarriers,
     /// §6.7's `TaskContract.allowed_tools`: what the audit record says this launch was constrained
     /// by, in this harness's own vocabulary.
@@ -166,13 +166,12 @@ pub struct HarnessSpec {
     pub stderr_boilerplate: &'static [&'static str],
     /// **How a message reaches this node's next turn**, per shape — the one mechanism behind both
     /// a child's end pushed to its parent and a parent's or operator's steer into a child.
-    /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
-    /// surfaces_can_carry` checks each strategy against the rest of the row.
+    /// Resolved by [`delivery_for`] alone; [`crate::sweep::validate`] checks each strategy against
+    /// the rest of the row.
     pub delivery: Deliveries,
     /// **How a running turn is ended early**, per shape — what a cancel writes before its grace,
     /// and what a node past its wall clock gets before the kill. Resolved by [`abort_for`] alone;
-    /// the sweep `every_row_states_its_abort_verb_for_both_shapes` checks each verb against the
-    /// rest of the row.
+    /// [`crate::sweep::validate`] checks each verb against the rest of the row.
     pub abort: Aborts,
     /// **The dialogs this harness's TUI can put up before its composer exists** — measured first
     /// screens in a fresh directory. A paste typed into one answers it: claude 2.1.283's folder
