@@ -1,3 +1,0 @@
-requests: 6
-tools: ['update_topic', 'list_directory', 'read_file', 'grep_search', 'glob', 'google_web_search', 'enter_plan_mode', 'invoke_agent']
-tools: ['list_directory', 'read_file', 'grep_search', 'glob', 'google_web_search', 'enter_plan_mode', 'complete_task']

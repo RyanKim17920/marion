@@ -1,2 +1,0 @@
-Error executing tool run_shell_command: Tool "run_shell_command" not found. Did you mean one of: "update_topic", "grep_search", "invoke_agent"?
-Error executing tool mcp_marion_report: Tool "mcp_marion_report" not found. Did you mean one of: "update_topic", "list_directory", "grep_search"?

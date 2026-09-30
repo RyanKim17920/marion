@@ -142,7 +142,7 @@ opencode's own vocabulary is marion's vocabulary, word for word, for `read`, `ed
 
 ## Files
 
-- `probe-claude.sh`, `probe-codex.sh`, `probe-gemini.sh`, `probe-opencode.sh` — the probes,
+- `probe-claude.sh`, `probe-codex.sh`, `probe-opencode.sh` — the probes,
   verbatim as run. Argv and environment are copied from the four adapters' `compile_*` functions so
   the probe measures the shape marion actually compiles.
 - `declarations.json` — every run's outcome in one file: declared names, exit code, stderr.
@@ -163,7 +163,7 @@ verbatim. Re-running the probes regenerates the full logs locally.
 
 ```sh
 cargo build -p marion-provider --bin canned
-OUT=/tmp/s14 zsh tests/fixtures/s14/probe-claude.sh     # likewise -codex, -gemini, -opencode
+OUT=/tmp/s14 zsh tests/fixtures/s14/probe-claude.sh     # likewise -codex, -opencode
 ```
 
 The gemini probe needs no Google access: it uses S12's technique — a throwaway `GEMINI_API_KEY`
@@ -205,3 +205,6 @@ unbounded first attempt produced a 2.4 GB request log before it was stopped.
 - **Nothing about near-misses beyond case.** `NotATool` and lowercase `read` were tried on claude;
   neither was tried on gemini or opencode, where only a plainly bogus name was used. Whether
   gemini's `read_file` or opencode's `read` are case- or separator-sensitive is unmeasured.
+
+**The gemini CLI captures were removed on 2026-09-30, when marion retired that harness** (Google
+discontinued the CLI in favour of Antigravity). Its rows above stay as the measurement recorded them.

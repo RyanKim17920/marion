@@ -1,2 +1,0 @@
-argv: <SCRATCH>/bin/gm --approval-mode auto_edit
-env names: GEMINI_CLI_HOME GEMINI_CLI_SYSTEM_SETTINGS_PATH GEMINI_CLI_TRUST_WORKSPACE GEMINI_FORCE_FILE_STORAGE GOOGLE_GEMINI_BASE_URL GEMINI_API_KEY; settings general.enableAutoUpdate(+Notification)=false

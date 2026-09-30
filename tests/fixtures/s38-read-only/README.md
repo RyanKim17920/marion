@@ -54,7 +54,6 @@ the tool.
 | claude | `anthropic_edit` (or `NodeScript`) | `Write` | `{file_path, content}` (a relative path works) | `crates/marion-supervisor/tests/cross_product.rs:421` |
 | codex | `child_patch` (`apply_patch` via code-mode `exec`) | `apply_patch` | `*** Begin Patch\n*** Add File: <p>\n+<line>\n*** End Patch` | `cross_product.rs:429`; shell form `child_exec_js` in `timeout_kill.rs:129` |
 | codex (shell) | `child_exec_js` | `tools.exec_command` | `const r = await tools.exec_command({cmd: "…"}); text(JSON.stringify(r));` | this fixture; `timeout_kill.rs:129` |
-| gemini | `gemini_edit` | `write_file` | `{file_path, content}` | `cross_product.rs:444` |
 | opencode | `openai_edit` | `write` | `{filePath, content}` | `cross_product.rs:456`, `acp_child.rs:68` |
 | opencode (shell) | `openai_edit`/`NodeScript` | `bash` | `{command, description}` | this fixture only |
 | qwen | `openai_edit`/`NodeScript` | `write_file` | `{file_path: <ABSOLUTE>, content}` (a relative path is refused) | none canned (s25 probe only; `cross_product.rs` has no qwen child) |
@@ -67,3 +66,6 @@ the tool.
 
 The canned file assertion is `comp.changed_paths` containing the file:
 `cross_product.rs:1107-1111` and `acp_child.rs:143`.
+
+**The gemini CLI captures were removed on 2026-09-30, when marion retired that harness** (Google
+discontinued the CLI in favour of Antigravity). Its rows above stay as the measurement recorded them.

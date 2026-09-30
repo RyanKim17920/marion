@@ -85,3 +85,6 @@ Host, username and credential scan: clean (no `$HOME`, no user name, no key mate
   Two files are evidence only and have no row: `docker-agent.jsonl` (its launch needs the
   operator's own agent file) and `droid.jsonl` (its `session/new` starts a device pairing, and the
   doctor's `--adapter` mode opens a session on every row).
+
+**The gemini CLI captures were removed on 2026-09-30, when marion retired that harness** (Google
+discontinued the CLI in favour of Antigravity). Its rows above stay as the measurement recorded them.
