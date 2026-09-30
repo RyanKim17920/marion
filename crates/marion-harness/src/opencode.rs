@@ -34,8 +34,8 @@ use crate::spec;
 use crate::spec::{
     Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries,
     Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly,
-    Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
-    UpdatePolicy, Val, When, WireRecipe,
+    Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -219,7 +219,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: CONFIG_CONTENT_ENV,
         body: Body::Code(live_config_document),
     }),
-    token: TokenCarriers::DECLARATION,
+    // Canned: inside the 0600 document. Live: the declaration is `OPENCODE_CONFIG_CONTENT`, a
+    // variable every shell command the model runs inherits, so it names the token's file instead.
+    token: TokenCarriers {
+        canned: TokenCarrier::Declaration,
+        live: TokenCarrier::DeclaredFile {
+            note: "the live declaration rides OPENCODE_CONFIG_CONTENT, an environment variable the \
+                   model's shell commands inherit",
+        },
+    },
     constraint: Constraint::Fixed {
         prefix: "",
         value: NO_COMPILED_TOOL_CONSTRAINT,
@@ -909,6 +917,7 @@ mod tests {
 
     fn bridge() -> BridgeEnv {
         BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),

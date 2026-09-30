@@ -923,7 +923,7 @@ pub fn prepare_watched(
         bridge: spec.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };
-    let written = crate::run::write_config_documents(adapter.config_files(&launch, &ctx)?)?;
+    let written = crate::run::write_config_documents(adapter.launch_documents(&launch, &ctx)?)?;
     let invocation = compile_root(adapter.as_ref(), spec.pane, &launch, &ctx)?;
 
     // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
@@ -1681,7 +1681,7 @@ fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode,
     let gateway = crate::endpoint::open(&next)?.map(std::sync::Arc::new);
     let mut launch = r.launch.clone();
     crate::endpoint::apply(&mut launch, &next, gateway.as_deref());
-    crate::run::write_config_documents(adapter.config_files(&launch, &r.ctx)?)?;
+    crate::run::write_config_documents(adapter.launch_documents(&launch, &r.ctx)?)?;
     let invocation = compile_root(adapter.as_ref(), false, &launch, &r.ctx)?;
     Ok(RootNode {
         invocation,
@@ -2343,7 +2343,7 @@ fn launch_only(
             ..relaunch.launch.clone()
         };
         let inv = adapter
-            .config_files(&launch, &relaunch.ctx)
+            .launch_documents(&launch, &relaunch.ctx)
             .map_err(RootError::from)
             .and_then(|files| crate::run::write_config_documents(files).map_err(RootError::from))
             .and_then(|_| compile_root(adapter.as_ref(), false, &launch, &relaunch.ctx));
@@ -3738,6 +3738,7 @@ mod tests {
 
     fn env() -> BridgeEnv {
         BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),

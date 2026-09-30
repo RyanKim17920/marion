@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use marion_core::harness::Harness;
 
 use crate::adapter::harness_spec;
-use crate::mcp_bridge::{BridgeEnv, NODE_TOKEN_ENV};
+use crate::mcp_bridge::{BridgeEnv, NODE_TOKEN_FILE_ENV};
 use crate::spec::{HarnessSpec, LiveDeclaration};
 
 /// `Debug` prints the environment's names, never its values: it is the operator's, and carries
@@ -95,9 +95,9 @@ pub struct NativeInjection {
     pub argv_prefix: Vec<OsString>,
     pub env_overlay: Vec<(OsString, OsString)>,
     /// The bridge's own variables, which the harness passes on to the MCP server it starts: the
-    /// node token, where the row's live [`crate::spec::TokenCarrier`] withholds it from an argv
+    /// node token file, where the row's live [`crate::spec::TokenCarrier`] withholds the token from an argv
     /// declaration. The one way a `MARION_` name enters a native environment, and
-    /// [`assemble_native`] admits [`NODE_TOKEN_ENV`] alone.
+    /// [`assemble_native`] admits [`NODE_TOKEN_FILE_ENV`] alone.
     pub bridge_env: Vec<(OsString, OsString)>,
     pub documents: Vec<NativeDocument>,
 }
@@ -249,16 +249,26 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
         // The row's live carrier decides whether the declaration names the token or withholds
         // it for the harness's environment, exactly as on the managed live launch.
         let carrier = self.row.token.live;
-        let bridge = &carrier.declared(context.bridge);
+        let token_file = context
+            .document_dir
+            .join(crate::mcp_bridge::NODE_TOKEN_FILE);
+        let bridge = &carrier.declared(context.bridge, &token_file);
         let mut injection = NativeInjection {
             argv_prefix: Vec::new(),
             env_overlay: Vec::new(),
             bridge_env: carrier
-                .process_env(context.bridge)
+                .process_env(context.bridge, &token_file)
                 .into_iter()
                 .map(|(k, v)| (OsString::from(k), OsString::from(v)))
                 .collect(),
-            documents: Vec::new(),
+            documents: carrier
+                .document(context.bridge, &token_file)
+                .map(|(path, token)| NativeDocument {
+                    path,
+                    contents: token.into_bytes(),
+                })
+                .into_iter()
+                .collect(),
         };
         match declaration {
             LiveDeclaration::ArgvDocument {
@@ -457,7 +467,7 @@ pub fn assemble_native(
     if injection
         .bridge_env
         .iter()
-        .any(|(name, _)| name != NODE_TOKEN_ENV)
+        .any(|(name, _)| name != NODE_TOKEN_FILE_ENV)
     {
         return Err(NativeInjectionError::UndeclaredBridgeVariable);
     }

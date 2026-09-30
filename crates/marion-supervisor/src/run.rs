@@ -3334,7 +3334,7 @@ fn declare_and_compile(
     launch: &LaunchSpec,
     ctx: &SpawnCtx,
 ) -> Result<Invocation, SpawnError> {
-    write_config_documents(adapter.config_files(launch, ctx)?)?;
+    write_config_documents(adapter.launch_documents(launch, ctx)?)?;
     Ok(adapter.compile(launch, ctx)?)
 }
 

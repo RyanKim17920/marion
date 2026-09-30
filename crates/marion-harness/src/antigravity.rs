@@ -503,6 +503,7 @@ mod tests {
     #[test]
     fn the_declaration_names_marions_server_with_the_bridges_identity() {
         let b = BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),

@@ -16,6 +16,13 @@ pub const AUTH_ENV: &str = "MARION_AUTH";
 pub const BASE_URL_ENV: &str = "MARION_BASE_URL";
 pub const DEPTH_ENV: &str = "MARION_DEPTH";
 pub const NODE_TOKEN_ENV: &str = "MARION_NODE_TOKEN";
+/// Where a harness's environment points its bridge at the node token, in place of the token
+/// itself, on a row whose carrier withholds it from the declaration: the path of a 0600 file in
+/// the node's own directory ([`NODE_TOKEN_FILE`]). A model's shell commands inherit the harness's
+/// environment, so the token is never in it.
+pub const NODE_TOKEN_FILE_ENV: &str = "MARION_NODE_TOKEN_FILE";
+/// The node token's file name, under the node's own config or document directory.
+pub const NODE_TOKEN_FILE: &str = "node-token";
 pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
 
 /// What every MCP declaration of marion's bridge carries — **one value, five documents**.
@@ -54,6 +61,10 @@ pub struct BridgeEnv {
     /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
     /// absent, never empty ([`NODE_TOKEN_ENV`]).
     pub node_token: Option<marion_core::secret::Secret>,
+    /// Where the node token's 0600 file is, for a declaration that names the file rather than
+    /// carrying the token ([`NODE_TOKEN_FILE_ENV`]) — a declaration that itself rides the
+    /// harness's environment, which every shell command its model runs inherits. `None` otherwise.
+    pub node_token_file: Option<PathBuf>,
     /// The readiness marker the bridge touches once it has answered `tools/list` (§6.1 step 8).
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on.
@@ -87,6 +98,12 @@ impl BridgeEnv {
         if let Some(t) = &self.node_token {
             pairs.push((NODE_TOKEN_ENV.to_string(), t.expose().to_string()));
         }
+        if let Some(f) = &self.node_token_file {
+            pairs.push((
+                NODE_TOKEN_FILE_ENV.to_string(),
+                f.to_string_lossy().into_owned(),
+            ));
+        }
         if let Some(r) = &self.ready_file {
             pairs.push((READY_FILE_ENV.to_string(), r.to_string_lossy().into_owned()));
         }
@@ -110,6 +127,7 @@ mod tests {
 
     fn bridge(node_token: Option<&str>) -> BridgeEnv {
         BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),

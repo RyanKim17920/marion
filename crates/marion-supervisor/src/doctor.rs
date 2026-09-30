@@ -690,7 +690,7 @@ fn declaration_step(
     };
     let ctx = probe_ctx();
     let compiled = adapter
-        .config_files(&spec, &ctx)
+        .launch_documents(&spec, &ctx)
         .and_then(|files| Ok((files, adapter.compile(&spec, &ctx)?)));
     let (files, inv) = match compiled {
         Ok(v) => v,

@@ -9,6 +9,7 @@ fn neutral_and_compatibility_paths_name_one_bridge_contract() {
     assert_eq!(FLAT_AGENT_ID_ENV, AGENT_ID_ENV);
     assert_eq!(COMPAT_AGENT_ID_ENV, AGENT_ID_ENV);
     let bridge = BridgeEnv {
+        node_token_file: None,
         bridge: "/bin/marion-supervisor".into(),
         args: vec!["mcp".into()],
         repo: "/repo".into(),

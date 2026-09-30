@@ -559,6 +559,25 @@ pub trait HarnessAdapter {
         )])
     }
 
+    /// **Every file a launch writes before its harness starts**: [`Self::config_files`], and the
+    /// node token's own file where the launch's carrier withholds the token from the declaration
+    /// ([`spec::TokenCarrier::document`]). What a spawn site writes; `config_files` is what the
+    /// harness reads.
+    fn launch_documents(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let mut documents = self.config_files(spec, ctx)?;
+        if spec.mcp == McpDeclaration::Marion {
+            documents.extend(
+                self.token_carrier(spec)
+                    .document(&bridge_env(spec, ctx), &token_file(spec)),
+            );
+        }
+        Ok(documents)
+    }
+
     /// The wires this harness can be pointed at in endpoint mode, in preference order — the
     /// wires of the row's [`spec::HarnessSpec::wires`] recipes.
     fn endpoint_wires(&self) -> Vec<Wire> {
@@ -1042,6 +1061,7 @@ pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result
 /// an endpoint spelled as the empty string, with nothing anywhere reporting it.
 pub(crate) fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> BridgeEnv {
     BridgeEnv {
+        node_token_file: None,
         bridge: ctx.bridge.clone(),
         args: ctx.bridge_args.clone(),
         repo: ctx.repo.clone(),
@@ -1068,7 +1088,9 @@ pub(crate) fn declared_bridge<A: HarnessAdapter + ?Sized>(
     spec: &LaunchSpec,
     ctx: &SpawnCtx,
 ) -> BridgeEnv {
-    adapter.token_carrier(spec).declared(&bridge_env(spec, ctx))
+    adapter
+        .token_carrier(spec)
+        .declared(&bridge_env(spec, ctx), &token_file(spec))
 }
 
 /// What the harness process's environment carries for its bridge: the node token, where the
@@ -1082,9 +1104,15 @@ fn bridge_process_env<A: HarnessAdapter + ?Sized>(
     match spec.mcp {
         McpDeclaration::Marion => adapter
             .token_carrier(spec)
-            .process_env(&bridge_env(spec, ctx)),
+            .process_env(&bridge_env(spec, ctx), &token_file(spec)),
         McpDeclaration::None => Vec::new(),
     }
+}
+
+/// Where a managed launch's node token is written when its carrier withholds it from the
+/// declaration: the node's own config dir, 0600 like every document there.
+pub fn token_file(spec: &LaunchSpec) -> PathBuf {
+    spec.config_dir.join(crate::mcp_bridge::NODE_TOKEN_FILE)
 }
 
 /// [`spec::render`] with its refusals named for this harness: a row with no pane shape, a launch
@@ -2785,6 +2813,7 @@ mod tests {
         let spec = claude_spec();
         let files = ClaudeCodeAdapter.config_files(&spec, &ctx()).unwrap();
         let expected = serde_json::to_string_pretty(&claude_code::mcp_config_json(&BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),
@@ -2810,6 +2839,7 @@ mod tests {
         let files = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap();
         let expected = config_toml(
             &BridgeEnv {
+                node_token_file: None,
                 bridge: "/bin/marion-supervisor".into(),
                 args: vec!["mcp".into()],
                 repo: "/repo".into(),
@@ -3070,6 +3100,7 @@ mod tests {
     #[test]
     fn every_adapters_bridge_env_block_uses_one_set_of_key_names() {
         let claude = claude_code::mcp_config_json(&BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),
@@ -3089,6 +3120,7 @@ mod tests {
             .collect();
 
         let g = gemini::settings_json(Some(&BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),
@@ -3109,6 +3141,7 @@ mod tests {
                 key_header: Default::default(),
             },
             Some(&BridgeEnv {
+                node_token_file: None,
                 bridge: "/bin/marion-supervisor".into(),
                 args: vec!["mcp".into()],
                 repo: "/repo".into(),
@@ -3975,6 +4008,7 @@ mod tests {
             vec![(
                 PathBuf::from("/state/x/config/marion-settings.json"),
                 serde_json::to_string_pretty(&gemini::settings_json(Some(&BridgeEnv {
+                    node_token_file: None,
                     bridge: "/bin/marion-supervisor".into(),
                     args: vec!["mcp".into()],
                     repo: "/repo".into(),
@@ -4005,6 +4039,7 @@ mod tests {
                         key_header: Default::default(),
                     },
                     Some(&BridgeEnv {
+                        node_token_file: None,
                         bridge: "/bin/marion-supervisor".into(),
                         args: vec!["mcp".into()],
                         repo: "/repo".into(),
@@ -4076,6 +4111,24 @@ mod tests {
     /// one harness earlier. So the sweeps ask the route.
     fn declaration_bytes(h: Harness, spec: &LaunchSpec, ctx: &SpawnCtx) -> String {
         let a = launch_adapter(h).unwrap();
+        let mut bytes = route_bytes(h, a.as_ref(), spec, ctx);
+        // A carrier that withholds the token hands the bridge a 0600 file instead; its contents
+        // are what the bridge receives, spelled as the other routes spell a pair.
+        let token_file = token_file(spec);
+        for (path, contents) in a.launch_documents(spec, ctx).unwrap_or_default() {
+            if path == token_file {
+                bytes.push_str(&format!("\n{}=\"{contents}\"", mcp_bridge::NODE_TOKEN_ENV));
+            }
+        }
+        bytes
+    }
+
+    fn route_bytes(
+        h: Harness,
+        a: &dyn HarnessAdapter,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> String {
         match a.mcp_route(spec) {
             McpRoute::Document => a
                 .config_files(spec, ctx)
@@ -4244,21 +4297,42 @@ mod tests {
                 "{who}: the node token is on argv: {:?}",
                 inv.args
             );
-            let in_env: Vec<&String> = inv
+            assert!(
+                !inv.env.iter().any(|(_, v)| v.contains(TOKEN)),
+                "{who}: the node token is in the harness's environment: {inv:?}"
+            );
+            let named: Vec<&String> = inv
                 .env
                 .iter()
-                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_FILE_ENV)
                 .map(|(_, v)| v)
                 .collect();
             let declaration = declaration_without_env(a, spec, &minted, inv);
-            if a.token_carrier(spec).withholds() {
-                assert_eq!(in_env, [TOKEN], "{who}: the environment carries it once");
+            let carrier = a.token_carrier(spec);
+            if carrier.withholds() {
+                let file = token_file(spec);
+                let path = file.to_string_lossy().into_owned();
+                if carrier.names_file_in_env() {
+                    assert_eq!(named, [&path], "{who}: the environment names the file once");
+                } else {
+                    assert!(named.is_empty(), "{who}: {:?}", inv.env);
+                    assert!(
+                        declaration.contains(&path),
+                        "{who}: the declaration names the token's file: {declaration}"
+                    );
+                }
+                assert!(
+                    a.launch_documents(spec, &minted)
+                        .unwrap()
+                        .contains(&(file, TOKEN.to_string())),
+                    "{who}: the token's file is written before the launch"
+                );
                 assert!(
                     !declaration.contains(TOKEN),
                     "{who}: the declaration withholds it: {declaration}"
                 );
             } else {
-                assert!(in_env.is_empty(), "{who}: {:?}", inv.env);
+                assert!(named.is_empty(), "{who}: {:?}", inv.env);
                 assert!(
                     declaration.contains(TOKEN),
                     "{who}: the declaration carries it: {declaration}"
@@ -4369,22 +4443,54 @@ mod tests {
                 "{h}: the node token is on the native argv: {:?}",
                 injection.argv_prefix
             );
+            assert!(
+                !injection
+                    .bridge_env
+                    .iter()
+                    .any(|(_, v)| lossy(v).contains(TOKEN)),
+                "{h}: the node token is in the native environment"
+            );
+            let token_file = document_dir.join(mcp_bridge::NODE_TOKEN_FILE);
             let passed: Vec<String> = injection
                 .bridge_env
                 .iter()
-                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_FILE_ENV)
                 .map(|(_, v)| lossy(v))
                 .collect();
             let declared = injection
                 .documents
                 .iter()
+                .filter(|d| d.path != token_file)
                 .any(|d| String::from_utf8_lossy(&d.contents).contains(TOKEN))
                 || injection
                     .env_overlay
                     .iter()
                     .any(|(_, v)| lossy(v).contains(TOKEN));
-            if harness_spec(h).token.live.withholds() {
-                assert_eq!(passed, [TOKEN], "{h}");
+            let carrier = harness_spec(h).token.live;
+            if carrier.withholds() {
+                let path = token_file.to_string_lossy().into_owned();
+                if carrier.names_file_in_env() {
+                    assert_eq!(passed, [path], "{h}");
+                } else {
+                    assert!(passed.is_empty(), "{h}");
+                    assert!(
+                        injection
+                            .env_overlay
+                            .iter()
+                            .chain(&injection.bridge_env)
+                            .any(|(_, v)| lossy(v).contains(&path))
+                            || injection.documents.iter().any(|d| d.path != token_file
+                                && String::from_utf8_lossy(&d.contents).contains(&path)),
+                        "{h}: the declaration names the token's file"
+                    );
+                }
+                assert!(
+                    injection
+                        .documents
+                        .iter()
+                        .any(|d| d.path == token_file && d.contents == TOKEN.as_bytes()),
+                    "{h}: the token's file is a document of the launch"
+                );
                 assert!(!declared, "{h}: the declaration withholds it");
             } else {
                 assert!(passed.is_empty(), "{h}");
@@ -4796,10 +4902,11 @@ mod tests {
         assert!(!joined.contains("MARION_BASE_URL"), "{joined}");
     }
 
-    /// **A live codex node's token is never on its argv**, where `ps` shows it to every user: it
-    /// rides codex's environment, and the `-c` pairs name its variable in `env_vars` because codex
-    /// hands a stdio server only an allowlist of its own environment. A canned node's token stays
-    /// in its 0600 `config.toml`, and nothing is added to its environment.
+    /// **A live codex node's token is never on its argv**, where `ps` shows it to every user, nor
+    /// in its environment, which the model's shell inherits: it is written to a 0600 file, codex's
+    /// environment names the file, and the `-c` pairs name that variable in `env_vars` because
+    /// codex hands a stdio server only an allowlist of its own environment. A canned node's token
+    /// stays in its 0600 `config.toml`, and nothing is added to its environment.
     #[test]
     fn a_live_codex_nodes_token_rides_its_environment_and_env_vars_names_it() {
         let minted = SpawnCtx {
@@ -4807,9 +4914,13 @@ mod tests {
             ..ctx()
         };
         let token_env = |inv: &Invocation| -> Vec<String> {
+            assert!(
+                !inv.env.iter().any(|(_, v)| v.contains("SENTINEL")),
+                "{inv:?}"
+            );
             inv.env
                 .iter()
-                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_FILE_ENV)
                 .map(|(_, v)| v.clone())
                 .collect()
         };
@@ -4825,10 +4936,17 @@ mod tests {
             "the declaration names no token value: {joined}"
         );
         assert!(
-            joined.contains(r#"-c mcp_servers.marion.env_vars=["MARION_NODE_TOKEN"]"#),
+            joined.contains(r#"-c mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]"#),
             "codex is told to pass the variable on: {joined}"
         );
-        assert_eq!(token_env(&live), ["tok-SENTINEL-codex-4b1d"]);
+        let file = token_file(&codex_live_spec());
+        assert_eq!(token_env(&live), [file.to_string_lossy().into_owned()]);
+        assert!(
+            CodexAdapter
+                .launch_documents(&codex_live_spec(), &minted)
+                .unwrap()
+                .contains(&(file, "tok-SENTINEL-codex-4b1d".to_string()))
+        );
 
         let canned = CodexAdapter.compile(&codex_spec(), &minted).unwrap();
         assert!(token_env(&canned).is_empty(), "{:?}", canned.env);
@@ -4840,8 +4958,8 @@ mod tests {
     }
 
     /// **A live qwen node's `--mcp-config` document is argv, so it carries no token**: qwen hands
-    /// its MCP server its own environment, and the token rides that. A canned node's token stays
-    /// in its 0600 `settings.json`.
+    /// its MCP server its own environment, which names the token's 0600 file and never holds the
+    /// token. A canned node's token stays in its 0600 `settings.json`.
     #[test]
     fn a_live_qwen_nodes_token_rides_its_environment_and_not_its_inline_document() {
         let minted = SpawnCtx {
@@ -4864,9 +4982,14 @@ mod tests {
         );
         assert!(!joined.contains(mcp_bridge::NODE_TOKEN_ENV), "{joined}");
         assert!(
+            !inv.env.iter().any(|(_, v)| v.contains("SENTINEL")),
+            "{inv:?}"
+        );
+        assert!(
             inv.env
                 .iter()
-                .any(|(k, v)| k == mcp_bridge::NODE_TOKEN_ENV && v == "tok-SENTINEL-qwen-0c55"),
+                .any(|(k, v)| k == mcp_bridge::NODE_TOKEN_FILE_ENV
+                    && *v == token_file(&live).to_string_lossy()),
             "{:?}",
             inv.env
         );
@@ -4876,7 +4999,7 @@ mod tests {
             !canned
                 .env
                 .iter()
-                .any(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV),
+                .any(|(k, _)| k == mcp_bridge::NODE_TOKEN_FILE_ENV),
             "{:?}",
             canned.env
         );
@@ -4889,8 +5012,9 @@ mod tests {
     }
 
     /// The native lane reads the same live carrier: `marion codex` puts the same `-c` pairs in
-    /// front of the operator's own flags, and the token reaches the assembled environment — past
-    /// the rule that strips every `MARION_` name the operator's own environment carried.
+    /// front of the operator's own flags, and the token's file reaches the assembled environment —
+    /// past the rule that strips every `MARION_` name the operator's own environment carried —
+    /// while the token itself is a document, never a variable.
     #[test]
     fn a_native_codex_nodes_token_rides_its_environment_and_never_its_argv() {
         use std::ffi::OsString;
@@ -4951,17 +5075,29 @@ mod tests {
         );
         assert!(
             argv.iter()
-                .any(|a| a == r#"mcp_servers.marion.env_vars=["MARION_NODE_TOKEN"]"#),
+                .any(|a| a == r#"mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]"#),
             "{argv:?}"
         );
-        let token: Vec<&OsString> = prepared
+        let named: Vec<&OsString> = prepared
             .invocation
             .env
             .iter()
-            .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+            .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_FILE_ENV)
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(token, [&OsString::from("tok-SENTINEL-native-77e2")]);
+        assert_eq!(
+            named,
+            [&OsString::from("/state/agents/019f-root/node-token")]
+        );
+        assert!(
+            !prepared
+                .invocation
+                .env
+                .iter()
+                .any(|(k, v)| k == mcp_bridge::NODE_TOKEN_ENV
+                    || v.to_string_lossy().contains("SENTINEL")),
+            "neither the operator's forged token nor marion's is in the environment"
+        );
         let printed = format!("{prepared:?}");
         assert!(!printed.contains("SENTINEL"), "{printed}");
     }
@@ -6667,7 +6803,7 @@ mod tests {
     /// and verifies against argv. The same program named as a *command* has no row and gets the
     /// protocol's channel, which on this version is the difference between a report and silence.
     #[test]
-    fn the_copilot_refinements_argv_document_carries_no_token_and_its_environment_does() {
+    fn the_copilot_refinements_argv_document_carries_no_token_and_its_environment_names_its_file() {
         let row = AcpAdapter::for_agent(acp::COPILOT);
         let spec = LaunchSpec {
             extra: Extras {
@@ -6691,9 +6827,14 @@ mod tests {
             inv.args
         );
         assert!(
+            !inv.env.iter().any(|(_, v)| v.contains("SENTINEL")),
+            "{inv:?}"
+        );
+        assert!(
             inv.env
                 .iter()
-                .any(|(k, v)| k == mcp_bridge::NODE_TOKEN_ENV && v == "tok-SENTINEL-acp-9f30"),
+                .any(|(k, v)| k == mcp_bridge::NODE_TOKEN_FILE_ENV
+                    && *v == token_file(&spec).to_string_lossy()),
             "{:?}",
             inv.env
         );
@@ -6704,7 +6845,7 @@ mod tests {
             !session
                 .env
                 .iter()
-                .any(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+                .any(|(k, _)| k == mcp_bridge::NODE_TOKEN_FILE_ENV)
         );
         let decl = acp_adapter()
             .session_declaration(&acp_spec(), &minted)

@@ -93,6 +93,7 @@ fn adapter_prefix_precedes_boundary_tail_and_documents_remain_a_pure_handoff() {
         "/work/project",
     );
     let bridge = BridgeEnv {
+        node_token_file: None,
         bridge: PathBuf::from("/opt/bin/marion-supervisor"),
         args: vec!["mcp".into()],
         repo: PathBuf::from("/work/project"),

@@ -67,6 +67,7 @@ fn v2_context(
 
 fn bridge() -> BridgeEnv {
     BridgeEnv {
+        node_token_file: None,
         bridge: PathBuf::from("/synthetic/marion-supervisor"),
         args: vec!["mcp".into()],
         repo: PathBuf::from("/work/project"),

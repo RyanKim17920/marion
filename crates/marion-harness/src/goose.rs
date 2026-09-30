@@ -603,12 +603,13 @@ mod tests {
 
     use crate::auth::Auth;
     use crate::invocation::Invocation;
-    use crate::mcp_bridge::NODE_TOKEN_ENV;
+    use crate::mcp_bridge::{NODE_TOKEN_ENV, NODE_TOKEN_FILE_ENV};
     use crate::spec::{Axes, Fields, Shape, render};
     use crate::stream::{CallOutcome, MarionCall, StreamOutcome};
 
     fn bridge() -> BridgeEnv {
         BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),
@@ -637,11 +638,22 @@ mod tests {
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: Some("sk-fake".into()),
             axes: Axes::default(),
-            mcp_config: Some(extension_declaration(&SPEC.token.canned.declared(&b))),
-            extra_env: SPEC.token.canned.process_env(&b),
+            mcp_config: Some(extension_declaration(
+                &SPEC
+                    .token
+                    .canned
+                    .declared(&b, std::path::Path::new(TOKEN_FILE)),
+            )),
+            extra_env: SPEC
+                .token
+                .canned
+                .process_env(&b, std::path::Path::new(TOKEN_FILE)),
             ..Fields::default()
         }
     }
+
+    /// Where these tests say the node token's file is.
+    const TOKEN_FILE: &str = "/tmp/cfg/node-token";
 
     fn live_spec() -> Fields {
         Fields {
@@ -721,9 +733,11 @@ mod tests {
         assert!(token.contains(EXTENSION_KEY));
     }
 
-    /// The whole point of splitting the declaration: goose persists the token's pairs.
+    /// The whole point of splitting the declaration: goose persists the token's pairs. So the
+    /// token is on neither argv nor the environment (which the model's shell inherits): the
+    /// environment names its 0600 file, and the file is a document written before the launch.
     #[test]
-    fn the_node_token_never_reaches_argv_and_rides_the_environment() {
+    fn the_node_token_never_reaches_argv_or_the_environment_only_its_file() {
         let inv = compile(&spec());
         for a in &inv.args {
             assert!(!a.contains("tok-secret-7c1f"), "the token is on argv: {a}");
@@ -732,14 +746,26 @@ mod tests {
                 "the token's name is on argv: {a}"
             );
         }
-        assert_eq!(
-            env_of(&inv, NODE_TOKEN_ENV).as_deref(),
-            Some("tok-secret-7c1f")
+        assert!(
+            inv.env.iter().all(|(_, v)| !v.contains("tok-secret-7c1f")),
+            "the token is in the harness's environment: {:?}",
+            inv
         );
-        // And where none was minted, nothing is set — never an empty string.
+        assert_eq!(env_of(&inv, NODE_TOKEN_ENV), None);
+        assert_eq!(
+            env_of(&inv, NODE_TOKEN_FILE_ENV).as_deref(),
+            Some(TOKEN_FILE)
+        );
+        let path = std::path::Path::new(TOKEN_FILE);
+        assert_eq!(
+            SPEC.token.canned.document(&bridge(), path),
+            Some((path.to_path_buf(), "tok-secret-7c1f".to_string()))
+        );
+        // And where none was minted, nothing is set and nothing written — never an empty string.
         let mut b = bridge();
         b.node_token = None;
-        assert!(SPEC.token.canned.process_env(&b).is_empty());
+        assert!(SPEC.token.canned.process_env(&b, path).is_empty());
+        assert_eq!(SPEC.token.canned.document(&b, path), None);
         assert!(!extension_declaration(&b).contains(NODE_TOKEN_ENV));
     }
 

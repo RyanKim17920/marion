@@ -1567,6 +1567,7 @@ mod tests {
 
     fn bridge_env() -> BridgeEnv {
         BridgeEnv {
+            node_token_file: None,
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),

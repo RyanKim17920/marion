@@ -4,13 +4,17 @@
 //! login: a live codex node (`-c mcp_servers.marion.…`), a live qwen node (`--mcp-config <json>`)
 //! and `copilot --acp` (`--additional-mcp-config <json>`). argv is readable by every user on the
 //! machine through `ps`, so each row's token carrier withholds `MARION_NODE_TOKEN` from that
-//! declaration and sets it on the harness's own environment, which the harness passes on to the
+//! declaration. Nor is it set on the harness's environment, which every shell command its model
+//! runs inherits: it is written to a 0600 file in the node's own directory, and the harness's
+//! environment names that file (`MARION_NODE_TOKEN_FILE`), which the harness passes on to the
 //! bridge it starts (`marion_harness::spec::TokenCarrier`).
 //!
 //! Each test spawns the real harness through `run_spawn` under `Auth::Inherited`, holds the
 //! provider's first turn — so the harness and the bridge it started are both alive — and reads the
-//! process table while it is held: the token is on the harness's environment and the bridge's,
-//! and on no process's argv. Released, the node calls marion's `report`, which the contract shows.
+//! process table while it is held: the token is on no process's argv and in neither the harness's
+//! environment nor the bridge's; both name the file, which holds the token, 0600. Released, the
+//! node calls marion's `report` — the bridge proved itself with the file's token — which the
+//! contract shows.
 //!
 //! "The operator's own login" is a scratch `HOME` whose harness configuration points at marion's
 //! canned provider, so nothing here reaches a vendor or starts a login. The process environment is
@@ -32,6 +36,7 @@ use serde_json::json;
 const CHILD_TIMEOUT_SECS: u64 = 120;
 const NARRATIVE: &str = "Reported through a bridge whose token never touched argv.";
 const TOKEN_ENV: &str = marion_harness::mcp_bridge::NODE_TOKEN_ENV;
+const TOKEN_FILE_ENV: &str = marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV;
 
 /// One canned provider per harness, each on its own port so its gate counts one node's turns.
 struct Providers {
@@ -190,13 +195,19 @@ fn process_table() -> Vec<(i32, i32, String)> {
 
 /// The value of `MARION_NODE_TOKEN` in a process's environment, as `ps -E` prints it after the
 /// argv. The last occurrence, so an argv that also named it cannot stand in for the environment.
-fn token_in_env_of(pid: i32) -> Option<String> {
+/// `pid`'s command line with its environment appended, as `ps -E` prints it.
+fn env_text_of(pid: i32) -> String {
     let out = Command::new("ps")
         .args(["-Eww", "-o", "command=", "-p", &pid.to_string()])
         .output()
         .expect("`ps -E` runs");
-    let text = String::from_utf8_lossy(&out.stdout);
-    let needle = format!("{TOKEN_ENV}=");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The value `pid`'s environment gives `name`, if any.
+fn env_of(pid: i32, name: &str) -> Option<String> {
+    let text = env_text_of(pid);
+    let needle = format!("{name}=");
     let at = text.rfind(&needle)?;
     let value: String = text[at + needle.len()..]
         .chars()
@@ -313,11 +324,24 @@ fn spawn_and_inspect(tag: &str, agent_type: &str, provider: &Provider) -> TaskCo
             );
         }
 
-        assert_eq!(
-            token_in_env_of(started).as_deref(),
-            Some(token),
-            "{agent_type}: the harness's environment carries the node's token"
+        assert!(
+            !env_text_of(started).contains(token),
+            "{agent_type}: the node token is in the harness's environment"
         );
+        assert_eq!(env_of(started, TOKEN_ENV), None, "{agent_type}");
+        let file = env_of(started, TOKEN_FILE_ENV).unwrap_or_else(|| {
+            panic!("{agent_type}: the harness's environment names no token file")
+        });
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap_or_default(),
+            token,
+            "{agent_type}: the named file holds the node's token"
+        );
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{agent_type}: {file} is private");
+        }
         assert!(
             !bridges.is_empty(),
             "{agent_type}: the harness started no bridge: {:?}",
@@ -327,10 +351,14 @@ fn spawn_and_inspect(tag: &str, agent_type: &str, provider: &Provider) -> TaskCo
                 .collect::<Vec<_>>()
         );
         for b in &bridges {
+            assert!(
+                !env_text_of(*b).contains(token),
+                "{agent_type}: the bridge {b}'s environment holds the token itself"
+            );
             assert_eq!(
-                token_in_env_of(*b).as_deref(),
-                Some(token),
-                "{agent_type}: the bridge {b} was handed the node's token"
+                env_of(*b, TOKEN_FILE_ENV).as_deref(),
+                Some(file.as_str()),
+                "{agent_type}: the bridge {b} was handed the token's file"
             );
         }
     }));

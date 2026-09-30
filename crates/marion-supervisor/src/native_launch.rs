@@ -114,6 +114,7 @@ impl ProductionNativeCommandFactory {
         repo: &std::path::Path,
     ) -> BridgeEnv {
         BridgeEnv {
+            node_token_file: None,
             bridge: self.env.bridge.clone(),
             args: vec!["mcp".into()],
             repo: repo.to_path_buf(),

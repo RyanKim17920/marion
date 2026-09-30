@@ -37,7 +37,7 @@ use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
 use crate::invocation::Invocation;
 use crate::jsonl_channel::JsonlChannel;
-use crate::mcp_bridge::{BridgeEnv, NODE_TOKEN_ENV};
+use crate::mcp_bridge::{BridgeEnv, NODE_TOKEN_FILE_ENV};
 use crate::rpc_channel::RpcChannel;
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
@@ -2043,20 +2043,27 @@ impl TokenCarriers {
 /// The declaration names the node; the token proves it. Where the declaration is a private
 /// document, an environment variable or marion's own ACP pipe, the token can sit inside it. Where
 /// the declaration rides **argv** it cannot: argv is readable through `ps` by every user on the
-/// machine. Then the token is withheld from the declaration and set on the harness's own
-/// environment, and the row states how the harness passes it on to the MCP server it starts.
+/// machine. Then the token is withheld from the declaration and written to a 0600 file in the
+/// node's own directory; the harness's environment carries only the file's path
+/// ([`NODE_TOKEN_FILE_ENV`]), and the row states how the harness passes that on to the MCP server
+/// it starts. The token itself is never in the harness's environment, which every shell command
+/// its model runs inherits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenCarrier {
     /// Inside the declaration, beside the node's identity.
     Declaration,
-    /// Withheld from the declaration and set on the harness's environment, which its MCP
-    /// launcher hands a stdio server whole. `note` names the measurement.
+    /// Withheld from the declaration; its file's path is set on the harness's environment, which
+    /// its MCP launcher hands a stdio server whole. `note` names the measurement.
     InheritedEnv { note: &'static str },
-    /// Withheld from the declaration and set on the harness's environment; the launcher hands a
-    /// server only an allowlist of the parent's variables, so the declaration names the token's
-    /// variable in the harness's own pass-through list ([`Self::forwarded`]). `note` names the
-    /// measurement.
+    /// Withheld from the declaration; its file's path is set on the harness's environment, and the
+    /// launcher hands a server only an allowlist of the parent's variables, so the declaration
+    /// names the path's variable in the harness's own pass-through list ([`Self::forwarded`]).
+    /// `note` names the measurement.
     ForwardedEnv { note: &'static str },
+    /// Withheld from a declaration that itself rides the harness's environment (so a model's shell
+    /// would inherit it): the declaration names the token's 0600 file instead, and the harness's
+    /// own environment carries nothing more. `note` names why.
+    DeclaredFile { note: &'static str },
 }
 
 impl TokenCarrier {
@@ -2065,31 +2072,61 @@ impl TokenCarrier {
         !matches!(self, TokenCarrier::Declaration)
     }
 
-    /// The bridge as this carrier's declaration states it: `b` itself, or `b` without its token.
-    pub fn declared(self, b: &BridgeEnv) -> BridgeEnv {
+    /// The bridge as this carrier's declaration states it: `b` itself, or `b` without its token —
+    /// naming the token's file (`token_file`) instead where this carrier is
+    /// [`Self::DeclaredFile`] and a token was minted.
+    pub fn declared(self, b: &BridgeEnv, token_file: &Path) -> BridgeEnv {
         let mut declared = b.clone();
         if self.withholds() {
             declared.node_token = None;
         }
+        if matches!(self, TokenCarrier::DeclaredFile { .. }) && b.node_token.is_some() {
+            declared.node_token_file = Some(token_file.to_path_buf());
+        }
         declared
     }
 
-    /// What the harness's own environment carries for its bridge: the token, where this carrier
-    /// withholds it from the declaration and one was minted. Present or absent, never empty.
-    pub fn process_env(self, b: &BridgeEnv) -> Vec<(String, String)> {
-        match (self.withholds(), &b.node_token) {
-            (true, Some(t)) => vec![(NODE_TOKEN_ENV.to_string(), t.expose().to_string())],
+    /// Whether the harness's own environment names the token's file (the two `…Env` carriers),
+    /// rather than the declaration or nothing.
+    pub fn names_file_in_env(self) -> bool {
+        matches!(
+            self,
+            TokenCarrier::InheritedEnv { .. } | TokenCarrier::ForwardedEnv { .. }
+        )
+    }
+
+    /// What the harness's own environment carries for its bridge: the path of the token's file
+    /// (`token_file`), where this carrier withholds the token from the declaration and one was
+    /// minted. Present or absent, never empty; never the token.
+    pub fn process_env(self, b: &BridgeEnv, token_file: &Path) -> Vec<(String, String)> {
+        match (self.names_file_in_env(), &b.node_token) {
+            (true, Some(_)) => vec![(
+                NODE_TOKEN_FILE_ENV.to_string(),
+                token_file.to_string_lossy().into_owned(),
+            )],
             _ => Vec::new(),
         }
     }
 
-    /// The variables a declaration must name for its harness to pass them on — the token's, under
-    /// [`Self::ForwardedEnv`]; none otherwise. Named whether or not a token was minted: passing
-    /// on an unset variable passes nothing (measured on codex 0.145.0 through 0.155.1).
+    /// The token's file, `(token_file, token)`, where this carrier withholds the token from the
+    /// declaration and one was minted: the caller writes it 0600 with the launch's other
+    /// documents, before the harness starts.
+    pub fn document(self, b: &BridgeEnv, token_file: &Path) -> Option<(PathBuf, String)> {
+        match (self.withholds(), &b.node_token) {
+            (true, Some(t)) => Some((token_file.to_path_buf(), t.expose().to_string())),
+            _ => None,
+        }
+    }
+
+    /// The variables a declaration must name for its harness to pass them on — the token file's,
+    /// under [`Self::ForwardedEnv`]; none otherwise. Named whether or not a token was minted:
+    /// passing on an unset variable passes nothing (measured on codex 0.145.0 through 0.155.1).
     pub fn forwarded(self) -> &'static [&'static str] {
         match self {
-            TokenCarrier::ForwardedEnv { .. } => &[NODE_TOKEN_ENV],
-            TokenCarrier::Declaration | TokenCarrier::InheritedEnv { .. } => &[],
+            TokenCarrier::ForwardedEnv { .. } => &[NODE_TOKEN_FILE_ENV],
+            TokenCarrier::Declaration
+            | TokenCarrier::InheritedEnv { .. }
+            | TokenCarrier::DeclaredFile { .. } => &[],
         }
     }
 }
