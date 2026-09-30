@@ -281,7 +281,7 @@ fn ended_nodes_resume_and_running_ones_steer() {
         Effect::Resume(AgentId("child".into()))
     );
     assert_eq!(h.key(Key::Char('s')), Effect::None);
-    assert!(h.notice.as_deref().unwrap().contains("resume"));
+    assert!(h.notice.as_deref().unwrap().contains("brings it back"));
     assert_eq!(
         h.key(Key::Char('x')),
         Effect::None,

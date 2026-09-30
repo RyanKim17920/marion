@@ -920,7 +920,10 @@ impl Home {
                         text: String::new(),
                     }
                 }
-                Some(_) => self.notice = Some("it has ended; resume it with u".into()),
+                Some(_) => {
+                    self.notice =
+                        Some("it has ended; u brings it back from its recorded session".into())
+                }
                 None => self.notice = Some("nothing selected".into()),
             },
             Key::Char('x') => match self.selected() {

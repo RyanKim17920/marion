@@ -77,7 +77,7 @@ pub const VERBS: &[Verb] = &[
     Verb {
         name: "resume",
         aliases: &[],
-        summary: Some("bring back an agent whose supervisor stopped"),
+        summary: Some("bring back an ended agent from its recorded session"),
         help: resume_help,
         main: super::resume_main,
     },
@@ -500,8 +500,9 @@ fn resume_help() -> String {
     format!(
         "usage: marion resume <id> [--prompt <text>] [options]\n\
          \n\
-         Bring back a headless agent whose supervisor stopped, from its recorded session, and\n\
-         watch it as `marion run` does. --prompt gives it something new to start from.\n\
+         Bring back an ended agent from its recorded session (one that finished, or whose\n\
+         supervisor stopped), and watch it as `marion run` does. --prompt gives it something\n\
+         new to start from.\n\
          \n\
          \x20 --prompt <text>      a message to resume with\n\
          {PLACE_HELP}\n\

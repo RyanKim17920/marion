@@ -842,7 +842,11 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("esc", "back from the stream", ""),
             ("s", "steer", "marion steer <id> <text>"),
             ("x", "cancel, asks first", "marion cancel <id>"),
-            ("u", "resume an ended agent", "marion resume <id>"),
+            (
+                "u",
+                "bring back an ended agent from its session",
+                "marion resume <id>",
+            ),
             ("o", "shell in its workspace", ""),
             ("d", "what its branch changed", "git log -p HEAD..<branch>"),
             (
