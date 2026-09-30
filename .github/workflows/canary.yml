@@ -24,6 +24,16 @@
 # probes under spikes/. The PR it opens carries admit-harness.sh's MILESTONES paragraph in its body
 # for the reviewer to paste; CONTRIBUTING.md's rule that MILESTONES moves in the same commit still
 # applies before merging. Scheduled runs use the default branch.
+#
+# Trust split. Steps 1-3 execute code this repository does not control: the newest release of eight
+# third-party packages, straight from npm and Homebrew, plus whatever their install scripts run. So
+# they run in `run`, which holds a read-only token, keeps no credential in the checkout and no
+# secret in its environment, and hands everything onward as one artifact of plain files. The write
+# half of steps 4-5 runs in `admit` and `report`, which download only that artifact, execute nothing
+# from it and nothing installed, and each hold only the scopes their one write needs. The artifact
+# is untrusted input to them: the pairs must match a strict pattern, the patch may touch only the
+# two files an admission edits, and the result is a pull request a person reviews, never a push to
+# a branch that matters. CANARY_TOKEN appears in `admit` alone.
 
 name: Harness canary
 
@@ -32,10 +42,8 @@ on:
     - cron: "23 7 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+# Every job starts from nothing and names what it needs.
+permissions: {}
 
 concurrency:
   group: harness-canary
@@ -50,24 +58,36 @@ defaults:
     shell: bash
 
 jobs:
-  canary:
+  # Installs and runs third-party code. Read-only; everything it learns leaves as the artifact.
+  run:
     runs-on: macos-latest
     timeout-minutes: 330
+    permissions:
+      contents: read
     env:
       # Three cores: the cells carry 60 s bounds that a fully parallel run starves on a loaded box
       # (see the opencode 1.18.32 admission note in PINNED_HARNESSES).
       RUST_TEST_THREADS: 3
+    outputs:
+      pairs: ${{ steps.drift.outputs.pairs }}
+      admitted: ${{ steps.admit.outcome == 'success' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      # A cache this job writes has had third-party code running beside it, so it lives under its
+      # own prefix and ci.yml's jobs never restore it.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v0-canary
       - run: test -x scripts/cargo-runner.sh
       - name: Give git a committer identity
         run: |
           git config --global user.name "marion canary"
           git config --global user.email "canary@marion.invalid"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: lts/*
 
@@ -108,12 +128,15 @@ jobs:
           # shellcheck disable=SC2086
           scripts/admit-harness.sh $PAIRS 2>&1 | tee admit.txt
 
-      - name: Pull request body
+      # The admission leaves as a patch: `admit` applies it to a fresh checkout, so this job never
+      # pushes anything itself.
+      - name: Admission patch and pull request body
         if: steps.admit.outcome == 'success'
         env:
           PAIRS: ${{ steps.drift.outputs.pairs }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          git diff --binary -- crates/marion-testsupport/src/lib.rs crates/marion-supervisor/src/doctor.rs > admit.patch
           {
             echo "The nightly canary installed the newest harness releases and found these not yet admitted: \`$PAIRS\`."
             echo "The whole workspace suite passed against them under \`MARION_GATE=warn\`, and \`scripts/admit-harness.sh\` then passed strict. Run: $RUN_URL"
@@ -132,32 +155,9 @@ jobs:
             echo '</details>'
           } > pr-body.md
 
-      - name: Open or update the admission pull request
-        if: steps.admit.outcome == 'success'
-        uses: peter-evans/create-pull-request@v7
-        with:
-          # A PR opened with the default token does not trigger ci.yml; a CANARY_TOKEN secret (a
-          # token with contents and pull-requests write) makes it run. See CONTRIBUTING.md.
-          token: ${{ secrets.CANARY_TOKEN || github.token }}
-          branch: canary/admit-harnesses
-          delete-branch: true
-          add-paths: |
-            crates/marion-testsupport/src/lib.rs
-            crates/marion-supervisor/src/doctor.rs
-          commit-message: |
-            test: admit ${{ steps.drift.outputs.pairs }} to the pinned harness set
-
-            The nightly canary found these releases installed and unadmitted. The whole
-            workspace suite passed against them, and admit-harness.sh re-ran every suite that
-            drives them with only the accepted sets widened.
-          title: "test: admit ${{ steps.drift.outputs.pairs }} to the pinned harness set"
-          body-path: pr-body.md
-          labels: harness-canary
-
-      - name: Open or update the canary issue
+      - name: Canary issue body
         if: failure()
         env:
-          GH_TOKEN: ${{ github.token }}
           PAIRS: ${{ steps.drift.outputs.pairs }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -182,24 +182,124 @@ jobs:
             grep -hA2 'panicked at' matrix.log admit.txt | head -n 400
             echo '```'
           } | head -c 60000 > issue.md
-          gh label create harness-canary --color B60205 \
-            --description "Opened by the nightly harness canary" --force
-          number=$(gh issue list --label harness-canary --state open --json number --jq '.[0].number')
-          if [ -n "$number" ]; then
-            gh issue comment "$number" --body-file issue.md
-          else
-            gh issue create --title "Harness canary failing" --label harness-canary --body-file issue.md
-          fi
 
-      - name: Keep the logs
+      - name: Keep the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: canary-logs
+          name: canary-report
           path: |
             versions.txt
             drift.txt
             doctor.txt
             matrix.log
             admit.txt
+            admit.patch
+            pr-body.md
+            issue.md
           if-no-files-found: ignore
+
+  # Opens or updates the admission pull request from the artifact. Runs nothing from `run`.
+  admit:
+    needs: run
+    if: needs.run.result == 'success' && needs.run.outputs.admitted == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      # The `harness-canary` label on the pull request goes through the issues API.
+      issues: write
+    steps:
+      # The commit `run` tested, so the patch applies to exactly what it was made against.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: canary-report
+          path: ${{ runner.temp }}/report
+      - name: Check and apply the admission
+        id: apply
+        env:
+          PAIRS: ${{ needs.run.outputs.pairs }}
+          REPORT: ${{ runner.temp }}/report
+        run: |
+          # `<harness> <version>` pairs and nothing else: they reach a commit message and a title.
+          if ! [[ "$PAIRS" =~ ^[a-z0-9-]+\ [0-9A-Za-z.+-]+(\ [a-z0-9-]+\ [0-9A-Za-z.+-]+)*$ ]]; then
+            echo "::error::drift pairs from the run job are not <harness> <version> pairs"
+            exit 1
+          fi
+          test -s "$REPORT/admit.patch"
+          test -s "$REPORT/pr-body.md"
+          # Only the two files an admission edits. `git apply` only writes files, never runs any.
+          allowed=(--include=crates/marion-testsupport/src/lib.rs --include=crates/marion-supervisor/src/doctor.rs)
+          if [ -n "$(git apply --numstat --exclude=crates/marion-testsupport/src/lib.rs \
+            --exclude=crates/marion-supervisor/src/doctor.rs "$REPORT/admit.patch")" ]; then
+            echo "::error::the admission patch touches files other than the pin table and doctor.rs"
+            exit 1
+          fi
+          git apply "${allowed[@]}" "$REPORT/admit.patch"
+          head -c 60000 "$REPORT/pr-body.md" > "$RUNNER_TEMP/pr-body.md"
+          echo "pairs=$PAIRS" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the admission pull request
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
+        with:
+          # A PR opened with the default token does not trigger ci.yml; a CANARY_TOKEN secret (a
+          # token with contents and pull-requests write) makes it run. See CONTRIBUTING.md.
+          token: ${{ secrets.CANARY_TOKEN || github.token }}
+          branch: canary/admit-harnesses
+          delete-branch: true
+          add-paths: |
+            crates/marion-testsupport/src/lib.rs
+            crates/marion-supervisor/src/doctor.rs
+          commit-message: |
+            test: admit ${{ steps.apply.outputs.pairs }} to the pinned harness set
+
+            The nightly canary found these releases installed and unadmitted. The whole
+            workspace suite passed against them, and admit-harness.sh re-ran every suite that
+            drives them with only the accepted sets widened.
+          title: "test: admit ${{ steps.apply.outputs.pairs }} to the pinned harness set"
+          body-path: ${{ runner.temp }}/pr-body.md
+          labels: harness-canary
+
+  # Opens or comments on the canary issue from the artifact when either job above failed. Runs
+  # nothing from `run`.
+  report:
+    needs: [run, admit]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      # A failure with no test report (`run` died before writing one, or `admit` failed) still gets
+      # an issue, with a shorter body.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: canary-report
+          path: ${{ runner.temp }}/report
+      - name: Open or update the canary issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPORT: ${{ runner.temp }}/report
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$RUNNER_TEMP/issue.md"
+          if [ -s "$REPORT/issue.md" ]; then
+            head -c 60000 "$REPORT/issue.md" > "$body"
+          else
+            echo "The nightly harness canary failed on $(date -u +%Y-%m-%d) without a test report: the run stopped before the matrix finished, or opening the admission pull request failed. Run: $RUN_URL" > "$body"
+          fi
+          gh label create harness-canary --color B60205 \
+            --description "Opened by the nightly harness canary" --force
+          number=$(gh issue list --label harness-canary --state open --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file "$body"
+          else
+            gh issue create --title "Harness canary failing" --label harness-canary --body-file "$body"
+          fi
