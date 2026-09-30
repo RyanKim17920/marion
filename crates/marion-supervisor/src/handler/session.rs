@@ -30,6 +30,7 @@ impl RegistryHandle {
         &self,
         conn: ConnId,
         p: &SessionHelloParams,
+        peer_pid: Option<u32>,
     ) -> Result<SessionHelloResult, RpcError> {
         if lock(&self.shared).principals.contains_key(&conn) {
             return Err(RpcError::refused(
@@ -41,7 +42,10 @@ impl RegistryHandle {
             ));
         }
         let principal = match (&p.operator, &p.node) {
-            (Some(key), None) => self.prove_operator(key)?,
+            (Some(key), None) => {
+                self.refuse_from_below_a_node(peer_pid)?;
+                self.prove_operator(key)?
+            }
             (None, Some(caller)) => match self.authenticate(caller) {
                 Some(_) => SessionPrincipal::Node(caller.agent_id.clone()),
                 None => return Err(unminted_token(&caller.agent_id)),
@@ -59,6 +63,40 @@ impl RegistryHandle {
             .principals
             .insert(conn, principal.clone());
         Ok(SessionHelloResult { principal })
+    }
+
+    /// **Defense in depth for a key at rest**: the operator's key is refused from any process
+    /// whose parent chain or process group reaches a live node, since that is where a node's shell
+    /// that read the file would present it from. An unread peer pid skips this — the key is still
+    /// required.
+    fn refuse_from_below_a_node(&self, peer_pid: Option<u32>) -> Result<(), RpcError> {
+        let Some(pid) = peer_pid.and_then(|p| i32::try_from(p).ok()) else {
+            return Ok(());
+        };
+        let live: Vec<(AgentId, Option<i32>, Option<i32>)> = lock(&self.nodes)
+            .iter()
+            .filter(|(_, n)| n.running())
+            .map(|(id, n)| (id.clone(), n.pid, n.pgid))
+            .collect();
+        let above = live.iter().find(|(_, pid_of, pgid_of)| {
+            let pids: Vec<i32> = pid_of.iter().copied().collect();
+            let groups: Vec<i32> = pgid_of.iter().copied().collect();
+            crate::procid::descends_from(pid, &pids, &groups, crate::procid::lineage)
+        });
+        match above {
+            None => Ok(()),
+            Some((node, _, _)) => Err(RpcError::refused(
+                "operator",
+                format!(
+                    "this connection comes from process {pid}, which runs inside node `{}`'s \
+                     process tree, and a node never speaks for the operator — even holding the \
+                     operator's key. A node acts through its own bridge, as itself; run marion \
+                     from your own terminal to act as the operator.",
+                    node.0
+                ),
+                "§2, §5.4",
+            )),
+        }
     }
 
     fn prove_operator(&self, key: &Secret) -> Result<SessionPrincipal, RpcError> {

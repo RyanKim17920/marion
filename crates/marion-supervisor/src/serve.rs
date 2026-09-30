@@ -422,6 +422,9 @@ pub struct Outbound {
     /// Who the kernel says is on the other end. Carried here rather than passed beside every call
     /// because it is a property of the connection and is read once, at accept — see [`Peer`].
     peer: Peer,
+    /// The pid that connected, where the kernel says: what `session/hello` walks up to refuse the
+    /// operator's key from inside a node's process tree.
+    peer_pid: Option<u32>,
     tx: SyncSender<OutboundItem>,
     departed: Arc<Mutex<Option<Departure>>>,
     shutdown: Option<Arc<std::os::unix::net::UnixStream>>,
@@ -546,6 +549,11 @@ impl Outbound {
     /// and, more importantly, what they do not.
     pub fn peer(&self) -> Peer {
         self.peer
+    }
+
+    /// The pid that connected, where the kernel said. See [`Outbound::peer_pid`]'s field.
+    pub fn peer_pid(&self) -> Option<u32> {
+        self.peer_pid
     }
 
     /// Queue one frame. **Never blocks, and never fails silently.**
@@ -689,9 +697,19 @@ pub(crate) fn sink(conn: ConnId) -> Outbound {
     Outbound {
         conn,
         peer: Peer::Uid(crate::socket::own_uid()),
+        peer_pid: None,
         tx,
         departed: Arc::new(Mutex::new(None)),
         shutdown: None,
+    }
+}
+
+/// [`sink`], as though process `pid` had connected.
+#[cfg(test)]
+pub(crate) fn sink_from(conn: ConnId, pid: u32) -> Outbound {
+    Outbound {
+        peer_pid: Some(pid),
+        ..sink(conn)
     }
 }
 
@@ -708,6 +726,7 @@ pub(crate) fn capture(conn: ConnId) -> (Outbound, Captured) {
     let out = Outbound {
         conn,
         peer: Peer::Uid(crate::socket::own_uid()),
+        peer_pid: None,
         tx,
         departed: Arc::new(Mutex::new(None)),
         shutdown: None,
@@ -1304,6 +1323,12 @@ impl PreparedClaimedConn {
         let out = Outbound {
             conn: id,
             peer: peer_of(stream),
+            peer_pid: {
+                use std::os::fd::AsRawFd;
+                crate::native_bootstrap::peer_identity(stream.as_raw_fd())
+                    .ok()
+                    .map(|p| p.pid())
+            },
             tx,
             departed: Arc::clone(&departed),
             shutdown: Some(Arc::new(shutdown_half)),
@@ -1898,6 +1923,7 @@ mod tests {
         let out = Outbound {
             conn: ConnId(9),
             peer: Peer::Unknown,
+            peer_pid: None,
             tx,
             departed: Arc::new(Mutex::new(None)),
             shutdown: None,

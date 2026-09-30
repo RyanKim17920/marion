@@ -3498,7 +3498,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[cfg(target_os = "linux")]
-fn peer_identity(fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
+pub(crate) fn peer_identity(fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
     // SAFETY: `fd` belongs to the live `UnixStream` held by the caller.
     let fd = unsafe { BorrowedFd::borrow_raw(fd) };
     let credentials = rustix::net::sockopt::socket_peercred(fd)
@@ -3510,7 +3510,7 @@ fn peer_identity(fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
 }
 
 #[cfg(target_os = "macos")]
-fn peer_identity(fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
+pub(crate) fn peer_identity(fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
     use std::ffi::{c_int, c_void};
 
     unsafe extern "C" {
@@ -3561,7 +3561,7 @@ fn peer_identity(fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn peer_identity(_fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
+pub(crate) fn peer_identity(_fd: RawFd) -> Result<PeerIdentity, BootstrapError> {
     Err(BootstrapError::PeerCredentials(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "native bootstrap requires peer uid and pid credentials",

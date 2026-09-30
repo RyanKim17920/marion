@@ -701,6 +701,79 @@ fn read_impl(pid: i32) -> Read {
     Read::Id(StartId(format!("linux-starttime:{starttime}")))
 }
 
+/// **A process's parent and process group**, read from the process table with no fork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Lineage {
+    pub(crate) ppid: i32,
+    pub(crate) pgid: i32,
+}
+
+/// **macOS: `kinfo_proc.kp_eproc.{e_ppid, e_pgid}`**, at **560** and **564** of the measured
+/// **648**-byte struct — found by reading a child started in its own process group, whose parent
+/// and group are both known. `None` for a pid nobody wears or a short answer.
+#[cfg(target_os = "macos")]
+pub(crate) fn lineage(pid: i32) -> Option<Lineage> {
+    const E_PPID: usize = 560;
+    const E_PGID: usize = 564;
+    let Ok(KinfoProc::Described(bytes)) = kinfo_proc(pid) else {
+        return None;
+    };
+    let int = |at: usize| {
+        bytes
+            .get(at..at + 4)
+            .map(|b| i32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    Some(Lineage {
+        ppid: int(E_PPID)?,
+        pgid: int(E_PGID)?,
+    })
+}
+
+/// **Linux: `/proc/<pid>/stat` fields `ppid` (4) and `pgrp` (5)**, counted after the last `)`.
+#[cfg(target_os = "linux")]
+pub(crate) fn lineage(pid: i32) -> Option<Lineage> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, after_comm) = stat.rsplit_once(')')?;
+    let mut fields = after_comm.split_ascii_whitespace().skip(1);
+    Some(Lineage {
+        ppid: fields.next()?.parse().ok()?,
+        pgid: fields.next()?.parse().ok()?,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn lineage(_pid: i32) -> Option<Lineage> {
+    None
+}
+
+/// **Whether `pid` is one of `pids`, sits in one of `groups`, or descends from either** — the walk
+/// up `ppid` to pid 1, reading each step with `read`. Bounded, so a table that changes under the
+/// walk cannot loop it; an unreadable step ends the walk with what it found so far.
+pub(crate) fn descends_from(
+    pid: i32,
+    pids: &[i32],
+    groups: &[i32],
+    read: impl Fn(i32) -> Option<Lineage>,
+) -> bool {
+    let mut cur = pid;
+    for _ in 0..256 {
+        if cur <= 1 {
+            return false;
+        }
+        if pids.contains(&cur) {
+            return true;
+        }
+        let Some(step) = read(cur) else {
+            return false;
+        };
+        if groups.contains(&step.pgid) {
+            return true;
+        }
+        cur = step.ppid;
+    }
+    false
+}
+
 /// **Every other platform: an explicit refusal, not a guess.**
 ///
 /// macOS and Linux are read above. Anywhere else marion has measured nothing, and a start-time
@@ -722,6 +795,45 @@ fn read_impl(pid: i32) -> Read {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The offsets [`lineage`] reads, pinned against this process: its parent and its group.
+    #[test]
+    fn lineage_reads_this_processs_parent_and_group() {
+        let own = std::process::id() as i32;
+        let ppid = std::os::unix::process::parent_id() as i32;
+        // SAFETY: reads the calling process's own group and cannot fail.
+        let pgid = unsafe { getpgrp() };
+        assert_eq!(lineage(own), Some(Lineage { ppid, pgid }));
+    }
+
+    unsafe extern "C" {
+        fn getpgrp() -> i32;
+    }
+
+    /// **The walk finds a node above the peer by pid or by group, and nothing else.**
+    #[test]
+    fn descends_from_walks_parents_and_groups_to_pid_one() {
+        // 40 -> 30 -> 20 -> 1, each in its own group except 30, which is in group 20.
+        let table = |pid: i32| match pid {
+            40 => Some(Lineage { ppid: 30, pgid: 40 }),
+            30 => Some(Lineage { ppid: 20, pgid: 20 }),
+            20 => Some(Lineage { ppid: 1, pgid: 20 }),
+            _ => None,
+        };
+        assert!(descends_from(40, &[20], &[], table), "an ancestor's pid");
+        assert!(descends_from(40, &[], &[20], table), "an ancestor's group");
+        assert!(descends_from(20, &[20], &[], table), "the node itself");
+        assert!(!descends_from(40, &[99], &[99], table), "an unrelated node");
+        assert!(
+            !descends_from(1, &[1], &[1], table),
+            "pid 1 is nobody's descendant here"
+        );
+        let cycle = |pid: i32| Some(Lineage { ppid: pid, pgid: 7 });
+        assert!(
+            !descends_from(5, &[9], &[9], cycle),
+            "a cycle ends, and finds nothing"
+        );
+    }
 
     /// The offsets [`run_state`] reads, pinned against a real child in each state: running while it
     /// sleeps, a zombie once killed and not yet waited for, and gone once reaped.

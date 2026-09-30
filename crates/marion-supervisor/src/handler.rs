@@ -6156,7 +6156,9 @@ impl Handle for RegistryHandle {
 
     fn call(&self, conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError> {
         if let Call::SessionHello(p) = call {
-            return self.session_hello(conn, p).map(MethodResult::SessionHello);
+            return self
+                .session_hello(conn, p, out.peer_pid())
+                .map(MethodResult::SessionHello);
         }
         self.authorize(conn, call)?;
         match call {
@@ -14219,6 +14221,28 @@ mod tests {
             assert!(
                 hello_operator(&fx, ConnId(73)).is_err(),
                 "a connection says who it speaks for once"
+            );
+        }
+
+        /// **The operator's key is refused from inside a node's process tree** — defense in depth
+        /// for a key a same-uid process could read: a node's shell that lifted it still descends
+        /// from the node.
+        #[test]
+        fn the_operators_key_is_refused_from_a_process_below_a_live_node() {
+            let fx = owning("owns-hello-below", vec![intent("root", None, "claude", 0)]);
+            fx.handle.claim(&id("root"), None, fx.repo.clone());
+            let parent = std::os::unix::process::parent_id() as i32;
+            fx.handle.mark_started(&id("root"), parent);
+            let conn = ConnId(76);
+            let out = crate::serve::sink_from(conn, std::process::id());
+            let e = fx
+                .handle
+                .call(conn, &Call::SessionHello(fx.handle.operator_hello()), &out)
+                .expect_err("a process below a live node is not the operator");
+            assert!(e.message.contains("root"), "names the node: {}", e.message);
+            assert!(
+                call_on(&fx, conn, quit_detach()).is_err(),
+                "and the connection speaks for nobody"
             );
         }
 

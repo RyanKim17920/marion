@@ -164,7 +164,8 @@ and never hides your credentials from the harness.
   to a node), or one node, by presenting that node's token. A node's connection may read the tree
   and steer, attach to or end only the nodes below it; starting a root, resuming, quitting and
   answering permission requests are yours alone. The key is a file of your own user, so a node
-  running with no OS sandbox could still read it.
+  running with no OS sandbox could still read it; the supervisor therefore also refuses the key
+  from any process running inside a live node's process tree.
 - **A repository cannot redirect your keys.** Providers come only from your user-level config;
   a repository's `.marion/` is never read for them.
 - **A repository cannot run its own command, or widen a node, without your consent.** A
