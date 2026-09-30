@@ -74,8 +74,6 @@ pub struct Expanded {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskView {
     pub prompt: String,
-    /// What marion appended (its report instruction): drawn dim, as marion's words.
-    pub appended: Option<String>,
     pub acceptance: Vec<String>,
     pub verification: Vec<String>,
 }
@@ -446,9 +444,6 @@ fn expanded_rows<'a>(
                 block.push(vec![span(summary.join(" · "), dim())]);
             }
         } else {
-            if let Some(a) = &t.appended {
-                block.push(vec![span("+ marion: ", dim()), span(a.clone(), dim())]);
-            }
             for a in &t.acceptance {
                 block.push(vec![span("✓ ", dim()), span(a.clone(), Style::default())]);
             }

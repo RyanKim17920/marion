@@ -48,7 +48,6 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
 ❯ ├─ ◐ codex impl 91cd               3m02s     41k             asks to write .github/workflows/ci…
   │    └ TASK             Wire the limiter into CI
-  │                       + marion: When you have finished, call the `report` tool of the marion …
   │                       ✓ cargo test passes
   │                       ✓ 100 req/min per key, 429 after
   │                       $ cargo test -q limits
@@ -65,6 +64,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 
 
 
+
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯                                                                                              │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -73,7 +73,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   190  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKNEEDSYOURUNNIN"
-  794  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  734  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     2  Style::new().green().bg(Color::Reset)  "●●"
@@ -90,7 +90,6 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   ├─ ● codex impl a1f0           ⠸   2m17s     88k             editing src/limits/bucket.rs
 ❯ ├─ ◐ codex impl 91cd               3m02s     41k             asks to write .github/workflows/ci.yml
   │    └ TASK             Wire the limiter into CI
-  │                       + marion: When you have finished, call the `report` tool of the marion MCP server exactly once.
   │                       ✓ cargo test passes
   │                       ✓ 100 req/min per key, 429 after
   │                       $ cargo test -q limits
@@ -127,6 +126,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 
 
 
+
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯                                                                                                                                                          │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -135,7 +135,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   211  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodeximpl91cdWiret"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
    53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKNEEDSYOURUNNIN"
- 1326  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+ 1246  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"

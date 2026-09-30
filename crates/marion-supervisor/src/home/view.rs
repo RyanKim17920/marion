@@ -547,13 +547,9 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
         endpoint: endpoint_of(n),
         subtree: subtree_line(home, n),
         task: d.task.as_ref().map(|t| TaskView {
+            // The task as the operator wrote it: what marion appended (its report instruction, the
+            // same on every agent) is marion's plumbing, not the task, and is not shown.
             prompt: t.prompt.clone(),
-            // marion's own report instruction, named rather than quoted: the sentence is the same
-            // on every node and pushed the operator's criteria off a short screen.
-            appended: t
-                .appended
-                .as_ref()
-                .map(|_| "report when finished".to_string()),
             acceptance: t.acceptance.clone(),
             verification: t.verification.clone(),
         }),

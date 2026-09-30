@@ -94,7 +94,6 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   ├─ ✗ codex impl 7b2e               4m50s    120k             exit 101: 3 tests failed
 ❯ └─ ✓ codex impl 3c33               6m41s    197k             landed marion/t-3c33
        └ TASK             Add token-bucket limiter to /v1/orders
-                          + marion: When you have finished, call the `report` tool of the marion MCP server exactly once.
                           ✓ cargo test passes
                           ✓ 100 req/min per key, 429 after
                           $ cargo test -q limits
@@ -129,6 +128,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 
 
 
+
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-3c33                                                                                                                same as enter │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -137,7 +137,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   345  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
    65  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
- 1464  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+ 1385  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     9  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interrupt"
    37  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▃▂▄▅▇█▆▄▃▄"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯co❯"

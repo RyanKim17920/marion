@@ -324,9 +324,6 @@ fn landed() -> Expanded {
 fn task_view(prompt: &str) -> TaskView {
     TaskView {
         prompt: s(prompt),
-        appended: Some(s(
-            "When you have finished, call the `report` tool of the marion MCP server exactly once.",
-        )),
         acceptance: vec![s("cargo test passes"), s("100 req/min per key, 429 after")],
         verification: vec![s("cargo test -q limits")],
     }
@@ -941,7 +938,7 @@ fn watch_full_stream_fills_the_screen() {
     insta::assert_snapshot!(report(&screen(Body::Watch(&v), input, "watch"), 80, 24));
 }
 
-/// The TASK block by itself: the prompt ellipsised at three rows, marion's appended instruction dim,
+/// The TASK block by itself: the prompt ellipsised at three rows, never marion's own instruction,
 /// then the criteria and the checks.
 #[test]
 fn watch_task_block_shows_what_marion_sent() {
@@ -960,14 +957,14 @@ fn watch_task_block_shows_what_marion_sent() {
         .skip_while(|l| !l.contains("TASK"))
         .take_while(|l| !l.contains("RAN") && !l.contains("RUNNING"))
         .collect();
-    assert_eq!(task_rows.len(), 3 + 1 + 2 + 1, "{text}");
+    assert_eq!(task_rows.len(), 3 + 2 + 1, "{text}");
     assert!(task_rows[2].trim_end().ends_with('…'), "{text}");
     assert!(
-        task_rows[3].contains("+ marion: When you have finished"),
-        "{text}"
+        !text.contains("report"),
+        "marion's instruction is not the task: {text}"
     );
-    assert!(task_rows[4].contains("✓ cargo test passes"), "{text}");
-    assert!(task_rows[6].contains("$ cargo test -q limits"), "{text}");
+    assert!(task_rows[3].contains("✓ cargo test passes"), "{text}");
+    assert!(task_rows[5].contains("$ cargo test -q limits"), "{text}");
 }
 
 /// **The stream as the dry run drew it, fixed**: a command's end is one line saying how it went
