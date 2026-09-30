@@ -1,1 +1,1 @@
-pub const ROOT_DEPTH: u32 = 0;
+pub use marion_core::node::ROOT_DEPTH;

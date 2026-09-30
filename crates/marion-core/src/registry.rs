@@ -238,6 +238,14 @@ impl ReplayedNode {
         self.intent.as_ref().and_then(|i| i.parent_id.as_ref())
     }
 
+    /// [`crate::journal::SpawnIntent::is_root`], off this node's intent: `false` for a node whose
+    /// intent was never read, which has no parent edge to call it one by.
+    pub fn is_root(&self) -> bool {
+        self.intent
+            .as_ref()
+            .is_some_and(crate::journal::SpawnIntent::is_root)
+    }
+
     pub fn harness(&self) -> Option<Harness> {
         self.intent.as_ref().map(|i| i.harness)
     }

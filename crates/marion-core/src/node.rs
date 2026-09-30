@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::contract::ExitStatus;
 
+/// §3.1's depth of a **root**: a node the operator started on their own checkout, with no parent
+/// and no contract. Everything marion spawns sits below it — including a contracted node the
+/// operator asked for directly, which is the operator's own child and so lands at `ROOT_DEPTH + 1`
+/// with no parent node (the operator is the implicit root above it).
+pub const ROOT_DEPTH: u32 = 0;
+
 /// **A process's start identity: the one thing that distinguishes a survivor from a recycled pid.**
 ///
 /// §7.2's probe branch — *"resolved by checking for the process"* — needs to know whether the

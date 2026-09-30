@@ -5967,8 +5967,9 @@ impl RegistryHandle {
                     // A non-terminal child is the node its parent's blocking `spawn` is waiting
                     // on. §7.2 names that as a separate refusal even if the child happens to be
                     // between turns and reports `Idle`; reaping it would strand the caller because
-                    // ReapedIdle writes no Completion. Roots have no waiting spawn by construction.
-                    && n.parent_id().is_none()
+                    // ReapedIdle writes no Completion. Roots have no waiting spawn by construction;
+                    // a top-level contracted node may, from the operator's own client.
+                    && n.is_root()
             })
             .collect();
         if let Some(node) = reaping.iter().find(|n| n.pid.is_none()) {

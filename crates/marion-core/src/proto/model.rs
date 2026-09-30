@@ -135,6 +135,16 @@ pub struct NodeSummary {
     pub budget: Option<crate::budget::Budget>,
 }
 
+impl NodeSummary {
+    /// **A root**: no parent, at [`crate::node::ROOT_DEPTH`] — the operator's own session, with no
+    /// contract. The summary's counterpart of [`crate::journal::SpawnIntent::is_root`]: a
+    /// top-level contracted node has no parent either, but sits one level down, as the operator's
+    /// own child.
+    pub fn is_root(&self) -> bool {
+        self.parent_id.is_none() && u32::from(self.depth) == crate::node::ROOT_DEPTH
+    }
+}
+
 /// An endpoint node's provider, model and route, for a client to show beside the node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeEndpoint {

@@ -177,7 +177,7 @@ impl Walk<'_> {
 
         // A child's task is its contract's. A root has none; its kept prompt is the operator's own
         // words, and a shared report carries them only when asked to.
-        let root_prompt = contract.is_none() && intent.parent_id.is_none();
+        let root_prompt = contract.is_none() && intent.is_root();
         let (task, task_withheld) = match &contract {
             Some(c) => (Some(crate::node_detail::task_sent(c)), false),
             None if root_prompt => match std::fs::read_to_string(dir.prompt()) {

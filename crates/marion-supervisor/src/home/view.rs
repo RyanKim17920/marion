@@ -159,7 +159,8 @@ fn start(home: &Home) -> StartView {
     }
 }
 
-/// The roots this supervisor holds, most recent first.
+/// The top-level runs this supervisor holds — roots and the contracted nodes the operator asked
+/// for directly — most recent first.
 fn recent(nodes: &[NodeSummary]) -> Vec<RecentRow> {
     nodes
         .iter()

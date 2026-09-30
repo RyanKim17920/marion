@@ -378,6 +378,16 @@ pub struct SpawnIntent {
     pub budget: Option<crate::budget::Budget>,
 }
 
+impl SpawnIntent {
+    /// **A root**: no parent and no contract — the operator's own session on their checkout (§9).
+    /// A node with no parent but a contract is a **top-level contracted node** the operator asked
+    /// for directly (`marion mcp`, `marion run --worktree`, `marion race`): it has a worktree, a
+    /// contract and verification like any child, and only its requester is not a node.
+    pub fn is_root(&self) -> bool {
+        self.parent_id.is_none() && self.task_id.is_none()
+    }
+}
+
 /// See [`RecordKind::RaceOpened`]. Seat strings are capped at [`crate::race::CANDIDATE_CAP`] and
 /// there are at most [`crate::race::MAX_SEATS`], so the record stays far under
 /// [`MAX_RECORD_BYTES`].
@@ -1024,6 +1034,32 @@ mod tests {
             assert_eq!(line.last(), Some(&b'\n'));
             assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
         }
+    }
+
+    /// **A root is no parent and no contract; a parentless node with a contract is not one.** The
+    /// operator's own session and a contracted node the operator asked for directly both have no
+    /// parent, and only the contract tells them apart.
+    #[test]
+    fn a_root_has_neither_a_parent_nor_a_contract() {
+        let intent = |parent: Option<&str>, task: Option<&str>| SpawnIntent {
+            budget: None,
+            review_of: None,
+            agent_id: AgentId("a".into()),
+            parent_id: parent.map(|p| AgentId(p.into())),
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: u32::from(parent.is_some() || task.is_some()),
+            task_id: task.map(|t| crate::contract::TaskId(t.into())),
+            timeout_secs: None,
+            verification: vec![],
+            race: None,
+        };
+        assert!(intent(None, None).is_root(), "the operator's own session");
+        assert!(
+            !intent(None, Some("t")).is_root(),
+            "a top-level contracted node"
+        );
+        assert!(!intent(Some("p"), Some("t")).is_root(), "a child");
     }
 
     #[test]
