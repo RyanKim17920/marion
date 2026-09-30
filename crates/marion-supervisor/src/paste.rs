@@ -94,24 +94,10 @@ const PASTE_END: &str = "\x1b[201~";
 /// result is quoted here, and its `ESC[201~` would turn the rest into typing, its first newline a
 /// submit), and a CR, alone or before LF, becomes the newline it means.
 pub fn frame(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + PASTE_START.len() + PASTE_END.len());
-    out.push_str(PASTE_START);
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                out.push('\n');
-            }
-            '\n' | '\t' => out.push(c),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    out.push_str(PASTE_END);
-    out
+    format!(
+        "{PASTE_START}{}{PASTE_END}",
+        crate::printable::printable(text)
+    )
 }
 
 /// The row's paste, as this driver uses it.

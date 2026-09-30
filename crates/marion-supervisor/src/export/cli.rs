@@ -135,8 +135,9 @@ fn export(args: &Args, repo: &std::path::Path, state: &std::path::Path) -> Resul
         }
         None => {
             use std::io::Write;
+            // To a terminal as `marion ls` prints: node-authored text carries no escape sequence.
             std::io::stdout()
-                .write_all(text.as_bytes())
+                .write_all(crate::printable::printable(&text).as_bytes())
                 .map_err(|e| format!("writing the report: {e}"))?;
         }
     }

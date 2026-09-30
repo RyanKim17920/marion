@@ -469,7 +469,11 @@ fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
     });
     match found {
         Ok((node, detail)) => {
-            print!("{}", detail_text(&node, &detail));
+            // A task, a narrative and a stream line are node-authored text.
+            print!(
+                "{}",
+                marion_supervisor::printable::printable(&detail_text(&node, &detail))
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -621,7 +625,8 @@ fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
         .iter()
         .filter(|n| !attention || tree::attention_of(n).is_some())
     {
-        if writeln!(out, "{}", tree::list_line(node)).is_err() {
+        let line = tree::list_line(node);
+        if writeln!(out, "{}", marion_supervisor::printable::printable(&line)).is_err() {
             // A closed stdout — `marion list | head -1` — is the reader's decision, not a failure.
             return ExitCode::SUCCESS;
         }
@@ -1224,7 +1229,11 @@ fn brief(s: &str, n: usize) -> String {
 ///
 /// An empty body still prints its tag: a frame that arrived is news even when it carries nothing
 /// worth summarising.
+///
+/// The body is what a node or its model wrote, so it passes through
+/// [`marion_supervisor::printable::printable`]: no escape sequence of theirs reaches the terminal.
 fn say(out: &mut dyn Write, tag: &str, body: &str) -> io::Result<()> {
+    let body = marion_supervisor::printable::printable(body);
     let mut lines = body.lines().filter(|l| !l.trim().is_empty()).peekable();
     if lines.peek().is_none() {
         return writeln!(out, "{tag:<TAG_WIDTH$}  ");
@@ -4278,6 +4287,35 @@ mod tests {
              within an iteration is NOT this bug: both orders still poll before returning, and \
              the mutation check confirmed both pass.) Saw: {seen:?}"
         );
+    }
+
+    /// **No escape a node writes reaches the operator's terminal**: an OSC 52 clipboard write in a
+    /// model's reply, an OSC 8 link in a raw stdout line and a window title in a tool result are
+    /// all shown without a single control character.
+    #[test]
+    fn node_text_reaches_the_terminal_without_its_escape_sequences() {
+        let control = |s: &str| s.chars().any(|c| c.is_control() && c != '\n');
+        let reply = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "done\u{1b}]52;c;cHduZWQ=\u{7}"}]}
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        render_event(StreamEvent::Frame(&reply), &mut buf).unwrap();
+        render_event(
+            StreamEvent::Unparsed("\x1b]8;;https://evil.example\x1b\\click\x1b]8;;\x1b\\"),
+            &mut buf,
+        )
+        .unwrap();
+        let result = serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "t",
+                "content": "\u{1b}]0;owned\u{7}ok"}]}
+        });
+        render_event(StreamEvent::Frame(&result), &mut buf).unwrap();
+        let shown = String::from_utf8(buf).unwrap();
+        assert!(!control(&shown), "{shown:?}");
+        assert!(shown.contains("done]52;c;cHduZWQ="), "{shown:?}");
+        assert!(shown.contains("click"), "{shown:?}");
     }
 
     /// A stdout line the node wrote that was not JSON is usually a crash or a warning. It is shown
