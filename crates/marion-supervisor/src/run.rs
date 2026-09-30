@@ -2871,6 +2871,10 @@ pub fn run_spawn_watched(
             task_id: task_id.clone(),
             requester: AgentId(caller.agent_id.clone()),
             status: contract.completion.as_ref().map(|c| c.status),
+            changed: contract
+                .completion
+                .as_ref()
+                .and_then(|c| u32::try_from(c.changed_paths.len() + c.changed_paths_omitted).ok()),
         }),
     );
     // The intent is resolved: `Spawned` and `Exited` are on the record above, so the abort this

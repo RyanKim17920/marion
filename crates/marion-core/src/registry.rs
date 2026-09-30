@@ -52,6 +52,8 @@ pub struct ReplayedContract {
     pub status: Option<ResultStatus>,
     /// A reviewer's tally, from [`ContractPersisted::review`].
     pub review: Option<crate::review::ReviewTally>,
+    /// How many files the run changed, from [`ContractPersisted::changed`].
+    pub changed: Option<u32>,
 }
 
 /// One node of the replayed tree.
@@ -499,6 +501,7 @@ impl ReplayedNode {
             requester,
             status,
             review,
+            changed,
             ..
         } = c;
         match self.contracts.iter_mut().find(|c| c.task_id == task_id) {
@@ -506,12 +509,14 @@ impl ReplayedNode {
                 existing.requester = requester;
                 existing.status = status;
                 existing.review = review;
+                existing.changed = changed;
             }
             None => self.contracts.push(ReplayedContract {
                 task_id,
                 requester,
                 status,
                 review,
+                changed,
             }),
         }
     }
@@ -1012,6 +1017,7 @@ mod tests {
                 },
             })),
             next(RecordKind::ContractPersisted(ContractPersisted {
+                changed: None,
                 review: None,
                 agent_id: id("child"),
                 task_id: TaskId("t-1".into()),
@@ -1158,6 +1164,7 @@ mod tests {
         assert_eq!(
             child.contracts,
             vec![ReplayedContract {
+                changed: None,
                 task_id: TaskId("t-1".into()),
                 requester: id("root"),
                 status: Some(ExitStatus::Ok),
@@ -1823,6 +1830,7 @@ mod tests {
         j.push(record(
             n,
             RecordKind::ContractPersisted(ContractPersisted {
+                changed: Some(14),
                 review: Some(tally),
                 agent_id: id("child"),
                 task_id: TaskId("t-1".into()),
@@ -1838,6 +1846,18 @@ mod tests {
             c.contracts[0].review,
             Some(tally),
             "a reviewer's tally is folded"
+        );
+        assert_eq!(
+            c.contracts[0].changed,
+            Some(14),
+            "the changed-file count is folded"
+        );
+        let old: ContractPersisted =
+            serde_json::from_str(r#"{"agent_id":"c","task_id":"t","requester":"r","status":"Ok"}"#)
+                .unwrap();
+        assert_eq!(
+            old.changed, None,
+            "a record from before the count decodes as unknown"
         );
     }
 

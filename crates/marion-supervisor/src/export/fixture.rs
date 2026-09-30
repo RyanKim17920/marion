@@ -184,6 +184,7 @@ fn write_journal(p: &ProjectDir) {
             requester: id(ROOT),
             status: Some(status),
             review: None,
+            changed: None,
         })
     };
     let records = [

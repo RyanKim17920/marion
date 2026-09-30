@@ -37,6 +37,10 @@ use crate::proto::model::{ElicitationRequestId, NodeSummary, PermissionRequestId
 
 /// Adjacently tagged, exactly as [`crate::proto::Call`] is, so a notification and a request are the same
 /// shape minus the `id`.
+///
+/// `tree/node-added`'s summary is the large variant. Left unboxed for [`crate::proto::Call`]'s
+/// reason: one event exists per frame in flight, and none is stored in bulk.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum Event {
@@ -241,6 +245,8 @@ mod tests {
             Event::NodeAdded {
                 node: Box::new(NodeSummary {
                     widened: vec![],
+                    budget: None,
+                    changed: None,
                     review_of: None,
                     review: None,
                     agent_id: AgentId("a".into()),

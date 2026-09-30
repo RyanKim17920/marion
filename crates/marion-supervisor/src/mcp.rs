@@ -1918,6 +1918,8 @@ mod tests {
             endpoint: None,
             race: badge,
             cancel: None,
+            budget: None,
+            changed: None,
         };
         let badge = |seat, verdict| RaceBadge {
             race_id: race.clone(),
@@ -2779,6 +2781,8 @@ mod tests {
         fn node(id: &str, parent: Option<&str>) -> NodeSummary {
             NodeSummary {
                 widened: vec![],
+                budget: None,
+                changed: None,
                 review_of: None,
                 review: None,
                 agent_id: AgentId(id.into()),
@@ -2845,6 +2849,8 @@ mod tests {
 
         let cyclic = |id: &str, parent: &str| NodeSummary {
             widened: vec![],
+            budget: None,
+            changed: None,
             review_of: None,
 
             review: None,

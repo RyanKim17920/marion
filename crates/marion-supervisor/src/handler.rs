@@ -289,6 +289,8 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
                 forced: c.forced,
                 had_abort: c.verb != marion_harness::spec::AbortVerb::NONE_KIND,
             }),
+        changed: node.contracts.last().and_then(|c| c.changed),
+        budget: intent.budget,
     })
 }
 
@@ -363,6 +365,8 @@ struct Extra {
     /// Whether a cancel reached the node, and whether it was forced — so a cancel starting, or
     /// ending in a kill, re-sends the summary.
     cancel: Option<bool>,
+    /// A contract's changed-file count lands with its record, after the exit.
+    changed: Option<u32>,
 }
 
 impl Extra {
@@ -383,6 +387,7 @@ impl Extra {
             race_verdict: n.race_verdict,
             widened: !n.widened.is_empty(),
             cancel: n.cancel.as_ref().map(|c| c.forced),
+            changed: n.contracts.last().and_then(|c| c.changed),
         }
     }
 }

@@ -1709,6 +1709,7 @@ pub fn finished_project(project: &marion_core::paths::ProjectDir) -> FinishedPro
             turns: vec![],
         }),
         RecordKind::ContractPersisted(ContractPersisted {
+            changed: None,
             agent_id: child.clone(),
             task_id: task.clone(),
             requester: root.clone(),

@@ -125,6 +125,14 @@ pub struct NodeSummary {
     /// cancelled, and from an older supervisor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancel: Option<NodeCancel>,
+    /// **How many files the node changed**, from its latest contract's record — what Watch sums
+    /// over a subtree. `None` for a node with no contract yet, and from an older supervisor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<u32>,
+    /// **The node's token budget** as its intent recorded it ([`crate::budget`]) — what Watch
+    /// measures its subtree's spend against. `None` for an unbudgeted node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<crate::budget::Budget>,
 }
 
 /// An endpoint node's provider, model and route, for a client to show beside the node.
@@ -768,6 +776,8 @@ mod tests {
     fn a_node_summary_round_trips_and_encodes_its_bound_in_seconds() {
         let n = NodeSummary {
             widened: vec![],
+            budget: None,
+            changed: None,
             review_of: None,
             review: None,
             agent_id: agent("0199c0ff-ee00-7000-8000-000000000001"),

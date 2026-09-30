@@ -664,6 +664,12 @@ pub struct ContractPersisted {
     /// other contract, so those records are byte-identical to what earlier builds wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<crate::review::ReviewTally>,
+    /// **How many files the node changed**, counting any the contract's cap left out: its
+    /// contract's `changed_paths` and `changed_paths_omitted`, added — what a view sums over a
+    /// subtree without reading the contract. `None` on journals written before the field, and
+    /// where marion could not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<u32>,
 }
 
 /// See [`RecordKind::WiderDelegation`]. `agent_id` is the child's.
@@ -959,6 +965,7 @@ mod tests {
                 grace: crate::encoding::Millis(std::time::Duration::from_millis(1_500)),
             }),
             RecordKind::ContractPersisted(ContractPersisted {
+                changed: None,
                 review: None,
                 agent_id: AgentId("a-1".into()),
                 task_id: TaskId("t-1".into()),
@@ -1092,6 +1099,7 @@ mod tests {
         );
         assert!(
             !RecordKind::ContractPersisted(ContractPersisted {
+                changed: None,
                 review: None,
                 agent_id: a.clone(),
                 task_id: TaskId("t".into()),

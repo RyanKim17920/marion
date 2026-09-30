@@ -4211,6 +4211,8 @@ mod tests {
     ) -> marion_core::proto::NodeSummary {
         marion_core::proto::NodeSummary {
             widened: vec![],
+            budget: None,
+            changed: None,
             review_of: None,
             review: None,
             agent_id: AgentId(id.into()),
@@ -4412,6 +4414,8 @@ mod tests {
             &MethodResult::NodeAttach(marion_core::proto::result::NodeAttachResult {
                 node: NodeSummary {
                     widened: vec![],
+                    budget: None,
+                    changed: None,
                     review_of: None,
                     review: None,
                     agent_id: AgentId("native".into()),

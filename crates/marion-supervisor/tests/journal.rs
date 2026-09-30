@@ -86,6 +86,7 @@ fn a_tree() -> Vec<RecordKind> {
         }));
         kinds.push(RecordKind::ContractPersisted(
             marion_core::journal::ContractPersisted {
+                changed: None,
                 review: None,
                 agent_id: child,
                 task_id: TaskId(format!("t-{i}")),

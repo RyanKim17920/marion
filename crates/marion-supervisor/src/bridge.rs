@@ -2385,6 +2385,8 @@ mod tests {
         use marion_core::proto::model::NodeSummary;
         let node = |state| NodeSummary {
             widened: vec![],
+            budget: None,
+            changed: None,
             review_of: None,
             review: None,
             agent_id: AgentId("019f-child".into()),

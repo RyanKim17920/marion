@@ -5316,6 +5316,8 @@ mod tests {
         use marion_core::proto::result::{CompletionSummary, DiffStat, NodeDetail};
         let node = marion_core::proto::NodeSummary {
             widened: vec![],
+            budget: None,
+            changed: None,
             agent_id: marion_core::contract::AgentId("019f-a".into()),
             parent_id: None,
             name: None,

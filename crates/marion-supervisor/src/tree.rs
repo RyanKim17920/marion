@@ -952,6 +952,8 @@ mod tests {
     fn summary(id: &str, harness: Harness, pane: bool, version: Option<&str>) -> NodeSummary {
         NodeSummary {
             widened: vec![],
+            budget: None,
+            changed: None,
             review_of: None,
             review: None,
             agent_id: AgentId(id.into()),
