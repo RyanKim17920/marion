@@ -11,7 +11,11 @@
 //! child's work merged into its parent's — is counted twice: the figure is labelled a sum (`Σ`),
 //! not a count of distinct files.
 
+use std::collections::HashMap;
+
+use marion_core::contract::AgentId;
 use marion_core::encoding::SystemTime;
+use marion_core::proto::NodeSummary;
 
 /// The facts one node contributes, as its reader found them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -24,6 +28,21 @@ pub struct Own {
     pub live: bool,
     pub started: Option<SystemTime>,
     pub ended: Option<SystemTime>,
+}
+
+impl Own {
+    /// What a view's summary of the node says: live while neither exited nor reaped, and no end
+    /// while live.
+    pub fn of_summary(n: &NodeSummary) -> Own {
+        let live = !n.state.is_exited() && !n.reap_state.is_terminal_for_gating();
+        Own {
+            tokens: n.tokens,
+            changed: n.changed,
+            live,
+            started: n.started_at,
+            ended: if live { None } else { n.ended_at },
+        }
+    }
 }
 
 /// A subtree's figures: every node's [`Own`] added.
@@ -83,6 +102,13 @@ impl Totals {
         }
         self.last_end?.0.duration_since(self.first_start?.0).ok()
     }
+
+    /// First start to last end, or to `now` while any node runs — what a live view shows.
+    pub fn wall_to(&self, now: std::time::SystemTime) -> Option<std::time::Duration> {
+        let start = self.first_start?.0;
+        let end = if self.live > 0 { now } else { self.last_end?.0 };
+        end.duration_since(start).ok()
+    }
 }
 
 fn earlier(a: Option<SystemTime>, b: Option<SystemTime>) -> Option<SystemTime> {
@@ -97,6 +123,103 @@ fn later(a: Option<SystemTime>, b: Option<SystemTime>) -> Option<SystemTime> {
         (Some(a), Some(b)) => Some(if b.0 > a.0 { b } else { a }),
         (a, b) => a.or(b),
     }
+}
+
+/// Every node's subtree totals.
+#[derive(Debug, Clone, Default)]
+pub struct Rollup {
+    subtree: HashMap<AgentId, Totals>,
+    children: HashMap<AgentId, usize>,
+}
+
+impl Rollup {
+    /// One pass: each node's own figures, then each added to its parent's, deepest first. A node
+    /// whose parent is not in `nodes` heads its own subtree; a parent chain that loops is cut
+    /// where it would repeat.
+    pub fn build(nodes: &[NodeSummary]) -> Rollup {
+        let index: HashMap<&AgentId, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (&n.agent_id, i))
+            .collect();
+        let parent_of = |i: usize| -> Option<usize> {
+            nodes[i]
+                .parent_id
+                .as_ref()
+                .and_then(|p| index.get(p).copied())
+        };
+        // Depth by walking up, bounded by the node count so a loop cannot run for ever.
+        let depth: Vec<usize> = (0..nodes.len())
+            .map(|i| {
+                let mut d = 0;
+                let mut at = parent_of(i);
+                while let Some(p) = at {
+                    d += 1;
+                    if d > nodes.len() {
+                        break;
+                    }
+                    at = parent_of(p);
+                }
+                d
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..nodes.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(depth[i]));
+        let mut totals: Vec<Totals> = nodes
+            .iter()
+            .map(|n| Totals::of(&Own::of_summary(n)))
+            .collect();
+        let mut children: HashMap<AgentId, usize> = HashMap::new();
+        for &i in &order {
+            if let Some(p) = parent_of(i).filter(|&p| depth[p] < depth[i]) {
+                let t = totals[i];
+                totals[p].add(&t);
+                *children.entry(nodes[p].agent_id.clone()).or_default() += 1;
+            }
+        }
+        Rollup {
+            subtree: nodes
+                .iter()
+                .zip(totals)
+                .map(|(n, t)| (n.agent_id.clone(), t))
+                .collect(),
+            children,
+        }
+    }
+
+    /// `id`'s subtree, itself included.
+    pub fn get(&self, id: &AgentId) -> Option<&Totals> {
+        self.subtree.get(id)
+    }
+
+    /// Whether `id` has any child — a leaf's subtree is only itself, and says nothing new.
+    pub fn has_children(&self, id: &AgentId) -> bool {
+        self.children.get(id).is_some_and(|c| *c > 0)
+    }
+
+    /// The whole forest: every root's subtree, added.
+    pub fn forest(&self, nodes: &[NodeSummary]) -> Totals {
+        let ids: std::collections::HashSet<&AgentId> = nodes.iter().map(|n| &n.agent_id).collect();
+        let mut all = Totals::default();
+        for n in nodes
+            .iter()
+            .filter(|n| n.parent_id.as_ref().is_none_or(|p| !ids.contains(p)))
+        {
+            if let Some(t) = self.get(&n.agent_id) {
+                all.add(t);
+            }
+        }
+        all
+    }
+}
+
+/// **A node's tree budget against its subtree's spend**: `(spent, limit, over the warn line)`,
+/// where the node carries a tree limit and some node of its subtree reported a figure.
+pub fn budget_of(node: &NodeSummary, totals: &Totals) -> Option<(u64, u64, bool)> {
+    let budget = node.budget?;
+    let limit = budget.tree_tokens?;
+    let warn_at = limit.saturating_mul(u64::from(budget.warn_pct)) / 100;
+    Some((totals.tokens, limit, totals.tokens >= warn_at))
 }
 
 #[cfg(test)]
@@ -191,5 +314,105 @@ mod tests {
         let mut left = Totals::of(&a);
         left.add(&Totals::sum(&[b, c]));
         assert_eq!(left, Totals::sum(&[a, b, c]));
+    }
+
+    mod summaries {
+        use super::*;
+        use marion_core::contract::ExitStatus;
+        use marion_core::harness::Harness;
+        use marion_core::node::{NodeState, ReapState};
+
+        fn node(id: &str, parent: Option<&str>, tokens: Option<u64>, changed: u32) -> NodeSummary {
+            NodeSummary {
+                agent_id: AgentId(id.into()),
+                parent_id: parent.map(|p| AgentId(p.into())),
+                name: None,
+                agent_type: "codex".into(),
+                harness: Harness::Codex,
+                harness_version: None,
+                depth: 0,
+                state: NodeState::Running,
+                reap_state: ReapState::Live,
+                timeout: marion_core::encoding::Duration::from_secs(900),
+                pane: false,
+                started_at: None,
+                ended_at: None,
+                tokens,
+                attention: None,
+                review_of: None,
+                review: None,
+                cancel: None,
+                changed: Some(changed),
+                budget: None,
+                endpoint: None,
+                race: None,
+                widened: vec![],
+            }
+        }
+
+        fn at(s: u64) -> Option<SystemTime> {
+            Some(SystemTime::from_unix_millis(s * 1000))
+        }
+
+        /// **A subtree is itself and every descendant**, however the list is ordered — a child listed
+        /// before its parent is still added to it — and a forest adds only its roots' subtrees.
+        #[test]
+        fn a_subtree_adds_every_descendant_in_any_order() {
+            let mut grand = node("grand", Some("child"), Some(100), 1);
+            grand.state = NodeState::Exited(ExitStatus::Ok);
+            grand.started_at = at(20);
+            grand.ended_at = at(90);
+            let mut root = node("root", None, Some(1_000), 2);
+            root.started_at = at(10);
+            let nodes = vec![
+                grand,
+                node("child", Some("root"), Some(500), 3),
+                root,
+                node("other", None, None, 0),
+            ];
+            let r = Rollup::build(&nodes);
+            let t = r.get(&AgentId("root".into())).unwrap();
+            assert_eq!((t.tokens, t.changed, t.nodes, t.live), (1_600, 6, 3, 2));
+            assert_eq!(t.claimed, 3);
+            assert_eq!(t.first_start, at(10));
+            assert_eq!(
+                t.wall_to(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100)),
+                Some(std::time::Duration::from_secs(90)),
+                "still running: to now"
+            );
+            assert!(r.has_children(&AgentId("root".into())));
+            assert!(!r.has_children(&AgentId("grand".into())));
+            let other = r.get(&AgentId("other".into())).unwrap();
+            assert_eq!(other.claimed, 0, "no figure is no claim");
+            assert_eq!(r.forest(&nodes).nodes, 4);
+            assert_eq!(r.forest(&nodes).tokens, 1_600);
+        }
+
+        #[test]
+        fn a_parent_loop_is_cut_rather_than_followed() {
+            let nodes = vec![
+                node("a", Some("b"), Some(1), 0),
+                node("b", Some("a"), Some(2), 0),
+            ];
+            let r = Rollup::build(&nodes);
+            assert!(r.get(&AgentId("a".into())).is_some());
+        }
+
+        #[test]
+        fn a_tree_budget_is_measured_against_the_subtrees_spend() {
+            let mut root = node("root", None, Some(700), 0);
+            root.budget = Some(marion_core::budget::Budget {
+                tree_tokens: Some(1_000),
+                ..Default::default()
+            });
+            let nodes = vec![root.clone(), node("kid", Some("root"), Some(200), 0)];
+            let r = Rollup::build(&nodes);
+            let t = r.get(&root.agent_id).unwrap();
+            assert_eq!(budget_of(&root, t), Some((900, 1_000, true)));
+            assert_eq!(
+                budget_of(&nodes[1], r.get(&nodes[1].agent_id).unwrap()),
+                None
+            );
+        }
     }
 }
