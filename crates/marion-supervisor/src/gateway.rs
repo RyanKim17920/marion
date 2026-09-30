@@ -46,6 +46,15 @@ const MAX_CONNS: usize = 16;
 /// What a refused request's unread body may still be drained of before its connection closes: a
 /// harness's own request with a wrong credential, not a body sent to occupy the gateway.
 const DISCARD: u64 = 1024 * 1024;
+
+/// How long a caller has to send its whole request, head and body. A harness writes its request
+/// at once over loopback; a connection that dribbles would otherwise hold one of [`MAX_CONNS`]
+/// permits for as long as it liked, and sixteen of them cut the node off from its model.
+const REQUEST_DEADLINE: Duration = if cfg!(test) {
+    Duration::from_millis(500)
+} else {
+    Duration::from_secs(10)
+};
 /// How long a stopping gateway waits for its connection threads to see their sockets closed.
 const DRAIN: Duration = Duration::from_secs(5);
 /// How much of a provider's error body is read, for its message.
@@ -457,6 +466,27 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>) {
     }
 }
 
+/// A caller's socket read against one deadline: each read waits at most what is left of it, and
+/// none starts once it has passed.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the request did not arrive in time",
+            ));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(buf)
+    }
+}
+
 /// Whether the request presents this gateway's bearer, as `Authorization: Bearer` or `x-api-key`.
 fn presents(req: &http::Request, bearer: &Secret) -> bool {
     let offered = req
@@ -473,10 +503,14 @@ fn error_response(t: Translation, mut w: &TcpStream, status: u16, message: &str)
 
 fn serve(shared: &Shared, conn: &Conn, stream: &TcpStream) {
     let t = shared.translation;
-    // No read timeout: a connection that never sends holds one of `MAX_CONNS` permits until the
-    // gateway stops, which shuts it — and a timer would be a wakeup an idle node does not need.
+    // The request is read under one deadline over the whole of it ([`REQUEST_DEADLINE`]): each read
+    // is given only what is left, so a caller sending a byte at a time cannot renew it. Cleared
+    // once the request is in; nothing after reads from the caller.
     let w = stream;
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(Deadline {
+        stream,
+        until: Instant::now() + REQUEST_DEADLINE,
+    });
     let bad = |e: io::Error| {
         if e.kind() == io::ErrorKind::InvalidData {
             error_response(t, w, 400, &format!("marion gateway: {e}"));
@@ -505,6 +539,7 @@ fn serve(shared: &Shared, conn: &Conn, stream: &TcpStream) {
     if let Err(e) = http::read_body(&mut reader, &mut req) {
         return bad(e);
     }
+    let _ = stream.set_read_timeout(None);
     let method = req.method.to_ascii_uppercase();
     match method.as_str() {
         // A model listing names the one model every request goes to, whatever a harness asks for.

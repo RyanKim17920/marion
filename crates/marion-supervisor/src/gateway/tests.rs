@@ -346,6 +346,34 @@ fn a_dropped_gateway_is_gone() {
     let _ = half.read_to_end(&mut rest);
 }
 
+/// **Slow callers cannot hold the gateway's permits**: sixteen connections that send half a head
+/// and then nothing are dropped at the request deadline, and the node's own request is served
+/// after them. Mutation: drop the deadline and the seventeenth connection is refused 503.
+#[test]
+fn callers_that_dribble_are_dropped_at_the_deadline_and_free_their_permits() {
+    let (_d, server) = canned("slowloris", report_script());
+    let gw = gateway_for(&server.base_url());
+    let addr = gw.addr.to_string();
+    let idle: Vec<TcpStream> = (0..MAX_CONNS)
+        .map(|_| {
+            let mut s = TcpStream::connect(&addr).unwrap();
+            s.write_all(b"POST /v1/messages HTTP/1.1\r\n").unwrap();
+            s
+        })
+        .collect();
+    std::thread::sleep(REQUEST_DEADLINE * 3);
+    let (status, body) = post(
+        &gw,
+        Some(gw.bearer().expose()),
+        &anthropic_turn(false, vec![]),
+    );
+    assert_ne!(
+        status, 503,
+        "a permit is still held by a dribbling caller: {body}"
+    );
+    drop(idle);
+}
+
 /// **A gateway dropped mid-request kills the curl it started**, though curl is blocked waiting on a
 /// provider that never answers: the drop returns well inside its drain bound and the provider sees
 /// its connection close. Mutation: hand the child over only after the head is read; the drop then
