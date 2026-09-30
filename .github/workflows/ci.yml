@@ -1,6 +1,6 @@
 # What this workflow is, and what it deliberately is not.
 #
-# marion's real test suite drives REAL harness binaries — claude, codex, gemini, opencode,
+# marion's real test suite drives REAL harness binaries — claude, codex, opencode,
 # copilot, goose, cline, qwen — at the exact releases `marion_testsupport::PINNED_HARNESSES`
 # admits, against a canned local provider. That matrix cannot run here: the binaries are not
 # installable from a manifest, they auto-update out from under a pin, some need credentials, and
