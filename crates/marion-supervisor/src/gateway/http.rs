@@ -9,13 +9,28 @@ const MAX_HEAD: usize = 64 * 1024;
 /// A request's body may not exceed this: a long conversation with images, with room to spare.
 pub const MAX_BODY: usize = 64 * 1024 * 1024;
 
-#[derive(Debug)]
 pub struct Request {
     pub method: String,
     /// The target without its query (`/v1/messages?beta=true` is `/v1/messages`).
     pub path: String,
     headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+/// **Header names and the body's length only.** The headers carry the gateway's bearer
+/// (`Authorization`, `x-api-key`) and the body the whole conversation, so neither is printed.
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field(
+                "headers",
+                &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 impl Request {
@@ -218,6 +233,20 @@ mod tests {
         );
         assert_eq!(req.header("authorization"), Some("Bearer t"));
         assert_eq!(req.body, br#"{"a":1}"#);
+    }
+
+    /// A request's `Debug` names its headers and the body's size, and never the bearer or the text.
+    #[test]
+    fn a_requests_debug_carries_neither_its_credential_nor_its_body() {
+        let raw = b"POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer marion-gw-secret\r\n\
+                    x-api-key: marion-gw-secret\r\nContent-Length: 11\r\n\r\nhello world";
+        let printed = format!("{:?}", read_request(&mut &raw[..]).unwrap());
+        assert!(!printed.contains("marion-gw-secret"), "{printed}");
+        assert!(!printed.contains("hello"), "{printed}");
+        assert!(
+            printed.contains("Authorization") && printed.contains("11"),
+            "{printed}"
+        );
     }
 
     #[test]
