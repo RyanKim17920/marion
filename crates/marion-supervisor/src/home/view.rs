@@ -942,6 +942,12 @@ fn hints(home: &Home) -> Vec<Hint> {
         ]),
         // Nothing to act on: the one key that leads somewhere.
         (_, Tab::Watch) if home.watch.nodes.is_empty() => h(&[("tab", "Start")]),
+        (_, Tab::Watch) if home.selected_race().is_some() => h(&[
+            ("j/k", "move"),
+            ("!", "needs you"),
+            ("enter", "winner"),
+            ("m", "merge winner"),
+        ]),
         // `!` second: a narrow row drops hints from its end, and what needs the operator is the
         // one a narrow screen must keep.
         (_, Tab::Watch) => h(&[

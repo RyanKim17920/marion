@@ -321,6 +321,9 @@ pub struct Watch {
     pub rollup: crate::rollup::Rollup,
     /// The selected agent's stream fills the screen: Enter on a headless agent, Esc back.
     pub full_stream: bool,
+    /// `m` or `c` pressed on a race row: done to its winner once the winner's detail (and branch)
+    /// arrives.
+    pub pending: Option<(AgentId, char)>,
 }
 
 /// One change in the forest, as the feed shows it.
@@ -348,6 +351,7 @@ impl Default for Watch {
             feed: Vec::new(),
             rollup: crate::rollup::Rollup::default(),
             full_stream: false,
+            pending: None,
         }
     }
 }
@@ -496,6 +500,50 @@ impl Home {
         self.watch.nodes.iter().find(|n| n.agent_id.0 == *id)
     }
 
+    /// The race whose header row is under Watch's cursor.
+    pub fn selected_race(&self) -> Option<String> {
+        crate::tree::race_of_row(&self.watch.tree.selected()?.id).map(str::to_string)
+    }
+
+    /// A race's winning agent, once one has won.
+    fn race_winner(&self, race: &str) -> Option<AgentId> {
+        self.watch
+            .nodes
+            .iter()
+            .find(|n| {
+                n.race.as_ref().is_some_and(|b| {
+                    b.race_id.0 == race && b.verdict == Some(marion_core::race::SeatVerdict::Won)
+                })
+            })
+            .map(|n| n.agent_id.clone())
+    }
+
+    /// A key on a race's header row, which has no agent of its own: Enter goes to the winner, and
+    /// `m`/`c` act on the winner's branch once its detail is read. Anything else says what does.
+    fn race_key(&mut self, race: &str, key: &Key) -> Effect {
+        let winner = self.race_winner(race);
+        match (key, winner) {
+            (Key::Enter, Some(w)) => {
+                self.select(&w.0);
+            }
+            (Key::Char(c @ ('m' | 'c')), Some(w)) => {
+                self.watch.pending = Some((w.clone(), *c));
+                self.select(&w.0);
+            }
+            (Key::Enter | Key::Char('m' | 'c'), None) => {
+                self.notice = Some("no agent has won this race yet; its agents are below".into())
+            }
+            _ => {
+                self.notice = Some(
+                    "a race row: enter goes to its winner, m merges it; select an agent below to \
+                     steer or cancel it"
+                        .into(),
+                )
+            }
+        }
+        Effect::None
+    }
+
     fn selected_detail(&self) -> Option<&NodeDetail> {
         let sel = self.selected()?;
         match &self.watch.detail {
@@ -577,6 +625,18 @@ impl Home {
                     ..Default::default()
                 });
             }
+        }
+        let branch = detail.completion.as_ref().and_then(|c| c.branch.clone());
+        let pending = self.watch.pending.take();
+        match (pending, branch) {
+            (Some((p, 'm')), Some(b)) if p == id => self.mode = Mode::Confirm(Effect::Merge(b)),
+            (Some((p, _)), Some(b)) if p == id => {
+                self.notice = Some(marion_core::contract::merge_command(&b))
+            }
+            (Some((p, _)), None) if p == id => {
+                self.notice = Some("the winner landed no branch to merge".into())
+            }
+            (other, _) => self.watch.pending = other,
         }
         self.watch.detail = Some((id, detail));
     }
@@ -796,6 +856,18 @@ impl Home {
     }
 
     fn watch_key(&mut self, key: Key) -> Effect {
+        if let Some(race) = self.selected_race()
+            && !matches!(
+                key,
+                Key::Char('q' | '?' | 'j' | 'k' | '!' | 'J' | 'K')
+                    | Key::Up
+                    | Key::Down
+                    | Key::PageUp
+                    | Key::PageDown
+            )
+        {
+            return self.race_key(&race, &key);
+        }
         match key {
             Key::Char('q') => return Effect::Quit,
             Key::Char('?') => self.toggle_help(),

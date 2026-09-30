@@ -1697,3 +1697,61 @@ fn a_parent_row_shows_its_subtree_against_its_budget_and_the_header_the_forest()
         "{line}"
     );
 }
+
+/// **A race row acts on its winner**: Enter goes to it, `m` goes to it and, once its detail says
+/// which branch it landed, asks to merge that branch; before a winner, or for keys that act on one
+/// agent, it says what does work there.
+#[test]
+fn a_race_row_goes_to_its_winner_and_merges_it() {
+    use marion_core::race::SeatVerdict;
+    let mut h = home();
+    h.tab = Tab::Watch;
+    let header = "race:019f0000-1a2b-7000-8000-00000000000a";
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, None, 100),
+        NodeSummary {
+            state: NodeState::Running,
+            ..seat("s2", 2, None, 50)
+        },
+    ]);
+    h.watch.tree.select(header);
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert!(
+        h.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("no agent has won")
+    );
+    h.key(Key::Char('s'));
+    assert!(h.notice.as_deref().unwrap_or("").contains("a race row"));
+
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, Some(SeatVerdict::Failed), 100),
+        seat("s2", 2, Some(SeatVerdict::Won), 50),
+    ]);
+    h.watch.tree.select(header);
+    h.key(Key::Enter);
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
+    h.watch.tree.select(header);
+    assert_eq!(h.key(Key::Char('m')), Effect::None);
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
+    h.absorb_detail(
+        AgentId("s2".into()),
+        NodeDetail {
+            completion: Some(CompletionSummary {
+                status: ExitStatus::Ok,
+                narrative: None,
+                branch: Some("marion/s2".into()),
+                commit: None,
+                changed_paths: 1,
+                exit: String::new(),
+                diff: None,
+            }),
+            ..Default::default()
+        },
+    );
+    assert_eq!(h.mode, Mode::Confirm(Effect::Merge("marion/s2".into())));
+    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/s2".into()));
+}
