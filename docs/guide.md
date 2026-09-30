@@ -255,6 +255,10 @@ last step before it that did. A `review` step (`of = "<step>"`, optionally `on` 
 `max_rounds` up to 3) reviews that step's work read-only; blocking findings go to a fixer on the
 work's own agent type, cut at its commit, and the fix is reviewed again, until a round is clean
 (`clean`) or the last one still blocks (`blocked`). `{gate.findings}` is the last review's list.
+A `land` step (`of = "<step>"`) lands that step's work: `mode = "branch"` (the default) names its
+branch and the command that merges it; `mode = "ff"` fast-forwards your checkout to it, but only
+while the checkout has no uncommitted change and is still on the commit it was on when the run
+started — never a merge commit, never a force.
 
 `budget = { tokens = 2_000_000, wall = "45m" }` bounds the whole run. Each step's agents get the
 least of the step's own `tokens`, its `share` of the total, and what the run has left, split evenly
@@ -269,7 +273,7 @@ marion workflow cancel <run id>           # start nothing more, cancel what runs
 ```
 
 A repository's workflow runs only after `marion trust allow <file>`, which shows every step, agent
-and verification command first; any edit revokes it. Land steps are coming.
+and verification command first; any edit revokes it.
 
 ## Sharing a run
 

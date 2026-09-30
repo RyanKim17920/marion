@@ -917,3 +917,171 @@ tokens = 100
         "every timeout is under the ten-minute wall: {caps:?}"
     );
 }
+
+/// A two-step run: a writer that makes `ok`, then its work landed by `mode`.
+fn landed_workflow(mode: &str) -> String {
+    format!(
+        r#"schema = 1
+name = "landed"
+
+[[step]]
+id = "work"
+kind = "agent"
+on = "claude"
+prompt = "LANDMARK: make ok"
+verify = ["test -f ok"]
+
+[[step]]
+id = "land"
+kind = "land"
+of = "work"
+mode = "{mode}"
+"#
+    )
+}
+
+fn land_script() -> Script {
+    Script {
+        nodes: vec![node("LANDMARK", &["ok"], "wrote ok")],
+        ..Script::default()
+    }
+}
+
+/// **(l) A branch landing names the work's branch and the one command that merges it**, and
+/// leaves the checkout as it was.
+#[test]
+fn landing_on_a_branch_names_it_and_leaves_the_checkout_alone() {
+    let Some(bed) = bed("wf-land-branch", land_script()) else {
+        return;
+    };
+    bed.user_workflow("landed", &landed_workflow("branch"));
+    let head = marion_testsupport::git(&bed.repo, &["rev-parse", "HEAD"]);
+    let result = bed.run_to_close("landed", &[]);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Succeeded,
+        "{}",
+        result.scoreboard()
+    );
+    let note = result.steps[1]
+        .note
+        .clone()
+        .expect("the land step says where the work is");
+    assert!(
+        note.contains("changes on branch") && note.contains("git merge"),
+        "{note}"
+    );
+    assert!(
+        result.scoreboard().contains(&note),
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(
+        marion_testsupport::git(&bed.repo, &["rev-parse", "HEAD"]),
+        head
+    );
+    assert!(!bed.repo.join("ok").exists(), "the checkout is untouched");
+}
+
+/// **(l) A fast-forward lands the work in a clean checkout that has not moved**: `HEAD` becomes
+/// the work's commit, with no merge commit.
+#[test]
+fn a_fast_forward_lands_the_work_on_a_clean_unmoved_checkout() {
+    let Some(bed) = bed("wf-land-ff", land_script()) else {
+        return;
+    };
+    bed.user_workflow("landed", &landed_workflow("ff"));
+    let result = bed.run_to_close("landed", &[]);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Succeeded,
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(result.steps[1].verdict, Some(StepVerdict::Succeeded));
+    assert!(bed.repo.join("ok").exists(), "the work is in the checkout");
+    let parents = marion_testsupport::git(&bed.repo, &["rev-list", "--parents", "-n1", "HEAD"]);
+    assert_eq!(
+        parents.split_whitespace().count(),
+        2,
+        "no merge commit: {parents}"
+    );
+    assert_eq!(
+        marion_testsupport::git(
+            &bed.repo,
+            &["status", "--porcelain", "--untracked-files=no"]
+        ),
+        ""
+    );
+}
+
+/// **(l) A fast-forward is refused on a checkout with uncommitted changes, or one that moved since
+/// the run opened**: the land step fails saying why, and the checkout keeps what it had.
+#[test]
+fn a_fast_forward_is_refused_on_a_dirty_or_moved_checkout() {
+    // Dirty: a tracked file edited before the run.
+    let Some(bed) = bed("wf-land-dirty", land_script()) else {
+        return;
+    };
+    bed.user_workflow("landed", &landed_workflow("ff"));
+    std::fs::write(bed.repo.join("src/keep.txt"), "edited\n").unwrap();
+    let head = marion_testsupport::git(&bed.repo, &["rev-parse", "HEAD"]);
+    let result = bed.run_to_close("landed", &[]);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Failed { step: 1 },
+        "{}",
+        result.scoreboard()
+    );
+    let note = result.steps[1].note.clone().expect("the refusal says why");
+    assert!(note.contains("uncommitted"), "{note}");
+    assert_eq!(
+        marion_testsupport::git(&bed.repo, &["rev-parse", "HEAD"]),
+        head
+    );
+    assert_eq!(
+        std::fs::read_to_string(bed.repo.join("src/keep.txt")).unwrap(),
+        "edited\n"
+    );
+    drop(bed);
+
+    // Moved: a commit lands in the checkout while the work step runs.
+    let hold = MarkerHold::new("LANDMARK");
+    let Some(bed) = bed_held("wf-land-moved", land_script(), Some(hold.clone())) else {
+        return;
+    };
+    bed.user_workflow("landed", &landed_workflow("ff"));
+    let mut watcher = bed.watcher();
+    let wf = bed.run("landed", &[]).expect("the run opens");
+    hold.await_parked(1);
+    std::fs::write(bed.repo.join("moved.txt"), "moved\n").unwrap();
+    marion_testsupport::git(&bed.repo, &["add", "moved.txt"]);
+    marion_testsupport::git(
+        &bed.repo,
+        &[
+            "-c",
+            "user.email=marion@example.invalid",
+            "-c",
+            "user.name=marion",
+            "commit",
+            "-qm",
+            "moved",
+        ],
+    );
+    let moved = marion_testsupport::git(&bed.repo, &["rev-parse", "HEAD"]);
+    hold.release();
+    let result = bed.await_close(&mut watcher, &wf);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Failed { step: 1 },
+        "{}",
+        result.scoreboard()
+    );
+    let note = result.steps[1].note.clone().expect("the refusal says why");
+    assert!(note.contains("moved"), "{note}");
+    assert_eq!(
+        marion_testsupport::git(&bed.repo, &["rev-parse", "HEAD"]),
+        moved
+    );
+    assert!(!bed.repo.join("ok").exists());
+}

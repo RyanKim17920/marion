@@ -43,18 +43,6 @@ impl RegistryHandle {
         )
         .map_err(|e| refuse(e.to_string()))?;
         let wf = &loaded.workflow;
-        if let Some(step) = wf
-            .steps
-            .iter()
-            .find(|s| matches!(s.kind, StepKind::Land { .. }))
-        {
-            return Err(refuse(format!(
-                "step `{}` is a {} step, which this build does not run yet; agent, parallel, \
-                 race and review steps run",
-                step.id,
-                step.kind.word()
-            )));
-        }
         if let Some(missing) = wf.inputs.iter().find(|i| !p.inputs.contains_key(*i)) {
             return Err(refuse(format!(
                 "the workflow needs its input `{missing}`: pass --input {missing}=<text>"
@@ -287,7 +275,7 @@ impl RegistryHandle {
                         .into_iter()
                         .map(|n| n.agent_id.clone())
                         .collect();
-                    self.decide_step(wf_id, step, verdict, ids);
+                    self.decide_step(wf_id, step, verdict, ids, None);
                 }
                 continue;
             }
@@ -299,7 +287,7 @@ impl RegistryHandle {
                             .into_iter()
                             .map(|n| n.agent_id.clone())
                             .collect();
-                        self.decide_step(wf_id, step, self.unstarted(wf_id), ids);
+                        self.decide_step(wf_id, step, self.unstarted(wf_id), ids, None);
                     }
                 }
                 continue;
@@ -307,12 +295,17 @@ impl RegistryHandle {
             match marion_core::workflow::next(wf, &state) {
                 Next::Wait => return,
                 Next::Skip { step } => {
-                    self.decide_step(wf_id, step, StepVerdict::Skipped, Vec::new())
+                    self.decide_step(wf_id, step, StepVerdict::Skipped, Vec::new(), None)
+                }
+                // A land step starts no node: it lands the work there and then.
+                Next::Launch { step } if matches!(wf.steps[step].kind, StepKind::Land { .. }) => {
+                    let (verdict, note) = land(&env, &values, step);
+                    self.decide_step(wf_id, step, verdict, Vec::new(), Some(note));
                 }
                 Next::Launch { step } => {
                     if !self.launch_step(wf_id, &env, &values, step) {
                         // Nothing started: the step failed where it stood.
-                        self.decide_step(wf_id, step, self.unstarted(wf_id), Vec::new());
+                        self.decide_step(wf_id, step, self.unstarted(wf_id), Vec::new(), None);
                         continue;
                     }
                     return;
@@ -388,6 +381,7 @@ impl RegistryHandle {
         step: usize,
         verdict: StepVerdict,
         nodes: Vec<AgentId>,
+        note: Option<String>,
     ) {
         if let Err(e) = self.journal_now(RecordKind::WorkflowStepDecided(WorkflowStepDecided {
             wf_id: wf_id.clone(),
@@ -395,6 +389,7 @@ impl RegistryHandle {
             round: 0,
             verdict,
             nodes,
+            note,
         })) {
             eprintln!(
                 "marion: could not journal workflow {}'s step {step}: {e}",
@@ -763,6 +758,54 @@ impl RegistryHandle {
                     self.drive_workflow(&id);
                 }
                 None => eprintln!("marion: workflow {} has no readable spec; left open", id.0),
+            }
+        }
+    }
+}
+
+/// **Land step `step`**: name the branch its work is on with the one command that merges it, or
+/// fast-forward the checkout to it where that is safe ([`crate::spawn::fast_forward`]). The
+/// verdict, and the line saying where the work is or why it was not landed.
+fn land(
+    env: &crate::run::Env,
+    values: &crate::workflow::RunValues<'_>,
+    step: usize,
+) -> (StepVerdict, String) {
+    let wf = &values.spec.workflow;
+    let StepKind::Land { of, mode } = &wf.steps[step].kind else {
+        return (StepVerdict::Failed, "not a land step".into());
+    };
+    let Some((branch, commit)) = values.landing(*of) else {
+        return (
+            StepVerdict::Failed,
+            format!("step `{}` left no branch to land", wf.steps[*of].id),
+        );
+    };
+    let landed = marion_core::contract::landed_line(&branch, &commit.0);
+    match mode {
+        marion_core::workflow::LandMode::Branch => (StepVerdict::Succeeded, landed),
+        marion_core::workflow::LandMode::Ff => {
+            let Some(base) = values.run.opened.as_ref().and_then(|o| o.base.as_deref()) else {
+                return (
+                    StepVerdict::Failed,
+                    format!(
+                        "the run recorded no commit it opened on, so marion did not fast-forward; {landed}"
+                    ),
+                );
+            };
+            match crate::spawn::fast_forward(
+                crate::run::tree_of(env, &values.spec.repo),
+                base,
+                &commit,
+            ) {
+                Ok(()) => (
+                    StepVerdict::Succeeded,
+                    format!(
+                        "fast-forwarded the checkout to {branch} ({})",
+                        commit.0.get(..12).unwrap_or(&commit.0)
+                    ),
+                ),
+                Err(why) => (StepVerdict::Failed, format!("{why}; {landed}")),
             }
         }
     }

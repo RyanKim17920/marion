@@ -478,6 +478,10 @@ pub struct WorkflowStepDecided {
     /// The nodes the step ran, in launch order; empty for a skipped step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<AgentId>,
+    /// What the step has to say beyond its verdict: where a land step put the work, or why it
+    /// could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// See [`RecordKind::WorkflowClosed`].
@@ -1731,6 +1735,7 @@ mod tests {
             round: 2,
             verdict: crate::workflow::StepVerdict::Blocked,
             nodes: vec![AgentId("019f0000-0000-7000-8000-00000000000d".into())],
+            note: None,
         });
         let wf_closed = RecordKind::WorkflowClosed(WorkflowClosed {
             wf_id: wf,

@@ -1085,6 +1085,9 @@ pub struct StepRow {
     /// The branch the step's work landed on, where it left one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// What the step said beyond its verdict ([`crate::journal::WorkflowStepDecided::note`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl WorkflowResult {
@@ -1103,6 +1106,9 @@ impl WorkflowResult {
                 out.push_str(&format!("  {b}"));
             }
             out.push('\n');
+            if let Some(note) = &row.note {
+                out.push_str(&format!("   {note}\n"));
+            }
         }
         out.push_str(&format!("workflow {}: {}", self.name, self.outcome.word()));
         out

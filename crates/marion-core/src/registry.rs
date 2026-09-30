@@ -2766,6 +2766,7 @@ mod tests {
                 round,
                 verdict,
                 nodes: nodes.iter().map(|n| id(n)).collect(),
+                note: None,
             })
         };
         let records = vec![

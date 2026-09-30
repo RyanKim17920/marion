@@ -720,6 +720,41 @@ pub fn head_commit(cwd: Tree<'_>) -> Option<Oid> {
         .map(Oid)
 }
 
+/// **Fast-forward the checkout at `tree` to `to`**, a workflow's land step: only where it has no
+/// uncommitted change to a tracked file and its `HEAD` is still `base`, the commit it was on when
+/// the run opened. Never a merge commit and never a force — `--ff-only` refuses anything else, and
+/// leaves the checkout as it was. A checkout already at `to` is landed: a restart between the
+/// fast-forward and its record lands again as a no-op. `Err` is the sentence saying why it did not.
+pub fn fast_forward(tree: Tree<'_>, base: &str, to: &Oid) -> Result<(), String> {
+    let _repo = repo_write_guard();
+    let status = git(tree, &["status", "--porcelain", "--untracked-files=no"])
+        .map_err(|e| format!("marion could not read the checkout's status: {e}"))?;
+    if !status.trim().is_empty() {
+        return Err(
+            "the checkout has uncommitted changes, so marion did not fast-forward it".into(),
+        );
+    }
+    let head = head_commit(tree).map(|o| o.0);
+    if head.as_deref() == Some(to.0.as_str()) {
+        return Ok(());
+    }
+    if head.as_deref() != Some(base) {
+        return Err(format!(
+            "the checkout moved since the run opened (it was on {}, it is on {}), so marion did not \
+             fast-forward it",
+            short(base),
+            head.as_deref().map_or("no commit", short)
+        ));
+    }
+    git(tree, &["merge", "--ff-only", "--quiet", &to.0])
+        .map(|_| ())
+        .map_err(|e| format!("git refused the fast-forward: {e}"))
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..12).unwrap_or(sha)
+}
+
 /// `changed_paths` in three independent terms, so no term's meaning depends on index state:
 /// committed work, uncommitted tracked work, and untracked files.
 ///
@@ -2341,6 +2376,40 @@ mod tests {
         tgit(&repo, &["commit", "-qm", "base"]);
         let base = Oid(tgit(&repo, &["rev-parse", "HEAD"]));
         (dir, repo, base)
+    }
+
+    /// **A fast-forward lands only on a clean checkout still at its base**, lands again as a no-op,
+    /// and leaves a dirty or moved checkout exactly as it was.
+    #[test]
+    fn a_fast_forward_needs_a_clean_checkout_still_at_its_base() {
+        let (_dir, repo, base) = committed_repo("spawn-ff");
+        let tree = || Tree::Operator(&repo);
+        tgit(&repo, &["checkout", "-qb", "work"]);
+        std::fs::write(repo.join("work.txt"), "work\n").unwrap();
+        tgit(&repo, &["add", "work.txt"]);
+        tgit(&repo, &["commit", "-qm", "work"]);
+        let work = Oid(tgit(&repo, &["rev-parse", "HEAD"]));
+        tgit(&repo, &["checkout", "-q", "main"]);
+
+        std::fs::write(repo.join("keep.txt"), "dirty\n").unwrap();
+        let why = fast_forward(tree(), &base.0, &work).unwrap_err();
+        assert!(why.contains("uncommitted"), "{why}");
+        assert_eq!(tgit(&repo, &["rev-parse", "HEAD"]), base.0);
+        tgit(&repo, &["checkout", "-q", "--", "keep.txt"]);
+
+        std::fs::write(repo.join("untracked.txt"), "mine\n").unwrap();
+        fast_forward(tree(), &base.0, &work).expect("an untracked file does not block it");
+        assert_eq!(tgit(&repo, &["rev-parse", "HEAD"]), work.0);
+        fast_forward(tree(), &base.0, &work).expect("landing again is a no-op");
+
+        tgit(&repo, &["reset", "-q", "--hard", &base.0]);
+        std::fs::write(repo.join("moved.txt"), "moved\n").unwrap();
+        tgit(&repo, &["add", "moved.txt"]);
+        tgit(&repo, &["commit", "-qm", "moved"]);
+        let moved = tgit(&repo, &["rev-parse", "HEAD"]);
+        let why = fast_forward(tree(), &base.0, &work).unwrap_err();
+        assert!(why.contains("moved"), "{why}");
+        assert_eq!(tgit(&repo, &["rev-parse", "HEAD"]), moved);
     }
 
     /// A child that has repointed its worktree's `.git` at a repository of its own, whose config

@@ -241,8 +241,17 @@ impl RunValues<'_> {
                 }
                 Some(work)
             }
-            StepKind::Parallel { .. } | StepKind::Land { .. } => None,
+            // What a land step landed is the work it names.
+            StepKind::Land { of, .. } => self.work_node(*of),
+            StepKind::Parallel { .. } => None,
         }
+    }
+
+    /// **What a land step of `of` lands**: the branch and commit that step's work left, or `None`
+    /// where it left none.
+    pub fn landing(&self, of: usize) -> Option<(String, marion_core::contract::Oid)> {
+        let completion = contract_of(self.project, self.work_node(of)?)?.completion?;
+        Some((completion.branch?, completion.commit?))
     }
 
     /// The contracts a step's fields are read from: each of a parallel step's nodes', or the one
@@ -555,6 +564,7 @@ pub fn result(
                     .makes_a_branch()
                     .then(|| values.field(i, Field::Branch))
                     .flatten(),
+                note: run.decision(s).and_then(|d| d.note.clone()),
             }
         })
         .collect();
