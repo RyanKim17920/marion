@@ -485,6 +485,8 @@ struct Bed {
     _dir: marion_testsupport::Scratch,
     cast: std::path::PathBuf,
     host: Arc<PtyHost>,
+    /// The cast's clock origin, so a cast timestamp and an `Instant` can be compared.
+    origin: Instant,
     slave: std::fs::File,
     inboxes: Arc<Inboxes>,
     records: Arc<Mutex<Vec<RecordKind>>>,
@@ -524,16 +526,10 @@ impl Bed {
         termios.make_raw();
         rustix::termios::tcsetattr(&slave, rustix::termios::OptionalActions::Now, &termios)
             .expect("the slave goes raw");
+        let origin = Instant::now();
         let host = Arc::new(
-            PtyHost::start(
-                agent(),
-                master,
-                &cast,
-                size,
-                "xterm-256color",
-                Instant::now(),
-            )
-            .expect("the host starts"),
+            PtyHost::start(agent(), master, &cast, size, "xterm-256color", origin)
+                .expect("the host starts"),
         );
         if marions_workspace {
             host.license_boot_dialog_answers();
@@ -563,6 +559,7 @@ impl Bed {
             _dir: dir,
             cast,
             host,
+            origin,
             slave,
             inboxes,
             records,
@@ -738,11 +735,11 @@ fn the_operators_half_typed_line_holds_the_paste() {
     let mut bed = Bed::new("paste-composer", fast());
     bed.node_writes(BOOTED);
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
-    bed.host.write_input(&lease, b"hel").unwrap();
+    bed.host.write_opaque_input(&lease, b"hel").unwrap();
     assert_eq!(bed.read_slave(3), b"hel");
     let id = bed.steer("wait for me");
     bed.await_decision(|d| matches!(d, Gate::Wait(Hold::ComposerNotEmpty, _)));
-    bed.host.write_input(&lease, b"lo\r").unwrap();
+    bed.host.write_opaque_input(&lease, b"lo\r").unwrap();
     let mut want = b"lo\r".to_vec();
     want.extend(expected_paste("wait for me"));
     assert_eq!(
@@ -757,13 +754,14 @@ fn the_operators_half_typed_line_holds_the_paste() {
 }
 
 /// **The operator's last key starts the quiet period**: the paste is written no sooner than
-/// `operator_quiet` after it, measured on the cast's own clock.
+/// `operator_quiet` after it, measured on the cast's own clock. The operator's key leaves no `i`
+/// record, so its time is the host's own note of the operator's typing, on the same origin.
 #[test]
 fn the_paste_waits_for_the_operator_to_be_quiet() {
     let mut bed = Bed::new("paste-quiet", fast());
     bed.node_writes(BOOTED);
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
-    bed.host.write_input(&lease, b"\r").unwrap();
+    bed.host.write_opaque_input(&lease, b"\r").unwrap();
     bed.read_slave(1);
     let id = bed.steer("after a pause");
     bed.await_decision(|d| matches!(d, Gate::Wait(Hold::OperatorTyping, _)));
@@ -771,19 +769,28 @@ fn the_paste_waits_for_the_operator_to_be_quiet() {
         bed.resolution(&id),
         RecordKind::MessageDelivered(_)
     ));
+    let operator_at = bed
+        .host
+        .input_state()
+        .last_operator_input
+        .expect("the operator's key was noted")
+        .duration_since(bed.origin)
+        .as_secs_f64();
     let mut clock = 0.0;
-    let mut operator_at = None;
     let mut paste_at = None;
-    for (dt, code, data) in bed.cast_records() {
+    for (dt, code, _) in bed.cast_records() {
         clock += dt;
-        match code.as_str() {
-            "i" if data == "\r" && paste_at.is_none() => operator_at = Some(clock),
-            "m" => paste_at = Some(clock),
-            _ => {}
+        if code == "m" {
+            paste_at = Some(clock);
         }
     }
-    let gap = paste_at.unwrap() - operator_at.unwrap();
-    assert!(gap >= 0.2, "the paste came {gap}s after the operator's key");
+    let gap = paste_at.unwrap() - operator_at;
+    // A millisecond of slack for the cast's per-record microsecond rounding, which the host's own
+    // `Instant` does not share.
+    assert!(
+        gap >= 0.199,
+        "the paste came {gap}s after the operator's key"
+    );
 }
 
 /// **No bracketed paste, no paste**: past the grace the message is dropped by name and the node
@@ -803,7 +810,7 @@ fn a_terminal_without_bracketed_paste_drops_the_message_by_name() {
         other => panic!("expected a drop, got {other:?}"),
     }
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
-    bed.host.write_input(&lease, b"x").unwrap();
+    bed.host.write_opaque_input(&lease, b"x").unwrap();
     assert_eq!(
         bed.read_slave(1),
         b"x",
@@ -981,7 +988,7 @@ fn the_injector_ends_with_its_node_and_drops_what_it_held() {
     let mut bed = Bed::new("paste-close", fast());
     bed.node_writes(BOOTED);
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
-    bed.host.write_input(&lease, b"typing").unwrap();
+    bed.host.write_opaque_input(&lease, b"typing").unwrap();
     let id = bed.steer("too late");
     bed.await_decision(|d| matches!(d, Gate::Wait(Hold::ComposerNotEmpty, _)));
     bed.inboxes.close(&agent(), "the node ended");
@@ -1015,7 +1022,7 @@ fn a_paste_waits_for_the_operator_to_dismiss_a_boot_dialog() {
         bed.host.dialog_hold()
     );
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
-    bed.host.write_input(&lease, b"\x1b[B\r").unwrap();
+    bed.host.write_opaque_input(&lease, b"\x1b[B\r").unwrap();
     assert_eq!(
         bed.read_slave(4),
         b"\x1b[B\r",
@@ -1152,7 +1159,7 @@ fn a_dialog_marion_never_answers_drops_the_message_by_name() {
         bed.host.dialog_hold()
     );
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
-    bed.host.write_input(&lease, b"x").unwrap();
+    bed.host.write_opaque_input(&lease, b"x").unwrap();
     assert_eq!(
         bed.read_slave(1),
         b"x",

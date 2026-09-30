@@ -1090,20 +1090,21 @@ fn the_cast_header_and_record_shape_match_the_committed_captures() {
     assert!(want_records.iter().all(|(dt, _, _)| *dt >= 0.0));
 }
 
-/// **`i` and `r` are not optional.** C1's mouse-through leaves no trace in the output stream at
-/// all, and C2's `CSI 3J` finding cannot be re-derived after the fact without knowing the geometry
-/// each repaint happened at.
+/// **Input evidence and `r` are not optional.** C1's mouse-through leaves no trace in the output
+/// stream at all, and C2's `CSI 3J` finding cannot be re-derived after the fact without knowing
+/// the geometry each repaint happened at. The operator's keystrokes are evidenced by length in the
+/// durable stream; the cast carries no `i` for them.
 ///
-/// **Mutations:** drop the `i` record from `PtyHost::write_input`; write the size as
-/// `"ROWSxCOLS"`.
+/// **Mutations:** drop the input evidence from `PtyHost::write_opaque_input_admitted`; write the
+/// size as `"ROWSxCOLS"`.
 #[test]
-fn the_cast_records_i_and_r_not_only_o() {
+fn the_recording_keeps_input_evidence_and_resizes_not_only_output() {
     let mut lb = Loopback::new("pty-ir", WinSize::new(120, 40));
     let lease = lb
         .host
         .lease_writer(crate::serve::ConnId(1))
         .expect("a fresh host has no writer");
-    lb.host.write_input(&lease, b"/help\r").unwrap();
+    lb.host.write_opaque_input(&lease, b"/help\r").unwrap();
     lb.host.resize(WinSize::new(100, 24)).unwrap();
     lb.child_writes(b"repainted");
     lb.hang_up();
@@ -1111,12 +1112,13 @@ fn the_cast_records_i_and_r_not_only_o() {
 
     let (_, records) = read_cast(&lb.cast);
     let codes: Vec<&str> = records.iter().map(|(_, c, _)| c.as_str()).collect();
-    assert!(codes.contains(&"i"), "no keystroke record: {codes:?}");
+    assert!(
+        !codes.contains(&"i"),
+        "operator keys reached the cast: {codes:?}"
+    );
     assert!(codes.contains(&"r"), "no resize record: {codes:?}");
     assert!(codes.contains(&"o"), "no output record: {codes:?}");
 
-    let i = records.iter().find(|(_, c, _)| c == "i").unwrap();
-    assert_eq!(i.2, "/help\r");
     let r = records.iter().find(|(_, c, _)| c == "r").unwrap();
     assert_eq!(
         r.2, "100x24",
@@ -1141,7 +1143,7 @@ fn resolved_input_delivery_keeps_completed_replay_eligible() {
     let lease = lb.host.lease_writer(ConnId(85)).unwrap();
 
     lb.host
-        .write_input(&lease, b"delivered\r")
+        .write_opaque_input(&lease, b"delivered\r")
         .expect("the master accepts the admitted input");
     lb.hang_up();
     lb.host.shutdown().expect("legacy shutdown succeeds");
@@ -1155,7 +1157,6 @@ fn resolved_input_delivery_keeps_completed_replay_eligible() {
         .iter()
         .map(|(_, code, _)| code.as_str())
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"i"), "{codes:?}");
     assert_eq!(codes.last(), Some(&"x"), "{codes:?}");
 }
 
@@ -3270,13 +3271,13 @@ fn a_lease_from_another_node_cannot_be_used_to_type_into_this_one() {
     let lease_for_a = a.host.lease_writer(crate::serve::ConnId(1)).expect("a");
     let err = b
         .host
-        .write_input(&lease_for_a, b"rm -rf /\r")
+        .write_opaque_input(&lease_for_a, b"rm -rf /\r")
         .expect_err("b accepted a's lease");
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 
     // And the control: the lease does work on the node it was issued for.
     a.host
-        .write_input(&lease_for_a, b"ok\r")
+        .write_opaque_input(&lease_for_a, b"ok\r")
         .expect("a's own lease");
 }
 
@@ -3581,108 +3582,11 @@ fn a_child_dropped_before_adoption_is_killed_and_reaped() {
 // The cast records what the node received
 // ---------------------------------------------------------------------------------------------
 
-/// **`write_input` records the bytes it writes, or it writes nothing.**
-///
-/// It used to record `String::from_utf8_lossy(bytes)` and then write the original slice, so `0xff`
-/// reached the node and U+FFFD reached the cast. The `i` records are the *only* evidence of what
-/// was typed — C1's mouse-through leaves no `o` trace at all — so a recording that differs from
-/// what happened is worse than no recording, because nothing downstream can tell.
-///
-/// asciicast's `data` is a JSON string and has no byte-exact spelling for a byte that is not part
-/// of valid UTF-8, so the choice is a private encoding nothing else reads or a refusal. It refuses,
-/// **before** the write, which is what makes the two halves below assertable as one property: what
-/// the node received and what the cast says are the same on every path, including this one, where
-/// both are nothing.
-///
-/// The multibyte control leg matters as much as the refusal: without it a `write_input` that
-/// refused everything non-ASCII would pass.
-///
-/// **Mutation:** restore `String::from_utf8_lossy(bytes)` and the unconditional
-/// `self.master.write_all(bytes)`. The refusal stops being one, `0xff` reaches the slave ahead of
-/// the sentinel, and the cast grows an `i` record saying U+FFFD.
-#[test]
-fn input_the_cast_cannot_carry_is_refused_before_the_node_receives_it() {
-    let mut lb = Loopback::new("pty-input-bytes", WinSize::new(80, 24));
-    let slave = lb.slave.take().expect("attached");
-    nonblocking(slave.as_raw_fd());
-    let mut slave = slave;
-    let lease = lb
-        .host
-        .lease_writer(crate::serve::ConnId(1))
-        .expect("a fresh host has no writer");
-
-    // Control: a multibyte keystroke goes through untouched, so the refusal below is about the
-    // bytes and not about "anything past ASCII".
-    lb.host.write_input(&lease, "é\r".as_bytes()).unwrap();
-
-    // The defect's own input. Refused, by kind, with a sentence that says why.
-    let refused = lb
-        .host
-        .write_input(&lease, &[0xff])
-        .expect_err("a lone 0xff has no faithful spelling in a JSON string");
-    assert_eq!(refused.kind(), io::ErrorKind::InvalidData, "{refused}");
-    assert!(
-        refused.to_string().contains("not valid UTF-8"),
-        "the refusal must say what it refused: {refused}"
-    );
-
-    // A sentinel behind it. If `0xff` had been written, it would be in the stream *before* this —
-    // so reading the slave and finding the sentinel with no `0xff` ahead of it is a positive
-    // statement about what the node received, not an inference from an absence.
-    lb.host.write_input(&lease, "Z\r".as_bytes()).unwrap();
-
-    let mut got: Vec<u8> = Vec::new();
-    assert!(
-        until(|| {
-            let mut buf = [0u8; 256];
-            match slave.read(&mut buf) {
-                Ok(0) => {}
-                Ok(n) => got.extend_from_slice(&buf[..n]),
-                Err(_) => {}
-            }
-            got.contains(&b'Z')
-        }),
-        "the sentinel never reached the node: {got:?}"
-    );
-    assert!(
-        !got.contains(&0xff),
-        "the node received a byte the cast does not record: {got:?}"
-    );
-    assert!(
-        got.starts_with("é".as_bytes()),
-        "the control keystroke must have arrived byte-for-byte: {got:?}"
-    );
-
-    drop(slave);
-    lb.hang_up();
-    lb.host.shutdown().unwrap();
-
-    // And the record agrees, in both directions: the two accepted keystrokes are there verbatim,
-    // and the refused one left nothing behind — no `i`, and no U+FFFD anywhere.
-    let (_, records) = read_cast(&lb.cast);
-    let typed: Vec<&str> = records
-        .iter()
-        .filter(|(_, c, _)| c == "i")
-        .map(|(_, _, d)| d.as_str())
-        .collect();
-    assert_eq!(
-        typed,
-        vec!["é\r", "Z\r"],
-        "the cast must be exactly what the node received: {records:#?}"
-    );
-    assert!(
-        !records
-            .iter()
-            .any(|(_, c, d)| c == "i" && d.contains('\u{fffd}')),
-        "a substitute character in an `i` record is the defect itself: {records:#?}"
-    );
-}
-
 /// Opaque pane input is byte-exact even when asciicast cannot represent it. The authoritative
 /// binary stream persists only content-independent length and ordering evidence, while the
 /// compatibility cast deliberately has no fabricated `i` record for bytes it cannot spell.
 #[test]
-fn opaque_input_reaches_the_slave_exactly_without_a_legacy_i_record() {
+fn opaque_input_reaches_the_slave_exactly_without_an_i_record() {
     let mut lb = Loopback::new("pty-opaque-input-bytes", WinSize::new(80, 24));
     let slave = lb.slave.take().expect("attached");
     nonblocking(slave.as_raw_fd());
@@ -3715,7 +3619,7 @@ fn opaque_input_reaches_the_slave_exactly_without_a_legacy_i_record() {
     let (_, cast) = read_cast(&lb.cast);
     assert!(
         cast.iter().all(|(_, code, _)| code != "i"),
-        "opaque input must not fabricate a lossy legacy record: {cast:?}"
+        "opaque input must not fabricate a lossy i record: {cast:?}"
     );
     let recovery = read_stream(&lb.cast);
     let evidence = recovery
@@ -3853,9 +3757,24 @@ fn opaque_evidence_failure_refuses_master_delivery_and_completion() {
         .expect_err("opaque bytes without durable evidence must be refused");
     assert!(refused.to_string().contains("evidence sync failure"));
 
-    // A compatibility write remains available and is a positive sentinel proving that the
-    // nonblocking slave was observed after the refused delivery would have occurred.
-    lb.host.write_input(&lease, b"Z\r").unwrap();
+    // The durability failure is latched, so every later opaque write is refused too. Marion's own
+    // injection tolerates it (it only disqualifies replay), which makes it a positive sentinel
+    // proving that the nonblocking slave was observed after the refused delivery would have
+    // occurred.
+    assert!(
+        lb.host.write_opaque_input(&lease, b"Y\r").is_err(),
+        "a latched evidence failure admitted a later opaque write"
+    );
+    let sentinel = Injection {
+        label: "sentinel",
+        body: b"Z\r",
+        submit: b"",
+        submit_delay: Duration::ZERO,
+    };
+    assert_eq!(
+        lb.host.inject(&sentinel, &|_| true).unwrap(),
+        Injected::Written
+    );
     let mut got = Vec::new();
     assert!(until(|| {
         let mut buf = [0_u8; 32];

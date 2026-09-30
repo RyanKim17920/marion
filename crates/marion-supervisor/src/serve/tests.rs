@@ -1305,11 +1305,12 @@ fn node_get(agent: &str) -> Call {
 fn an_inbound_notification_reaches_the_handler_and_is_never_answered() {
     let f = Fixture::new("input");
     let mut s = f.dial();
+    let keys = marion_core::proto::Input::NodePaneWrite(marion_core::proto::NodePaneWriteV1 {
+        agent_id: AgentId("a".into()),
+        bytes: marion_core::proto::OpaquePaneBytesV1::new(b"ls\r"),
+    });
     for input in [
-        marion_core::proto::Input::NodePtyWrite {
-            agent_id: AgentId("a".into()),
-            bytes: "ls\r".into(),
-        },
+        keys.clone(),
         marion_core::proto::Input::NodeResize {
             agent_id: AgentId("a".into()),
             cols: 140,
@@ -1329,10 +1330,7 @@ fn an_inbound_notification_reaches_the_handler_and_is_never_answered() {
     assert_eq!(
         got,
         vec![
-            marion_core::proto::Input::NodePtyWrite {
-                agent_id: AgentId("a".into()),
-                bytes: "ls\r".into()
-            },
+            keys,
             marion_core::proto::Input::NodeResize {
                 agent_id: AgentId("a".into()),
                 cols: 140,
@@ -1349,6 +1347,50 @@ fn an_inbound_notification_reaches_the_handler_and_is_never_answered() {
     }
 }
 
+/// **An old client's `node/pty-write` is an unknown method, and the connection survives it.**
+///
+/// The legacy UTF-8 keystroke was retired with the legacy pane stream. Sent as a notification it
+/// has no id to answer, so it is dropped unread; sent with an id it gets the ordinary
+/// method-not-found error. Either way the handler never sees an input and the next request on the
+/// same connection is answered.
+#[test]
+fn a_legacy_pty_write_is_an_unknown_method_and_the_connection_reads_on() {
+    let f = Fixture::new("legacy-pty-write");
+    let mut s = f.dial();
+    let mut r = std::io::BufReader::new(s.try_clone().unwrap());
+    s.write_all(
+        concat!(
+            r#"{"jsonrpc":"2.0","method":"node/pty-write","params":{"agent_id":"a","bytes":"ls\r"}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"node/pty-write","params":{"agent_id":"a","bytes":"ls\r"}}"#,
+            "\n",
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    s.flush().unwrap();
+    match read_frame(&mut r) {
+        Frame::Response(resp) => {
+            assert_eq!(resp.id, RequestId::Number(3));
+            let marion_core::proto::Outcome::Error(e) = resp.outcome else {
+                panic!("a legacy keystroke was answered with a result")
+            };
+            assert_eq!(e.code, marion_core::proto::error::METHOD_NOT_FOUND, "{e}");
+            assert!(e.message.contains("node/pty-write"), "{e}");
+        }
+        other => panic!("expected the method-not-found answer: {other:?}"),
+    }
+    send(&mut s, node_get("a"), 7);
+    match read_frame(&mut r) {
+        Frame::Response(resp) => assert_eq!(resp.id, RequestId::Number(7)),
+        other => panic!("the connection did not read on: {other:?}"),
+    }
+    assert!(
+        lock(&f.rec.inputs).is_empty(),
+        "a retired keystroke reached the handler"
+    );
+}
+
 /// A handler that panics on a keystroke must not take the operator's whole attach with it: the
 /// connection reads on and the next request is still answered.
 #[test]
@@ -1357,10 +1399,10 @@ fn a_panic_on_an_inbound_notification_does_not_end_the_connection() {
     let handle = Arc::clone(&rec) as Arc<dyn Handle>;
     let out = sink(ConnId(1));
     let line = Frame::Input(marion_core::proto::ClientNotification::new(
-        marion_core::proto::Input::NodePtyWrite {
+        marion_core::proto::Input::NodePaneWrite(marion_core::proto::NodePaneWriteV1 {
             agent_id: AgentId("boom".into()),
-            bytes: "x".into(),
-        },
+            bytes: marion_core::proto::OpaquePaneBytesV1::new(b"x"),
+        }),
     ))
     .to_line();
     let mut stated = None;

@@ -127,17 +127,17 @@ fn paste<'a>(label: &'a str, body: &'a [u8]) -> Injection<'a> {
 }
 
 /// **The operator's typing is what the host remembers**: when it last typed, and whether its last
-/// keystroke submitted — through the cast path and the opaque path alike. Focus reports are the
-/// operator's terminal talking, not the operator, and move neither.
+/// keystroke submitted. Focus reports are the operator's terminal talking, not the operator, and
+/// move neither.
 #[test]
-fn operator_input_is_tracked_from_both_write_paths() {
+fn operator_input_is_tracked_from_the_write_path() {
     let lb = RawLoopback::new("pty-operator-input");
     let fresh = lb.host.input_state();
     assert_eq!(fresh.last_operator_input, None, "nobody has typed");
     assert!(fresh.composer_empty, "and nothing is half-typed");
 
     let lease = lb.host.lease_writer(ConnId(7)).expect("the write half");
-    lb.host.write_input(&lease, b"hel").unwrap();
+    lb.host.write_opaque_input(&lease, b"hel").unwrap();
     let typing = lb.host.input_state();
     let typed_at = typing.last_operator_input.expect("typing is recorded");
     assert!(
@@ -145,7 +145,7 @@ fn operator_input_is_tracked_from_both_write_paths() {
         "a half-typed line is in the composer"
     );
 
-    lb.host.write_input(&lease, b"\x1b[I").unwrap();
+    lb.host.write_opaque_input(&lease, b"\x1b[I").unwrap();
     lb.host.write_opaque_input(&lease, b"\x1b[O").unwrap();
     let focused = lb.host.input_state();
     assert_eq!(
@@ -223,7 +223,7 @@ fn an_injection_is_recorded_as_marion_and_submitted_after_its_delay() {
 fn a_declined_injection_writes_nothing() {
     let mut lb = RawLoopback::new("pty-inject-declined");
     let lease = lb.host.lease_writer(ConnId(3)).expect("the write half");
-    lb.host.write_input(&lease, b"ab").unwrap();
+    lb.host.write_opaque_input(&lease, b"ab").unwrap();
     assert_eq!(lb.drain_slave(2), b"ab");
     let seen = std::sync::Mutex::new(None);
     let outcome = lb
@@ -239,7 +239,7 @@ fn a_declined_injection_writes_nothing() {
         "it saw the operator's half-typed line"
     );
     assert_eq!(outcome, Injected::Declined);
-    lb.host.write_input(&lease, b"c").unwrap();
+    lb.host.write_opaque_input(&lease, b"c").unwrap();
     assert_eq!(
         lb.drain_slave(1),
         b"c",

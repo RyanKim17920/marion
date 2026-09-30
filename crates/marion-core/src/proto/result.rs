@@ -223,7 +223,7 @@ pub struct PaneAttach {
     /// asking is rendering the geometry some earlier attacher chose.
     pub cols: u16,
     pub rows: u16,
-    /// Whether this client may send `node/pty-write` and `node/resize` for this node.
+    /// Whether this client may send `node/pane-write` and `node/resize` for this node.
     pub writable: bool,
     /// The connection holding the write half, when it is not this one. `None` when `writable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

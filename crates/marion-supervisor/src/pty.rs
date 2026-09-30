@@ -1083,7 +1083,8 @@ const RESIZE_APPLY_GRACE: Duration = Duration::from_secs(2);
 /// naming the connection that has it, not with a bare failure.
 type WriterSlot = Mutex<Option<ConnId>>;
 
-/// **Proof that its holder is this node's one writer.** Required by [`PtyHost::write_input`].
+/// **Proof that its holder is this node's one writer.** Required by
+/// [`PtyHost::admit_opaque_input`].
 ///
 /// # Why a token and not a check
 ///
@@ -1106,8 +1107,9 @@ type WriterSlot = Mutex<Option<ConnId>>;
 #[derive(Debug)]
 pub struct WriteLease {
     conn: ConnId,
-    /// The slot to clear on drop. Shared with the host, and used by [`PtyHost::write_input`] to
-    /// tell a lease for *this* node from a lease for some other one.
+    /// The slot to clear on drop. Shared with the host, and used by
+    /// [`PtyHost::admit_opaque_input`] to tell a lease for *this* node from a lease for some other
+    /// one.
     slot: Arc<WriterSlot>,
 }
 
@@ -3515,116 +3517,16 @@ impl PtyHost {
         *self.shared.writer.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Keystrokes in. Recorded as `i` **before** they are written, for the same asymmetry the
-    /// resize order is chosen on: an `i` for a keystroke that did not land replays as a keystroke
-    /// the harness ignored, while a keystroke with no record is a session whose input is missing.
-    ///
-    /// **`lease` is the whole signature**, exactly as `witness` is [`spawn_pty`]'s: it is
-    /// deliberately unused in the body, because a capability's job is to have been required. A node
-    /// cannot be typed into by a client that was not given the write half, and that is enforced by
-    /// the type rather than by a check at each call site.
-    ///
-    /// A lease issued by a *different* [`PtyHost`] is refused. Without that check the token would
-    /// prove only "somebody, somewhere, holds a write half", which in a fleet with several
-    /// terminal nodes is not the claim being made.
-    ///
-    /// # Bytes the cast cannot carry are refused, not silently rewritten
-    ///
-    /// This used to record `String::from_utf8_lossy(bytes)` and write the original slice, so for
-    /// `b"\xff"` the cast said U+FFFD and the node received `0xff`. That is the one thing a
-    /// recording may not do: the `i` records exist because C1's mouse-through leaves no `o` trace
-    /// at all, which makes them the *only* evidence of what was typed — and evidence that differs
-    /// from what happened is worse than none, because nothing downstream can tell.
-    ///
-    /// asciicast has no byte-exact escape: `data` is a JSON string, so a byte that is not part of
-    /// valid UTF-8 has no faithful spelling in the format. Given that, the two honest options are
-    /// to invent a private encoding the corpus and `asciinema` would not read, or to refuse. It
-    /// refuses — and refuses **before** the write, so the node never receives something the cast
-    /// does not say it received. The failure is loud in the direction that matters: the record and
-    /// the node cannot disagree, because on this path neither of them gets anything.
-    ///
-    /// **Nothing legitimate is lost today**, and that is checked rather than hoped: the only
-    /// production caller is `RegistryHandle::deliver_input`, and `marion_core::proto::Input::NodePtyWrite`
-    /// carries `bytes` as a **`String`** — the protocol's own doc says so and says the bytes reach
-    /// the master unaltered — so every byte that can arrive over the wire is valid UTF-8 by
-    /// construction and this refusal is unreachable from a client. It guards the `pub` `&[u8]`
-    /// surface, which is what the in-crate callers and the tests use. If marion ever needs to carry
-    /// 8-bit input (a raw C1 `0x9b` CSI, a latin-1 paste), the change is a byte-exact cast encoding
-    /// **and** a wire type that can express it — not a quieter version of this.
-    pub fn write_input(&self, lease: &WriteLease, bytes: &[u8]) -> io::Result<()> {
-        self.validate_writer_lease(lease)?;
-        let text = std::str::from_utf8(bytes).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "refusing to type {} byte(s) into this node: they are not valid UTF-8 (at \
-                     offset {}), and `pty.cast`'s `i` record is a JSON string with no byte-exact \
-                     spelling for them. Recording a substitute for input the node really received \
-                     would make the only evidence of what was typed disagree with what was typed, \
-                     so nothing is written and nothing is recorded.",
-                    bytes.len(),
-                    e.valid_up_to()
-                ),
-            )
-        })?;
-        let (permit, delivery) = self.control.admit_write(None)?;
-        #[cfg(test)]
-        self.observe_control_hook();
-        // Both records are linearized before delivery. The binary evidence is best-effort on this
-        // compatibility path: a dark-stream failure must not break an existing UTF-8 client, but it
-        // does permanently disqualify completed replay.
-        let (durable_failure, cast_result) = {
-            let mut recorders = self
-                .shared
-                .recorders
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let durable_failure = recorders
-                .inject_durable_failure()
-                .and_then(|()| recorders.durable.append_input_evidence(bytes.len()))
-                .err();
-            let cast_result = recorders.cast.input(text);
-            if let Err(error) = &cast_result {
-                recorders.note_cast_failure("input", error);
-            }
-            (durable_failure, cast_result)
-        };
-        if let Some(error) = durable_failure {
-            self.mark_replay_ineligible(error);
-        }
-        if let Err(error) = cast_result {
-            let failure = format!("pty input recording failed before delivery: {error}");
-            drop(permit);
-            delivery.finish(Some(failure.clone()));
-            self.mark_replay_ineligible(failure);
-            return Err(error);
-        }
-        // Closing needs to order cast mutation before terminal `x`, not wait on a kernel write to
-        // a harness that may never read again. The gate therefore ends at the durable record.
-        drop(permit);
-        #[cfg(test)]
-        self.observe_post_cast_input_hook();
-        let outcome = self.write_operator_keys(bytes);
-        let delivery_failure = outcome.as_ref().err().map(|error| {
-            format!("pty input was recorded but delivery failed before completion: {error}")
-        });
-        delivery.finish(delivery_failure.clone());
-        if let Some(error) = delivery_failure {
-            self.mark_replay_ineligible(error);
-        }
-        outcome
-    }
-
     /// Test-only low-level delivery of opaque bytes without pane-v1 negotiation.
     ///
-    /// Unlike [`Self::write_input`], this path never invents a legacy asciicast `i` string. It
+    /// Like every operator write, this path records no asciicast `i` string. It
     /// commits content-independent length and ordering evidence under the host's recorder lock,
     /// releases every durability lock, and only then writes the original slice to the master.
     /// Failure of that evidence step therefore means failure before delivery, not an unaudited
     /// write. Production callers must use [`Self::admit_opaque_input`] so the exact negotiated
     /// pane slot and failure channel are captured before delivery.
     #[cfg(test)]
-    fn write_opaque_input(&self, lease: &WriteLease, bytes: &[u8]) -> io::Result<()> {
+    pub(crate) fn write_opaque_input(&self, lease: &WriteLease, bytes: &[u8]) -> io::Result<()> {
         self.validate_writer_lease(lease)?;
         let (permit, delivery) = self.control.admit_write(None)?;
         self.write_opaque_input_admitted(OpaqueInputAdmission { permit, delivery }, bytes)
@@ -3633,6 +3535,12 @@ impl PtyHost {
     /// Select a negotiated pane input while the caller still holds the global pane registry lock.
     /// The returned admission owns the control barrier and the slot's exact outbound channel; all
     /// recorder and master I/O happens later through [`Self::write_opaque_input_admitted`].
+    ///
+    /// **`lease` is proof, not data**, exactly as `witness` is [`spawn_pty`]'s: a node cannot be
+    /// typed into by a client that was not given the write half, and that is enforced by the type
+    /// rather than by a check at each call site. A lease issued by a *different* [`PtyHost`] is
+    /// refused. Without that check the token would prove only "somebody, somewhere, holds a write
+    /// half", which in a fleet with several terminal nodes is not the claim being made.
     pub(crate) fn admit_opaque_input(
         &self,
         lease: &WriteLease,
@@ -3796,13 +3704,14 @@ impl PtyHost {
     /// Each write is admitted through the control gate as any input is (refused once the pane is
     /// closing) and recorded before it is written: a cast `m` marker carrying `label`, then the
     /// `i` records, so the recording says what marion typed and that marion typed it — and the
-    /// durable stream's length evidence, as every input has. Bytes that are not UTF-8 are refused
-    /// for the reason [`Self::write_input`] gives. What marion types is **not** the operator's
-    /// typing: [`input::InputState::last_operator_input`] does not move.
+    /// durable stream's length evidence, as every input has. Bytes that are not UTF-8 are refused:
+    /// asciicast's `data` is a JSON string with no byte-exact spelling for them, and an `i` record
+    /// that differed from what the node received would be worse than none. What marion types is
+    /// **not** the operator's typing: [`input::InputState::last_operator_input`] does not move.
     ///
-    /// One ordering the lock does not give: an operator write records its `i` *before* it takes
-    /// the lock, so a keystroke racing an injection can appear in the cast one record away from
-    /// where it reached the node. The bytes the node receives are never interleaved.
+    /// The operator's own keystrokes leave no `i` record, only length evidence in the durable
+    /// stream, so the cast's `i` records are marion's alone. The bytes the node receives are never
+    /// interleaved.
     pub fn inject(
         &self,
         injection: &Injection<'_>,

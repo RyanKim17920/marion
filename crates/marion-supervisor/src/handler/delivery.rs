@@ -13,7 +13,6 @@ use crate::serve::{ConnId, Outbound};
 /// carries it has been read off the frame.
 #[derive(Clone, Copy)]
 enum PaneDelivery<'a> {
-    LegacyWrite(&'a [u8]),
     OpaqueWrite(&'a [u8]),
     Resize { cols: u16, rows: u16 },
 }
@@ -27,10 +26,10 @@ impl RegistryHandle {
     /// from under them, with no way for either to tell where it came from. §5.3 gives a node one
     /// writer; the geometry is part of what that means.
     ///
-    /// Legacy refusals remain silent for compatibility: there is no response envelope, and the
-    /// client was already told at `node/attach` that it may not type. Pane-v1 opaque input is
-    /// stronger: it is accepted only from that connection's live negotiated slot, and any refusal
-    /// visibly ends that exact socket before a terminal `End` can claim success.
+    /// A refused resize is silent: there is no response envelope, and the client was already told
+    /// at `node/attach` that it may not type. Opaque input is stronger: it is accepted only from
+    /// that connection's live negotiated slot, and any refusal visibly ends that exact socket
+    /// before a terminal `End` can claim success.
     pub(super) fn deliver_input(&self, conn: ConnId, input: &marion_core::proto::Input) {
         self.deliver_input_with_out(conn, input, None);
     }
@@ -112,9 +111,6 @@ impl RegistryHandle {
     /// **Which pane and what it is being asked to do**, read off the frame alone.
     fn classify_pane_delivery(input: &marion_core::proto::Input) -> (&AgentId, PaneDelivery<'_>) {
         match input {
-            marion_core::proto::Input::NodePtyWrite {
-                agent_id, bytes, ..
-            } => (agent_id, PaneDelivery::LegacyWrite(bytes.as_bytes())),
             marion_core::proto::Input::NodePaneWrite(params) => (
                 &params.agent_id,
                 PaneDelivery::OpaqueWrite(params.bytes.as_bytes()),
@@ -134,25 +130,25 @@ impl RegistryHandle {
         }
     }
 
-    /// **A leased legacy write or resize**: the lease and host are taken out from under
-    /// the registry lock in one look, and the lock is released before the write.
-    fn deliver_leased_input(
+    /// **A leased resize**: the lease is checked and the host taken out from under the registry
+    /// lock in one look, and the lock is released before the resize.
+    fn deliver_resize(
         &self,
         conn: ConnId,
         input: &marion_core::proto::Input,
         id: &AgentId,
-        delivery: PaneDelivery<'_>,
+        size: crate::pty::WinSize,
     ) {
-        // Both taken out from under the lock in one look, and the lock released before the write:
-        // see `Panes::leases`. A harness that has stopped reading its stdin must stall one attach,
-        // never the supervisor.
-        let (host, lease) = {
+        // Taken out from under the lock in one look, and the lock released before the resize:
+        // see `Panes::leases`. A harness that has stopped reading must stall one attach, never
+        // the supervisor.
+        let host = {
             let panes = lock(&self.panes);
-            let Some(lease) = panes.lease(conn, id) else {
+            if panes.lease(conn, id).is_none() {
                 return;
-            };
+            }
             match panes.hosts.get(id).and_then(PaneEntry::live_host) {
-                Some(h) => (Arc::clone(h), lease),
+                Some(h) => Arc::clone(h),
                 None => return,
             }
         };
@@ -160,14 +156,7 @@ impl RegistryHandle {
         if let Some(hook) = lock(&self.pane_delivery_hook).take() {
             hook();
         }
-        let outcome = match delivery {
-            PaneDelivery::LegacyWrite(bytes) => host.write_input(&lease, bytes),
-            PaneDelivery::OpaqueWrite(_) => unreachable!("opaque input returned above"),
-            PaneDelivery::Resize { cols, rows } => {
-                host.resize(crate::pty::WinSize::new(cols, rows))
-            }
-        };
-        if let Err(e) = outcome {
+        if let Err(e) = host.resize(size) {
             eprintln!("marion: {} on node {}: {e}", input.method(), id.0);
         }
     }
@@ -182,12 +171,14 @@ impl RegistryHandle {
             self.deliver_pane_ready(conn, ready);
             return;
         }
-        let (id, delivery) = Self::classify_pane_delivery(input);
-        if let PaneDelivery::OpaqueWrite(bytes) = delivery {
-            self.deliver_opaque_input(conn, input, id, bytes, wire_out);
-            return;
+        match Self::classify_pane_delivery(input) {
+            (id, PaneDelivery::OpaqueWrite(bytes)) => {
+                self.deliver_opaque_input(conn, input, id, bytes, wire_out);
+            }
+            (id, PaneDelivery::Resize { cols, rows }) => {
+                self.deliver_resize(conn, input, id, crate::pty::WinSize::new(cols, rows));
+            }
         }
-        self.deliver_leased_input(conn, input, id, delivery);
     }
 
     /// How many node streams this supervisor is following on behalf of a client.

@@ -2962,6 +2962,46 @@ fn attach(
     }
 }
 
+/// Attach over pane-stream v1, the way `marion attach` does: read up to the response, then send
+/// the exact Ready it advertised so the pane's frames follow on this socket.
+fn attach_pane_stream(
+    c: &mut std::os::unix::net::UnixStream,
+    r: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+    agent: &str,
+    rid: i64,
+) -> marion_core::proto::result::NodeAttachResult {
+    call(
+        c,
+        Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
+            agent_id: id(agent),
+            pane_stream: Some(marion_core::proto::params::PaneStreamCapabilityV1::new()),
+        }),
+        rid,
+    );
+    let attached = loop {
+        match next_frame(r) {
+            Frame::Notification(_) => continue,
+            Frame::Response(resp) => break attached_ok(resp.outcome),
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    };
+    let descriptor = attached
+        .pane
+        .as_ref()
+        .and_then(|pane| pane.pane_ready.clone())
+        .expect("a pane-stream attach advertises its Ready boundary");
+    let ready = Frame::Input(marion_core::proto::ClientNotification::new(
+        marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
+            agent_id: id(agent),
+            token: descriptor.token,
+            cut: descriptor.cut,
+        }),
+    ));
+    c.write_all(ready.to_line().as_bytes()).unwrap();
+    c.flush().unwrap();
+    attached
+}
+
 fn attached_ok(
     outcome: marion_core::proto::Outcome,
 ) -> marion_core::proto::result::NodeAttachResult {
@@ -3342,24 +3382,17 @@ fn native_ticket_is_revoked_by_replacement_and_terminal_lifecycle() {
     old.shutdown().unwrap();
 }
 
-fn write_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &str) {
-    let f = Frame::Input(marion_core::proto::ClientNotification::new(
-        marion_core::proto::Input::NodePtyWrite {
-            agent_id: id(agent),
-            bytes: bytes.into(),
-        },
-    ));
-    s.write_all(f.to_line().as_bytes()).unwrap();
-    s.flush().unwrap();
+fn pane_write(agent: &str, bytes: &[u8]) -> marion_core::proto::Input {
+    marion_core::proto::Input::NodePaneWrite(marion_core::proto::NodePaneWriteV1 {
+        agent_id: id(agent),
+        bytes: marion_core::proto::OpaquePaneBytesV1::new(bytes),
+    })
 }
 
-fn write_opaque_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &[u8]) {
-    let f = Frame::Input(marion_core::proto::ClientNotification::new(
-        marion_core::proto::Input::NodePaneWrite(marion_core::proto::NodePaneWriteV1 {
-            agent_id: id(agent),
-            bytes: marion_core::proto::OpaquePaneBytesV1::new(bytes),
-        }),
-    ));
+fn write_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &[u8]) {
+    let f = Frame::Input(marion_core::proto::ClientNotification::new(pane_write(
+        agent, bytes,
+    )));
     s.write_all(f.to_line().as_bytes()).unwrap();
     s.flush().unwrap();
 }
@@ -3980,72 +4013,6 @@ fn a_resize_cloned_before_close_cannot_run_after_shutdown() {
     assert!(!codes.iter().any(|code| code == "r"), "{codes:?}");
 }
 
-/// Keystrokes obey the same close boundary as resize. The production change that must make
-/// this fail is omitting the host gate from `write_input`: a handler clone paused before that
-/// call can resume after shutdown and append an `i` record after the cast's terminal `x`.
-#[test]
-fn input_cloned_before_close_cannot_append_after_shutdown() {
-    let w = Wired::new("handler-pane-stale-input");
-    let host = pane(&w, "root", "sleep 30");
-    let conn = ConnId(1_109);
-    let (out, _captured) = crate::serve::capture(conn);
-    assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
-
-    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
-    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-    let release_rx = std::sync::Mutex::new(release_rx);
-    *lock(&w.fx.handle.pane_delivery_hook) = Some(Box::new(move || {
-        reached_tx.send(()).expect("the assertion side is alive");
-        release_rx
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("the stale delivery was not released");
-    }));
-    let handle = Arc::clone(&w.fx.handle);
-    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
-    let delivery = std::thread::spawn(move || {
-        handle.deliver_input(
-            conn,
-            &marion_core::proto::Input::NodePtyWrite {
-                agent_id: id("root"),
-                bytes: "late-input".into(),
-            },
-        );
-        done_tx.send(()).expect("the assertion side is alive");
-    });
-    reached_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("delivery did not reach the post-clone seam");
-
-    w.fx.handle.closing_pane(&id("root"), &host);
-    host.shutdown().expect("legacy shutdown succeeds");
-    let charge_before = host
-        .completed_replay_charge()
-        .expect("the drained replay is eligible");
-    w.fx.handle
-        .completed_pane(&id("root"), &host, charge_before);
-    release_tx.send(()).expect("the delivery thread is alive");
-    done_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("the stale delivery did not return");
-    delivery.join().unwrap();
-
-    assert_eq!(host.completed_replay_charge().unwrap(), charge_before);
-    let cast = std::fs::read_to_string(w.dir.join("root.cast")).unwrap();
-    let codes = cast
-        .lines()
-        .skip(1)
-        .map(|line| {
-            serde_json::from_str::<(f64, String, String)>(line)
-                .unwrap()
-                .1
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
-    assert!(!codes.iter().any(|code| code == "i"), "{codes:?}");
-}
-
 /// Sealing is a nonblocking registry transition; draining is shutdown's host-local barrier.
 /// The production change that must make this fail is waiting for admitted control while the
 /// global `Panes` lock is held, or writing cast `x` before that admitted mutation completes.
@@ -4055,7 +4022,14 @@ fn closing_releases_the_registry_before_shutdown_drains_admitted_control() {
     let host = pane(&w, "root", "sleep 30");
     let conn = ConnId(1_110);
     let (out, _captured) = crate::serve::capture(conn);
-    assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+    assert!(
+        w.fx.handle
+            .attach_pane_v1(&id("root"), &out)
+            .unwrap()
+            .0
+            .expect("the live pane is attachable")
+            .writable
+    );
 
     let (admitted_tx, admitted_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -4073,13 +4047,7 @@ fn closing_releases_the_registry_before_shutdown_drains_admitted_control() {
     let handle = Arc::clone(&w.fx.handle);
     let (delivery_done_tx, delivery_done_rx) = std::sync::mpsc::sync_channel(1);
     let delivery = std::thread::spawn(move || {
-        handle.deliver_input(
-            conn,
-            &marion_core::proto::Input::NodePtyWrite {
-                agent_id: id("root"),
-                bytes: "admitted".into(),
-            },
-        );
+        handle.deliver_input(conn, &pane_write("root", b"admitted"));
         delivery_done_tx
             .send(())
             .expect("the assertion side is alive");
@@ -4139,7 +4107,7 @@ fn closing_releases_the_registry_before_shutdown_drains_admitted_control() {
 
     assert!(
         host.completed_replay_charge().is_err(),
-        "a cast-recorded input that failed delivery remained cache-eligible"
+        "an evidenced input that failed delivery remained cache-eligible"
     );
     let cast = std::fs::read_to_string(w.dir.join("root.cast")).unwrap();
     let codes = cast
@@ -4152,10 +4120,9 @@ fn closing_releases_the_registry_before_shutdown_drains_admitted_control() {
         })
         .collect::<Vec<_>>();
     assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
-    assert!(codes.iter().any(|code| code == "i"), "{codes:?}");
 }
 
-/// A cast-recorded input remains part of the completion decision until its master write has
+/// An evidenced input remains part of the completion decision until its master write has
 /// either succeeded or failed. A permit that ends at the cast record lets shutdown cache an
 /// eligible replay while the write is still parked; its later failure then arrives too late to
 /// retract the registry's Completed entry.
@@ -4165,7 +4132,14 @@ fn unresolved_input_delivery_cannot_be_published_as_completed() {
     let host = pane(&w, "root", "sleep 30");
     let conn = ConnId(1_116);
     let (out, _captured) = crate::serve::capture(conn);
-    assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+    assert!(
+        w.fx.handle
+            .attach_pane_v1(&id("root"), &out)
+            .unwrap()
+            .0
+            .expect("the live pane is attachable")
+            .writable
+    );
 
     let (recorded_tx, recorded_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -4181,13 +4155,7 @@ fn unresolved_input_delivery_cannot_be_published_as_completed() {
 
     let handle = Arc::clone(&w.fx.handle);
     let delivery = std::thread::spawn(move || {
-        handle.deliver_input(
-            conn,
-            &marion_core::proto::Input::NodePtyWrite {
-                agent_id: id("root"),
-                bytes: "recorded-but-undelivered".into(),
-            },
-        );
+        handle.deliver_input(conn, &pane_write("root", b"recorded-but-undelivered"));
     });
     recorded_rx
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -4241,7 +4209,6 @@ fn unresolved_input_delivery_cannot_be_published_as_completed() {
         })
         .collect::<Vec<_>>();
     assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
-    assert!(codes.iter().any(|code| code == "i"), "{codes:?}");
 }
 
 /// Legacy pane presence means a live, attachable terminal—not retained replay state. The
@@ -5153,7 +5120,7 @@ fn pane_ready_routing_is_exact_and_preserves_the_valid_pending_slot() {
     ));
 }
 
-/// Read `node/pty` notifications until `want` appears in the accumulated bytes.
+/// Read `node/pane-frame` output until `want` appears in the accumulated bytes.
 ///
 /// Returns `None` on timeout rather than hanging, so a test that proves a *negative* — a
 /// read-only client's keystrokes never landing — is a test that can fail rather than one that
@@ -5187,8 +5154,10 @@ fn pty_until(
         }
         match Frame::from_line(&line).expect("well-formed") {
             Frame::Notification(n) => {
-                if let Event::NodePty { bytes, .. } = n.event {
-                    seen.push_str(&bytes);
+                if let Event::NodePaneFrame(frame) = n.event
+                    && let marion_core::proto::PaneFrameKindV1::Output { bytes } = frame.frame
+                {
+                    seen.push_str(&String::from_utf8_lossy(bytes.as_bytes()));
                     if seen.contains(want) {
                         return Some(seen);
                     }
@@ -5213,7 +5182,7 @@ fn alive(pid: i32) -> bool {
 ///
 /// The echo the line discipline produces would not prove this — a mutation that wrote to the
 /// master and never reached the child would still echo. `got:ping` can only be written by the
-/// shell that read the keystroke, so this dies if `node/pty-write` stops reaching the pty.
+/// shell that read the keystroke, so this dies if `node/pane-write` stops reaching the pty.
 #[test]
 fn an_attached_client_is_given_the_write_half_and_its_keystrokes_reach_the_child() {
     let w = Wired::new("handler-pane-write");
@@ -5221,8 +5190,7 @@ fn an_attached_client_is_given_the_write_half_and_its_keystrokes_reach_the_child
 
     let mut c = w.dial();
     let mut r = std::io::BufReader::new(c.try_clone().unwrap());
-    let (_, outcome) = attach(&mut c, &mut r, "root", 1);
-    let got = attached_ok(outcome);
+    let got = attach_pane_stream(&mut c, &mut r, "root", 1);
 
     let p = got
         .pane
@@ -5236,7 +5204,7 @@ fn an_attached_client_is_given_the_write_half_and_its_keystrokes_reach_the_child
         "the size is the master's, read back from the kernel"
     );
 
-    write_keys(&mut c, "root", "ping\r");
+    write_keys(&mut c, "root", b"ping\r");
     assert!(
         pty_until(&mut r, "got:ping", std::time::Duration::from_secs(10)).is_some(),
         "the keystroke never reached the child"
@@ -5246,7 +5214,8 @@ fn an_attached_client_is_given_the_write_half_and_its_keystrokes_reach_the_child
 /// A v1 input notification has no response envelope. If its durability evidence is refused,
 /// keeping the socket open would tell the terminal that the bytes were accepted even though
 /// the master was deliberately never written. The exact negotiated connection must therefore
-/// close before any terminal `End`; ordinary node lifetime and the next writer remain intact.
+/// close before any terminal `End`; ordinary node lifetime and the write lease remain intact. The
+/// durability failure is latched, so the next writer's input is refused the same visible way.
 #[test]
 fn opaque_input_evidence_refusal_closes_only_that_pane_client_before_end() {
     use std::io::BufRead;
@@ -5315,7 +5284,7 @@ fn opaque_input_evidence_refusal_closes_only_that_pane_client_before_end() {
         .get_ref()
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
-    write_opaque_keys(&mut first, "root", b"refused\r");
+    write_keys(&mut first, "root", b"refused\r");
     loop {
         let mut line = String::new();
         match first_reader.read_line(&mut line) {
@@ -5345,22 +5314,29 @@ fn opaque_input_evidence_refusal_closes_only_that_pane_client_before_end() {
 
     let mut second = w.dial();
     let mut second_reader = std::io::BufReader::new(second.try_clone().unwrap());
-    let pane = attached_ok(attach(&mut second, &mut second_reader, "root", 2).1)
+    let pane = attach_pane_stream(&mut second, &mut second_reader, "root", 2)
         .pane
         .expect("the node remains attachable");
     assert!(
         pane.writable,
         "the next client did not receive the released lease"
     );
-    write_keys(&mut second, "root", "accepted\r");
+    second_reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    write_keys(&mut second, "root", b"also-refused\r");
+    loop {
+        let mut line = String::new();
+        match second_reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(error) => panic!("the latched refusal did not close the next socket: {error}"),
+        }
+    }
+    assert!(alive(pid), "the second refusal killed the node");
     assert!(
-        until(|| std::fs::read_to_string(&received)
-            .is_ok_and(|contents| contents.contains("accepted\n"))),
-        "the surviving node did not receive the next writer's input"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&received).unwrap(),
-        "accepted\n",
+        !received.exists() || std::fs::read(&received).unwrap().is_empty(),
         "bytes refused before durable evidence still reached the child"
     );
 }
@@ -5425,7 +5401,7 @@ fn admitted_wire_opaque_input_failure_wins_over_terminal_end() {
             .expect("the admitted opaque write was not released");
     }));
     host.fail_next_master_input("injected close-race master delivery refusal");
-    write_opaque_keys(&mut client, "root", b"late\r");
+    write_keys(&mut client, "root", b"late\r");
     admitted_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("wire opaque input was not admitted at the host boundary");
@@ -5523,7 +5499,7 @@ fn unresolved_pending_wire_input_is_visibly_failed_before_terminal_end() {
             .recv_timeout(Duration::from_secs(2))
             .expect("the unresolved master outcome was not released");
     }));
-    write_opaque_keys(&mut client, "root", b"pending\r");
+    write_keys(&mut client, "root", b"pending\r");
     admitted_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("Pending wire input never reached the post-evidence seam");
@@ -5626,7 +5602,7 @@ fn a_negotiated_clients_first_opaque_keystroke_reaches_the_child() {
     client.flush().unwrap();
     // Typed immediately behind Ready, the way `marion attach` starts its keyboard: no replay
     // frame is waited for first, so this is the earliest a real client can type.
-    write_opaque_keys(&mut client, "root", b"typed\r");
+    write_keys(&mut client, "root", b"typed\r");
 
     assert!(
         until(|| std::fs::read_to_string(&received)
@@ -5682,7 +5658,7 @@ fn legacy_attach_cannot_forge_opaque_pane_input() {
             .writable
     );
 
-    write_opaque_keys(&mut client, "root", b"forged\r");
+    write_keys(&mut client, "root", b"forged\r");
     reader
         .get_ref()
         .set_read_timeout(Some(Duration::from_secs(1)))
@@ -5705,41 +5681,6 @@ fn legacy_attach_cannot_forge_opaque_pane_input() {
     );
 }
 
-#[test]
-fn legacy_input_keeps_its_compatibility_delivery_on_durable_evidence_failure() {
-    let w = Wired::new("handler-pane-legacy-evidence-failure");
-    let host = pane(
-        &w,
-        "root",
-        "stty -echo; while IFS= read -r line; do printf 'got:%s\\n' \"$line\"; done",
-    );
-    let mut client = w.dial();
-    let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
-    let attached = attached_ok(attach(&mut client, &mut reader, "root", 1).1);
-    assert!(attached.pane.expect("the pane is live").writable);
-
-    host.fail_next_durable_append("injected legacy evidence failure");
-    write_keys(&mut client, "root", "accepted\r");
-    assert!(
-        pty_until(&mut reader, "got:accepted", Duration::from_secs(10)).is_some(),
-        "the legacy compatibility path stopped delivering after evidence failure"
-    );
-    call(
-        &mut client,
-        Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
-        2,
-    );
-    // The pane's output can still be arriving after the line the test waited for; the
-    // connection is open if the call is answered after it.
-    let answered = loop {
-        match next_frame(&mut reader) {
-            Frame::Notification(_) => continue,
-            other => break matches!(other, Frame::Response(_)),
-        }
-    };
-    assert!(answered, "legacy evidence failure closed the connection");
-}
-
 /// §5.3's one-writer rule, over the socket and **by name**.
 ///
 /// Two halves, and the second is the one that matters: the refusal is not merely reported, it
@@ -5752,14 +5693,16 @@ fn a_second_attacher_is_refused_the_write_half_by_name_and_cannot_type() {
 
     let mut first = w.dial();
     let mut fr = std::io::BufReader::new(first.try_clone().unwrap());
-    let (_, outcome) = attach(&mut first, &mut fr, "root", 1);
-    let a = attached_ok(outcome).pane.expect("a pane");
+    let a = attach_pane_stream(&mut first, &mut fr, "root", 1)
+        .pane
+        .expect("a pane");
     assert!(a.writable);
 
     let mut second = w.dial();
     let mut sr = std::io::BufReader::new(second.try_clone().unwrap());
-    let (_, outcome) = attach(&mut second, &mut sr, "root", 1);
-    let b = attached_ok(outcome).pane.expect("a pane");
+    let b = attach_pane_stream(&mut second, &mut sr, "root", 1)
+        .pane
+        .expect("a pane");
     assert!(
         !b.writable,
         "two writers on one pty interleave into nonsense"
@@ -5770,13 +5713,13 @@ fn a_second_attacher_is_refused_the_write_half_by_name_and_cannot_type() {
     );
 
     // The refusal is enforced, not merely announced.
-    write_keys(&mut second, "root", "sneak\r");
+    write_keys(&mut second, "root", b"sneak\r");
     assert!(
         pty_until(&mut sr, "got:sneak", std::time::Duration::from_secs(2)).is_none(),
         "a read-only client typed into the node anyway"
     );
     // And the writer still works, so the block is about the lease and not about the socket.
-    write_keys(&mut first, "root", "ping\r");
+    write_keys(&mut first, "root", b"ping\r");
     assert!(
         pty_until(&mut fr, "got:ping", std::time::Duration::from_secs(10)).is_some(),
         "refusing the second client broke the first"
@@ -5798,18 +5741,20 @@ fn a_resize_reaches_the_pty_and_the_child_is_told() {
         // **`ready` is printed after the trap is installed, and only once the test has typed
         // `go` through its attach**, and the test waits for it. A signal delivered to a shell
         // that has not reached its `trap` yet is simply lost, so without `ready` the test races
-        // the child's startup. And without `go`, a quick child prints `ready` before the attach
-        // lands: legacy attach replays the node's event stream, never earlier pty bytes, so
-        // that `ready` never reaches this client and the wait for it expires. That flaked
-        // on macOS CI.
+        // the child's startup. `go` also puts the attach's keyboard ahead of the resize, so the
+        // two arrive at the child in the order this test sends them.
         "stty -echo; trap 'stty size' WINCH; read go; echo ready; while :; do sleep 0.05; done",
     );
 
     let mut c = w.dial();
     let mut r = std::io::BufReader::new(c.try_clone().unwrap());
-    let (_, outcome) = attach(&mut c, &mut r, "root", 1);
-    assert!(attached_ok(outcome).pane.expect("a pane").writable);
-    write_keys(&mut c, "root", "go\r");
+    assert!(
+        attach_pane_stream(&mut c, &mut r, "root", 1)
+            .pane
+            .expect("a pane")
+            .writable
+    );
+    write_keys(&mut c, "root", b"go\r");
     assert!(
         pty_until(&mut r, "ready", std::time::Duration::from_secs(10)).is_some(),
         "the child never installed its WINCH trap"
@@ -5835,12 +5780,12 @@ fn a_read_only_attacher_cannot_resize_the_node() {
 
     let mut first = w.dial();
     let mut fr = std::io::BufReader::new(first.try_clone().unwrap());
-    attached_ok(attach(&mut first, &mut fr, "root", 1).1);
+    attach_pane_stream(&mut first, &mut fr, "root", 1);
 
     let mut second = w.dial();
     let mut sr = std::io::BufReader::new(second.try_clone().unwrap());
     assert!(
-        !attached_ok(attach(&mut second, &mut sr, "root", 1).1)
+        !attach_pane_stream(&mut second, &mut sr, "root", 1)
             .pane
             .expect("a pane")
             .writable
@@ -5848,13 +5793,22 @@ fn a_read_only_attacher_cannot_resize_the_node() {
 
     send_resize(&mut second, "root", 200, 60);
     // Nothing to wait *for*, so wait for the supervisor to have processed something later on
-    // the same connection instead of sleeping on a hope.
+    // the same connection instead of sleeping on a hope. The pane's replay frames may come first.
     call(
         &mut second,
         Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
         9,
     );
-    assert!(matches!(next_frame(&mut sr), Frame::Response(_)));
+    let answered = loop {
+        match next_frame(&mut sr) {
+            Frame::Notification(_) => continue,
+            other => break matches!(other, Frame::Response(_)),
+        }
+    };
+    assert!(
+        answered,
+        "the read-only client's connection did not read on"
+    );
     let size = host.master().size().expect("TIOCGWINSZ");
     assert_eq!(
         (size.cols, size.rows),
@@ -5878,7 +5832,7 @@ fn a_client_departing_leaves_the_node_running_and_releases_its_keyboard() {
     let mut first = w.dial();
     let mut fr = std::io::BufReader::new(first.try_clone().unwrap());
     assert!(
-        attached_ok(attach(&mut first, &mut fr, "root", 1).1)
+        attach_pane_stream(&mut first, &mut fr, "root", 1)
             .pane
             .expect("a pane")
             .writable
@@ -5896,7 +5850,7 @@ fn a_client_departing_leaves_the_node_running_and_releases_its_keyboard() {
     assert!(alive(pid), "the node was killed by a client going away");
     let mut second = w.dial();
     let mut sr = std::io::BufReader::new(second.try_clone().unwrap());
-    let p = attached_ok(attach(&mut second, &mut sr, "root", 1).1)
+    let p = attach_pane_stream(&mut second, &mut sr, "root", 1)
         .pane
         .expect("a pane");
     assert!(
@@ -5904,7 +5858,7 @@ fn a_client_departing_leaves_the_node_running_and_releases_its_keyboard() {
         "the departed client's lease was never released: {:?}",
         p.held_by
     );
-    write_keys(&mut second, "root", "ping\r");
+    write_keys(&mut second, "root", b"ping\r");
     assert!(
         pty_until(&mut sr, "got:ping", std::time::Duration::from_secs(10)).is_some(),
         "the node survived but nobody can type into it"
@@ -5925,8 +5879,8 @@ fn a_node_with_no_pty_attaches_with_no_pane() {
     let got = attached_ok(attach(&mut c, &mut r, "root", 1).1);
     assert_eq!(got.pane, None);
     assert_eq!(w.fx.handle.panes(), 0);
-    // And a keystroke aimed at it is dropped rather than answered, crashing nothing.
-    write_keys(&mut c, "root", "x");
+    // And a resize aimed at it is dropped rather than answered, crashing nothing.
+    send_resize(&mut c, "root", 100, 30);
     call(
         &mut c,
         Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),

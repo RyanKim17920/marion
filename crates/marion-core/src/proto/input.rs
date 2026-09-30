@@ -30,8 +30,8 @@
 //! §5.7's argument for the outbound direction is that *the supervisor must not be able to block on
 //! a client*. The inbound direction has the mirror of it, and it is stronger: a keystroke has no
 //! answer. There is nothing a supervisor could put in a response that an operator wants — the pty
-//! echo **is** the acknowledgement, and it arrives as [`crate::proto::Event::NodePty`] whether marion
-//! answers or not. A request would put a socket round trip between a key press and the next key
+//! echo **is** the acknowledgement, and it arrives as [`crate::proto::Event::NodePaneFrame`] whether
+//! marion answers or not. A request would put a socket round trip between a key press and the next key
 //! press, so a client that awaited each one would type at the speed of the supervisor's event loop,
 //! and one that did not await would have re-invented a notification with an unread `id`.
 //!
@@ -71,9 +71,8 @@ where
 
 /// Byte-exact terminal input for a negotiated pane writer.
 ///
-/// This is deliberately separate from legacy [`Input::NodePtyWrite`]. Structured callers keep
-/// their UTF-8 text contract, while an interactive terminal may forward every byte its tty
-/// produced without inventing replacement characters or buffering for a Unicode boundary.
+/// An interactive terminal forwards every byte its tty produced, without inventing replacement
+/// characters or buffering for a Unicode boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodePaneWriteV1 {
@@ -95,26 +94,11 @@ pub struct NodePaneReadyV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum Input {
-    /// Keystrokes into a node's pty, from the one client holding its write half.
-    ///
-    /// **`bytes` is a JSON string, not base64** — the same encoding [`crate::proto::Event::NodePty`] uses,
-    /// and for the same reason: the outbound direction settled it against the committed asciicast
-    /// captures, and an inbound direction that disagreed would make one node's session two
-    /// encodings.
-    ///
-    /// The obligation that comes with a `String` is the one S11 states as *"a `read()` is not a
-    /// frame"*, now on the **client's** side of the seam. A client reads its own tty in raw mode,
-    /// so a multibyte keystroke or a pasted run can be split across two reads, and a producer
-    /// therefore MUST buffer an incomplete trailing UTF-8 sequence rather than emit it.
-    /// `marion_supervisor::pty::Utf8Stream` is the outbound buffer; a client needs its own.
+    /// Keystrokes into a node's pty, from the one client holding its write half, as opaque bytes.
     ///
     /// Bytes are written to the master **unaltered**. `marion_tui::keys` is a filter and not an
     /// encoder — marion's terminal is already raw, so what the operator typed is what the node
     /// expects — and the one thing it removes is its own `^]` prefix.
-    #[serde(rename = "node/pty-write")]
-    NodePtyWrite { agent_id: AgentId, bytes: String },
-
-    /// Opaque bytes from an interactive terminal holding a pane's write lease.
     #[serde(rename = "node/pane-write")]
     NodePaneWrite(NodePaneWriteV1),
 
@@ -147,7 +131,6 @@ impl Input {
     /// The wire spelling. One table, as [`crate::proto::Method::as_str`] and [`crate::proto::Event::method`].
     pub const fn method(&self) -> &'static str {
         match self {
-            Input::NodePtyWrite { .. } => "node/pty-write",
             Input::NodePaneWrite(_) => "node/pane-write",
             Input::NodeResize { .. } => "node/resize",
             Input::NodePaneReady(_) => "node/pane-ready",
@@ -159,7 +142,7 @@ impl Input {
     /// would otherwise have to guess which pane an operator was typing into.
     pub const fn agent_id(&self) -> &AgentId {
         match self {
-            Input::NodePtyWrite { agent_id, .. } | Input::NodeResize { agent_id, .. } => agent_id,
+            Input::NodeResize { agent_id, .. } => agent_id,
             Input::NodePaneWrite(params) => &params.agent_id,
             Input::NodePaneReady(params) => &params.agent_id,
         }
@@ -167,12 +150,7 @@ impl Input {
 
     /// Every inbound notification name, for the frame reader — so an unknown one is refused **by
     /// name** rather than as an anonymous parse failure.
-    pub const METHODS: [&'static str; 4] = [
-        "node/pty-write",
-        "node/pane-write",
-        "node/resize",
-        "node/pane-ready",
-    ];
+    pub const METHODS: [&'static str; 3] = ["node/pane-write", "node/resize", "node/pane-ready"];
 }
 
 #[cfg(test)]
@@ -190,13 +168,6 @@ mod tests {
 
     fn every_input() -> Vec<Input> {
         vec![
-            Input::NodePtyWrite {
-                agent_id: AgentId("a".into()),
-                // An ESC and a multibyte glyph, the two things a naive encoding gets wrong — the
-                // same pair `Event::NodePty`'s fixture uses, so the two directions are exercised
-                // against one hazard rather than two.
-                bytes: "\u{1b}[A\u{256d}".into(),
-            },
             Input::NodePaneWrite(NodePaneWriteV1 {
                 agent_id: AgentId("a".into()),
                 bytes: OpaquePaneBytesV1::new([0x00, 0x80, 0xff]),
@@ -235,16 +206,6 @@ mod tests {
 
     #[test]
     fn inputs_pin_their_wire_shapes() {
-        assert_eq!(
-            serde_json::to_string(&Input::NodePtyWrite {
-                agent_id: AgentId("a".into()),
-                bytes: "\u{1b}q".into(),
-            })
-            .unwrap(),
-            // The ESC is `\u001b` on the wire, not a raw byte: serde escapes C0 controls, which is
-            // what keeps `Frame::to_line`'s one-frame-one-line property true for a keystroke.
-            r#"{"method":"node/pty-write","params":{"agent_id":"a","bytes":"\u001bq"}}"#
-        );
         assert_eq!(
             serde_json::to_string(&Input::NodeResize {
                 agent_id: AgentId("a".into()),
@@ -367,13 +328,13 @@ mod tests {
         assert!(!Event::METHODS.contains(&"node/pane-ready"));
     }
 
-    /// `node/pty-write` and `node/pty` are one character apart, and the reader distinguishes them
-    /// by exact match rather than by prefix. Asserted because a prefix match is the natural way to
-    /// write that reader and it would route every keystroke into the outbound table.
+    /// **The retired UTF-8 keystroke name is in no table.** `node/pty-write` was the legacy pane
+    /// stream's input; marion's client and supervisor ship as a pair and nothing sends it, so it
+    /// must now be refused by the frame reader as the unknown name it is.
     #[test]
-    fn the_write_name_is_not_the_read_name_with_a_suffix_the_reader_may_ignore() {
-        assert!("node/pty-write".starts_with("node/pty"));
+    fn the_retired_legacy_keystroke_name_is_in_no_table() {
+        assert!(!Input::METHODS.contains(&"node/pty-write"));
         assert!(!Event::METHODS.contains(&"node/pty-write"));
-        assert!(!Input::METHODS.contains(&"node/pty"));
+        assert_eq!(Method::from_wire("node/pty-write"), None);
     }
 }

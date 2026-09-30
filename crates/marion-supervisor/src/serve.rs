@@ -1667,8 +1667,9 @@ fn answer_one(
             let _ = n;
             None
         }
-        // The inbound table, which is not an error: §2's `node/pty-write` and `node/resize`. Also
-        // unanswerable, and deliberately so — the acknowledgement of a keystroke is the pty echo.
+        // The inbound table, which is not an error: `node/pane-write`, `node/resize` and
+        // `node/pane-ready`. Also unanswerable, and deliberately so — the acknowledgement of a
+        // keystroke is the pty echo.
         Ok(Frame::Input(n)) => {
             // Caught for the same reason `call` is: a handler that panics on a malformed keystroke
             // must not take the connection, and through it the operator's whole attach, with it.

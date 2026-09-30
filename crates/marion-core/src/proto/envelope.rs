@@ -304,9 +304,9 @@ fn decode_request(line: &str, value: serde_json::Value, method: String) -> Resul
 
 /// `method`, no `id`: an event or a client input.
 ///
-/// **Two tables, matched exactly.** A prefix or `starts_with` test would route `node/pty-write`
-/// into the outbound table, where it would parse as nothing and be reported as a malformed
-/// `node/pty`. Which table a name is in is also which *direction* it travels, so the choice is not
+/// **Two tables, matched exactly.** A prefix or `starts_with` test would let one name capture
+/// another that merely begins with it, and report a frame from one table as a malformed entry of
+/// the other. Which table a name is in is also which *direction* it travels, so the choice is not
 /// cosmetic: it is what stops a client asserting what a node printed.
 fn decode_notification(
     line: &str,
@@ -398,13 +398,6 @@ mod tests {
         })
     }
 
-    fn input_write() -> ClientNotification {
-        ClientNotification::new(Input::NodePtyWrite {
-            agent_id: AgentId("a".into()),
-            bytes: "ls -la\r".into(),
-        })
-    }
-
     fn input_pane_ready() -> ClientNotification {
         ClientNotification::new(Input::NodePaneReady(NodePaneReadyV1 {
             agent_id: AgentId("a".into()),
@@ -447,7 +440,6 @@ mod tests {
                     bytes: OpaquePaneBytesV1::new([0xff]),
                 },
             ),
-            Frame::Input(input_write()),
             Frame::Input(input_pane_write()),
             Frame::Input(ClientNotification::new(Input::NodeResize {
                 agent_id: AgentId("a".into()),
@@ -678,21 +670,19 @@ mod tests {
         assert!(matches!(pane_frame, Frame::Notification(_)));
     }
 
-    /// `node/pty-write` is `node/pty` plus a suffix, and the reader matches exactly. A
-    /// `starts_with` reader — the natural way to write this — would route every keystroke into the
-    /// outbound table and report it as a malformed `node/pty`.
+    /// **The retired legacy keystroke is an unknown name, refused by name.** `node/pty-write` was
+    /// the legacy pane stream's input and nothing sends it any more; an old client's frame is
+    /// the ordinary unknown-notification error, not a keystroke and not a malformed event.
     #[test]
-    fn a_keystroke_is_not_read_as_a_truncated_pty_event() {
-        let f = Frame::from_line(
+    fn a_legacy_pty_write_is_refused_as_an_unknown_notification() {
+        let e = Frame::from_line(
             r#"{"jsonrpc":"2.0","method":"node/pty-write","params":{"agent_id":"a","bytes":"q"}}"#,
         )
-        .unwrap();
-        assert_eq!(
-            f,
-            Frame::Input(ClientNotification::new(Input::NodePtyWrite {
-                agent_id: AgentId("a".into()),
-                bytes: "q".into(),
-            }))
+        .unwrap_err();
+        assert_eq!(e.code, crate::proto::error::METHOD_NOT_FOUND, "{e}");
+        assert!(
+            e.message.contains("no such notification: node/pty-write"),
+            "{e}"
         );
     }
 

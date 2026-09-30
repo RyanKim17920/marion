@@ -168,8 +168,8 @@ pub enum Undecodable {
 /// # Why there is no `starts_with("notifications/")` here any more
 ///
 /// There was, and it was wrong in the way [`marion_core::proto::envelope`]'s own comment describes for
-/// its own protocol: *"a prefix or `starts_with` test would route `node/pty-write` into the
-/// outbound table"*. The same codebase was rigorous on one surface and loose on the other.
+/// its own protocol: *"a prefix or `starts_with` test would let one name capture another that
+/// merely begins with it"*. The same codebase was rigorous on one surface and loose on the other.
 ///
 /// It was also **unnecessary**, which is why the fix is a deletion rather than a table. JSON-RPC
 /// already decides this: a frame with no `id` is a notification and MUST NOT be answered, whatever
