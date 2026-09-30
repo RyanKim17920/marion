@@ -788,29 +788,6 @@ pub const OPENCODE: Agent = Agent {
            not measured on the `acp` subcommand",
 };
 
-/// `gemini --acp` — completes `initialize` and is refused `session/new` **vendor-side**.
-///
-/// It is in the table because a doctor row saying *why* an installed agent cannot run is worth
-/// more than an absent row, and its `tools` is `None` because no turn has ever happened: S20's
-/// `session/new` answers `-32000`, *"This client is no longer supported for Gemini Code Assist for
-/// individuals"*, reproduced with no marion involved.
-pub const GEMINI: Agent = Agent {
-    boot: UNMEASURED_AGENT,
-    id: "gemini",
-    argv: &["gemini", "--acp"],
-    tools: None,
-    canned: None,
-    declaration: Declaration::Session,
-    // No turn has ever run, so nothing mid-turn was measured.
-    mid_turn: None,
-    reasoning: None,
-    agent_info: "gemini-cli",
-    install: "npm i -g @google/gemini-cli",
-    reach: Reach::Refused,
-    note: "S20: `initialize` succeeds; `session/new` is refused -32000 (Gemini Code Assist \
-           ineligibility). No turn has run, so no tool spelling has been measured",
-};
-
 /// `@agentclientprotocol/claude-agent-acp` — an ACP Registry **shim**, not a vendor's own server.
 ///
 /// S22 ran it to a terminal `end_turn` against the operator's already-established `claude` login,
@@ -1135,9 +1112,9 @@ pub const PI_ACP: Agent = Agent {
 /// *starting a device pairing* and printing its code (S33), and the doctor's `--adapter` mode opens
 /// a session on every row — so a row would make a routine probe start a login flow. It stays
 /// reachable as the operator's own `acp:droid exec --output-format acp-daemon`.
-pub const AGENTS: [Agent; 15] = [
-    OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP, COPILOT, KILO, QWEN, GOOSE, FAST_AGENT, VIBE, VTCODE,
-    AUGGIE, QODER, CLINE, PI_ACP,
+pub const AGENTS: [Agent; 14] = [
+    OPENCODE, CLAUDE_ACP, CODEX_ACP, COPILOT, KILO, QWEN, GOOSE, FAST_AGENT, VIBE, VTCODE, AUGGIE,
+    QODER, CLINE, PI_ACP,
 ];
 
 /// The refinement row for an id, or `None` where marion has none — which is **not** a refusal;
@@ -3575,7 +3552,6 @@ mod tests {
                 Some(ToolSpelling::ServerUnderscoreTool),
                 Some(MidTurn::Fold),
             ),
-            ("gemini", &["gemini", "--acp"], None, None),
             (
                 "claude-acp",
                 &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"],

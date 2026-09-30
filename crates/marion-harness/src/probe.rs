@@ -1,8 +1,8 @@
 //! `<program> --version`, run the one way marion may run a real harness to read its version:
 //! **carrying the row's no-self-update switch**, whatever shape that switch takes.
 //!
-//! Running a harness bare is not harmless. gemini 0.53.0 started without its settings document
-//! updated the operator's global install to 0.61.0; copilot 1.0.83 asked `--version` without
+//! Running a harness bare is not harmless. gemini CLI 0.53.0 (since retired) started without its
+//! settings document updated the operator's global install to 0.61.0; copilot 1.0.83 asked `--version` without
 //! `COPILOT_AUTO_UPDATE=false` downloaded a newer build and answered with *that* build's version,
 //! which no node marion spawns runs. So the
 //! switch is applied here from the row's [`UpdatePolicy`] data, in the same spelling the row's
@@ -56,7 +56,7 @@ pub enum ProbeSwitch {
 /// the document its launches write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentChannel {
-    /// The path is the value of this variable (gemini's `GEMINI_CLI_SYSTEM_SETTINGS_PATH`).
+    /// The path is the value of this variable (cline's `CLINE_MCP_SETTINGS_PATH`).
     Env(&'static str),
     /// `<flag> <prefix><path>` on argv.
     Argv {
@@ -338,17 +338,31 @@ mod tests {
 
     /// A document row's probe names a private 0600 file in a 0700 directory, through the channel
     /// the row's declaration uses, carrying every key; the directory goes with the probe.
+    ///
+    /// No shipped row takes [`UpdatePolicy::Document`] since the gemini CLI row was retired, so the
+    /// row here is cline's — whose declaration names its document by environment variable — with
+    /// a document policy in place of its own.
     #[test]
     fn a_document_is_private_carries_the_keys_and_is_removed_with_the_probe() {
-        let spec = harness_spec(Harness::Gemini);
+        static DOCUMENT_ROW: HarnessSpec = HarnessSpec {
+            updates: UpdatePolicy::Document {
+                keys: &[
+                    ("general.enableAutoUpdate", false),
+                    ("general.enableAutoUpdateNotification", false),
+                ],
+                note: "synthetic: a document-policy row for this test",
+            },
+            ..crate::cline::SPEC
+        };
+        let spec = &DOCUMENT_ROW;
         let (
             Some(LiveDeclaration::EnvDocument { key: env_key, .. }),
             UpdatePolicy::Document { keys, .. },
         ) = (spec.live_declaration, spec.updates)
         else {
-            panic!("gemini names its settings document by env and states document keys");
+            panic!("the row names its settings document by env and states document keys");
         };
-        let p = version_probe(spec, "/bin/gemini").unwrap();
+        let p = version_probe(spec, "/bin/cline").unwrap();
         let path = envs(&p.command)
             .into_iter()
             .find(|(k, _)| k == env_key)

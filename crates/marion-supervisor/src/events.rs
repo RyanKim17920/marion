@@ -1381,7 +1381,11 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        match from_stream_event(Harness::Gemini, StreamEvent::Unparsed("[STARTUP] Phase 1")).payload
+        match from_stream_event(
+            Harness::OpenCode,
+            StreamEvent::Unparsed("[STARTUP] Phase 1"),
+        )
+        .payload
         {
             Payload::Raw(s) => assert_eq!(s, "[STARTUP] Phase 1"),
             other => panic!("{other:?}"),
@@ -1739,7 +1743,7 @@ mod tests {
     }
 
     /// **The sink meters the node's spend from the frames it records**, on every recording seam,
-    /// under the harness's own rule: gemini's terminal `result` totals its process, so a second
+    /// under the harness's own rule: goose's terminal `complete` totals its process, so a second
     /// `result` in one process supersedes the first while a continuation's adds to it; a line that
     /// is not JSON is not a unit; and a harness whose row states no usage claims none — `None`,
     /// never zero. Each frame that moves the figure publishes it, at once, to the owner's live
@@ -1749,14 +1753,14 @@ mod tests {
         let dir = scratch("events-usage");
         let result = |input: u64, output: u64| {
             format!(
-                "{{\"type\":\"result\",\"stats\":{{\"input_tokens\":{input},\
-                 \"output_tokens\":{output},\"cached\":0}}}}"
+                "{{\"type\":\"complete\",\"input_tokens\":{input},\
+                 \"output_tokens\":{output}}}"
             )
         };
         let spending = std::sync::Arc::new(crate::spending::Spending::default());
         let mut s = EventSink::new(
-            EventWriter::open_path(&dir.join("gemini.jsonl"), &node()).unwrap(),
-            Harness::Gemini,
+            EventWriter::open_path(&dir.join("goose.jsonl"), &node()).unwrap(),
+            Harness::Goose,
             "unused".into(),
         )
         .publishing_to(&node(), Some(spending.clone()));

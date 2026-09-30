@@ -270,10 +270,6 @@ fn script(node: &Node) -> Script {
         }
         // The Responses child keeps its three steps: patch, report, final message.
         Harness::Codex => s.child_narrative = GRANDCHILD_NARRATIVE.into(),
-        Harness::Gemini => {
-            s.gemini_report_tool = report;
-            s.gemini_report_args = json!({ "narrative": GRANDCHILD_NARRATIVE });
-        }
         Harness::OpenCode => {
             s.openai_report_tool = report;
             s.openai_report_args = json!({ "narrative": GRANDCHILD_NARRATIVE });

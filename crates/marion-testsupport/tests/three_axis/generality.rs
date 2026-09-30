@@ -19,7 +19,6 @@ pub const ROW_FILES: &[&str] = &[
     "crates/marion-core/src/harness.rs",
     "crates/marion-harness/src/claude_code.rs",
     "crates/marion-harness/src/codex.rs",
-    "crates/marion-harness/src/gemini.rs",
     "crates/marion-harness/src/opencode.rs",
     "crates/marion-harness/src/copilot.rs",
     "crates/marion-harness/src/goose.rs",
@@ -113,7 +112,7 @@ const VENDOR_ENV_PREFIXES: &[&str] = &[
     "DASHSCOPE_",
 ];
 
-/// `ClaudeCodeAdapter`, `CodexReleases`, `Gemini`: an identifier that starts with a harness word
+/// `ClaudeCodeAdapter`, `CodexReleases`, `Copilot`: an identifier that starts with a harness word
 /// at a CamelCase boundary.
 pub fn is_harness_named(ident: &str, vocab: &Vocabulary) -> bool {
     vocab.words.iter().any(|w| {

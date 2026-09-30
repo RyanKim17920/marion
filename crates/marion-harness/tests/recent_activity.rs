@@ -19,12 +19,6 @@ macro_rules! fixture {
     };
 }
 
-/// `gemini -o stream-json`, the tool and message lines verbatim from `s12/README.md`.
-const GEMINI: &str = r#"{"type":"message","timestamp":"<TS>","role":"user","content":"call the report tool"}
-{"type":"tool_use","timestamp":"<TS>","tool_name":"mcp_marion_report","tool_id":"mcp_marion_report__mcp_marion_report_<n>_0","parameters":{"text":"hi"}}
-{"type":"tool_result","timestamp":"<TS>","tool_id":"<TOOL-ID-1>","status":"success","output":"MARION_REPORT_OK"}
-{"type":"message","timestamp":"<TS>","role":"assistant","content":"DONE_AFTER_TOOL","delta":true}"#;
-
 /// `opencode run --format json`, the tool and text lines verbatim from `s13/README.md`.
 const OPENCODE: &str = r#"{"type":"tool_use","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"type":"tool","tool":"marionmcp_report","callID":"call_1","state":{"status":"completed","input":{"text":"hello-from-marion"},"output":"MCP_CALLED {\"text\": \"hello-from-marion\"}","metadata":{"truncated":false},"title":"","time":{"<REDACTED-timestamps>":0}},"id":"<PART-1>","sessionID":"<SESSION-1>","messageID":"<MESSAGE-1>"}}
 {"type":"text","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"id":"<PART-2>","messageID":"<MESSAGE-1>","type":"text","text":"CANNED_OK","time":{"start":"<TS>","end":"<TS>"}}}"#;
@@ -127,13 +121,6 @@ fn each_harness_reads_its_calls_and_words_from_the_stream_it_was_measured_emitti
             fixture!("s27/cline-report-ok.stdout.jsonl"),
             &["marion__report"],
             "S27-OK",
-        ),
-        (
-            "gemini s12",
-            Harness::Gemini,
-            GEMINI,
-            &["mcp_marion_report"],
-            "DONE_AFTER_TOOL",
         ),
         (
             "opencode s13",

@@ -37,7 +37,7 @@ pub struct Target {
 /// The built-in agent types a review falls back to when none is named, in order of preference.
 /// Data, so a new vendor's CLI is a new entry and nothing else. Only those whose row refuses a
 /// write ([`marion_harness::spec::ReadOnly::blocks_writes`]) are ever picked from it.
-const REVIEWERS: &[&str] = &["codex", "claude", "gemini"];
+const REVIEWERS: &[&str] = &["codex", "claude"];
 
 /// What a reviewer on a row that cannot refuse a write is told, and its contract records.
 pub const UNGUARDED: &str = "this harness cannot be made read-only; any write is recorded as a scope violation, not blocked";

@@ -188,10 +188,6 @@ fn script(root: &Node, child: &Node) -> Script {
             );
             s.child_final_text = json!({"narrative": NARRATIVE, "result_commits": []}).to_string();
         }
-        Harness::Gemini => {
-            s.gemini_report_tool = report;
-            s.gemini_report_args = json!({ "narrative": NARRATIVE });
-        }
         Harness::OpenCode => {
             s.openai_report_tool = report;
             s.openai_report_args = json!({ "narrative": NARRATIVE });

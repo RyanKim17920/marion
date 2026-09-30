@@ -24,7 +24,6 @@ use crate::claude_code;
 use crate::cline;
 use crate::codex;
 use crate::copilot;
-use crate::gemini;
 use crate::goose;
 use crate::grammar;
 use crate::invocation::Invocation;
@@ -207,7 +206,7 @@ pub struct LaunchSpec {
     /// The provider credential, where the node is meant to present one.
     ///
     /// Neutral because two harnesses need it in incompatible places and neither can be patched up
-    /// afterwards: gemini takes it as `GEMINI_API_KEY` in the child's env, while opencode wants it
+    /// afterwards: qwen takes it as `OPENAI_API_KEY` in the child's env, while opencode wants it
     /// **inside the generated config** at `provider.<id>.options.apiKey` — so no caller pushes a
     /// credential variable after `compile`; each row places this. `None` where the node presents
     /// no marion-supplied credential.
@@ -398,7 +397,7 @@ pub trait HarnessAdapter {
     /// The default is the rule the design states for the harness that has both axes: availability
     /// is the declared list mapped through [`Self::tool_name`], and permission is *"the same list,
     /// plus marion's own"* — [`LaunchSpec::allowed_tools`] with the mapped list appended. A harness
-    /// whose axes are shaped otherwise (copilot's two spellings, gemini's mode) says so here, and
+    /// whose axes are shaped otherwise (copilot's two spellings, goose's mode) says so here, and
     /// nowhere else: `compile` and `compiled_permissions` both read this one answer, so the flag and
     /// the audit record cannot disagree.
     fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
@@ -672,13 +671,13 @@ pub trait HarnessAdapter {
     ///
     /// Behind the seam for the same reason `compile` is: the four harnesses emit four different
     /// event vocabularies, and until this method existed the supervisor read every child as codex
-    /// JSONL — so a gemini child's report was simply invisible, and its contract said `Unreported`
+    /// JSONL — so another harness's child's report was simply invisible, and its contract said `Unreported`
     /// about a run that had reported. That is the §12 silent-failure shape again, not a missing
     /// feature.
     ///
     /// `exit` is passed rather than consulted by the caller so each harness can state its own
-    /// success rule. It is genuinely per-harness: gemini documents 0/1/42/53 **and** returns 0 with
-    /// a JSON error body on an auth failure (S12), while opencode returns 1 with an empty stderr
+    /// success rule. It is genuinely per-harness: a harness may return 0 with a JSON error body on an
+    /// auth failure (S12 measured one), while opencode returns 1 with an empty stderr
     /// and its only description in-stream (S13). Nothing here is obliged to *use* it — codex does
     /// not — but nothing else is in a position to decide.
     ///
@@ -976,13 +975,13 @@ pub trait HarnessAdapter {
     /// substring scan for any one of them is wrong on the other three (codex most of all, whose
     /// stream never contains the string `mcp__marion__` at all). They disagree about the *result*
     /// just as widely: codex revises one item in place, opencode emits only terminal states,
-    /// gemini and Claude Code emit a separate result frame that must be paired back to its call by
+    /// copilot and Claude Code emit a separate result frame that must be paired back to its call by
     /// id.
     ///
     /// **The outcome used to be discarded here, and that was the defect.** This read returned bare
     /// verb names on the argument that "a call the bridge refused still proves the node had
-    /// marion's tools" — true, and not what §6.1 step 8 needs to know. A gemini root whose `spawn`
-    /// was refused by gemini's own schema validator satisfied that gate, exited 0, and was
+    /// marion's tools" — true, and not what §6.1 step 8 needs to know. A root whose `spawn` was
+    /// refused by its harness's own schema validator satisfied that gate, exited 0, and was
     /// journalled `ExitStatus::Ok` having delegated nothing (`tasks/todo.md`, owed item 0): the
     /// same silent success the gate exists to prevent, one level in. It is also why the root
     /// `report` defect fixed in `7ff470e` stayed invisible — every refusal marion started issuing
@@ -1069,7 +1068,6 @@ pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result
         spec::Need::ApiKey => spec.api_key.is_some(),
         spec::Need::ModelOtherThan(canned) => spec.model.as_deref() != Some(canned),
         spec::Need::NoRecipe => false,
-        spec::Need::HttpsOrLoopback => spec.base_url.as_deref().is_none_or(spec::https_or_loopback),
     };
     match row
         .requires
@@ -1204,7 +1202,6 @@ pub struct Row {
 pub const ROWS: [Row; Harness::ALL.len()] = [
     claude_code::ROW,
     codex::ROW,
-    gemini::ROW,
     opencode::ROW,
     copilot::ROW,
     goose::ROW,
@@ -1317,7 +1314,6 @@ mod tests {
     use crate::cline::ClineAdapter;
     use crate::codex::CodexAdapter;
     use crate::copilot::CopilotAdapter;
-    use crate::gemini::GeminiAdapter;
     use crate::goose::GooseAdapter;
     use crate::mcp_bridge;
     use crate::mcp_bridge::{AGENT_TYPE_ENV, DEPTH_ENV};
@@ -1350,7 +1346,6 @@ mod tests {
                     Need::ApiKey => launch.api_key = None,
                     Need::ModelOtherThan(canned) => launch.model = Some(canned.into()),
                     Need::NoRecipe => {}
-                    Need::HttpsOrLoopback => launch.base_url = Some("http://gw.example/v1".into()),
                 }
                 let got = launch_adapter(h).unwrap().compile(&launch, &ctx());
                 assert!(
@@ -1373,7 +1368,6 @@ mod tests {
             [
                 ("claude-code", false),
                 ("codex", true),
-                ("gemini", false),
                 ("opencode", true),
                 ("copilot", false),
                 ("goose", false),
@@ -1423,7 +1417,7 @@ mod tests {
     fn orchestrators_exist_where_a_row_can_withhold_writes_and_implementers_write() {
         let names = agent_type::builtin_names();
         for plain in [
-            "claude", "codex", "gemini", "opencode", "copilot", "goose", "cline", "qwen",
+            "claude", "codex", "opencode", "copilot", "goose", "cline", "qwen",
         ] {
             let t = agent_type::builtin(plain).unwrap();
             assert!(writes_files(&t), "{plain} must be able to change files");
@@ -1921,14 +1915,6 @@ mod tests {
         }
     }
 
-    fn gemini_spec() -> LaunchSpec {
-        LaunchSpec {
-            model: Some("gemini-2.5-flash".into()),
-            api_key: Some("sk-fake".into()),
-            ..codex_spec()
-        }
-    }
-
     fn opencode_spec() -> LaunchSpec {
         LaunchSpec {
             model: Some("canned/canned-1".into()),
@@ -1954,6 +1940,42 @@ mod tests {
             api_key: Some("sk-fake".into()),
             allowed_tools: vec!["marion__report".into()],
             ..codex_spec()
+        }
+    }
+
+    /// A synthetic `LaunchOnly` row whose availability axis is a mode **and** which grants one
+    /// tool past the mode by name (`AxesRule::Mode::by_name`, recorded under
+    /// `Constraint::Mode::allowed`). The retired gemini row was the one shipped row of this shape;
+    /// the mechanism stays general, so a synthetic row keeps it under test.
+    static MODE_BY_NAME: spec::HarnessSpec = spec::HarnessSpec {
+        argv: &[
+            spec::Arg::Lit("run"),
+            spec::Arg::Flag("-t", spec::Field::Prompt),
+            spec::Arg::Flag("--with-builtin", spec::Field::Mode),
+            spec::Arg::Each("--allowed-tools", spec::Field::Allowed),
+        ],
+        constraint: spec::Constraint::Mode {
+            prefix: "with-builtin:",
+            default: goose::NO_BUILTIN,
+            allowed: Some("allowed-tools:"),
+        },
+        axes: spec::AxesRule::Mode {
+            mode: goose::DEVELOPER_BUILTIN,
+            when_any: &["write", "edit"],
+            by_name: &["shell"],
+        },
+        ..goose::SPEC
+    };
+
+    struct ModeByName;
+
+    impl HarnessAdapter for ModeByName {
+        fn harness(&self) -> Harness {
+            Harness::Goose
+        }
+
+        fn spec(&self) -> &'static spec::HarnessSpec {
+            &MODE_BY_NAME
         }
     }
 
@@ -2139,9 +2161,9 @@ mod tests {
         vec![
             ("claude", Box::new(ClaudeCodeAdapter), claude_spec()),
             ("codex", Box::new(CodexAdapter), codex_spec()),
-            ("gemini", Box::new(GeminiAdapter), gemini_spec()),
             ("opencode", Box::new(OpenCodeAdapter), opencode_spec()),
             ("copilot", Box::new(CopilotAdapter), copilot_spec()),
+            ("goose", Box::new(GooseAdapter), goose_spec()),
         ]
     }
 
@@ -2220,30 +2242,19 @@ mod tests {
         );
     }
 
-    /// **gemini and opencode already declare a read tool, so marion compiles nothing for it.**
+    /// **opencode already declares a read tool, so marion compiles nothing for it.**
     ///
-    /// s14 measured both: gemini 0.53.0 carries `read_file` in `functionDeclarations` under the
-    /// *default* approval mode, and opencode 1.17.3 carries `read` in its default tool list. The
-    /// grant is therefore a no-op on both, and the argv equality is the assertion — in particular
-    /// that `read` alone must **not** move gemini into `auto_edit`, which would silently hand every
-    /// reading node the write tools as well.
+    /// s14 measured it: opencode 1.17.3 carries `read` in its default tool list. The grant is
+    /// therefore a no-op, and the argv equality is the assertion.
     #[test]
-    fn a_declared_read_on_the_two_harnesses_that_already_have_one_changes_nothing() {
-        assert_eq!(
-            GeminiAdapter.tool_names(agent_type::TOOL_READ).unwrap(),
-            ["read_file"]
-        );
-        assert!(
-            !gemini::is_edit_tool("read_file"),
-            "read is not an edit tool, or declaring it would compile auto_edit and grant writes"
-        );
+    fn a_declared_read_on_a_harness_that_already_has_one_changes_nothing() {
         assert_eq!(
             OpenCodeAdapter.tool_names(agent_type::TOOL_READ).unwrap(),
             ["read"],
             "a spelling collision with marion's own word, written out rather than defaulted"
         );
         for (name, adapter, spec) in adapters_and_specs() {
-            if name != "gemini" && name != "opencode" {
+            if name != "opencode" {
                 continue;
             }
             assert_eq!(
@@ -2342,40 +2353,6 @@ mod tests {
         );
     }
 
-    /// **gemini: the availability axis is a mode, because the CLI has no per-tool flag.**
-    ///
-    /// Under the default approval mode 0.53.0 withholds `write_file` from `functionDeclarations`
-    /// entirely, so the tool the mapping names does not exist to be called. The flag is therefore
-    /// the compiled form of the declaration, and it is emitted **only** when one arrives — the
-    /// negative half is asserted here too, since an unconditional `auto_edit` would widen every
-    /// gemini node marion runs.
-    #[test]
-    fn a_declared_write_puts_gemini_in_the_approval_mode_that_declares_one() {
-        assert_eq!(
-            GeminiAdapter.tool_names(agent_type::TOOL_WRITE).unwrap(),
-            ["write_file"]
-        );
-        assert!(gemini::is_edit_tool("write_file"));
-        let with = GeminiAdapter
-            .compile(&writing(gemini_spec()), &ctx())
-            .unwrap();
-        let i = with
-            .args
-            .iter()
-            .position(|a| a == "--approval-mode")
-            .expect("the declaration must compile the mode that makes write_file exist");
-        assert_eq!(
-            with.args[i + 1],
-            "auto_edit",
-            "never -y: see §6.4 and item 24"
-        );
-        let without = GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap();
-        assert!(
-            !without.args.iter().any(|a| a == "--approval-mode"),
-            "a node that declared nothing must stay in the default mode"
-        );
-    }
-
     /// **codex and opencode: the declaration is *satisfied*, not compiled.**
     ///
     /// Neither has a per-tool availability surface marion drives. codex has one sandbox mode, which
@@ -2432,21 +2409,33 @@ mod tests {
         assert_eq!(at(&claude.args, "--tools"), "Bash");
         assert!(at(&claude.args, "--allowedTools").ends_with(",Bash"));
 
+        // A mode row that grants one tool past its mode by name: the retired gemini row's shape,
+        // held here on a synthetic row so `AxesRule::Mode::by_name` and `Constraint::Mode::allowed`
+        // keep a case no shipped row exercises today.
         let spec = LaunchSpec {
             tools: bash(),
-            ..gemini_spec()
+            mcp: McpDeclaration::None,
+            ..goose_spec()
         };
-        let gemini = GeminiAdapter.compile(&spec, &ctx()).unwrap();
-        assert_eq!(at(&gemini.args, "--allowed-tools"), "run_shell_command");
+        let by_name = ModeByName.compile(&spec, &ctx()).unwrap();
+        assert_eq!(at(&by_name.args, "--allowed-tools"), "shell");
         assert_eq!(
-            GeminiAdapter.compiled_permissions(&spec).unwrap(),
+            ModeByName.compiled_permissions(&spec).unwrap(),
             vec![
-                format!("approval-mode:{}", gemini::DEFAULT_APPROVAL_MODE),
-                "allowed-tools:run_shell_command".to_string()
+                format!("with-builtin:{}", goose::NO_BUILTIN),
+                "allowed-tools:shell".to_string()
             ],
             "the record names the grant past the mode"
         );
-        let plain = GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap();
+        let plain = ModeByName
+            .compile(
+                &LaunchSpec {
+                    mcp: McpDeclaration::None,
+                    ..goose_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
         assert!(
             !plain.args.iter().any(|a| a == "--allowed-tools"),
             "no declaration, no flag"
@@ -2531,11 +2520,11 @@ mod tests {
     }
 
     /// **§6.7's audit record names the constraint that was compiled, per harness, in that
-    /// harness's own vocabulary — and it is a different *kind* of answer on each of the four.**
+    /// harness's own vocabulary — and it is a different *kind* of answer on each.**
     ///
     /// That variety is the whole content of §3.1's *"the compiled, harness-native constraint — or
     /// the harness's coarsest equivalent where it has no per-tool allowlist at all"*: claude has a
-    /// real allowlist, codex has one sandbox mode, gemini has one approval mode, and opencode has
+    /// real allowlist, codex has one sandbox mode, goose has one builtin mode, and opencode has
     /// nothing marion compiles. A single uniform answer across four harnesses is what the field
     /// carried before (`["apply_patch", "shell"]`, hardcoded) and it was wrong on all four.
     #[test]
@@ -2546,12 +2535,12 @@ mod tests {
                 "claude" => vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
                 // §3.1's own worked example for this harness.
                 "codex" => vec!["sandbox:workspace-write".into()],
-                // The mode is the constraint, and it is recorded when withheld as well as relaxed.
-                "gemini" => vec!["approval-mode:default".into()],
                 "opencode" => vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()],
                 // A real allowlist again, in the pattern grammar: the `--allow-tool`s, prefixed
                 // with the axis because copilot's `write` kind collides with marion's verb.
                 "copilot" => vec!["allow-tool:marion(report)".into()],
+                // The mode is the constraint, and it is recorded when withheld as well as relaxed.
+                "goose" => vec![format!("with-builtin:{}", goose::NO_BUILTIN)],
                 _ => unreachable!(),
             }
         };
@@ -2576,7 +2565,7 @@ mod tests {
     /// A declaration moves the record on exactly the harnesses whose constraint it moves.
     ///
     /// **The point is that it is not uniform.** On claude the granted tool joins a real allowlist;
-    /// on gemini the mode it forces is what the record names; on codex and opencode the constraint
+    /// on goose the mode it forces is what the record names; on codex and opencode the constraint
     /// did not move, so neither does the record — which is the honest answer, not an oversight,
     /// because those two grant the write with or without a declaration.
     #[test]
@@ -2589,7 +2578,6 @@ mod tests {
                     "Write".into(),
                 ],
                 "codex" => vec!["sandbox:workspace-write".into()],
-                "gemini" => vec!["approval-mode:auto_edit".into()],
                 "opencode" => vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()],
                 // The kind `write` joins the list — not the tool name `create`, which s24 measured
                 // granting nothing as a pattern.
@@ -2597,6 +2585,7 @@ mod tests {
                     "allow-tool:marion(report)".into(),
                     "allow-tool:write".into(),
                 ],
+                "goose" => vec![format!("with-builtin:{}", goose::DEVELOPER_BUILTIN)],
                 _ => unreachable!(),
             }
         };
@@ -2613,7 +2602,7 @@ mod tests {
     ///
     /// This is the invariant that keeps `allowed_tools` from drifting back into fiction: whatever
     /// `compiled_permissions` reports for claude must be exactly the string `--allowedTools`
-    /// carries, and whatever it reports for gemini must be the mode argv actually asked for. Both
+    /// carries, and whatever it reports for goose must be the mode argv actually asked for. Both
     /// are checked against the *compiled invocation*, so a second derivation appearing in either
     /// place fails here rather than in a contract someone reads a month later.
     #[test]
@@ -2630,16 +2619,16 @@ mod tests {
                 "the record must be the flag, not a parallel derivation of it"
             );
         }
-        for spec in [gemini_spec(), writing(gemini_spec())] {
-            let inv = GeminiAdapter.compile(&spec, &ctx()).unwrap();
-            let compiled = match inv.args.iter().position(|a| a == "--approval-mode") {
+        for spec in [goose_spec(), writing(goose_spec())] {
+            let inv = GooseAdapter.compile(&spec, &ctx()).unwrap();
+            let compiled = match inv.args.iter().position(|a| a == "--with-builtin") {
                 // Absent from argv is not absent from the record: no flag *is* the default mode.
-                None => gemini::DEFAULT_APPROVAL_MODE.to_string(),
+                None => goose::NO_BUILTIN.to_string(),
                 Some(i) => inv.args[i + 1].clone(),
             };
             assert_eq!(
-                GeminiAdapter.compiled_permissions(&spec).unwrap(),
-                vec![format!("approval-mode:{compiled}")]
+                GooseAdapter.compiled_permissions(&spec).unwrap(),
+                vec![format!("with-builtin:{compiled}")]
             );
         }
     }
@@ -2844,44 +2833,29 @@ mod tests {
         ));
     }
 
-    /// The settings file `compile` names is the one `config_files` writes — the gemini analogue of
-    /// the `--mcp-config` invariant, and with the same failure mode if the two ever diverged: a
-    /// highest-precedence settings layer pointing at a document nobody wrote, hence no MCP server,
-    /// hence tools that are silently absent.
+    /// The settings file `compile` names by environment variable is one `config_files` writes —
+    /// the env-document analogue of the `--mcp-config` invariant, and with the same failure mode if
+    /// the two ever diverged: a settings layer pointing at a document nobody wrote, hence no MCP
+    /// server, hence tools that are silently absent. cline is the row that names its document so.
     #[test]
-    fn the_settings_argv_path_is_the_path_that_is_written() {
-        let spec = gemini_spec();
-        let inv = GeminiAdapter.compile(&spec, &ctx()).unwrap();
+    fn the_settings_env_path_is_the_path_that_is_written() {
+        let spec = cline_spec();
+        let inv = ClineAdapter.compile(&spec, &ctx()).unwrap();
         let (_, named) = inv
             .env
             .iter()
-            .find(|(k, _)| k == "GEMINI_CLI_SYSTEM_SETTINGS_PATH")
+            .find(|(k, _)| k == cline::MCP_SETTINGS_PATH_ENV)
             .unwrap();
-        let written = GeminiAdapter.config_files(&spec, &ctx()).unwrap();
-        assert_eq!(PathBuf::from(named), written[0].0);
-    }
-
-    /// §6.4/S12's MUST, asserted on the bytes the adapter actually emits: a "simplification" that
-    /// dropped `trust` would pass every other test in this file and produce runs that exit 0
-    /// having called nothing.
-    #[test]
-    fn the_gemini_settings_the_adapter_emits_declare_a_trusted_server() {
-        let files = GeminiAdapter.config_files(&gemini_spec(), &ctx()).unwrap();
-        assert_eq!(files.len(), 1);
-        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
-        assert_eq!(v["mcpServers"]["marion"]["trust"], serde_json::json!(true));
-        assert_eq!(
-            v["security"]["auth"]["selectedType"],
-            serde_json::json!("gemini-api-key")
-        );
-        assert_eq!(
-            v["mcpServers"]["marion"]["env"]["MARION_AGENT_ID"],
-            serde_json::json!("019f-root")
+        let written = ClineAdapter.config_files(&spec, &ctx()).unwrap();
+        assert!(
+            written.iter().any(|(p, _)| p.as_os_str() == named.as_str()),
+            "{named} is not among {:?}",
+            written.iter().map(|(p, _)| p).collect::<Vec<_>>()
         );
     }
 
-    /// The node identity keys are the **bridge's** contract, so gemini's `env` block and Claude
-    /// Code's must carry the same names. A divergence would leave a gemini child's contract
+    /// The node identity keys are the **bridge's** contract, so opencode's `environment` block and
+    /// Claude Code's `env` must carry the same names. A divergence would leave a child's contract
     /// stamped `unattributed-root` with nothing failing.
     #[test]
     fn every_adapters_bridge_env_block_uses_one_set_of_key_names() {
@@ -2905,20 +2879,6 @@ mod tests {
             .keys()
             .collect();
 
-        let g = gemini::settings_json(Some(&BridgeEnv {
-            node_token_file: None,
-            bridge: "/bin/marion-supervisor".into(),
-            args: vec!["mcp".into()],
-            repo: "/repo".into(),
-            state: "/state".into(),
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            auth: Auth::Canned,
-            agent_id: AgentId("019f-root".into()),
-            agent_type: "gemini".into(),
-            depth: 0,
-            node_token: None,
-            ready_file: Some("/state/x/mcp-ready".into()),
-        }));
         let o = opencode::config_json(
             &opencode::ConfigSpec {
                 model: opencode::ModelRef::parse("canned/canned-1").unwrap(),
@@ -2941,13 +2901,12 @@ mod tests {
                 ready_file: Some("/state/x/mcp-ready".into()),
             }),
         );
-        for block in [
-            &g["mcpServers"]["marion"]["env"],
-            &o["mcp"]["marion"]["environment"],
-        ] {
-            let got: Vec<&String> = block.as_object().unwrap().keys().collect();
-            assert_eq!(got, expected, "the bridge reads one set of names");
-        }
+        let got: Vec<&String> = o["mcp"]["marion"]["environment"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+        assert_eq!(got, expected, "the bridge reads one set of names");
     }
 
     /// The spec each harness needs to emit its configuration, so a test can sweep `Harness::ALL`
@@ -2957,7 +2916,6 @@ mod tests {
         match h {
             Harness::ClaudeCode => claude_spec(),
             Harness::Codex => codex_spec(),
-            Harness::Gemini => gemini_spec(),
             Harness::OpenCode => opencode_spec(),
             Harness::Copilot => copilot_spec(),
             Harness::Goose => goose_spec(),
@@ -3083,7 +3041,6 @@ mod tests {
             let want: &[Wire] = match h {
                 Harness::ClaudeCode => &[Wire::AnthropicMessages],
                 Harness::Codex => &[Wire::OpenAiResponses],
-                Harness::Gemini => &[Wire::GenerateContent],
                 Harness::Copilot => &[Wire::OpenAiChat, Wire::AnthropicMessages],
                 Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
                     &[Wire::OpenAiChat]
@@ -3341,7 +3298,7 @@ mod tests {
     /// The caller writes whatever `config_files` hands it, unconditionally and with
     /// `create_dir_all` on the parent — so a path that escaped `config_dir` would not be caught
     /// anywhere downstream: it would simply be written, over the operator's own `~/.codex/config.toml`
-    /// or `~/.gemini/settings.json`, and the first symptom would be a broken login on a harness
+    /// or `~/.config/opencode/opencode.json`, and the first symptom would be a broken login on a harness
     /// marion was not even running.
     ///
     /// It sweeps **both auth modes**, because live mode is where this is easiest to break by
@@ -3551,7 +3508,7 @@ mod tests {
             );
             // The named minimum. Without it the sweep would silently shrink to whichever harnesses
             // happen still to compile under a mode, which is exactly how it passed vacuously for
-            // gemini and opencode before they had a live route at all.
+            // the rows that had no live route yet.
             for h in Harness::ALL {
                 assert!(
                     bound.contains(&h),
@@ -3831,7 +3788,7 @@ mod tests {
     /// number no code read, and a child could spawn a grandchild, and that grandchild another,
     /// without bound. The failure was **silent** on three of the four — only Claude Code reads
     /// `allowed_tools`, and codex's generated config sets
-    /// `default_tools_approval_mode = "approve"`, so a codex, gemini or opencode child's `spawn`
+    /// `default_tools_approval_mode = "approve"`, so a codex or opencode child's `spawn`
     /// was simply *served*.
     ///
     /// Asserted on the emitted bytes rather than through a struct, and format-agnostically: three
@@ -4332,126 +4289,6 @@ mod tests {
             serde_json::json!("0"),
             "a root is depth 0 by definition (§3.1), and an absent value is not the same claim"
         );
-    }
-
-    #[test]
-    fn a_gemini_node_without_a_model_is_refused_rather_than_launched_on_auto() {
-        let mut spec = gemini_spec();
-        spec.model = None;
-        let e = GeminiAdapter.compile(&spec, &ctx()).unwrap_err();
-        assert!(matches!(
-            e,
-            HarnessError::MissingInput {
-                harness: Harness::Gemini,
-                ..
-            }
-        ));
-    }
-
-    /// The gemini node under `--live`, at the adapter seam: three variables gone by name, and the
-    /// settings path — the *whole* MCP injection route on this harness, there being no `--settings`
-    /// flag — still naming the document `config_files` writes.
-    #[test]
-    fn a_live_gemini_node_drops_three_env_vars_and_keeps_its_mcp_route() {
-        let live = LaunchSpec {
-            auth: Auth::Inherited,
-            base_url: None,
-            api_key: None,
-            ..gemini_spec()
-        };
-        let inv = GeminiAdapter.compile(&live, &ctx()).unwrap();
-        for k in [
-            "GEMINI_CLI_HOME",
-            "GOOGLE_GEMINI_BASE_URL",
-            "GEMINI_API_KEY",
-        ] {
-            assert!(
-                !inv.env.iter().any(|(n, _)| n == k),
-                "{k} must be absent under --live. env: {:?}",
-                inv.env
-            );
-        }
-        let (_, named) = inv
-            .env
-            .iter()
-            .find(|(k, _)| k == "GEMINI_CLI_SYSTEM_SETTINGS_PATH")
-            .expect("the settings path IS the MCP injection route; without it a live node has no bridge");
-        let files = GeminiAdapter.config_files(&live, &ctx()).unwrap();
-        assert_eq!(PathBuf::from(named), files[0].0);
-        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
-        assert_eq!(
-            v["mcpServers"]["marion"]["trust"],
-            serde_json::json!(true),
-            "without it the tools are omitted from the request body with no error anywhere"
-        );
-        assert_eq!(
-            v["mcpServers"]["marion"]["env"]["MARION_AUTH"],
-            serde_json::json!("inherited"),
-            "a child this node spawns must reach the same endpoint it did"
-        );
-    }
-
-    /// **`GEMINI_FORCE_FILE_STORAGE`'s absence under `--live` is a safety property.** Over the
-    /// operator's real `~/.gemini` it can trigger the one-way migration `tests/fixtures/s12/`
-    /// records — read `oauth_creds.json`, write the hybrid store, `fs.rm` the original — which is
-    /// marion destroying a file it does not own (§6.4).
-    #[test]
-    fn live_never_forces_file_storage_because_the_migration_deletes_the_operators_credential() {
-        let live = LaunchSpec {
-            auth: Auth::Inherited,
-            base_url: None,
-            api_key: None,
-            ..gemini_spec()
-        };
-        assert!(
-            !GeminiAdapter
-                .compile(&live, &ctx())
-                .unwrap()
-                .env
-                .iter()
-                .any(|(k, _)| k == "GEMINI_FORCE_FILE_STORAGE")
-        );
-    }
-
-    /// A live node declares **no** auth selection, with or without a bridge: this document is the
-    /// system-settings layer, and any `selectedType` in it pins every operator to one route —
-    /// `oauth-personal` pinned an operator whose only credential is `GEMINI_API_KEY` to a login
-    /// Google now refuses to individuals. Silent, gemini runs its own `user || env` resolution, and
-    /// the operator's own `settings.json` still wins because the layers merge leaf by leaf (S30).
-    #[test]
-    fn a_live_gemini_node_leaves_the_auth_selection_to_gemini() {
-        for mcp in [McpDeclaration::Marion, McpDeclaration::None] {
-            let live = LaunchSpec {
-                auth: Auth::Inherited,
-                base_url: None,
-                api_key: None,
-                mcp,
-                ..gemini_spec()
-            };
-            let files = GeminiAdapter.config_files(&live, &ctx()).unwrap();
-            let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
-            assert!(
-                v.pointer("/security/auth/selectedType").is_none(),
-                "{mcp:?}: a live document must not pin an auth route: {v}"
-            );
-        }
-        // Canned is untouched and still selects the type marion supplies a key for.
-        let canned: serde_json::Value =
-            serde_json::from_str(&GeminiAdapter.config_files(&gemini_spec(), &ctx()).unwrap()[0].1)
-                .unwrap();
-        assert_eq!(
-            canned["security"]["auth"]["selectedType"],
-            serde_json::json!("gemini-api-key")
-        );
-    }
-
-    #[test]
-    fn a_non_loopback_plain_http_base_url_is_refused_at_compile_time() {
-        let mut spec = gemini_spec();
-        spec.base_url = Some("http://example.com/v1".into());
-        assert!(GeminiAdapter.compile(&spec, &ctx()).is_err());
-        spec.base_url = Some("https://example.com/v1".into());
-        assert!(GeminiAdapter.compile(&spec, &ctx()).is_ok());
     }
 
     #[test]
@@ -5345,8 +5182,8 @@ mod tests {
     /// seconds after boot, and an alternate screen has no scrollback to retain, so a `CSI 3J`
     /// assertion made against claude would pass because there was nothing to lose.
     ///
-    /// gemini and opencode are `None` for a reason of the same kind, in the other direction:
-    /// neither has a TUI shape marion has measured, and a `Some` here would put a run that asked
+    /// opencode is `None` for a reason of the same kind, in the other direction: it has no TUI
+    /// shape marion has measured, and a `Some` here would put a run that asked
     /// for a pane onto a pty with an unmeasured harness on it rather than refusing by name.
     ///
     /// Mutation: revert `CodexAdapter::pane_surfaces` to the trait default. This fails, and so does
@@ -5587,16 +5424,15 @@ mod tests {
     }
 
     /// §3.1 makes the mapping part of the adapter contract because the harnesses genuinely
-    /// disagree. Three spellings, measured: Claude Code's double-underscore form (and codex's, for
-    /// the reason above), gemini's `mcp_<server>_<tool>` (S12, captured in a `tool_use` frame) and
-    /// opencode's `<server>_<tool>` (S13, verified live). Compiling one harness's spelling into
-    /// another's prompt names a tool that does not exist there.
+    /// disagree. Spellings, measured: Claude Code's double-underscore form (and codex's, for the
+    /// reason above), opencode's `<server>_<tool>` (S13, verified live) and copilot's
+    /// `<server>-<tool>` (s24). Compiling one harness's spelling into another's prompt names a
+    /// tool that does not exist there.
     #[test]
     fn the_harnesses_disagree_about_the_tool_name_and_the_adapters_say_so() {
         let names: Vec<String> = [
             Harness::ClaudeCode,
             Harness::Codex,
-            Harness::Gemini,
             Harness::OpenCode,
             Harness::Copilot,
         ]
@@ -5608,9 +5444,8 @@ mod tests {
             vec![
                 "mcp__marion__report",
                 "mcp__marion__report",
-                "mcp_marion_report",
                 "marion_report",
-                // A hyphen: the fifth spelling (s24, in `tools[]` and `toolName` alike).
+                // A hyphen (s24, in `tools[]` and `toolName` alike).
                 "marion-report",
             ]
         );
@@ -5624,8 +5459,7 @@ mod tests {
     }
 
     /// Now the stronger claim: `Harness::ALL` is *exhaustively* covered, and each adapter is the
-    /// one it says it is. This replaces the old "Gemini and OpenCode have no adapter" assertion —
-    /// they do now — and a future fifth harness fails here until it has one.
+    /// one it says it is, and a future harness fails here until it has one.
     #[test]
     fn every_named_harness_resolves_to_an_adapter_that_says_it_is_that_harness() {
         for h in Harness::ALL {
@@ -5650,8 +5484,7 @@ mod tests {
     ///
     /// So each built-in is bound the way a launch binds it, and the ACP ones are additionally
     /// required to name an agent that opened a session (S33), bound to its measured spelling where
-    /// one was watched and to the generic reading otherwise. `gemini --acp` refused `session/new`,
-    /// so a built-in pointed there would be a type that cannot run.
+    /// one was watched and to the generic reading otherwise.
     #[test]
     fn every_builtin_agent_type_binds_an_adapter_a_launch_could_use() {
         let mut acp = 0;
@@ -5708,24 +5541,6 @@ mod tests {
         }
     }
 
-    /// A gemini `stream-json` run, verbatim from `tests/fixtures/s12/` — every event type the CLI
-    /// emits, in the order it emitted them, warnings and all.
-    const GEMINI_STREAM: &str = concat!(
-        "Warning: Basic terminal detected. Some features may not work.\n",
-        r#"{"type":"init","timestamp":"<TS>","session_id":"<UUID-1>","model":"gemini-2.5-flash"}"#,
-        "\n",
-        r#"{"type":"message","timestamp":"<TS>","role":"user","content":"call the report tool"}"#,
-        "\n[STARTUP] Phase 2\n",
-        r#"{"type":"tool_use","timestamp":"<TS>","tool_name":"mcp_marion_report","tool_id":"mcp_marion_report__mcp_marion_report_1_0","parameters":{"narrative":"did the work"}}"#,
-        "\n",
-        r#"{"type":"tool_result","timestamp":"<TS>","tool_id":"<TOOL-ID-1>","status":"success","output":"MARION_REPORT_OK"}"#,
-        "\n",
-        r#"{"type":"message","timestamp":"<TS>","role":"assistant","content":"DONE_AFTER_TOOL","delta":true}"#,
-        "\n",
-        r#"{"type":"result","timestamp":"<TS>","status":"success","stats":{"total_tokens":16,"tool_calls":1}}"#,
-        "\n",
-    );
-
     /// An opencode `run --format json` stream, verbatim from `tests/fixtures/s13/` — and note what
     /// is *not* here: no init, no result, no usage summary, and no trailing newline.
     const OPENCODE_STREAM: &str = concat!(
@@ -5770,56 +5585,6 @@ mod tests {
         for other in ["mcp__marion__report", "mcp_marion_report", "marion_report"] {
             assert!(!COPILOT_STREAM.contains(other), "{other}");
         }
-    }
-
-    #[test]
-    fn a_gemini_report_is_read_from_the_tool_use_frame_in_geminis_own_spelling() {
-        let out = GeminiAdapter.parse_stream(GEMINI_STREAM, ChildExit::default());
-        assert_eq!(out.narrative.as_deref(), Some("did the work"));
-        assert_eq!(out.failure, None, "status was success");
-        assert!(
-            out.file_change_paths.is_empty(),
-            "gemini has no file_change event; git is the authority and this stays empty"
-        );
-        // The spelling is load-bearing: codex's `mcp__marion__report` names no gemini tool.
-        assert!(!GEMINI_STREAM.contains("mcp__marion__report"));
-    }
-
-    /// **S12's headline hazard**: an auth failure returned **exit 0** with a JSON error body. A
-    /// reader that trusted the exit code would record a clean run that did nothing.
-    #[test]
-    fn a_gemini_failure_that_exits_zero_is_still_a_failure() {
-        let exit_zero = ChildExit {
-            code: Some(0),
-            ..ChildExit::default()
-        };
-        // The measured body, verbatim from `tests/fixtures/s12/`.
-        let out = GeminiAdapter.parse_stream(
-            r#"{"error":{"type":"Error","message":"Invalid auth method selected.","code":41}}"#,
-            exit_zero,
-        );
-        assert_eq!(
-            out.failure.as_deref(),
-            Some("Invalid auth method selected."),
-            "exit 0 with an error body must not read as success"
-        );
-        // And the typed `error` frame of the stream-json event set, which is the other shape.
-        let framed = GeminiAdapter.parse_stream(
-            r#"{"type":"error","timestamp":"<TS>","error":{"message":"api error"}}"#,
-            exit_zero,
-        );
-        assert_eq!(framed.failure.as_deref(), Some("api error"));
-        // As is a result frame that says anything but success.
-        let bad_result = GeminiAdapter.parse_stream(
-            r#"{"type":"result","timestamp":"<TS>","status":"cancelled","stats":{}}"#,
-            exit_zero,
-        );
-        assert!(
-            bad_result
-                .failure
-                .as_deref()
-                .is_some_and(|f| f.contains("cancelled"))
-        );
     }
 
     #[test]
@@ -5916,9 +5681,6 @@ mod tests {
                 Harness::Codex => format!(
                     r#"{{"method":"item/completed","params":{{"item":{{"type":"mcpToolCall","id":"c1","server":"marion","tool":"report","status":"completed","arguments":{args}}}}}}}"#
                 ),
-                Harness::Gemini => {
-                    format!(r#"{{"type":"tool_use","tool_name":"{tool}","parameters":{args}}}"#)
-                }
                 Harness::OpenCode => format!(
                     r#"{{"type":"tool_use","part":{{"type":"tool","tool":"{tool}","state":{{"status":"completed","input":{args}}}}}}}"#
                 ),
@@ -5996,14 +5758,13 @@ mod tests {
     }
 
     /// Each harness reads **its own** spelling and no other's. Cross-feeding is the failure this
-    /// seam exists to end: before it, every child was read as codex JSONL, so a gemini report was
-    /// invisible and the contract said `Unreported` about a run that had reported.
+    /// seam exists to end: before it, every child was read as codex JSONL, so another harness's report
+    /// was invisible and the contract said `Unreported` about a run that had reported.
     #[test]
     fn no_adapter_can_read_another_harnesss_stream() {
         let codex = r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"c1","server":"marion","tool":"report","status":"completed","arguments":{"narrative":"did the work"}}}}"#;
         let streams = [
             (Harness::Codex, codex),
-            (Harness::Gemini, GEMINI_STREAM),
             (Harness::OpenCode, OPENCODE_STREAM),
             (Harness::Copilot, COPILOT_STREAM),
             (Harness::Goose, GOOSE_STREAM),
@@ -6080,13 +5841,16 @@ mod tests {
             Some("haiku".into())
         );
 
-        // And on the two that require one, the recorded value is the string in argv — one
+        // And on the ones that require one, the recorded value is the string in argv — one
         // derivation, so the contract cannot name a model the child was not given.
         for (inv, flag) in [
-            (GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap(), "-m"),
             (
                 OpenCodeAdapter.compile(&opencode_spec(), &ctx()).unwrap(),
                 "-m",
+            ),
+            (
+                CopilotAdapter.compile(&copilot_spec(), &ctx()).unwrap(),
+                "--model",
             ),
         ] {
             let i = inv.args.iter().position(|a| a == flag).unwrap();
@@ -6102,13 +5866,11 @@ mod tests {
     fn each_adapter_recognises_a_marion_call_in_its_own_stream_and_no_others() {
         let codex_spawn = r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"c1","server":"marion","tool":"spawn","status":"completed","arguments":{}}}}"#;
         let claude_spawn = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#;
-        let gemini_spawn = r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","parameters":{}}"#;
         let opencode_spawn = r#"{"type":"tool_use","part":{"type":"tool","tool":"marion_spawn","state":{"status":"completed"}}}"#;
         let copilot_spawn = r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}"#;
         let streams = [
             (Harness::ClaudeCode, claude_spawn),
             (Harness::Codex, codex_spawn),
-            (Harness::Gemini, gemini_spawn),
             (Harness::OpenCode, opencode_spawn),
             (Harness::Copilot, copilot_spawn),
         ];
@@ -6162,10 +5924,6 @@ mod tests {
         }
         // And the measured report streams do count as having reached the bridge.
         assert_eq!(
-            GeminiAdapter.marion_tool_calls(GEMINI_STREAM),
-            vec!["report".to_string()]
-        );
-        assert_eq!(
             OpenCodeAdapter.marion_tool_calls(OPENCODE_STREAM),
             vec!["report".to_string()]
         );
@@ -6174,15 +5932,14 @@ mod tests {
     /// **What became of each call, per harness — the half the old reader discarded.**
     ///
     /// Each harness answers a call somewhere different: codex revises its own item in place,
-    /// opencode carries the verdict on the tool part, gemini and Claude Code emit a separate frame
+    /// opencode carries the verdict on the tool part, copilot and Claude Code emit a separate frame
     /// that must be paired back by id. A single supervisor-side reading would be wrong on three of
     /// the four, exactly as it would be for the verb's name.
     ///
     /// **Provenance, stated because it is uneven.** The answered rows are the recorded shapes
-    /// (s6 for codex, s9 for Claude Code, s12 for gemini, s13 for opencode). Of the refused rows
-    /// **only opencode's is a recording**; codex's `"status":"failed"` and gemini's non-success
-    /// `status` are the obvious complements of what was captured, and nothing in this tree has
-    /// watched either arrive. They are pinned so that a harness that starts spelling refusal some
+    /// (s6 for codex, s9 for Claude Code, s13 for opencode, s24 for copilot). Of the refused rows
+    /// **opencode's and copilot's are recordings**; codex's `"status":"failed"` is the obvious
+    /// complement of what was captured, and nothing in this tree has watched it arrive. They are pinned so that a harness that starts spelling refusal some
     /// other way fails here rather than passing silently as an answer.
     #[test]
     fn each_adapter_reads_what_became_of_a_marion_call_in_its_own_stream() {
@@ -6190,7 +5947,7 @@ mod tests {
             verb: verb.to_string(),
             outcome: CallOutcome::Answered,
         };
-        let cases: [(Harness, &str, &str, MarionCall); 10] = [
+        let cases: [(Harness, &str, &str, MarionCall); 8] = [
             (
                 Harness::ClaudeCode,
                 "answered",
@@ -6228,29 +5985,6 @@ mod tests {
                 MarionCall {
                     verb: "spawn".into(),
                     outcome: CallOutcome::Refused("failed: bad arguments".into()),
-                },
-            ),
-            (
-                Harness::Gemini,
-                "answered",
-                concat!(
-                    r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}"#,
-                    "\n",
-                    r#"{"type":"tool_result","tool_id":"g1","status":"success","output":"ok"}"#,
-                ),
-                answered("spawn"),
-            ),
-            (
-                Harness::Gemini,
-                "refused",
-                concat!(
-                    r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}"#,
-                    "\n",
-                    r#"{"type":"tool_result","tool_id":"g1","status":"error","output":"invalid arguments"}"#,
-                ),
-                MarionCall {
-                    verb: "spawn".into(),
-                    outcome: CallOutcome::Refused("error: invalid arguments".into()),
                 },
             ),
             (
@@ -6314,7 +6048,7 @@ mod tests {
     /// class `root::assert_a_verb_was_answered` exists to close.
     #[test]
     fn a_call_with_no_result_frame_is_unknown_and_not_an_answer() {
-        let unanswered: [(Harness, &str); 4] = [
+        let unanswered: [(Harness, &str); 3] = [
             (
                 Harness::ClaudeCode,
                 r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#,
@@ -6328,10 +6062,6 @@ mod tests {
             (
                 Harness::Codex,
                 r#"{"method":"item/started","params":{"item":{"id":"i0","type":"mcpToolCall","server":"marion","tool":"spawn","result":null,"error":null,"status":"inProgress"}}}"#,
-            ),
-            (
-                Harness::Gemini,
-                r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}"#,
             ),
         ];
         for (h, stream) in unanswered {
@@ -6406,7 +6136,7 @@ mod tests {
     /// The mapping from a compiled string to "can it write" is *stated per harness rather than
     /// derived*, deliberately — deriving it would re-encode the same judgement in a second place
     /// and this test would then agree with itself for free. What it catches is a change in the
-    /// **evidence**: relax gemini's default approval mode, give codex a per-tool knob, teach the
+    /// **evidence**: give goose its developer builtin by default, give codex a per-tool knob, teach the
     /// opencode adapter to compile a real constraint, and this fails naming the harness, rather
     /// than §6.6's guard quietly going wrong about which nodes write.
     /// What the compiled constraint has to look like for the classification beside it to hold.
@@ -6434,9 +6164,9 @@ mod tests {
             ),
             // One coarse knob, and it is set to the writing value on every node marion configures.
             (Harness::Codex, Names("sandbox:workspace-write"), true),
-            // The default mode drops the mutating tools from `functionDeclarations` outright, so
-            // here the *presence* of the default mode is what proves the withholding.
-            (Harness::Gemini, Names("approval-mode:default"), false),
+            // Without the developer builtin goose loads no tool that writes, so here the
+            // *presence* of the empty mode is what proves the withholding (S26).
+            (Harness::Goose, Names("with-builtin:none"), false),
             // marion compiles nothing here, and nothing is not a constraint.
             (
                 Harness::OpenCode,
@@ -6733,7 +6463,7 @@ mod tests {
     /// pick one) and a selector with no program in it. An agent marion has never heard of is *not*
     /// one of them: it binds the generic path, compiles as the command the operator wrote, and gets
     /// the bridge declared over `session/new` like any measured row — that is the baseline every
-    /// refinement sits on. And a known-but-unmeasured row (`gemini --acp`) is no longer refused a
+    /// refinement sits on. And a known-but-unmeasured row (`kilo acp`) is no longer refused a
     /// declaration either: the s14 gate guarded a compiled spelling, and this row compiles none.
     #[test]
     fn an_acp_launch_is_refused_only_for_what_the_protocol_cannot_express() {
@@ -6810,31 +6540,26 @@ mod tests {
         let unmeasured = LaunchSpec {
             resume: None,
             extra: Extras {
-                acp_agent: Some(acp::GEMINI.id.into()),
+                acp_agent: Some(acp::KILO.id.into()),
                 ..Extras::default()
             },
             ..acp_spec()
         };
         assert!(
-            acp::GEMINI.tools.is_none(),
-            "the premise: this row is the unmeasured one"
+            acp::KILO.tools.is_none(),
+            "the premise: this row is an unmeasured one"
         );
-        let gemini = AcpAdapter::for_agent(acp::GEMINI);
-        let inv = gemini.compile(&unmeasured, &ctx()).unwrap();
-        assert_eq!(inv.program, "gemini");
-        assert_eq!(
-            inv.args,
-            vec!["--acp"],
-            "the row's measured argv, not the id"
-        );
+        let kilo = AcpAdapter::for_agent(acp::KILO);
+        let inv = kilo.compile(&unmeasured, &ctx()).unwrap();
+        assert_eq!(inv.program, "kilo");
+        assert_eq!(inv.args, vec!["acp"], "the row's measured argv, not the id");
         assert!(
-            gemini
-                .session_declaration(&unmeasured, &ctx())
+            kilo.session_declaration(&unmeasured, &ctx())
                 .unwrap()
                 .is_some()
         );
         assert_eq!(
-            gemini.marion_tool_name("report"),
+            kilo.marion_tool_name("report"),
             acp::GENERIC_SPELLING.spell("report")
         );
         // And the measured row keeps its own spelling: the refinement, layered over the baseline.
@@ -7344,9 +7069,8 @@ mod tests {
     /// so the readings survive the readers.
     ///
     /// `tests/fixtures/s6` (codex), `s9` (claude) and `s24` (copilot) carry real captured stdout;
-    /// `s12` (gemini) and `s13` (opencode) carry only their README, so those two rows are pinned by
-    /// the synthetic frames in their module tests and by `harness_matrix`, which reads a live
-    /// stream of each. Every reading below was produced by the adapter's reader on this tree
+    /// `s13` (opencode) carries only its README, so that row is pinned by the synthetic frames in
+    /// its module tests and by `harness_matrix`, which reads a live stream of it. Every reading below was produced by the adapter's reader on this tree
     /// before the grammar existed, and the adapter is asserted beside the row so the two cannot
     /// come apart while both exist.
     #[test]
@@ -7661,14 +7385,12 @@ mod tests {
                 "{h} {name}: the grammar's calls"
             );
         }
-        // The two harnesses with no captured stream: their rows must still exist, so the sweep
-        // above is not silently narrower than the registry.
-        for h in [Harness::Gemini, Harness::OpenCode] {
-            assert!(
-                harness_spec(h).stream.is_some(),
-                "{h}: no stream grammar on its row"
-            );
-        }
+        // The harness with no captured stream: its row must still exist, so the sweep above is
+        // not silently narrower than the registry.
+        assert!(
+            harness_spec(Harness::OpenCode).stream.is_some(),
+            "opencode: no stream grammar on its row"
+        );
     }
 
     /// **One bridge declaration, five documents.** Every harness's declaration of marion's bridge
@@ -7714,7 +7436,6 @@ mod tests {
             expected.env_json()
         );
         for (h, ptr) in [
-            (Harness::Gemini, "/mcpServers/marion/env"),
             (Harness::OpenCode, "/mcp/marion/environment"),
             (Harness::Copilot, "/mcpServers/marion/env"),
         ] {
@@ -8272,8 +7993,7 @@ mod tests {
     /// The spec it launches from still *carries* a base URL and a key, as a caller might hand
     /// one: live mode must drop them, not merely never have been given them.
     ///
-    /// Mutation: make any `HOME`/`XDG_*`/`CODEX_HOME`/`*_API_KEY` row `When::Always`, restore
-    /// gemini's `selectedType` fallback, blank `ANTHROPIC_API_KEY` beside no token, or turn
+    /// Mutation: make any `HOME`/`XDG_*`/`CODEX_HOME`/`*_API_KEY` row `When::Always`, blank `ANTHROPIC_API_KEY` beside no token, or turn
     /// claude's `--setting-sources` / opencode's `--pure` back into `Arg::Lit`.
     #[test]
     fn no_live_launch_selects_an_auth_route_or_hides_a_credential_source() {
@@ -8850,7 +8570,6 @@ mod tests {
             (Harness::ClaudeCode, "typed", "channel"),
             // S36 P6: app-server folds a steer into the running turn.
             (Harness::Codex, "typed", "paste"),
-            (Harness::Gemini, "none", "none"),
             (Harness::OpenCode, "continuation", "paste"),
             (Harness::Copilot, "continuation", "paste"),
             (Harness::Goose, "none", "none"),
@@ -9239,8 +8958,6 @@ mod tests {
             ("claude-acp", MidTurn::Fold),
             ("codex-acp", MidTurn::Queue),
             ("copilot", MidTurn::Queue),
-            // Refused `session/new` vendor-side, so nothing mid-turn was ever measured.
-            ("gemini", MidTurn::Queue),
         ] {
             let bound = AcpAdapter::bound(acp::Binding::resolve(id).unwrap());
             assert_eq!(mid(&bound), want, "{id}");
@@ -9481,7 +9198,6 @@ mod tests {
             [
                 ("claude-code", "allowed-tools-arg"),
                 ("codex", "declaration-key"),
-                ("gemini", "declaration-key"),
                 ("opencode", "declaration-key"),
                 ("copilot", "allowed-tools-arg"),
                 ("goose", "env-var"),
@@ -9628,7 +9344,6 @@ mod tests {
             [
                 ("claude-code", "tools-axis"),
                 ("codex", "pair"),
-                ("gemini", "tools-axis"),
                 ("opencode", "env-var"),
                 ("copilot", "tools-axis"),
                 ("goose", "tools-axis"),
@@ -9670,9 +9385,6 @@ mod tests {
                 // s9, s10, live smoke s2
                 Harness::ClaudeCode | Harness::Qwen => json!({"type": "system", "subtype": "init",
                     "session_id": "s", "model": "claude-haiku-4-5-20251001"}),
-                // s12
-                Harness::Gemini => json!({"type": "init", "session_id": "s",
-                    "model": "claude-haiku-4-5-20251001"}),
                 // s32
                 Harness::Antigravity => json!({"event": "init", "conversation_id": "c",
                     "init": {"model": "claude-haiku-4-5-20251001"}}),
@@ -9796,7 +9508,7 @@ mod tests {
     }
 
     /// **Every row states its vendor, and only a vendor's own CLI has one**: the family a node is
-    /// judged by when its model is unnamed. The three below were the core table this replaced;
+    /// judged by when its model is unnamed. The two below were the core table this replaced;
     /// every other row runs any vendor's model.
     #[test]
     fn every_row_states_its_vendor_and_only_a_vendors_own_cli_has_one() {
@@ -9804,7 +9516,6 @@ mod tests {
             let want = match h {
                 Harness::ClaudeCode => Some("anthropic"),
                 Harness::Codex => Some("openai"),
-                Harness::Gemini => Some("google"),
                 _ => None,
             };
             assert_eq!(harness_spec(h).vendor, want, "{h}");
@@ -10109,14 +9820,14 @@ mod tests {
         }
     }
 
-    /// gemini 0.53.0's `--resume` takes `latest` or an index, not a session id, and ACP resumes
-    /// through `session/load` rather than argv; codex's TUI has no measured resume grammar. Each
+    /// goose 1.49.0 names no session in any frame marion reads (S26), and ACP resumes through
+    /// `session/load` rather than argv; codex's TUI has no measured resume grammar. Each
     /// is a refusal by name, never a fresh session started under a resumed session's id.
     #[test]
     fn a_harness_without_a_measured_resume_flag_refuses_by_name() {
         use crate::spec::{Refusal, Shape, render};
         for (h, shape) in [
-            (Harness::Gemini, Shape::Headless),
+            (Harness::Goose, Shape::Headless),
             (Harness::Acp, Shape::Headless),
             (Harness::Codex, Shape::Pane),
         ] {
@@ -10147,7 +9858,7 @@ mod tests {
             resume: Some("SID".into()),
             ..spec_for(h)
         };
-        for (h, pane) in [(Harness::Gemini, false), (Harness::Codex, true)] {
+        for (h, pane) in [(Harness::Goose, false), (Harness::Codex, true)] {
             let a = launch_adapter(h).unwrap();
             let spec = resuming(h);
             let got = match pane {
@@ -10227,7 +9938,6 @@ mod tests {
     /// claude 2.1.220 (`s10/stream-*.jsonl`): `{"type":"system","subtype":"init","session_id"}`.
     /// codex 0.155.1 app-server (S36 P8): the answer to `thread/start` or `thread/resume`,
     /// `{"id":…,"result":{"thread":{"id"}}}`.
-    /// gemini 0.53.0 (`s12/README.md`): `{"type":"init","session_id"}`.
     /// opencode 1.17.3 (`s13/README.md`): `sessionID` on **every** frame.
     /// copilot 1.0.83 (`s24/*.stdout.jsonl`): only the terminal `result` frame carries `sessionId`;
     /// no earlier frame names the session, so a copilot run killed before its result has no id
@@ -10246,11 +9956,6 @@ mod tests {
                 Harness::Codex,
                 r#"{"id":1,"result":{"thread":{"id":"t-1","turns":[]}}}"#,
                 "t-1",
-            ),
-            (
-                Harness::Gemini,
-                r#"{"type":"init","timestamp":"<TS>","session_id":"g-1","model":"m"}"#,
-                "g-1",
             ),
             (
                 Harness::OpenCode,

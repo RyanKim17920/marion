@@ -449,18 +449,6 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
             );
             s.child_final_text = json!({"narrative": NARRATIVE, "result_commits": []}).to_string();
         }
-        Harness::Gemini => {
-            s.gemini_report_tool = report;
-            s.gemini_report_args = json!({ "narrative": NARRATIVE });
-            // The same step on the Gemini wire, through the `write_file` that `gemini-impl`'s grant
-            // declares — 0.53.0 withholds it under the default approval mode, so its presence here
-            // is the axis having compiled `--approval-mode auto_edit`. Same `{file_path, content}`,
-            // read off the live `parametersJsonSchema`.
-            s.gemini_edit = Some(EditTurn {
-                tool: "write_file".into(),
-                args: json!({ "file_path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
-            });
-        }
         // The opencode child writes before it reports, through the harness's own `write` — the tool
         // it declares to the model as `tools[].function.name == "write"`, taking `{filePath,
         // content}`. That makes it the second of the four wires whose child leaves something behind

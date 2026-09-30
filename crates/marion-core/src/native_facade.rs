@@ -741,18 +741,6 @@ fn executable_error(executable: &str) -> Result<(), NativeFacadeExecutableError>
 /// * `claude`, `codex` — the row's TUI shape was measured with its declaration flag
 ///   (`--mcp-config`, `-c mcp_servers.marion.*`) for M3's pane work, and again through the shipped
 ///   facade by `tests/it_live/native_facade_e2e.rs` (2026-09-05).
-/// * `gemini` — enabled 2026-09-10, on measurement of the question that kept it dark: the
-///   system-settings layer the declaration rides **outranks the operator's own**, and a native
-///   node that silently lost the operator's servers would be §6.4's failure. gemini 0.53.0 merges
-///   `mcpServers` **per key** (`tests/fixtures/s30/`, darwin 25.5.0): with the operator's
-///   `~/.gemini/settings.json` declaring `pencil` and `GEMINI_CLI_SYSTEM_SETTINGS_PATH` declaring
-///   `marion` the way the row emits it, the TUI's `/mcp` lists both (`🟢 pencil - Ready (1
-///   tool)`, `🟢 marion - Ready (1 tool)`, status bar `2 MCP servers`), `gemini mcp list` connects
-///   both, and the operator's `general.vimMode` survives the row's `general` block (`[INSERT]` on
-///   screen). The bundle agrees: `SETTINGS_SCHEMA.mcpServers.mergeStrategy = "shallow_merge"`
-///   (`{...user, ...system}`), applied in `mergeSettings` after user and workspace. Same-key
-///   collision: the system layer's entry wins, so an operator-owned server named `marion` is
-///   shadowed for the node's life (`s30/mcp-list.collision.txt`).
 /// * `opencode`, `copilot` — enabled 2026-09-05, on measurement of the TUI's own reading of the
 ///   declaration through the shipped facade (`tests/it_live/native_facade_e2e.rs` fixture, darwin
 ///   25.5.0). opencode 1.17.3 with `OPENCODE_CONFIG_CONTENT`: its `/mcp` dialog lists
@@ -782,16 +770,6 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         native: Some(Lane::new(
             true,
             NativeLane::new("codex", "codex", NativeAdapterId::new("codex")),
-        )),
-        structured: None,
-    },
-    NativeFacadeDescriptor {
-        identity: VendorIdentity::new("gemini"),
-        command: "gemini",
-        aliases: &[],
-        native: Some(Lane::new(
-            true,
-            NativeLane::new("gemini", "gemini", NativeAdapterId::new("gemini")),
         )),
         structured: None,
     },
@@ -1282,10 +1260,9 @@ mod tests {
         );
         assert_eq!(
             registry.enabled_native_commands(),
-            vec!["claude", "codex", "gemini", "opencode", "copilot", "pi"],
+            vec!["claude", "codex", "opencode", "copilot", "pi"],
             "the enabled lanes are exactly those whose interactive shape was measured \
-             (`tests/native_facade_e2e.rs`); `gemini`'s settings merge was measured per key \
-             (`tests/fixtures/s30/`), so it is among them"
+             (`tests/native_facade_e2e.rs`)"
         );
         for word in RESERVED_COMMANDS
             .iter()

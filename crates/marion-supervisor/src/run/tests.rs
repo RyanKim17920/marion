@@ -451,12 +451,13 @@ fn a_duration_the_clock_cannot_represent_bounds_the_run_rather_than_unwinding_it
 }
 
 /// **Every spawn-time probe carries the row's no-self-update switch**, for each shape of
-/// switch: an Env row (claude), a Pair row (codex, on its own `-c`), a Document row (gemini, a
-/// settings file named by its own variable). `harness_version` is the probe `run_spawn`,
+/// switch a shipped row takes: an Env row (claude) and a Pair row (codex, on its own `-c`). No
+/// shipped row takes a Document switch since the gemini CLI row was retired; `probe`'s own test
+/// holds that shape on a synthetic row. `harness_version` is the probe `run_spawn`,
 /// `root::launch_inner` and the native launch all take.
 #[test]
 fn the_spawn_probe_carries_every_shape_of_switch() {
-    for h in [Harness::ClaudeCode, Harness::Codex, Harness::Gemini] {
+    for h in [Harness::ClaudeCode, Harness::Codex] {
         let dir = scratch(&format!("vprobe-switch-{h}"));
         let (watch, want) = version_fake::switch_evidence(h);
         let watch: Vec<&str> = watch.iter().map(String::as_str).collect();
@@ -2039,8 +2040,6 @@ fn each_builtin_agent_type_dispatches_to_its_own_harness() {
         ("claude-impl", Harness::ClaudeCode),
         ("codex", Harness::Codex),
         ("codex-impl", Harness::Codex),
-        ("gemini", Harness::Gemini),
-        ("gemini-impl", Harness::Gemini),
         ("opencode", Harness::OpenCode),
         ("copilot", Harness::Copilot),
         ("copilot-impl", Harness::Copilot),
@@ -2065,7 +2064,7 @@ fn each_builtin_agent_type_dispatches_to_its_own_harness() {
 }
 
 /// **Re-pointed, not weakened.** This test used to reach the refusal through `adapter_for`,
-/// because Gemini and OpenCode had no adapter. They do now, so that route is gone — and
+/// because some harnesses had no adapter. They do now, so that route is gone — and
 /// asserting it against some other harness would have been vacuous, since the registry is
 /// exhaustive over `Harness::ALL` (`marion-harness::adapter::…resolves_to_an_adapter`). What
 /// the test was actually defending is the *conversion*: whatever produces an `Unimplemented`,
@@ -2208,7 +2207,6 @@ fn the_contract_records_the_compiled_constraint_and_never_the_requested_tool() {
         // and the compiled constraint are visibly different strings, so a record sourced from
         // the request cannot pass here by coincidence the way it could where the two agree.
         (Harness::Codex, vec!["sandbox:workspace-write"]),
-        (Harness::Gemini, vec!["approval-mode:auto_edit"]),
         (Harness::OpenCode, vec!["harness-default:unconstrained"]),
         // The pattern grammar, not the tool grammar: `write` is the kind that grants `create`.
         (
@@ -2275,14 +2273,14 @@ fn request(agent_type: &str, model: Option<&str>) -> SpawnRequest {
 }
 
 /// **The gap this phase closed.** `run_spawn` used to build its `LaunchSpec` with a hard
-/// `model: None`, and §6.4 makes an explicit model a MUST on both new harnesses (gemini's
-/// `auto` router hung; opencode has no `OPENCODE_MODEL` env var) — so a `gemini` or `opencode`
-/// agent type could be named, resolved and dispatched, and then refused at `compile`. The
+/// `model: None`, and §6.4 makes an explicit model a MUST on the harnesses that need one (opencode
+/// has no `OPENCODE_MODEL` env var; copilot's BYOK refuses to start without one) — so an
+/// `opencode` or `copilot` agent type could be named, resolved and dispatched, and then refused at `compile`. The
 /// resolved model is what makes them launchable, so the test asserts the *whole chain*: the
 /// built-in's default reaches `resolve_model`, and what `resolve_model` returns compiles.
 #[test]
 fn the_new_harnesses_now_compile_because_their_agent_types_carry_a_model() {
-    for name in ["gemini", "opencode"] {
+    for name in ["opencode", "copilot"] {
         let t = builtin(name).unwrap();
         let model = resolve_model(&request(name, None), &t, Auth::Canned);
         assert!(
@@ -2301,7 +2299,6 @@ fn the_new_harnesses_now_compile_because_their_agent_types_carry_a_model() {
 #[test]
 fn a_new_harness_with_no_model_anywhere_still_refuses_and_names_itself() {
     for (name, h) in [
-        ("gemini", Harness::Gemini),
         ("opencode", Harness::OpenCode),
         ("copilot", Harness::Copilot),
         ("goose", Harness::Goose),
@@ -2332,19 +2329,19 @@ fn a_new_harness_with_no_model_anywhere_still_refuses_and_names_itself() {
 /// what keeps `codex exec`'s measured argv, and `cross_product` and `timeout_kill` with it, unchanged.
 #[test]
 fn the_request_overrides_the_agent_types_default_and_absence_stays_absence() {
-    let gemini = builtin("gemini").unwrap();
+    let copilot = builtin("copilot").unwrap();
     assert_eq!(
         resolve_model(
-            &request("gemini", Some("gemini-2.5-pro")),
-            &gemini,
+            &request("copilot", Some("gpt-5-codex")),
+            &copilot,
             Auth::Canned
         )
         .as_deref(),
-        Some("gemini-2.5-pro"),
+        Some("gpt-5-codex"),
     );
     assert_eq!(
-        resolve_model(&request("gemini", None), &gemini, Auth::Canned).as_deref(),
-        Some("gemini-2.5-flash"),
+        resolve_model(&request("copilot", None), &copilot, Auth::Canned).as_deref(),
+        Some(marion_core::agent_type::COPILOT_DEFAULT_MODEL),
     );
     for name in ["codex-impl", "claude"] {
         assert_eq!(

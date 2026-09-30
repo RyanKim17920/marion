@@ -22,14 +22,6 @@ pub const DEFAULT_MAX_DEPTH: u32 = 3;
 /// §3.1/§6.1 step 2: live (non-terminal, unreaped) children of *this* node.
 pub const DEFAULT_MAX_CONCURRENT_CHILDREN: u32 = 4;
 
-/// The `gemini` built-in's default model.
-///
-/// The one id S12 exercised end to end against a canned endpoint. It is a *default*, not a claim
-/// about which model runs: S12 measured 0.53.0 rewriting an explicit `-m gemini-2.5-flash` to
-/// `gemini-3.5-flash` in the request path, which is precisely why the contract records what the
-/// adapter compiled rather than treating the request as an outcome.
-pub const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
-
 /// The `opencode` built-in's default model, in the `provider/model` form that is the only spelling
 /// `-m` accepts (S13: there is no `OPENCODE_MODEL` env var, so argv and the generated config are
 /// the only two channels).
@@ -121,7 +113,6 @@ pub const TOOL_WRITE: &str = "write";
 /// | harness | `read` maps to | what marion compiles | measured |
 /// |---|---|---|---|
 /// | claude 2.1.222 | `Read` | `--tools Read` **and** `--allowedTools Read` | a real grant: under marion's `--tools ""` there is no `Read` at all |
-/// | gemini 0.53.0 | `read_file` | nothing | a no-op: `read_file` is in `functionDeclarations` by default |
 /// | opencode 1.17.3 | `read` | nothing | a no-op: `read` is in the default tool list |
 /// | codex 0.146.0 | **nothing — there is no read tool** | — | refused by name; reading is `exec_command`, i.e. the shell |
 ///
@@ -157,10 +148,10 @@ pub const TOOL_READ: &str = "read";
 /// The third entry in §3.1's `tools:` vocabulary: *may change part of an existing file in place*.
 ///
 /// Its own word rather than a spelling of [`TOOL_WRITE`] because the harnesses that withhold
-/// built-ins name it apart: claude's `Edit`, gemini's `replace`, qwen's `edit` and goose's `edit`
+/// built-ins name it apart: claude's `Edit`, qwen's `edit` and goose's `edit`
 /// are separate tools from each one's whole-file writer, and a node offered only the writer
 /// rewrites a whole file to change one line. Each row maps it to the name it measured
-/// (`tests/fixtures/s14/`, `s25/`, `s26/`, and the gemini `auto_edit` declaration in §11 item 24).
+/// (`tests/fixtures/s14/`, `s25/`, `s26/`).
 pub const TOOL_EDIT: &str = "edit";
 
 /// The fourth entry in §3.1's `tools:` vocabulary: *may run a shell command in its workspace*.
@@ -172,7 +163,7 @@ pub const TOOL_EDIT: &str = "edit";
 /// judges whatever it changed there after the fact, exactly as it judges a file tool's write.
 ///
 /// §3.1's example line spells it `bash`, and so does this vocabulary; each row maps it to its own
-/// shell tool (claude's `Bash`, gemini's and qwen's `run_shell_command`, goose's `shell`, pi's and
+/// shell tool (claude's `Bash`, qwen's `run_shell_command`, goose's `shell`, pi's and
 /// copilot's `bash`).
 pub const TOOL_BASH: &str = "bash";
 
@@ -205,9 +196,9 @@ pub struct AgentType {
     /// Optional rather than required, and `None` on the two harnesses that already run without
     /// one. `codex exec` takes no model argument at all and Claude Code's `--model` is legitimately
     /// omissible, so a default there would either be inert or would change an argv that is
-    /// currently measured. The two new harnesses genuinely cannot launch without one — gemini's
-    /// `auto` router hung against a canned endpoint, and opencode has no `OPENCODE_MODEL` env var
-    /// — so their built-ins state one and their adapters refuse when none arrives.
+    /// currently measured. Harnesses that genuinely cannot launch without one — opencode has no `OPENCODE_MODEL`
+    /// env var, and copilot's BYOK refuses to start without a model — state one in their built-ins,
+    /// and their adapters refuse when none arrives.
     pub model: Option<String>,
     /// **Which ACP agent**, on the one harness where naming the harness is not naming a program.
     ///
@@ -235,7 +226,7 @@ pub struct AgentType {
     /// permission from one declaration is what makes them unable to disagree.
     ///
     /// **The default is empty, and empty is exactly the behaviour every node has had until now** —
-    /// `--tools ""` on Claude Code, gemini's default approval mode, i.e. no built-in tool at all.
+    /// `--tools ""` on Claude Code, i.e. no built-in tool at all.
     /// **No orchestrator type states one.** A tool declared here widens what *every* node of that
     /// type may do, so it is stated only by the implementer types (the plain harness names), which
     /// is the difference between closing item 24 and hardcoding a tool name to make a matrix green.
@@ -356,7 +347,7 @@ impl AgentType {
     /// On a live run (`canned == false`) a default that names marion's own canned plumbing is
     /// dropped: it exists so a canned node can launch, it names nothing on the operator's own
     /// account, and without it the harness uses the operator's own default model, as it uses their
-    /// login. A real vendor id (gemini's) is kept either way.
+    /// login. A real vendor id (agy's) is kept either way.
     pub fn default_model(&self, canned: bool) -> Option<String> {
         match &self.model {
             Some(m) if !canned && CANNED_PLUMBING_MODELS.contains(&m.as_str()) => None,
@@ -614,28 +605,6 @@ const BUILTINS: &[Builtin] = &[
         tools: &[],
         acp_agent: None,
         delegates_writes: false,
-    },
-    Builtin {
-        canonical: "gemini",
-        aliases: &["gemini-impl"],
-        description: "Implementer on the Gemini CLI: may read, write and edit files and run \
-                      commands.",
-        harness: Harness::Gemini,
-        model: Some(GEMINI_DEFAULT_MODEL),
-        tools: IMPLEMENTER_TOOLS,
-        acp_agent: None,
-        delegates_writes: false,
-    },
-    Builtin {
-        canonical: "gemini-orchestrator",
-        aliases: &[],
-        description: "Orchestrator on the Gemini CLI: plans and delegates through marion; cannot \
-                      write files.",
-        harness: Harness::Gemini,
-        model: Some(GEMINI_DEFAULT_MODEL),
-        tools: &[],
-        acp_agent: None,
-        delegates_writes: true,
     },
     // No `tools`: opencode's default tool list already grants reads and writes.
     Builtin {
@@ -1267,8 +1236,6 @@ mod tests {
             ("codex", Harness::Codex),
             ("copilot", Harness::Copilot),
             ("copilot-orchestrator", Harness::Copilot),
-            ("gemini", Harness::Gemini),
-            ("gemini-orchestrator", Harness::Gemini),
             ("goose", Harness::Goose),
             ("goose-orchestrator", Harness::Goose),
             ("opencode", Harness::OpenCode),
@@ -1284,7 +1251,7 @@ mod tests {
         }
         assert_eq!(
             builtin_names().len(),
-            27,
+            25,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -1369,15 +1336,6 @@ mod tests {
         assert_eq!(builtin("codex-impl").unwrap().model, None);
         assert_eq!(builtin("claude-impl").unwrap().model, None);
         assert_eq!(
-            builtin("gemini").unwrap().model.as_deref(),
-            Some(GEMINI_DEFAULT_MODEL)
-        );
-        assert_eq!(
-            builtin("gemini-impl").unwrap().model.as_deref(),
-            Some(GEMINI_DEFAULT_MODEL),
-            "the -impl flavour launches on the same adapter, which refuses without a model"
-        );
-        assert_eq!(
             builtin("opencode").unwrap().model.as_deref(),
             Some(OPENCODE_DEFAULT_MODEL)
         );
@@ -1397,7 +1355,7 @@ mod tests {
                 .iter()
                 .map(|t| t.to_string())
                 .collect::<Vec<_>>(),
-            "the implementer flavour declares both, as claude-impl and gemini-impl do (§11 item 24)"
+            "the implementer flavour declares both, as claude-impl does (§11 item 24)"
         );
         // opencode's `-m` accepts nothing else, and the generated provider block has to repeat it.
         assert!(
@@ -1410,7 +1368,7 @@ mod tests {
 
     /// **A default model that names marion's canned plumbing is not applied to a live run.** The
     /// live node then names no model and the harness uses the operator's own default, exactly as
-    /// it uses their login. A real vendor id (gemini's) is still a default either way.
+    /// it uses their login. A real vendor id (agy's) is still a default either way.
     #[test]
     fn a_canned_plumbing_default_model_is_dropped_on_a_live_run() {
         for name in [
@@ -1425,8 +1383,8 @@ mod tests {
             assert_eq!(t.default_model(false), None, "{name}: live");
             assert_eq!(t.default_model(true), t.model, "{name}: canned keeps it");
         }
-        let gemini = builtin("gemini").unwrap();
-        assert_eq!(gemini.default_model(false), gemini.model);
+        let agy = builtin("agy").unwrap();
+        assert_eq!(agy.default_model(false), agy.model);
         assert_eq!(builtin("claude").unwrap().default_model(false), None);
     }
 
@@ -1449,7 +1407,7 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude" | "gemini" | "copilot" | "qwen" | "pi" => {
+                "claude" | "copilot" | "qwen" | "pi" => {
                     IMPLEMENTER_TOOLS.iter().map(|t| t.to_string()).collect()
                 }
                 // No `bash`: agy's headless commands are approved by the operator or not at all.
@@ -1489,7 +1447,7 @@ mod tests {
     #[test]
     fn every_plain_harness_name_is_the_full_implementer_and_impl_is_its_alias() {
         for name in [
-            "claude", "codex", "gemini", "opencode", "copilot", "goose", "cline", "qwen",
+            "claude", "codex", "opencode", "copilot", "goose", "cline", "qwen",
         ] {
             let plain = builtin(name).unwrap_or_else(|| panic!("{name} resolves"));
             assert_eq!(plain.name, name, "{name} is the canonical spelling");
@@ -1549,7 +1507,6 @@ mod tests {
     fn an_impl_type_differs_from_its_orchestrator_only_in_the_grant() {
         for (orchestrator, implementer) in [
             ("claude-orchestrator", "claude"),
-            ("gemini-orchestrator", "gemini"),
             ("copilot-orchestrator", "copilot"),
             ("goose-orchestrator", "goose"),
             ("qwen-orchestrator", "qwen"),
@@ -1588,7 +1545,7 @@ mod tests {
     /// adapter and `marion run codex-impl` would stop launching. See [`TOOL_READ`].
     #[test]
     fn the_impl_types_can_read_what_they_write() {
-        for name in ["claude", "gemini"] {
+        for name in ["claude", "copilot", "qwen", "pi"] {
             let t = builtin(name).unwrap();
             assert_eq!(
                 t.tools[..2],
@@ -1886,7 +1843,7 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
             "acp-opencode",
         ] {
             let text = format!(
-                "[[agent]]\nname = \"{name}\"\nharness = \"gemini\"\ndescription = \"x\"\n"
+                "[[agent]]\nname = \"{name}\"\nharness = \"claude\"\ndescription = \"x\"\n"
             );
             assert_eq!(
                 AgentTypes::parse(&text),
@@ -1975,7 +1932,7 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
     #[test]
     fn a_duplicate_name_within_the_file_is_refused() {
         let twice = "[[agent]]\nname = \"r\"\nharness = \"codex\"\ndescription = \"x\"\n\
-                     [[agent]]\nname = \"r\"\nharness = \"gemini\"\ndescription = \"y\"\n";
+                     [[agent]]\nname = \"r\"\nharness = \"claude\"\ndescription = \"y\"\n";
         assert_eq!(
             AgentTypes::parse(twice),
             Err(AgentTypesError::Duplicate("r".into()))
@@ -1996,7 +1953,7 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
     #[test]
     fn names_lists_builtins_then_user_rows() {
         let text = format!(
-            "{REVIEWER}\n[[agent]]\nname = \"triager\"\nharness = \"gemini\"\ndescription = \"t\"\n"
+            "{REVIEWER}\n[[agent]]\nname = \"triager\"\nharness = \"claude\"\ndescription = \"t\"\n"
         );
         let types = AgentTypes::parse(&text).unwrap();
         let mut expected: Vec<&str> = builtin_names().to_vec();

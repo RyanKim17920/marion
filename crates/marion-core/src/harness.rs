@@ -19,7 +19,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub enum Harness {
     ClaudeCode,
     Codex,
-    Gemini,
     OpenCode,
     /// GitHub Copilot CLI, headless `-p` (measured on 1.0.83, `tests/fixtures/s24/`). The sixth
     /// name and the fifth binary; added after `Acp`'s doc comment below was written, so where that
@@ -58,7 +57,6 @@ impl Harness {
         match self {
             Harness::ClaudeCode => "claude-code",
             Harness::Codex => "codex",
-            Harness::Gemini => "gemini",
             Harness::OpenCode => "opencode",
             Harness::Copilot => "copilot",
             Harness::Goose => "goose",
@@ -81,10 +79,9 @@ impl Harness {
     }
 
     /// Every harness marion can name — what `marion doctor` would list.
-    pub const ALL: [Harness; 11] = [
+    pub const ALL: [Harness; 10] = [
         Harness::ClaudeCode,
         Harness::Codex,
-        Harness::Gemini,
         Harness::OpenCode,
         Harness::Copilot,
         Harness::Goose,
@@ -101,8 +98,8 @@ impl Harness {
 /// marion has never heard of.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unknown harness {0:?}; known harnesses are claude, codex, gemini, opencode, copilot, goose, \
-     cline, qwen, agy, pi, acp (claude-code is accepted for claude)"
+    "unknown harness {0:?}; known harnesses are claude, codex, opencode, copilot, goose, cline, \
+     qwen, agy, pi, acp (claude-code is accepted for claude)"
 )]
 pub struct UnknownHarness(pub String);
 
@@ -161,7 +158,6 @@ mod tests {
         // a format change, not a rename.
         assert_eq!(Harness::ClaudeCode.as_str(), "claude-code");
         assert_eq!(Harness::Codex.as_str(), "codex");
-        assert_eq!(Harness::Gemini.as_str(), "gemini");
         assert_eq!(Harness::OpenCode.as_str(), "opencode");
         assert_eq!(Harness::Copilot.as_str(), "copilot");
         assert_eq!(Harness::Goose.as_str(), "goose");

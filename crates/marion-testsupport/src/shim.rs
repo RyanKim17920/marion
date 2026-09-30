@@ -38,7 +38,7 @@
 //! - **codex** keeps `~/.codex/packages/standalone/releases/<ver>-<target>/bin/codex` — the
 //!   directory carries the target triple (`0.147.0-aarch64-apple-darwin`) — and
 //!   `~/.codex/packages/standalone/current` is the repointed symlink. Five releases were on disk.
-//! - **npm-installed** harnesses (copilot, gemini, qwen, cline, all under Homebrew's node tree on
+//! - **npm-installed** harnesses (copilot, qwen, cline, all under Homebrew's node tree on
 //!   this machine) have no per-version store: `npm i -g` overwrites in place. For those the shim
 //!   keeps its own, `<marion state>/harness-pins/<program>/<ver>`, filled by
 //!   `npm install -g --prefix` **only** when the binary first on `PATH` is not admitted — a network

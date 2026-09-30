@@ -760,7 +760,6 @@ mod tests {
         };
         for h in [
             Harness::ClaudeCode,
-            Harness::Gemini,
             Harness::OpenCode,
             Harness::Copilot,
             Harness::Goose,

@@ -58,7 +58,7 @@ pub enum LaunchPath {
     /// The prompt is a frame written after the readiness gate, never an argv element.
     Duplex,
     /// The prompt rides argv and there is no channel afterwards. `codex exec --json` is this, and
-    /// so are gemini and opencode.
+    /// so are opencode and copilot.
     LaunchOnly,
     /// **A pty marion owns, and nothing parses it.** The node is a TUI: the prompt is seeded into
     /// argv, everything after it is keystrokes, and the only observation is
@@ -1254,8 +1254,6 @@ mod tests {
                 ("claude", Some(LaunchPath::Duplex)),
                 ("claude-orchestrator", Some(LaunchPath::Duplex)),
                 ("codex", Some(LaunchPath::AppServer)),
-                ("gemini", Some(LaunchPath::LaunchOnly)),
-                ("gemini-orchestrator", Some(LaunchPath::LaunchOnly)),
                 ("opencode", Some(LaunchPath::LaunchOnly)),
                 ("copilot", Some(LaunchPath::LaunchOnly)),
                 ("copilot-orchestrator", Some(LaunchPath::LaunchOnly)),

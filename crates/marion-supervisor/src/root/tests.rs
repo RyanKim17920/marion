@@ -1200,7 +1200,7 @@ fn temp(name: &str) -> marion_testsupport::Scratch {
 fn every_builtin_agent_type_prepares_as_a_root_with_its_config_actually_on_disk() {
     let dir = temp("prepare");
     // A **git** repository, not the bare directory `temp` makes. Driving the sweep off
-    // `builtin_names()` surfaced `claude-impl` and `gemini-impl`, which declare tools — and
+    // `builtin_names()` surfaced `claude-impl` and `copilot-impl`, which declare tools — and
     // §6.1's rule is "no audit, no grant", so `prepare` refuses a tool-declaring root outright
     // where no change record can be taken. That refusal is correct; the fixture was wrong, and
     // a bare directory silently tested only the types that ask for nothing.
@@ -1534,7 +1534,7 @@ fn asking_for_a_pane_a_harness_does_not_have_is_refused_rather_than_downgraded()
         "claude-orchestrator",
         "codex",
         "codex-impl",
-        "gemini-orchestrator",
+        "copilot-orchestrator",
         "opencode",
     ] {
         let has_pane = adapter_for(builtin(name).unwrap().harness)
@@ -1583,7 +1583,7 @@ fn every_root_declares_itself_at_depth_zero_and_names_its_own_type() {
         "claude-orchestrator",
         "codex",
         "codex-impl",
-        "gemini-orchestrator",
+        "copilot-orchestrator",
         "opencode",
     ] {
         let node = prepare(&root_spec(&dir, name)).unwrap();
@@ -1655,7 +1655,7 @@ fn a_watched_roots_declaration_carries_the_token_its_owner_minted() {
         "claude-orchestrator",
         "codex",
         "codex-impl",
-        "gemini-orchestrator",
+        "copilot-orchestrator",
         "opencode",
     ] {
         let owned = prepare_watched(&root_spec(&dir, name), &Owner(TOKEN.into()))
@@ -1685,7 +1685,7 @@ fn only_the_duplex_root_carries_the_anthropic_env_pair() {
     for name in [
         "claude-orchestrator",
         "codex",
-        "gemini-orchestrator",
+        "copilot-orchestrator",
         "opencode",
     ] {
         let node = prepare(&root_spec(&dir, name)).unwrap();
@@ -2079,16 +2079,16 @@ fn the_refusal_carries_the_streams_own_failure_when_stderr_is_empty() {
 }
 
 /// **An authentication failure on stderr is the cause, and the refusal leads with it.**
-/// Measured live: a gemini root on a personal login emitted 0 frames and exited 55 with this
-/// stderr, and the refusal opened with "the root never reached marion's bridge … 0 frame(s)",
-/// which sends the operator to re-check a bridge declaration that was never the problem.
+/// Measured live on the since-retired gemini CLI, whose SDK qwen shares: a root on a personal
+/// login emitted 0 frames and exited 55 with this stderr, and the refusal opened with "the root
+/// never reached marion's bridge … 0 frame(s)", which sends the operator to re-check a bridge declaration that was never the problem.
 #[test]
 fn a_root_that_could_not_authenticate_is_refused_leading_with_the_harnesss_own_words() {
     let line = "Error authenticating: IneligibleTierError: This client is no longer supported \
                 for Gemini Code Assist for individuals. To continue using Gemini, please \
                 migrate to the Antigravity suite of products";
     let stderr = format!("Loaded cached credentials.\n{line}\n    at async main (gemini.js:1:1)");
-    let msg = assert_a_verb_was_answered(Harness::Gemini, &ran(&[], 0, Some(55), &stderr))
+    let msg = assert_a_verb_was_answered(Harness::Qwen, &ran(&[], 0, Some(55), &stderr))
         .expect_err("a root that never authenticated delegated nothing")
         .to_string();
     let cause = msg.find(line).expect("the auth line must be quoted");
@@ -2099,13 +2099,13 @@ fn a_root_that_could_not_authenticate_is_refused_leading_with_the_harnesss_own_w
         cause < bridge,
         "the authentication failure is the cause and must come first: {msg}"
     );
-    assert!(msg.starts_with("gemini: "), "{msg}");
+    assert!(msg.starts_with("qwen: "), "{msg}");
     // Without an auth line the refusal is unchanged: the bridge sentence leads.
-    let plain = assert_a_verb_was_answered(Harness::Gemini, &ran(&[], 0, Some(1), "boom"))
+    let plain = assert_a_verb_was_answered(Harness::Qwen, &ran(&[], 0, Some(1), "boom"))
         .expect_err("still a refusal")
         .to_string();
     assert!(
-        plain.starts_with("gemini: the root never reached marion's bridge"),
+        plain.starts_with("qwen: the root never reached marion's bridge"),
         "{plain}"
     );
 }
@@ -2116,7 +2116,7 @@ fn a_root_that_could_not_authenticate_is_refused_leading_with_the_harnesss_own_w
 fn one_answered_marion_call_of_any_verb_satisfies_the_post_hoc_assertion() {
     for verb in ["spawn", "status", "wait", "list", "report"] {
         assert!(
-            assert_a_verb_was_answered(Harness::Gemini, &ran(&[verb], 1, Some(0), "")).is_ok(),
+            assert_a_verb_was_answered(Harness::Qwen, &ran(&[verb], 1, Some(0), "")).is_ok(),
             "{verb}: the question is whether a verb was answered, not which verb it was"
         );
     }
@@ -2172,7 +2172,7 @@ fn the_gate_passes_only_on_an_answered_verb() {
     ];
     for (label, calls, ok) in cases {
         assert_eq!(
-            assert_a_verb_was_answered(Harness::Gemini, &outcome(&calls, 1, Some(0), "")).is_ok(),
+            assert_a_verb_was_answered(Harness::Qwen, &outcome(&calls, 1, Some(0), "")).is_ok(),
             ok,
             "{label}"
         );
@@ -2224,13 +2224,13 @@ fn a_refused_call_is_not_reported_as_a_bridge_that_was_never_reached() {
         Some(0),
         "",
     );
-    let err = assert_a_verb_was_answered(Harness::Gemini, &refused)
+    let err = assert_a_verb_was_answered(Harness::Qwen, &refused)
         .expect_err("a root whose only verb was refused delegated nothing");
     let msg = err.to_string();
     assert!(matches!(
         err,
         RootError::NoVerbAnswered {
-            harness: Harness::Gemini,
+            harness: Harness::Qwen,
             calls: 1,
             exit: Some(0),
             ..

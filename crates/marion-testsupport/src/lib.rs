@@ -299,8 +299,9 @@ pub struct PinnedHarness {
     /// it. The same test keeps the two equal.
     pub probe_args: &'static [&'static str],
     /// The row's switch where it is a settings document: written to a private file for the probe's
-    /// lifetime, its path in [`ProbeDocument::env`] — gemini's system settings, which has no
-    /// update variable at all, and whose bare start updated the operator's install on 2026-09-27.
+    /// lifetime, its path in [`ProbeDocument::env`] — the shape a row takes when it has no update
+    /// variable at all (the retired gemini CLI's bare start updated the operator's install on
+    /// 2026-09-27). No pinned row takes it today.
     pub probe_document: Option<ProbeDocument>,
 }
 
@@ -793,18 +794,6 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         accepted: marion_harness::codex::SPEC.verified,
     },
     PinnedHarness {
-        program: "gemini",
-        store: ReleaseStore::Npm("@google/gemini-cli"),
-        probe_env: &[],
-        probe_args: &[],
-        probe_document: Some(ProbeDocument {
-            env: "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
-            body: r#"{"general":{"enableAutoUpdate":false,"enableAutoUpdateNotification":false}}"#,
-        }),
-        // The version that omits MCP tools entirely without `trust: true`, silently.
-        accepted: marion_harness::gemini::SPEC.verified,
-    },
-    PinnedHarness {
         program: "opencode",
         store: ReleaseStore::PathOnly,
         probe_env: &[("OPENCODE_DISABLE_AUTOUPDATE", "1")],
@@ -1042,7 +1031,6 @@ pub fn pinned_version(program: &str) -> &'static str {
 /// |------------|--------------------------------------------------------------------------|
 /// | `claude`   | `2.1.222 (Claude Code)`                                                  |
 /// | `codex`    | `codex-cli 0.146.0`                                                      |
-/// | `gemini`   | `0.53.0`                                                                 |
 /// | `opencode` | `1.17.3`                                                                 |
 /// | `copilot`  | `GitHub Copilot CLI 1.0.83.` then `Run 'copilot update' to check for updates.` |
 /// | `goose`    | ` 1.49.0` — a leading space, no name (measured 2026-09-05)                 |
@@ -2308,7 +2296,7 @@ mod tests {
         for (raw, want) in [
             ("2.1.222 (Claude Code)\n", "2.1.222"), // claude
             ("codex-cli 0.146.0\n", "0.146.0"),     // codex
-            ("0.53.0\n", "0.53.0"),                 // gemini
+            ("3.0.61\n", "3.0.61"),                 // cline: bare
             ("1.17.3\n", "1.17.3"),                 // opencode
             // copilot: two lines, and the version ends the first sentence with a full stop.
             (
@@ -2415,12 +2403,12 @@ mod tests {
     /// which upgrade caused it.
     #[test]
     fn a_program_reporting_an_unpinned_version_fails_naming_both_versions() {
-        let e = check_version(pin("gemini"), "0.99.0\n", "")
-            .expect_err("a gemini that is not the pinned one must not pass the gate");
-        assert!(e.contains("gemini"), "names the program: {e}");
+        let e = check_version(pin("cline"), "0.99.0\n", "")
+            .expect_err("a cline that is not the pinned one must not pass the gate");
+        assert!(e.contains("cline"), "names the program: {e}");
         assert!(e.contains("0.99.0"), "names what was actually found: {e}");
         assert!(
-            e.contains(pinned_version("gemini")),
+            e.contains(pinned_version("cline")),
             "names the expected version, from the table: {e}"
         );
     }

@@ -81,7 +81,7 @@ mod tests {
             passthrough_from(&path, "codex-impl").unwrap(),
             ["CORP_*", "MY_KEY"]
         );
-        assert_eq!(passthrough_from(&path, "gemini").unwrap(), ["CORP_*"]);
+        assert_eq!(passthrough_from(&path, "goose").unwrap(), ["CORP_*"]);
         std::fs::write(&path, "[passthrough]\ncodex-impl = [\"$(evil)\"]\n").unwrap();
         let e = passthrough_from(&path, "codex-impl").unwrap_err();
         assert!(e.contains("$(evil)"), "{e}");

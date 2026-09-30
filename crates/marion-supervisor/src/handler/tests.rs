@@ -478,10 +478,10 @@ fn a_recorded_type_is_resumed_only_under_the_harness_it_was_journaled_with() {
         recorded_type(None, &repo, &intent).unwrap().harness,
         Harness::Codex
     );
-    std::fs::write(&file, row("gemini")).unwrap();
+    std::fs::write(&file, row("claude")).unwrap();
     let e = recorded_type(None, &repo, &intent).unwrap_err();
     assert!(
-        e.message.contains("journaled as codex") && e.message.contains("now says gemini"),
+        e.message.contains("journaled as codex") && e.message.contains("now says claude"),
         "{e}"
     );
     std::fs::remove_file(&file).unwrap();

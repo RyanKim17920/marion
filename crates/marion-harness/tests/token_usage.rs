@@ -42,11 +42,6 @@ fn usage_of(h: Harness, acp_agent: Option<&str>, stdout: &str) -> Option<TokenUs
         .usage(&json_frames(stdout))
 }
 
-/// `gemini -o stream-json`'s terminal frame, verbatim from `s12/README.md`. **Unmeasured beyond
-/// that one line**: its `cached` is zero, so whether `input_tokens` counts cached tokens is not
-/// shown by any capture; the row assumes it does.
-const GEMINI_RESULT: &str = r#"{"type":"result","timestamp":"<TS>","status":"success","stats":{"total_tokens":16,"input_tokens":10,"output_tokens":6,"cached":0,"input":10,"duration_ms":47,"tool_calls":1,"models":{"<REDACTED-machine-specific>":{}}}}"#;
-
 /// `opencode run --format json`'s `step_finish`, verbatim from `s13/README.md`.
 const OPENCODE_STEP_FINISH: &str = r#"{"type":"step_finish","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"reason":"stop","type":"step-finish","tokens":{"input":0,"output":0,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}"#;
 
@@ -121,12 +116,6 @@ fn each_harness_reads_its_usage_from_the_stream_it_was_measured_emitting() {
             Harness::Copilot,
             fixture!("s24/copilot-write-then-report.stdout.jsonl"),
             None,
-        ),
-        (
-            "gemini s12",
-            Harness::Gemini,
-            GEMINI_RESULT,
-            Some(tokens(10, 6, 0, 0)),
         ),
         (
             "opencode s13",

@@ -15,8 +15,7 @@
 //! binary's `--help`, transcribed once from a measurement and never computed.
 //!
 //! *Code*: whether a launch is **allowed** — claude refuses an argv prompt because 2.1.220 takes
-//! turn one before its MCP server is up; gemini refuses a missing model because `auto` hangs; a
-//! canned copilot refuses a missing base URL because the CLI goes looking for a GitHub login. Those
+//! turn one before its MCP server is up; a canned copilot refuses a missing base URL because the CLI goes looking for a GitHub login. Those
 //! are measured *decisions*, each with a fixture behind it, and enum-izing them would turn a
 //! sentence of evidence into a variant nobody can check. They live in the adapters.
 //!
@@ -43,9 +42,10 @@ use crate::rpc_channel::RpcChannel;
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
 /// The name marion gives its own MCP server in every declaration, and therefore half of every
-/// harness's model-facing spelling of marion's tools. **It must not contain `_`**: gemini exposes
-/// MCP tools as `mcp_<server>_<tool>` and its policy engine mis-parses a fully-qualified name with
-/// extra underscores, **silently** (S12).
+/// harness's model-facing spelling of marion's tools. **It must not contain `_`**: the spellings
+/// join server and tool with underscores (`mcp__<server>__<tool>`, `<server>_<tool>`), and a
+/// policy engine that splits on them mis-parses a name with extra ones, **silently** (S12 measured
+/// that on the since-retired gemini CLI).
 pub const MCP_ALIAS: &str = "marion";
 
 /// One harness, as a row: what its launch looks like, stated as data.
@@ -222,7 +222,6 @@ pub struct HarnessSpec {
     /// | codex | **writes** — `sandbox_mode = "workspace-write"` on every node marion configures, and `codex exec` has no per-tool knob at all | `codex::SANDBOX_MODE` |
     /// | opencode | **writes** — marion compiles no constraint whatsoever | `opencode::NO_COMPILED_TOOL_CONSTRAINT` |
     /// | claude-code | withheld — `--tools ""` unless `write` is declared | `ClaudeCodeAdapter::permission_axis` |
-    /// | gemini | withheld — the default approval mode drops the mutating tools from `functionDeclarations` outright | `gemini::DEFAULT_APPROVAL_MODE` |
     /// | copilot | withheld — `--available-tools` names only marion's verbs unless `write` is declared, and an ungranted `create` is `denied` (measured, `tests/fixtures/s24/`) | `CopilotAdapter::permission_axis` |
     /// | acp | **writes** — twice over; see below | `acp::NO_TOOL_AVAILABILITY_SURFACE` |
     ///
@@ -395,9 +394,6 @@ pub enum Need {
     ModelOtherThan(&'static str),
     /// Nothing satisfies it: the row has no measured recipe for the mode.
     NoRecipe,
-    /// A base URL, where one is given, that is HTTPS or plain HTTP to a loopback host
-    /// ([`https_or_loopback`]). No base URL satisfies it.
-    HttpsOrLoopback,
 }
 
 /// **How one harness speaks one wire in endpoint mode**: the wire, and the environment that
@@ -852,8 +848,8 @@ pub const BOOT_FLOOR: Duration = Duration::from_secs(30);
 pub const TOLERATED_OVERSUBSCRIPTION: u32 = 25;
 
 /// **What booting a harness costs**: CPU time, user plus system, from `exec` until it sends its
-/// first model request — over every process it re-execs into (gemini and qwen relaunch
-/// themselves under a second `node`; the relaunch is part of the boot).
+/// first model request — over every process it re-execs into (qwen relaunches itself under a
+/// second `node`; the relaunch is part of the boot).
 ///
 /// CPU time and not wall time because only CPU time is a property of the harness: the wall time
 /// of the same boot moves with whatever else the machine is doing, and a wall clock copied from a
@@ -905,7 +901,7 @@ pub enum Approval {
         note: &'static str,
     },
     /// A key on marion's **own** server declaration approves that server's tools and nothing
-    /// else — codex's `default_tools_approval_mode = "approve"`, gemini's `trust: true`.
+    /// else — codex's `default_tools_approval_mode = "approve"`.
     DeclarationKey {
         key: &'static str,
         /// The operator config the key exists to override, merged at the top of the declaration
@@ -996,7 +992,7 @@ impl Approval {
 pub enum ReadOnly {
     /// The availability axis is the whole switch: a launch declared without `write` offers no tool
     /// that changes a file, and a scripted call to one is refused by the harness itself — claude's
-    /// `--tools`, gemini's default approval mode, qwen's `--core-tools`, pi's `--tools`.
+    /// `--tools`, qwen's `--core-tools`, pi's `--tools`.
     /// `verified` is whether that refusal was measured against a scripted write; a row that only
     /// believes it (agy, which has no canned route) does not count as blocking writes.
     ToolsAxis { verified: bool, note: &'static str },
@@ -1077,8 +1073,8 @@ pub enum UpdatePolicy {
         value: &'static str,
         note: &'static str,
     },
-    /// Boolean keys, as dotted paths, in the JSON declaration document the row already emits —
-    /// gemini's system settings. The document emitter applies them with
+    /// Boolean keys, as dotted paths, in the JSON declaration document the row already emits. The
+    /// document emitter applies them with
     /// [`UpdatePolicy::apply_to_json`], and the sweep reads them back from every emitted document.
     Document {
         keys: &'static [(&'static str, bool)],
@@ -1147,7 +1143,7 @@ pub enum Field {
     Cwd,
     ConfigDir,
     /// The model in this harness's own spelling, **after** the adapter's rule — codex compiles
-    /// none under a canned provider, opencode wants `provider/model`, gemini refuses `None`.
+    /// none under a canned provider, opencode wants `provider/model`, a canned copilot refuses `None`.
     Model,
     /// The compiled prompt. Carries a value even when empty; see [`Arg::PosIfNonEmpty`].
     Prompt,
@@ -1411,28 +1407,6 @@ impl std::fmt::Debug for Fields {
             .field("read_only", read_only)
             .finish()
     }
-}
-
-/// Whether a base URL is HTTPS, or plain HTTP to a loopback host — [`Need::HttpsOrLoopback`]. A
-/// harness that refuses a non-loopback plain-HTTP endpoint at runtime (gemini, S12/§6.4) states
-/// the requirement, so the refusal is a launch error rather than a confusing runtime failure.
-pub fn https_or_loopback(base_url: &str) -> bool {
-    let u = base_url.trim();
-    if u.starts_with("https://") {
-        return true;
-    }
-    let Some(rest) = u.strip_prefix("http://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = match authority.strip_prefix('[') {
-        // An IPv6 literal keeps its brackets: `[::1]:8099`.
-        Some(r) => r
-            .split_once(']')
-            .map_or(String::new(), |(h, _)| format!("[{h}]")),
-        None => authority.split(':').next().unwrap_or("").to_string(),
-    };
-    matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
 }
 
 /// A base URL without its trailing `/v1` (and without trailing slashes either side of it) —
@@ -1794,7 +1768,6 @@ impl Surfaces {
 /// | who | what the model typed | where |
 /// |---|---|---|
 /// | claude-code 2.1.220, codex 0.146.0 (as a JavaScript identifier), `claude-agent-acp` 0.66.0 | `mcp__marion__report` | S1, S6, S22 |
-/// | gemini CLI 0.53.0 | `mcp_marion_report` | S12 |
 /// | opencode 1.17.3, `opencode acp` | `marion_report` | S13, S21 |
 /// | copilot 1.0.83 | `marion-report` | s24 |
 /// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
@@ -1804,8 +1777,6 @@ impl Surfaces {
 pub enum ToolSpelling {
     /// `mcp__<server>__<tool>`.
     McpDoubleUnderscore,
-    /// `mcp_<server>_<tool>`, single underscores.
-    McpSingleUnderscore,
     /// `<server>_<tool>`.
     ServerUnderscoreTool,
     /// `<server>-<tool>`.
@@ -1824,7 +1795,6 @@ impl ToolSpelling {
     pub fn spell(self, tool: &str) -> String {
         match self {
             Self::McpDoubleUnderscore => format!("mcp__{MCP_ALIAS}__{tool}"),
-            Self::McpSingleUnderscore => format!("mcp_{MCP_ALIAS}_{tool}"),
             Self::ServerUnderscoreTool => format!("{MCP_ALIAS}_{tool}"),
             Self::ServerHyphenTool => format!("{MCP_ALIAS}-{tool}"),
             Self::McpDotted => format!("mcp.{MCP_ALIAS}.{tool}"),
@@ -1941,7 +1911,7 @@ pub enum LiveDeclaration {
         always: bool,
     },
     /// A document written to `file` under the node's own directory whose path rides the
-    /// environment variable `key` — gemini's `GEMINI_CLI_SYSTEM_SETTINGS_PATH`.
+    /// environment variable `key` — cline's `CLINE_MCP_SETTINGS_PATH`.
     EnvDocument {
         key: &'static str,
         file: &'static str,
@@ -2207,7 +2177,7 @@ pub enum Constraint {
     /// under a real constraint.
     ///
     /// `allowed` is where a mode row that also grants single tools past the mode records them:
-    /// each entry of the axes' allow list, under that prefix (gemini's `--allowed-tools`). `None`
+    /// each entry of the axes' allow list, under that prefix. `None`
     /// on a row whose adapter never grants one, and the sweep holds the two together.
     Mode {
         prefix: &'static str,
@@ -2226,6 +2196,18 @@ pub enum Constraint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`Field::BaseUrlRoot`]'s value drops one trailing `/v1` and the slashes around it, and
+    /// leaves a URL without one as it is.
+    #[test]
+    fn a_base_url_root_loses_the_v1_an_sdk_appends_for_itself() {
+        assert_eq!(base_url_root("https://x.example/v1/"), "https://x.example");
+        assert_eq!(base_url_root("https://x.example"), "https://x.example");
+        assert_eq!(
+            base_url_root("http://127.0.0.1:8099/v1"),
+            "http://127.0.0.1:8099"
+        );
+    }
 
     /// **What a steer's acknowledgement promises is the row's own strategy.** A live run was told
     /// its message "reaches codex at its next tool round or turn" while its `exec` row took one

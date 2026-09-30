@@ -149,29 +149,15 @@ const OPENCODE: Node = Node {
 
 /// One marion tool call in **this harness's own stream shape**, made and **answered**.
 ///
-/// The two shapes are not interchangeable and nothing translates between them: gemini puts the
-/// harness-native spelling in `tool_name`, opencode in `part.tool`. The two spellings are taken
-/// from the adapter's own `marion_tool_name` rather than restated, because that mapping *is* the
-/// §3.1 contract under test — a frame written by hand here would keep passing if the adapter's
-/// spelling changed underneath it.
-///
-/// **gemini's is two frames and used to be one**, which is not a fixture detail: §6.1 step 8 asks
-/// whether a verb was *answered*, and gemini answers a call in a separate `tool_result` frame
-/// paired back by `tool_id` (S12's event set, `tests/fixtures/s12/README.md`). A lone `tool_use`
-/// was never a complete recording of a working gemini turn; it merely satisfied a gate that asked
-/// the weaker question. opencode emits only terminal states, so it already carried its verdict in
-/// the frame it had.
+/// Shapes are not interchangeable and nothing translates between them: opencode puts the
+/// harness-native spelling in `part.tool`. The spelling is taken from the adapter's own
+/// `marion_tool_name` rather than restated, because that mapping *is* the §3.1 contract under test
+/// — a frame written by hand here would keep passing if the adapter's spelling changed underneath
+/// it. §6.1 step 8 asks whether a verb was *answered*; opencode emits only terminal states, so it
+/// carries its verdict in the one frame.
 fn reached_the_bridge(node: &Node) -> String {
     let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
     match node.harness {
-        Harness::Gemini => format!(
-            "{}\n{}",
-            format_args!(
-                r#"{{"type":"tool_use","tool_name":"{}","tool_id":"call-1","args":{{}}}}"#,
-                adapter.marion_tool_name("spawn")
-            ),
-            r#"{"type":"tool_result","tool_id":"call-1","status":"success","output":"ok"}"#,
-        ),
         Harness::OpenCode => format!(
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"completed","input":{{}}}}}}}}"#,
             adapter.marion_tool_name("spawn")
@@ -289,26 +275,13 @@ fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 }
 
 /// **The launch shape, per harness.** §6.1 step 8's defining property of this surface is that the
-/// prompt is an argv element, and each puts it somewhere different — positionally at the end for
-/// opencode, as the argument to `-p` for gemini. The surrounding flags are asserted with it because
+/// prompt is an argv element, and each puts it somewhere of its own — positionally at the end for
+/// opencode. The surrounding flags are asserted with it because
 /// a prompt that arrived without `stream-json` / `--format json`
 /// would produce no machine-readable stream for the bridge assertion to read.
 fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String], prompt: &str) {
     let h = node.harness;
     match h {
-        Harness::Gemini => {
-            assert_eq!(
-                value_of(args, "--output-format"),
-                Some("stream-json"),
-                "{h}: without stream-json there is no stream to assert readiness from: {args:?}"
-            );
-            assert_eq!(
-                value_of(args, "-p"),
-                Some(prompt),
-                "{h}: the prompt is the ARGUMENT TO -p — a bare positional launches the \
-                 interactive UI and stdin is prepended as context instead: {args:?}"
-            );
-        }
         Harness::OpenCode => {
             assert_eq!(
                 args.first().map(String::as_str),
@@ -357,11 +330,9 @@ fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String]
 /// marion that wrote the file somewhere the harness never looks.
 fn assert_the_bridge_declaration_was_written(node: &Node, dir: &Path) {
     let h = node.harness;
-    // The variable, and what sits under it. gemini's names the document itself; the other two name
-    // a **directory** whose layout beneath is the harness's own — which is why marion creates the
+    // The variable, and what sits under it: it names a **directory** whose layout beneath is the harness's own — which is why marion creates the
     // parents rather than writing straight into `config_dir`.
     let (var, beneath): (&str, &[&str]) = match h {
-        Harness::Gemini => ("GEMINI_CLI_SYSTEM_SETTINGS_PATH", &[]),
         Harness::OpenCode => ("XDG_CONFIG_HOME", &["opencode", "opencode.json"]),
         Harness::Copilot
         | Harness::Goose
@@ -684,34 +655,19 @@ fn a_root_runs_in_its_own_temp_dir_and_leaves_nothing_in_it() {
 //
 // The gap between properties 1 and 2. A root can reach marion's bridge and still have delegated
 // nothing — the call goes out and comes back an error, and the harness carries on and exits 0.
-// Measured, not hypothesised: `tasks/todo.md`'s owed item 0 records a gemini root whose `spawn` was
-// refused by gemini's own schema validator, after which the root finished its turn, exited 0, and
+// Measured, not hypothesised: `tasks/todo.md`'s owed item 0 records a root whose `spawn` was
+// refused by its harness's own schema validator, after which the root finished its turn, exited 0, and
 // marion journalled `ExitStatus::Ok` for a run that delegated nothing. Property 2's frame and this
 // one differ in exactly one field, which is the whole point: an *attempted* verb is not evidence.
 
 /// The same one marion call as [`reached_the_bridge`], in the same harness-native shape, **refused**.
 ///
-/// One of the two is a recorded shape and one is constructed, and the difference is stated rather
-/// than smoothed over:
-///
-/// * **opencode is measured.** S13 recorded `{"status":"error","error":"The user rejected
-///   permission to use this specific tool call."}` on the tool part, with the run continuing and
-///   exiting 0 — `opencode::parse_stream` has read that shape since S13.
-/// * **gemini is constructed.** S12 records the `tool_result` frame and its `status`, but captured
-///   only `"success"`; it also redacted the `tool_id` on the `tool_use` and on the `tool_result`
-///   differently, so even the pairing of a result to its call is an assumption about that stream,
-///   not something the fixture proves.
+/// **opencode's is measured.** S13 recorded `{"status":"error","error":"The user rejected
+/// permission to use this specific tool call."}` on the tool part, with the run continuing and
+/// exiting 0 — `opencode::parse_stream` has read that shape since S13.
 fn refused_at_the_bridge(node: &Node) -> String {
     let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
     match node.harness {
-        Harness::Gemini => format!(
-            "{}\n{}",
-            format_args!(
-                r#"{{"type":"tool_use","tool_name":"{}","tool_id":"call-1","parameters":{{}}}}"#,
-                adapter.marion_tool_name("spawn")
-            ),
-            r#"{"type":"tool_result","tool_id":"call-1","status":"error","output":"invalid arguments"}"#,
-        ),
         Harness::OpenCode => format!(
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","error":"The user rejected permission to use this specific tool call."}}}}}}"#,
             adapter.marion_tool_name("spawn")

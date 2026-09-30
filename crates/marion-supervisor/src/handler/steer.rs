@@ -720,7 +720,7 @@ mod tests {
         let spawning = fx.steer("spawning", None).expect_err("spawning");
         assert!(spawning.message.contains("retry"), "{spawning}");
 
-        fx.running("gem", None, Harness::Gemini);
+        fx.running("goose", None, Harness::Goose);
         fx.intent("native", None, Harness::ClaudeCode);
         for kind in [
             RecordKind::Spawned(Spawned {
@@ -746,9 +746,9 @@ mod tests {
         assert_eq!(unowned.kind(), Some(FailureKind::Unimplemented));
         assert!(!unowned.message.contains("retry"), "{unowned}");
 
-        let unsupported = fx.steer("gem", None).expect_err("no strategy");
+        let unsupported = fx.steer("goose", None).expect_err("no strategy");
         assert_eq!(unsupported.kind(), Some(FailureKind::Unsupported));
-        let note = marion_harness::adapter::harness_spec(Harness::Gemini)
+        let note = marion_harness::adapter::harness_spec(Harness::Goose)
             .delivery
             .headless
             .note();

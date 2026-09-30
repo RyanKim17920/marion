@@ -11,8 +11,8 @@
 //! Each `(Wire, base)` pair is the base URL a client of that wire is handed: the `…/v1`-style
 //! prefix for the two OpenAI wires, the root (no `/v1`) for Anthropic Messages and Gemini — the
 //! spelling each vendor's own SDK takes. The adapters already derive their harness's spelling from
-//! a launch's base URL (`claude_code::anthropic_base_url` strips a trailing `/v1`,
-//! `gemini::google_base_url` likewise), so either form reaches the harness correctly.
+//! a launch's base URL (`claude_code::anthropic_base_url` strips a trailing `/v1`), so either form
+//! reaches the harness correctly.
 //!
 //! # What is and is not verified
 //!

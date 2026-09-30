@@ -50,9 +50,9 @@
 //! # A live turn costs a model call, and marion may not choose a model
 //!
 //! `--adapter`'s spawn step runs the real binary against the operator's real credential, which is
-//! what §8 asks for (*"Run `--adapter` in CI"*). Two adapters — gemini and opencode — make an
-//! explicit model a MUST at `compile`, and marion has no basis for picking one (S12 measured 0.53.0
-//! rewriting even an explicit `-m`). So those two report the spawn step as **not run for want of a
+//! what §8 asks for (*"Run `--adapter` in CI"*). Several adapters — opencode and a canned copilot
+//! among them — make an explicit model a MUST at `compile`, and marion has no basis for picking one
+//! (S12 measured a harness rewriting even an explicit `-m`). So those report the spawn step as **not run for want of a
 //! model** unless `--model` names one, rather than being handed a guess.
 
 use std::path::{Path, PathBuf};
@@ -1677,11 +1677,11 @@ fn is_executable(p: &Path) -> bool {
 
 /// The model a spec that **launches nothing** is compiled with, where the operator named none.
 ///
-/// gemini and opencode refuse to compile without one, and marion may not choose a real model for
-/// the operator (§6.4; S12 measured 0.53.0 rewriting even an explicit `-m`). But the two things
+/// opencode and a canned copilot refuse to compile without one, and marion may not choose a real
+/// model for the operator (§6.4; S12 measured a harness rewriting even an explicit `-m`). But the two things
 /// this spec is used for — reading the program name off the compiled argv, and checking the MCP
 /// declaration route was taken — do not depend on the model at all, and a probe that reported
-/// "gemini: unknown, pass --model" for a *version string* would be refusing a question it can
+/// "opencode: unknown, pass --model" for a *version string* would be refusing a question it can
 /// answer.
 ///
 /// It is a placeholder in the strict sense: no process is ever started from a spec carrying it.
@@ -2008,9 +2008,10 @@ mod tests {
         assert!(no_home.contains("cannot tell"), "{no_home}");
     }
 
-    /// **A live turn that could not authenticate says so, in the harness's own words.** Measured:
-    /// gemini on a personal login writes nothing to stdout, exits 55, and puts the whole diagnosis
-    /// on stderr — which this probe piped and never read, so the report said only "the binary wrote
+    /// **A live turn that could not authenticate says so, in the harness's own words.** Measured
+    /// on the since-retired gemini CLI, whose SDK qwen shares: on a personal login it wrote nothing
+    /// to stdout, exited 55, and put the whole diagnosis on stderr — which this probe piped and
+    /// never read, so the report said only "the binary wrote
     /// nothing to stdout". The stand-in is `sh`, so this spends nothing and needs no harness.
     #[test]
     fn a_live_turn_that_could_not_authenticate_reports_the_auth_line_plainly() {
@@ -2032,7 +2033,7 @@ mod tests {
         };
         let mut notes = Vec::new();
         let turn = live_turn(
-            &marion_harness::GeminiAdapter,
+            &marion_harness::QwenAdapter,
             Path::new("/bin/sh"),
             &inv,
             &mut notes,
@@ -2076,7 +2077,7 @@ mod tests {
             session_mode: None,
         };
         let turn = live_turn(
-            &marion_harness::GeminiAdapter,
+            &marion_harness::QwenAdapter,
             Path::new("/bin/sh"),
             &inv,
             &mut Vec::new(),
@@ -2215,16 +2216,16 @@ mod tests {
                 None,
             ),
             row(
-                Harness::Gemini,
+                Harness::Goose,
                 None,
-                &["binary: `gemini` not found on $PATH"],
+                &["binary: `goose` not found on $PATH"],
                 None,
             ),
         ];
         let v = verdict(&rows, &[]);
         assert!(v.contains("codex 0.147.0: ready: yes"), "{v}");
         assert!(
-            v.contains("gemini: ready: no — binary: `gemini` not found on $PATH"),
+            v.contains("goose: ready: no — binary: `goose` not found on $PATH"),
             "{v}"
         );
         assert!(
@@ -2308,12 +2309,13 @@ mod tests {
     }
 
     /// **Doctor's probe carries every shape of switch too** — the same fake the spawn probe's
-    /// test uses, read through `read_version`: an Env row, a Pair row on the row's own flag, a
-    /// Document row's settings file.
+    /// test uses, read through `read_version`: an Env row and a Pair row on the row's own flag. (No
+    /// shipped row takes a Document switch since the gemini CLI row was retired; `probe`'s own
+    /// test holds that shape on a synthetic row.)
     #[test]
     fn the_doctor_probe_carries_every_shape_of_switch() {
         use crate::run::version_fake;
-        for h in [Harness::ClaudeCode, Harness::Codex, Harness::Gemini] {
+        for h in [Harness::ClaudeCode, Harness::Codex] {
             let dir = marion_testsupport::scratch(&format!("doctor-vprobe-{h}"));
             let (watch, want) = version_fake::switch_evidence(h);
             let watch: Vec<&str> = watch.iter().map(String::as_str).collect();
@@ -2651,26 +2653,16 @@ mod tests {
         if answered.len() < acp::AGENTS.len() {
             return;
         }
-        // **The named difference, not two sets.** S20 measured it as exactly `fork` and `resume`;
-        // comparing `a.capabilities != b.capabilities` would survive the two rows being swapped,
-        // and comparing the two `granted()` sets would survive it too.
-        let (a, b) = (answered[0], answered[1]);
-        let differing: Vec<&str> = Capabilities::FIELDS
-            .iter()
-            .copied()
-            .filter(|f| {
-                a.capabilities.granted().contains(f) != b.capabilities.granted().contains(f)
-            })
-            .collect();
-        assert_eq!(differing, vec!["fork", "resume"], "{}", render(&rows, &[]));
+        // **The rows differ, not merely exist.** S20 measured `opencode acp` advertising
+        // `sessionCapabilities {close, fork, list, resume}` where another agent advertised none, so
+        // a full set of answers whose capability columns were all equal would be a table keyed on
+        // a name after all.
         assert!(
-            a.capabilities.fork && a.capabilities.resume,
-            "`opencode acp` advertises sessionCapabilities {{close, fork, list, resume}}, and it \
-             is the first row, so the difference is attributed and not merely present"
-        );
-        assert!(
-            !b.capabilities.fork && !b.capabilities.resume,
-            "`gemini --acp` advertises no `sessionCapabilities` object at all"
+            answered
+                .iter()
+                .any(|r| r.capabilities != answered[0].capabilities),
+            "every ACP row reports the same capabilities: {}",
+            render(&rows, &[])
         );
     }
 
@@ -2830,9 +2822,9 @@ mod tests {
         );
     }
 
-    /// The load-bearing half of the version-without-a-model answer: gemini and opencode make an
-    /// explicit model a MUST at `compile`, and marion may not choose one (§6.4). The placeholder
-    /// exists so those two can still be *named and version-read*, and it is only honest as long as
+    /// The load-bearing half of the version-without-a-model answer: opencode and a canned copilot
+    /// make an explicit model a MUST at `compile`, and marion may not choose one (§6.4). The
+    /// placeholder exists so those can still be *named and version-read*, and it is only honest as long as
     /// no process is ever started from a spec carrying it.
     #[test]
     fn the_placeholder_model_never_reaches_a_spec_anything_is_launched_from() {
@@ -2867,7 +2859,6 @@ mod tests {
     #[test]
     fn a_harness_that_requires_a_model_still_reports_a_version_without_one() {
         for h in [
-            Harness::Gemini,
             Harness::OpenCode,
             Harness::Copilot,
             Harness::Goose,
