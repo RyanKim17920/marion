@@ -856,9 +856,12 @@ mod tests {
     ///
     /// Every script here carries its own self-destruct, so a regression that would hang **fails**
     /// instead of wedging the suite.
+    ///
+    /// `bash`, not `sh`: a script here times a read (`read -t`), which dash — ubuntu's `sh` — does
+    /// not have, and without it the agent answers at once instead of holding its turn.
     fn agent(cwd: &Path, script: &str) -> Invocation {
         Invocation {
-            program: "sh".into(),
+            program: "bash".into(),
             args: vec!["-c".into(), format!("( sleep 20; kill -9 $$ ) &\n{script}")],
             env: vec![],
             env_remove: vec![],
@@ -984,7 +987,9 @@ sleep 15"#,
     /// Causal rather than timed: the agent will not answer the prompt until the sink has seen its
     /// `agent_message_chunk` (the sink drops a marker file the script polls for), so a driver that
     /// only forwarded at the end would never be answered and the turn would expire. A non-JSON
-    /// banner and a line written after the prompt's answer prove the sink is raw and complete.
+    /// banner and a line written after the prompt's answer prove the sink is raw and complete. The
+    /// two go out in one write: marion stops an agent as soon as its turn is answered, so a line
+    /// the agent had yet to write when it was stopped was never in the transcript to see.
     #[test]
     fn a_live_sink_sees_every_agent_line_in_order_before_the_turn_returns() {
         let dir = scratch("acp-live");
@@ -998,8 +1003,7 @@ printf '%s\n' '{OPENED}'
 read prompt
 printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_fake","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"live"}}}}}}}}'
 while [ ! -f '{marker}' ]; do sleep 0.05; done
-printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
-echo 'after the answer'
+printf '%s\nafter the answer\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
 sleep 15"#,
             marker = marker.display(),
         );
