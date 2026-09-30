@@ -38,12 +38,12 @@ expression: "report(&screen, 92, 36)"
  ╭────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a0e64e-433f                                                    enter │
  ╰────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge                  ? shortcuts
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention   F1 help
 --- styles ---
   289  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Adda--topN"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
-   36  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGACTIVITY"
-  930  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGACTIVITY"
+  939  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
    14  Style::new().green().bg(Color::Reset)  "●●✓22ms✓52ms●●"

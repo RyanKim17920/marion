@@ -32,12 +32,12 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion doctor                                                                              r │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key · x remove key         ? shortcuts
+  j/k move · enter expand · r re-check · n new type · a add key · x remove key             F1 help
 --- styles ---
   160  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionacpvibe"
-   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
-  778  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+  773  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯ax❯"
    13  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●"

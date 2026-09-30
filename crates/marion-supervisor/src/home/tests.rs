@@ -512,6 +512,36 @@ fn a_blocked_agent_says_what_the_operator_can_do_about_it() {
     assert!(waiting.contains("its own agents"), "{waiting}");
 }
 
+/// **Help opens from wherever the operator is and goes back there.** `?` is help on an empty
+/// Start prompt and a question mark in a typed one; F1 opens it from any tab; Esc, `?` or F1 return
+/// to the tab it was opened from, not to Start.
+#[test]
+fn help_opens_from_any_tab_and_returns_to_it() {
+    let mut h = home();
+    h.key(Key::Char('?'));
+    assert_eq!(h.tab, Tab::Help, "`?` on an empty prompt");
+    h.key(Key::Esc);
+    assert_eq!(h.tab, Tab::Start);
+    typed(&mut h, "why?");
+    assert_eq!(h.tab, Tab::Start);
+    assert_eq!(
+        h.start.prompt, "why?",
+        "a question mark in a prompt is text"
+    );
+    h.key(Key::F1);
+    assert_eq!(h.tab, Tab::Help, "F1 even mid-prompt");
+    h.key(Key::F1);
+    assert_eq!(h.tab, Tab::Start);
+    assert_eq!(h.start.prompt, "why?", "the prompt survives");
+    for from in [Tab::Watch, Tab::Setup] {
+        h.tab = from;
+        h.key(Key::Char('?'));
+        assert_eq!(h.tab, Tab::Help);
+        h.key(Key::Esc);
+        assert_eq!(h.tab, from, "back where it was opened");
+    }
+}
+
 #[test]
 fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
     let id = AgentId("0199-abc".into());

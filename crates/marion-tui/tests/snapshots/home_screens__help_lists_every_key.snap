@@ -32,12 +32,12 @@ expression: "report(&screen(Body::Help(&v), command(\"marion --help\", \"\"), \"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion --help                                                                                │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  tab back                                                                             ? shortcuts
+  tab back                                                                                 F1 help
 --- styles ---
    79  Style::new().fg(Color::Reset).bg(Color::Reset)  "nextscreenthispagequitat"
     6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
-   24  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "EVERYWHEREWATCHSTARTtab?"
-  481  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   25  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "EVERYWHEREWATCHSTARTtabF"
+  476  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "?tab?qentersxc!enter↑↓←→"
     2  Style::new().yellow().bg(Color::Reset)  "◐2"

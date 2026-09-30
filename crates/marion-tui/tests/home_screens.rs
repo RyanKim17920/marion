@@ -1109,7 +1109,7 @@ fn a_notice_takes_the_hint_row() {
         last.contains("queued as m-1") && !last.contains("enter attach"),
         "{last}"
     );
-    assert!(last.ends_with("? shortcuts"), "{last}");
+    assert!(last.ends_with("F1 help"), "{last}");
 }
 
 /// Following the end: a new line appears at the bottom of the window without any key pressed.

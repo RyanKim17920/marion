@@ -32,12 +32,12 @@ expression: "report(&screen(Body::Setup(&v), input, \"confirm\"), 100, 30)"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ Write reviewer to .marion/agents.toml?   $ +5 lines                         y yes · any key no │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  y yes · any key no                                                                   ? shortcuts
+  y yes · any key no                                                                       F1 help
 --- styles ---
    39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    55  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionproviderWriterevie"
-   26  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPECHANGEyanyke"
-  299  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   27  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPECHANGEyanyke"
+  294  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
   200  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏╭─────────────────────"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯y"
    94  Style::new().green().bg(Color::Reset)  "+[[agent]]+name=\"reviewe"

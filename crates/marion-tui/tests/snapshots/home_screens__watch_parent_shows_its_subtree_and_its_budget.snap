@@ -26,12 +26,12 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-5e1a                                same as enter │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge      ? shortcuts
+  j/k move · enter attach · s steer · x cancel · c copy merge          F1 help
 --- styles ---
   107  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   35  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEj"
-  597  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   36  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEj"
+  592  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     2  Style::new().green().bg(Color::Reset)  "●●"
@@ -68,12 +68,12 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-5e1a                                                    same as enter │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention       ? shortcuts
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention           F1 help
 --- styles ---
   164  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   36  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEj"
-  747  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEj"
+  742  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     2  Style::new().green().bg(Color::Reset)  "●●"
@@ -130,12 +130,12 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-5e1a                                                                                                                same as enter │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention                                                                   ? shortcuts
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention                                                                       F1 help
 --- styles ---
   185  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   44  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEA"
- 1269  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGSUBTREEA"
+ 1264  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"

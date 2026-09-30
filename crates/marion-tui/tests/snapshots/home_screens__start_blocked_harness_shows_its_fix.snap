@@ -26,12 +26,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ ▏describe the task, enter runs it                                        │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens   ? shortcuts
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens       F1 help
 --- styles ---
    49  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
-   41  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
-  470  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+   42  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+  465  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    43  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
     3  Style::new().green().bg(Color::Reset)  "●●●"
@@ -68,12 +68,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ ▏describe the task, enter runs it                                                            │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                       ? shortcuts
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                           F1 help
 --- styles ---
    85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
-   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
-  788  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+  783  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    43  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
     4  Style::new().green().bg(Color::Reset)  "●●●●"
@@ -130,12 +130,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ ▏describe the task, enter runs it                                                                                                                        │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                                                                                   ? shortcuts
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                                                                                       F1 help
 --- styles ---
    98  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
-   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
- 1064  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+ 1059  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    43  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
     4  Style::new().green().bg(Color::Reset)  "●●●●"

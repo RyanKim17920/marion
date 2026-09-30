@@ -817,6 +817,8 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
         "Everywhere",
         &[
             ("tab", "next screen", ""),
+            ("?", "help (on Start: while the prompt is empty)", ""),
+            ("F1", "help, from anywhere", ""),
             ("^c", "quit", ""),
             ("q", "quit, off Start", ""),
         ],
@@ -953,7 +955,7 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("a", "add key"),
             ("x", "remove key"),
         ]),
-        (_, Tab::Help) => h(&[("tab", "next screen"), ("esc", "back")]),
+        (_, Tab::Help) => h(&[("esc", "back"), ("tab", "next screen")]),
     }
 }
 

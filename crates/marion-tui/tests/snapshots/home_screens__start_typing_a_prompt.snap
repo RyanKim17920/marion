@@ -26,12 +26,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and  │
  │   cover it with tests▏                                                     │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens   ? shortcuts
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens       F1 help
 --- styles ---
   110  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSe"
-  524  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSe"
+  519  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
     3  Style::new().green().bg(Color::Reset)  "●●●"
@@ -68,12 +68,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and cover it with tests▏ │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                       ? shortcuts
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                           F1 help
 --- styles ---
   159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   44  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
-  895  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+  890  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"
@@ -130,12 +130,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and cover it with tests▏                                                             │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                                                                                   ? shortcuts
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                                                                                       F1 help
 --- styles ---
   159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   44  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
- 1167  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+ 1162  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"

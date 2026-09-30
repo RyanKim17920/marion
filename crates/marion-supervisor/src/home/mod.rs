@@ -392,6 +392,8 @@ pub struct Home {
     pub recent_models: Vec<(String, Vec<String>)>,
     /// One line for the operator: the last effect's answer, or why a key did nothing.
     pub notice: Option<String>,
+    /// The tab help was opened from, and goes back to.
+    pub help_from: Tab,
 }
 
 /// How many stream lines a Page Up / Page Down moves.
@@ -410,6 +412,17 @@ impl Home {
             types: Vec::new(),
             recent_models: Vec::new(),
             notice: None,
+            help_from: tab,
+        }
+    }
+
+    /// Open help, remembering the tab to go back to; from help itself, go back.
+    fn toggle_help(&mut self) {
+        if self.tab == Tab::Help {
+            self.tab = self.help_from;
+        } else {
+            self.help_from = self.tab;
+            self.tab = Tab::Help;
         }
     }
 
@@ -671,6 +684,10 @@ impl Home {
                 self.tab = next_tab(self.tab, -1);
                 return Effect::None;
             }
+            Key::F1 => {
+                self.toggle_help();
+                return Effect::None;
+            }
             _ => {}
         }
         match self.tab {
@@ -680,7 +697,7 @@ impl Home {
             Tab::Help => match key {
                 Key::Char('q') => Effect::Quit,
                 Key::Esc | Key::Char('?') => {
-                    self.tab = Tab::Start;
+                    self.toggle_help();
                     Effect::None
                 }
                 _ => Effect::None,
@@ -692,6 +709,8 @@ impl Home {
     fn start_key(&mut self, key: Key) -> Effect {
         let s = &mut self.start;
         match key {
+            // `?` is a question mark in a prompt, and help on an empty one.
+            Key::Char('?') if s.prompt.is_empty() => self.toggle_help(),
             Key::Char(c) => push_bounded(&mut s.prompt, &c.to_string()),
             Key::Paste(p) => push_bounded(&mut s.prompt, &p),
             Key::Backspace => {
@@ -756,7 +775,7 @@ impl Home {
     fn watch_key(&mut self, key: Key) -> Effect {
         match key {
             Key::Char('q') => return Effect::Quit,
-            Key::Char('?') => self.tab = Tab::Help,
+            Key::Char('?') => self.toggle_help(),
             Key::Char('j') | Key::Down => {
                 self.watch.tree.move_by(1);
                 self.selection_moved();
@@ -850,7 +869,7 @@ impl Home {
     fn setup_key(&mut self, key: Key) -> Effect {
         match key {
             Key::Char('q') => return Effect::Quit,
-            Key::Char('?') => self.tab = Tab::Help,
+            Key::Char('?') => self.toggle_help(),
             Key::Char('j') | Key::Down => {
                 // The profiles, or the one row that adds the first while there are none.
                 let n = self.profiles_start() + self.setup.profiles.len().max(1);

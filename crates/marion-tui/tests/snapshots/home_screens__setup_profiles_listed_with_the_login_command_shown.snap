@@ -26,12 +26,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion profile use codex cx                                            u │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · a add profile · u use · x remove · r re-check         ? shortcuts
+  j/k move · a add profile · u use · x remove · r re-check             F1 help
 --- styles ---
    77  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeclaude-orchestrato"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTTYPESLOGINSPROFILES"
-  561  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   33  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTTYPESLOGINSPROFILES"
+  556  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    79  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
    11  Style::new().green().bg(Color::Reset)  "●●●●●●✓●●●●"
@@ -67,12 +67,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion profile use codex cx                                                                u │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · a add profile · u use · x remove · r re-check                             ? shortcuts
+  j/k move · a add profile · u use · x remove · r re-check                                 F1 help
 --- styles ---
   156  Style::new().fg(Color::Reset).bg(Color::Reset)  "geminiopencodecopilotagy"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESLOGINSP"
-  723  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   40  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESLOGINSP"
+  718  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    79  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
    12  Style::new().green().bg(Color::Reset)  "●●●●●●●✓●●●●"
@@ -129,12 +129,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion profile use codex cx                                                                                                                            u │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · a add profile · u use · x remove · r re-check                                                                                         ? shortcuts
+  j/k move · a add profile · u use · x remove · r re-check                                                                                             F1 help
 --- styles ---
   169  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
- 1082  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   49  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+ 1077  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    82  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
    14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"

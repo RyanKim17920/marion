@@ -32,12 +32,12 @@ expression: "report(&screen(Body::Setup(&v), input, \"confirm\"), 100, 30)"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ Remove the profile work?   $ marion profile remove work                     y yes · any key no │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  y yes · any key no                                                                   ? shortcuts
+  y yes · any key no                                                                       F1 help
 --- styles ---
   163  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    37  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionworkRemovetheprofi"
-   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESLOGINSP"
-  512  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   40  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESLOGINSP"
+  507  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
   223  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯y"
    14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"

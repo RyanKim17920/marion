@@ -280,7 +280,7 @@ impl Widget for InputBox<'_> {
     }
 }
 
-/// The hint row: `key verb` pairs, dot separated, keys bold and everything dim, with `? shortcuts`
+/// The hint row: `key verb` pairs, dot separated, keys bold and everything dim, with `F1 help`
 /// pinned right. Pairs that do not fit are dropped whole from the end.
 pub struct HintRow<'a> {
     pub hints: &'a [Hint],
@@ -309,7 +309,8 @@ impl Widget for HintRow<'_> {
                 g
             })
             .collect();
-        let right = vec![span("? ", label()), span("shortcuts  ", dim())];
+        // F1, not `?`: on Start a typed prompt takes `?` as text, and F1 works everywhere.
+        let right = vec![span("F1 ", label()), span("help  ", dim())];
         let mut left = vec![Span::raw("  ")];
         match self.notice {
             Some(n) => left.push(span(n.to_string(), bold())),

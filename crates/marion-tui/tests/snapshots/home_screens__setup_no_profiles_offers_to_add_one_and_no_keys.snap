@@ -32,12 +32,12 @@ expression: "report(&screen(Body::Setup(&v), input, \"profiles\"), 100, 30)"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion profile add <harness> <name>                                                        a │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · a add profile · u use · x remove · r re-check                             ? shortcuts
+  j/k move · a add profile · u use · x remove · r re-check                                 F1 help
 --- styles ---
   134  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    18  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion+addaprofile"
-   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
-  721  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   49  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+  716  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
    46  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupamarionlogin<provid"
    10  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓"

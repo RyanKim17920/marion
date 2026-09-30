@@ -26,12 +26,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ gemini                                                   sign in, then r │
  ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key    ? shortcuts
+  j/k move · enter expand · r re-check · n new type · a add key        F1 help
 --- styles ---
   134  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  520  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   49  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+  515  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
     3  Style::new().green().bg(Color::Reset)  "●●●"
@@ -68,12 +68,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ gemini                                                                       sign in, then r │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key · x remove key         ? shortcuts
+  j/k move · enter expand · r re-check · n new type · a add key · x remove key             F1 help
 --- styles ---
   181  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   65  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  672  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   66  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+  667  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
    10  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓"
@@ -130,12 +130,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ gemini                                                                                                                                   sign in, then r │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key · x remove key                                                                     ? shortcuts
+  j/k move · enter expand · r re-check · n new type · a add key · x remove key                                                                         F1 help
 --- styles ---
   218  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   73  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
- 1068  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   74  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+ 1063  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯geminiaxaux❯"
    14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"

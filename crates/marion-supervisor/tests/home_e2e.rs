@@ -523,7 +523,7 @@ fn enter_attaches_to_a_pane_node_and_detaching_returns_home() {
     });
     op.type_in(b"\x1dd");
     op.wait_for("Watch again after detaching, repainted whole", |s| {
-        s.contains("NODES") && s.contains("? shortcuts") && !s.contains("HOMEE2E-PANE-READY")
+        s.contains("NODES") && s.contains("F1 help") && !s.contains("HOMEE2E-PANE-READY")
     });
     op.type_in(b"\x03");
 }
