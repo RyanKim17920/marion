@@ -1804,3 +1804,108 @@ fn setup_notifications_row_flips_them_with_enter() {
     h.setup.notify = None;
     assert!(!h.on_notify(), "no row until the setting has been read");
 }
+
+const WF: &str = "019f0000-1a2b-7000-8000-00000000000b";
+
+/// A node that ran step `step` (round `round`) of the run `ship`, four steps, 2M budget.
+fn step(
+    id: &str,
+    step: u8,
+    round: u8,
+    step_id: &str,
+    state: NodeState,
+    tokens: u64,
+) -> NodeSummary {
+    NodeSummary {
+        workflow: Some(marion_core::proto::model::WorkflowBadge {
+            wf_id: marion_core::workflow::WorkflowId(WF.into()),
+            step,
+            round,
+            verdict: None,
+            closed: None,
+            name: "ship".into(),
+            steps: 4,
+            step_id: step_id.into(),
+            budget_tokens: Some(2_000_000),
+        }),
+        tokens: Some(tokens),
+        ..node(id, None, state)
+    }
+}
+
+/// **A workflow run is one header row over its steps on Watch**: the header says the run, the step
+/// it is on of how many (and the review round), its spend against its budget and its clock; each
+/// step node says its step; a race step's header nests under the run's. Enter on the header goes to
+/// the step running now.
+#[test]
+fn a_workflow_is_one_header_row_over_its_steps() {
+    let twelve_minutes_ago = marion_core::encoding::SystemTime(
+        std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60 + 5),
+    );
+    let seat_of = |id: &str, n: u8| {
+        let s = seat(id, n, None, 100);
+        NodeSummary {
+            parent_id: None,
+            workflow: step(id, 1, 0, "impl", NodeState::Exited(ExitStatus::Ok), 0).workflow,
+            ..s
+        }
+    };
+    let mut h = home();
+    h.set_nodes(vec![
+        NodeSummary {
+            started_at: Some(twelve_minutes_ago),
+            ..step(
+                "plan",
+                0,
+                0,
+                "plan",
+                NodeState::Exited(ExitStatus::Ok),
+                400_000,
+            )
+        },
+        seat_of("s1", 1),
+        seat_of("s2", 2),
+        step("gate1", 2, 0, "gate", NodeState::Exited(ExitStatus::Ok), 0),
+        step("gate2", 2, 1, "gate", NodeState::Running, 1_000_000),
+    ]);
+    let f = view::frame(&h, &view::Places::default());
+    let ids: Vec<&str> = f.watch.rows.iter().map(|r| r.id.as_str()).collect();
+    let header = format!("workflow:{WF}");
+    let race = "race:019f0000-1a2b-7000-8000-00000000000a";
+    assert_eq!(
+        ids,
+        [header.as_str(), "plan", race, "s1", "s2", "gate1", "gate2"]
+    );
+    let head = &f.watch.rows[0];
+    assert_eq!(head.harness, "workflow");
+    assert!(
+        head.kind
+            .starts_with("workflow ship · 3/4 gate r2 · Σ1.4M/2M · 12m"),
+        "{}",
+        head.kind
+    );
+    assert!(
+        f.watch.rows[1].kind.contains("step plan"),
+        "{}",
+        f.watch.rows[1].kind
+    );
+    assert!(
+        f.watch.rows[6].kind.contains("step gate r2"),
+        "{}",
+        f.watch.rows[6].kind
+    );
+    assert!(
+        crate::tree::label_of(&h.watch.nodes[4]).contains("step gate r2"),
+        "the tree's label says the step too"
+    );
+
+    h.tab = Tab::Watch;
+    h.watch.tree.select(&header);
+    assert!(h.selected().is_none(), "the header is no node");
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(
+        h.selected().map(|n| n.agent_id.0.as_str()),
+        Some("gate2"),
+        "Enter on the header goes to the step running now"
+    );
+}

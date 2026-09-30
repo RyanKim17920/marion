@@ -291,16 +291,20 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
             }),
         changed: node.contracts.last().and_then(|c| c.changed),
         budget: intent.budget,
-        workflow: intent
-            .workflow
-            .as_ref()
-            .map(|seat| marion_core::proto::model::WorkflowBadge {
+        workflow: intent.workflow.as_ref().map(|seat| {
+            let head = node.workflow_head.as_ref();
+            marion_core::proto::model::WorkflowBadge {
                 wf_id: seat.wf_id.clone(),
                 step: seat.step,
                 round: seat.round,
                 verdict: node.workflow_verdict,
                 closed: node.workflow_closed,
-            }),
+                name: head.map(|h| h.name.clone()).unwrap_or_default(),
+                steps: head.map_or(0, |h| h.steps),
+                step_id: head.map(|h| h.step_id.clone()).unwrap_or_default(),
+                budget_tokens: head.and_then(|h| h.budget_tokens),
+            }
+        }),
     })
 }
 

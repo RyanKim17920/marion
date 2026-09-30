@@ -913,14 +913,34 @@ impl Home {
                 self.notice = (!hit).then(|| "nothing needs you".to_string());
                 self.selection_moved();
             }
-            Key::Enter => match self.selected() {
-                Some(n) if n.pane => return Effect::Attach(n.agent_id.clone()),
-                Some(_) => {
-                    self.watch.full_stream = !self.watch.full_stream;
-                    self.watch.scroll = 0;
+            Key::Enter => {
+                // A workflow run's header is no node: Enter goes to the step it is on.
+                let run = self
+                    .watch
+                    .tree
+                    .selected()
+                    .and_then(|r| crate::tree::workflow_of_row(&r.id))
+                    .map(|wf| marion_core::workflow::WorkflowId(wf.to_string()));
+                if let Some(wf) = run {
+                    let now = std::time::SystemTime::now();
+                    match crate::tree::WorkflowSummary::of(&wf, &self.watch.nodes, now).current_node
+                    {
+                        Some(id) => {
+                            self.select(&id);
+                        }
+                        None => self.notice = Some("the run has no step node yet".into()),
+                    }
+                    return Effect::None;
                 }
-                None => self.notice = Some("nothing selected".into()),
-            },
+                match self.selected() {
+                    Some(n) if n.pane => return Effect::Attach(n.agent_id.clone()),
+                    Some(_) => {
+                        self.watch.full_stream = !self.watch.full_stream;
+                        self.watch.scroll = 0;
+                    }
+                    None => self.notice = Some("nothing selected".into()),
+                }
+            }
             Key::Esc if self.watch.full_stream => self.watch.full_stream = false,
             Key::Char('s') => match self.selected() {
                 Some(n) if !n.state.is_exited() => {

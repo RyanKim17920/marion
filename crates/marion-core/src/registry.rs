@@ -145,6 +145,8 @@ pub struct ReplayedNode {
     pub workflow_verdict: Option<crate::workflow::StepVerdict>,
     /// How the workflow run this node was a step of ended, once it closed.
     pub workflow_closed: Option<crate::workflow::Outcome>,
+    /// The run this node was a step of, as its opening record named it, for a view's header.
+    pub workflow_head: Option<WorkflowHead>,
     /// How many records mentioned this node — the audit handle for "the journal says nothing
     /// more about it than that it started".
     pub records: usize,
@@ -230,6 +232,7 @@ impl ReplayedNode {
             race_verdict: None,
             workflow_verdict: None,
             workflow_closed: None,
+            workflow_head: None,
             records: 0,
             first_ts: None,
             state_ts: None,
@@ -629,6 +632,17 @@ pub struct Replay {
     workflows: Vec<ReplayedWorkflow>,
 }
 
+/// **A step node's run, as a view heads it**: the run's name, how many steps it has, the node's own
+/// step's id, and the run's token budget — copied off the run's opening record onto each node it
+/// launched, so a node's summary can carry them without a second lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowHead {
+    pub name: String,
+    pub steps: u8,
+    pub step_id: String,
+    pub budget_tokens: Option<u64>,
+}
+
 /// A workflow run, as the journal knows it: that it opened, which nodes ran each step, how each
 /// step was decided and how the run closed. The run's `spec.json` holds what it was asked; this is
 /// what the tree and a restart need to step it on.
@@ -903,7 +917,26 @@ impl Replay {
             return;
         };
         let ts = r.ts;
+        let head = match &r.kind {
+            RecordKind::SpawnIntent(i) => i.workflow.as_ref().and_then(|seat| {
+                let opened = self.workflow(&seat.wf_id)?.opened.as_ref()?;
+                Some(WorkflowHead {
+                    name: opened.name.clone(),
+                    steps: u8::try_from(opened.step_ids.len()).unwrap_or(u8::MAX),
+                    step_id: opened
+                        .step_ids
+                        .get(usize::from(seat.step))
+                        .cloned()
+                        .unwrap_or_default(),
+                    budget_tokens: opened.budget_tokens,
+                })
+            }),
+            _ => None,
+        };
         let node = self.node_mut(&agent_id);
+        if head.is_some() {
+            node.workflow_head = head;
+        }
         node.records += 1;
         if node.first_ts.is_none() {
             node.first_ts = Some(ts);
@@ -2780,6 +2813,7 @@ mod tests {
                     base: Some("c0ffee".into()),
                     deadline: None,
                     budget_tokens: Some(1000),
+                    step_ids: vec!["plan".into(), "gate".into()],
                 }),
             ),
             record(1, node("plan", 0, 0)),
@@ -2799,6 +2833,12 @@ mod tests {
         let r = replay(&bytes(&records));
         let fold = r.workflow(&wf).expect("the run is on record");
         assert_eq!(fold.opened.as_ref().unwrap().name, "ship");
+        let head = r.get(&id("gate2")).unwrap().workflow_head.clone().unwrap();
+        assert_eq!(
+            (head.name.as_str(), head.steps, head.step_id.as_str()),
+            ("ship", 2, "gate"),
+            "each step node carries its run's head"
+        );
         assert_eq!(fold.step_nodes(1, 1), vec![&id("gate2")]);
         assert_eq!(fold.step_nodes(0, 0), vec![&id("plan")]);
         assert_eq!(

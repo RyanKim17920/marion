@@ -194,6 +194,17 @@ pub struct WorkflowBadge {
     pub verdict: Option<crate::workflow::StepVerdict>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<crate::workflow::Outcome>,
+    /// The run's name, its step count and this node's step's id — what a header row and a step's
+    /// label say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub steps: u8,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub step_id: String,
+    /// The run's token budget, where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u64>,
 }
 
 fn is_zero(n: &u8) -> bool {

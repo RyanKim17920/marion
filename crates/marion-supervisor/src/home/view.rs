@@ -205,6 +205,13 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
             rows.push(race_row(prefix, tnode, race, &w.nodes));
             continue;
         }
+        if let Some(run) = crate::tree::workflow_of_row(&tnode.id) {
+            if i == w.tree.cursor() {
+                cursor = rows.len();
+            }
+            rows.push(workflow_row(prefix, tnode, run, &w.nodes, now));
+            continue;
+        }
         let Some(n) = w.nodes.iter().find(|n| n.agent_id.0 == tnode.id) else {
             continue;
         };
@@ -231,6 +238,11 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
                         crate::tree::race_note(n).map(|seat| format!("{} · {seat}", kind_of(n)))
                     })
                     .unwrap_or_else(|| kind_of(n));
+                let kind = match crate::tree::workflow_note(n) {
+                    Some(step) if kind.is_empty() => step,
+                    Some(step) => format!("{kind} · {step}"),
+                    None => kind,
+                };
                 match &n.endpoint {
                     Some(e) => format!("{kind} {}", e.label()).trim().to_string(),
                     None => kind,
@@ -378,6 +390,38 @@ fn race_row(
             None => format!("{} of {} agents finished", summary.ended, summary.seats),
         },
         // The header's figures are already its seats' sum; it heads no subtree of its own.
+        subtree: None,
+    }
+}
+
+/// **A workflow run's header row**, summed from its step nodes: no node stands behind it. Its tokens
+/// are the steps' so far; Enter on it goes to the step running now.
+fn workflow_row(
+    prefix: &str,
+    tnode: &marion_tui::tree::Node,
+    run: &str,
+    nodes: &[NodeSummary],
+    now: std::time::SystemTime,
+) -> NodeRow {
+    let summary = crate::tree::WorkflowSummary::of(
+        &marion_core::workflow::WorkflowId(run.to_string()),
+        nodes,
+        now,
+    );
+    NodeRow {
+        id: tnode.id.clone(),
+        prefix: prefix.to_string(),
+        harness: "workflow".into(),
+        kind: summary.label(),
+        short: short_id(run).to_string(),
+        tone: tnode.tone,
+        elapsed: String::new(),
+        tokens: summary.tokens,
+        doing: match (summary.closed, &summary.current) {
+            (Some(outcome), _) => format!("the run {}", outcome.word()),
+            (None, Some(_)) => "enter goes to the step running now".into(),
+            (None, None) => "starting".into(),
+        },
         subtree: None,
     }
 }

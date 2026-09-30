@@ -466,6 +466,9 @@ pub struct WorkflowOpened {
     pub deadline: Option<crate::encoding::SystemTime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u64>,
+    /// Each step's id, in order: what a view names a step by. Ids only — never a prompt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_ids: Vec<String>,
 }
 
 /// See [`RecordKind::WorkflowStepDecided`].
@@ -1728,6 +1731,7 @@ mod tests {
             base: Some("f".repeat(40)),
             deadline: None,
             budget_tokens: Some(2_000_000),
+            step_ids: vec![],
         });
         let wf_decided = RecordKind::WorkflowStepDecided(WorkflowStepDecided {
             wf_id: wf.clone(),

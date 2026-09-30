@@ -82,6 +82,7 @@ impl RegistryHandle {
             base: crate::spawn::head_commit(crate::run::tree_of(&env, &p.repo)).map(|o| o.0),
             deadline,
             budget_tokens: wf.budget.tokens,
+            step_ids: wf.steps.iter().map(|s| s.id.clone()).collect(),
         }))
         .map_err(|e| {
             RpcError::internal(format!(

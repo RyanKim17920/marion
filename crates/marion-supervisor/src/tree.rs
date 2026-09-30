@@ -144,6 +144,10 @@ pub fn label_of(node: &NodeSummary) -> String {
         Some(note) => format!("{label} · {note}"),
         None => label,
     };
+    let label = match workflow_note(node) {
+        Some(note) => format!("{label} · {note}"),
+        None => label,
+    };
     match widened_note(node) {
         Some(note) => format!("{label} · {note}"),
         None => label,
@@ -169,6 +173,142 @@ pub fn race_note(node: &NodeSummary) -> Option<String> {
             format!("{seat} {word}")
         }
     })
+}
+
+/// **What a workflow step's row adds**: its step, and the review round past the first. `None` for a
+/// node in no workflow run. The tree and Home Watch both say it through this.
+pub fn workflow_note(node: &NodeSummary) -> Option<String> {
+    let badge = node.workflow.as_ref()?;
+    let step = if badge.step_id.is_empty() {
+        format!("step {}", u16::from(badge.step) + 1)
+    } else {
+        format!("step {}", badge.step_id)
+    };
+    Some(match badge.round {
+        0 => step,
+        r => format!("{step} r{}", u16::from(r) + 1),
+    })
+}
+
+/// The tree id of a workflow run's header row. Not an agent id, like a race's
+/// ([`race_row_id`]).
+pub fn workflow_row_id(wf_id: &marion_core::workflow::WorkflowId) -> String {
+    format!("workflow:{}", wf_id.0)
+}
+
+/// The workflow run a tree row heads, if it is a run's header row.
+pub fn workflow_of_row(id: &str) -> Option<&str> {
+    id.strip_prefix("workflow:")
+}
+
+/// **A workflow run, summed from its step nodes** — the header row's facts, as a race's are from
+/// its seats: the run's name and step count, the step it is on (and the review round), which node
+/// that is, its tokens against its budget, its clock, and how it closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowSummary {
+    pub name: String,
+    pub steps: u8,
+    /// `(step, round, step id)` of the latest step any node ran.
+    pub current: Option<(u8, u8, String)>,
+    /// The node the run is on: the latest step's running node, else its last.
+    pub current_node: Option<String>,
+    pub tokens: Option<u64>,
+    pub budget: Option<u64>,
+    /// From the first step's start to now, or to the last end once closed.
+    pub elapsed_secs: Option<u64>,
+    pub closed: Option<marion_core::workflow::Outcome>,
+}
+
+impl WorkflowSummary {
+    pub fn of(
+        wf_id: &marion_core::workflow::WorkflowId,
+        nodes: &[NodeSummary],
+        now: std::time::SystemTime,
+    ) -> WorkflowSummary {
+        let steps: Vec<(&NodeSummary, &marion_core::proto::model::WorkflowBadge)> = nodes
+            .iter()
+            .filter_map(|n| Some((n, n.workflow.as_ref().filter(|b| &b.wf_id == wf_id)?)))
+            .collect();
+        let latest = steps.iter().map(|(_, b)| (b.step, b.round)).max();
+        let at_latest = || {
+            steps
+                .iter()
+                .filter(move |(_, b)| Some((b.step, b.round)) == latest)
+        };
+        let current_node = at_latest()
+            .find(|(n, _)| !n.state.is_exited())
+            .or_else(|| at_latest().next_back())
+            .map(|(n, _)| n.agent_id.0.clone());
+        let first = steps.first().map(|(_, b)| *b);
+        let closed = steps.iter().find_map(|(_, b)| b.closed);
+        let started = steps
+            .iter()
+            .filter_map(|(n, _)| n.started_at)
+            .map(|t| t.0)
+            .min();
+        let until = if closed.is_some() {
+            steps
+                .iter()
+                .filter_map(|(n, _)| n.ended_at)
+                .map(|t| t.0)
+                .max()
+        } else {
+            Some(now)
+        };
+        WorkflowSummary {
+            name: first.map(|b| b.name.clone()).unwrap_or_default(),
+            steps: first.map_or(0, |b| b.steps),
+            current: at_latest()
+                .next()
+                .map(|(_, b)| (b.step, b.round, b.step_id.clone())),
+            current_node,
+            tokens: steps
+                .iter()
+                .filter_map(|(n, _)| n.tokens)
+                .fold(None, |sum: Option<u64>, t| Some(sum.unwrap_or(0) + t)),
+            budget: first.and_then(|b| b.budget_tokens),
+            elapsed_secs: started
+                .zip(until)
+                .and_then(|(s, u)| u.duration_since(s).ok())
+                .map(|d| d.as_secs()),
+            closed,
+        }
+    }
+
+    /// The header row's label: `workflow ship · 3/4 gate r2 · Σ1.4M/2M · 12m04s`, or how it closed
+    /// in place of the step once it has.
+    pub fn label(&self) -> String {
+        use marion_tui::home::text::{elapsed, tokens};
+        let mut parts = vec![format!("workflow {}", self.name)];
+        match (self.closed, &self.current) {
+            (Some(outcome), _) => parts.push(outcome.word().to_string()),
+            (None, Some((step, round, id))) => {
+                let mut at = format!("{}/{} {id}", u16::from(*step) + 1, self.steps);
+                if *round > 0 {
+                    at.push_str(&format!(" r{}", u16::from(*round) + 1));
+                }
+                parts.push(at);
+            }
+            (None, None) => parts.push("starting".into()),
+        }
+        match (self.tokens, self.budget) {
+            (t, Some(b)) => parts.push(format!("Σ{}/{}", tokens(t.unwrap_or(0)), tokens(b))),
+            (Some(t), None) => parts.push(format!("Σ{}", tokens(t))),
+            (None, None) => {}
+        }
+        if let Some(secs) = self.elapsed_secs {
+            parts.push(elapsed(secs));
+        }
+        parts.join(" · ")
+    }
+
+    pub fn tone(&self) -> Tone {
+        match self.closed {
+            Some(marion_core::workflow::Outcome::Succeeded) => Tone::Done,
+            Some(_) => Tone::Failed,
+            None => Tone::Live,
+        }
+    }
 }
 
 /// The tree id of a race's header row. Not an agent id: nothing is launched or attached by it, and
@@ -443,13 +583,39 @@ pub fn build(nodes: &[NodeSummary], keep: Option<&str>) -> Tree {
 }
 
 /// Every node's row, with each race's seats gathered under one header row placed where its seats'
-/// shared parent put them. A race has no node of its own, so the header is made here, from the
-/// seats, and carries no actions.
+/// shared parent put them, and each workflow run's step nodes — a race step's header included —
+/// under one header row of the run's. Neither has a node of its own, so each header is made here,
+/// from the nodes under it, and carries no actions.
 fn with_race_rows(nodes: &[NodeSummary]) -> Vec<tree::Node> {
     let mut rows: Vec<tree::Node> = Vec::with_capacity(nodes.len());
     let mut races: Vec<marion_core::race::RaceId> = Vec::new();
+    let mut runs: Vec<marion_core::workflow::WorkflowId> = Vec::new();
+    let now = std::time::SystemTime::now();
     for n in nodes {
         let mut r = row(n);
+        if let Some(wf) = &n.workflow {
+            if !runs.contains(&wf.wf_id) {
+                runs.push(wf.wf_id.clone());
+                let run = WorkflowSummary::of(&wf.wf_id, nodes, now);
+                rows.push(tree::Node {
+                    id: workflow_row_id(&wf.wf_id),
+                    parent: r.parent.clone(),
+                    label: run.label(),
+                    state: match run.closed {
+                        Some(outcome) => outcome.word().into(),
+                        None => "running".into(),
+                    },
+                    tone: run.tone(),
+                    actions: Vec::new(),
+                    note: None,
+                });
+            }
+            // A step node is the operator's own; a race step's seats go under the race's header,
+            // which goes under the run's.
+            if r.parent.is_none() {
+                r.parent = Some(workflow_row_id(&wf.wf_id));
+            }
+        }
         if let Some(badge) = &n.race {
             if !races.contains(&badge.race_id) {
                 races.push(badge.race_id.clone());
