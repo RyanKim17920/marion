@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use marion_harness::acp;
 use marion_harness::invocation::Invocation;
-use marion_supervisor::duplex::{self, LaunchPath};
+use marion_supervisor::duplex::{self, Dialect, LaunchPath, Seen};
 use serde_json::{Value, json};
 
 use crate::report::Log;
@@ -336,6 +336,10 @@ pub struct Node {
     pub session: Option<String>,
     /// The row's thread vocabulary, on an app-server node.
     rpc: Option<&'static marion_harness::rpc_channel::RpcChannel>,
+    /// What a duplex node's pipes speak: stream-json, or the row's JSONL command channel.
+    dialect: Dialect,
+    /// Turns a duplex node was asked to start.
+    turns_sent: usize,
     next_id: u64,
     prompt_ids: Vec<u64>,
 }
@@ -409,6 +413,8 @@ impl Node {
             path,
             session: None,
             rpc: launch.rpc,
+            dialect: launch.dialect,
+            turns_sent: 0,
             next_id: 10,
             prompt_ids: Vec::new(),
         };
@@ -422,14 +428,15 @@ impl Node {
                     return Err("marion's bridge never wrote its ready file".into());
                 }
                 let init = "marion-conformance-init";
-                node.proc.send_text(&duplex::initialize_request(init));
+                let dialect = node.dialect;
+                node.proc.send_text(&dialect.handshake(init));
                 if !node.proc.wait(BOOT, |io| {
                     io.frames
                         .iter()
-                        .any(|f| duplex::is_control_response_to(f, init))
+                        .any(|f| dialect.is_handshake_reply(f, init))
                         || io.exit.is_some()
                 }) {
-                    return Err("no answer to the stream-json initialize".into());
+                    return Err(format!("no answer to the {dialect:?} handshake"));
                 }
                 node.prompt(prompt)?;
             }
@@ -543,8 +550,15 @@ impl Node {
                 self.proc.send(&frame);
                 Ok(())
             }
+            // What marion does: a fold into an open turn, a new turn otherwise.
             LaunchPath::Duplex => {
-                self.proc.send_text(&duplex::user_message(text));
+                // Open from the write on, not from the harness's first frame of the turn: a
+                // second bare `prompt` before pi's `agent_start` is answered and never run (S34).
+                let open = self.proc.with(|io| self.ends(io)) < self.turns_sent;
+                self.proc.send_text(&self.dialect.turn(text, open));
+                if !open {
+                    self.turns_sent += 1;
+                }
                 Ok(())
             }
             LaunchPath::Acp => {
@@ -577,10 +591,13 @@ impl Node {
                     self.proc.send(&acp::cancel_notification(sid));
                 }
             }
-            LaunchPath::Duplex => {
-                self.proc.send(&json!({"type": "control_request",
+            LaunchPath::Duplex => match self.dialect.abort() {
+                Some(frame) => self.proc.send_text(&frame),
+                None => {
+                    self.proc.send(&json!({"type": "control_request",
                 "request_id": "marion-conformance-interrupt", "request": {"subtype": "interrupt"}}))
-            }
+                }
+            },
             LaunchPath::LaunchOnly | LaunchPath::Terminal => self.proc.signal_group(SIGINT),
         }
     }
@@ -595,7 +612,11 @@ impl Node {
                     .filter(|f| c.closes_turn(f).is_some())
                     .count()
             }),
-            LaunchPath::Duplex => io.frames.iter().filter(|f| f["type"] == "result").count(),
+            LaunchPath::Duplex => io
+                .frames
+                .iter()
+                .filter(|f| self.dialect.seen(f) == Seen::TurnEnded)
+                .count(),
             LaunchPath::Acp => io
                 .frames
                 .iter()
