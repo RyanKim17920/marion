@@ -50,7 +50,6 @@ fn a_keystroke_that_arrives_after_the_session_ends_is_not_forwarded() {
                 writer,
                 leaving,
                 failure,
-                KeyboardEncoder::V1,
             );
         })
     };
@@ -124,7 +123,7 @@ fn an_interactive_attach_explicitly_requests_pane_stream_v1() {
     server.join().expect("the paired server did not panic");
     assert!(
         seen_rx.recv().expect("the request was observed"),
-        "the interactive client silently selected the legacy lossy pane stream"
+        "the interactive client attached without asking for pane-stream v1"
     );
 }
 
@@ -510,7 +509,7 @@ fn a_read_only_attach_to_a_silent_node_still_detaches_on_the_prefix() {
             frame,
             Frame::Input(note) if matches!(
                 note.input,
-                Input::NodePaneWrite(_) | Input::NodePtyWrite { .. }
+                Input::NodePaneWrite(_)
             )
         )),
         "a read-only attach sent the supervisor a keystroke: {sent:?}"
@@ -580,7 +579,6 @@ fn bare_session(stream: UnixStream, pane_stream: PaneStream, view: Option<View>)
         stream,
         writer: Arc::new(std::sync::Mutex::new(writer)),
         inbound: Vec::new(),
-        legacy_prefix: String::new(),
         id: AgentId("root".into()),
         input_fd: -1,
         view,
@@ -885,15 +883,21 @@ fn ready_is_written_only_after_the_attach_response_and_uses_its_exact_boundary()
     server_thread.join().unwrap();
 }
 
+/// **A refused pane-v1 attach is reported, never retried under a weaker protocol.** The client
+/// and the supervisor ship as a pair, so an `invalid params` answer is a real refusal and not an
+/// older supervisor that might accept a request without the capability.
+///
+/// Mutation: retry the attach without `pane_stream` after `INVALID_PARAMS`. The fixture then
+/// sees a second request and this fails.
 #[test]
-fn invalid_params_is_the_only_legacy_retry_and_uses_a_new_response_id() {
+fn an_invalid_params_answer_is_refused_and_not_retried() {
     let (client, mut server) = UnixStream::pair().unwrap();
     let server_thread = std::thread::spawn(move || {
         let mut lines = BufReader::new(server.try_clone().unwrap());
         let mut line = String::new();
         lines.read_line(&mut line).unwrap();
         let Frame::Request(first) = Frame::from_line(&line).unwrap() else {
-            panic!("expected first attach")
+            panic!("expected the attach request")
         };
         assert_eq!(first.id, RequestId::Number(1));
         server
@@ -907,159 +911,66 @@ fn invalid_params_is_the_only_legacy_retry_and_uses_a_new_response_id() {
             )
             .unwrap();
         server.flush().unwrap();
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        let Frame::Request(second) = Frame::from_line(&line).unwrap() else {
-            panic!("expected legacy retry")
-        };
-        assert_eq!(second.id, RequestId::Number(2));
-        let Call::NodeAttach(params) = second.call else {
-            panic!("expected node/attach")
-        };
-        assert!(params.pane_stream.is_none());
-        server
-            .write_all(
-                pane_attach_response_with_id(
-                    RequestId::Number(2),
-                    marion_core::proto::result::PaneAttach {
-                        cols: 80,
-                        rows: 24,
-                        writable: false,
-                        held_by: Some(7),
-                        ended: false,
-                        pane_ready: None,
-                    },
-                )
-                .to_line()
-                .as_bytes(),
-            )
-            .unwrap();
-        server.flush().unwrap();
+        // Whatever the client sends after the refusal, until it hangs up.
+        let mut after = Vec::new();
+        loop {
+            line.clear();
+            if lines.read_line(&mut line).unwrap() == 0 {
+                return after;
+            }
+            after.push(line.clone());
+        }
     });
-    let session = Session::open_for_test(
+    let error = Session::open_for_test(
         client,
         AgentId("root".into()),
         Sink::default(),
         -1,
         (80, 24),
     )
-    .unwrap();
-    assert_eq!(session.pane_stream, PaneStream::Legacy);
-    drop(session);
-    server_thread.join().unwrap();
+    .err()
+    .expect("a refused attach must not open a session");
+    assert!(error.contains("refused the attach"), "{error}");
+    let after = server_thread.join().unwrap();
+    assert!(after.is_empty(), "the refusal was retried: {after:?}");
 }
 
+/// A pane answer with no Ready descriptor is refused rather than rendered.
 #[test]
-fn writable_legacy_retry_keeps_incremental_utf8_on_node_pty_write() {
+fn a_pane_answer_without_its_ready_descriptor_is_refused() {
     let (client, mut server) = UnixStream::pair().unwrap();
-    let (keyboard_input, mut keyboard_writer) = UnixStream::pair().unwrap();
-    let (attached_tx, attached_rx) = std::sync::mpsc::channel();
-    let (prefix_tx, prefix_rx) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
-        let mut lines = BufReader::new(server.try_clone().unwrap());
         let mut line = String::new();
-
-        lines.read_line(&mut line).unwrap();
-        let Frame::Request(first) = Frame::from_line(&line).unwrap() else {
-            panic!("expected pane-v1 attach request")
-        };
-        let Call::NodeAttach(first_params) = first.call else {
-            panic!("expected node/attach")
-        };
-        assert!(first_params.pane_stream.is_some());
+        BufReader::new(server.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
         server
             .write_all(
-                Frame::Response(marion_core::proto::Response::err(
-                    RequestId::Number(1),
-                    marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
-                ))
+                pane_attach_response(marion_core::proto::result::PaneAttach {
+                    cols: 80,
+                    rows: 24,
+                    writable: false,
+                    held_by: Some(7),
+                    ended: false,
+                    pane_ready: None,
+                })
                 .to_line()
                 .as_bytes(),
             )
             .unwrap();
         server.flush().unwrap();
-
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        let Frame::Request(second) = Frame::from_line(&line).unwrap() else {
-            panic!("expected legacy attach retry")
-        };
-        let Call::NodeAttach(second_params) = second.call else {
-            panic!("expected node/attach")
-        };
-        assert_eq!(second.id, RequestId::Number(2));
-        assert!(second_params.pane_stream.is_none());
-        server
-            .write_all(
-                pane_attach_response_with_id(
-                    RequestId::Number(2),
-                    marion_core::proto::result::PaneAttach {
-                        cols: 80,
-                        rows: 24,
-                        writable: true,
-                        held_by: None,
-                        ended: false,
-                        pane_ready: None,
-                    },
-                )
-                .to_line()
-                .as_bytes(),
-            )
-            .unwrap();
-        server.flush().unwrap();
-
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        let Frame::Input(initial) = Frame::from_line(&line).unwrap() else {
-            panic!("expected initial geometry")
-        };
-        assert!(matches!(initial.input, Input::NodeResize { .. }));
-        attached_tx.send(()).unwrap();
-
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        let Frame::Input(prefix) = Frame::from_line(&line).unwrap() else {
-            panic!("expected legacy keyboard input")
-        };
-        let Input::NodePtyWrite { agent_id, bytes } = prefix.input else {
-            panic!("legacy keyboard input used node/pane-write")
-        };
-        assert_eq!(agent_id, AgentId("root".into()));
-        assert_eq!(bytes, "a");
-        prefix_tx.send(()).unwrap();
-
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        let Frame::Input(suffix) = Frame::from_line(&line).unwrap() else {
-            panic!("expected the completed UTF-8 scalar")
-        };
-        let Input::NodePtyWrite { agent_id, bytes } = suffix.input else {
-            panic!("legacy keyboard input used node/pane-write")
-        };
-        assert_eq!(agent_id, AgentId("root".into()));
-        assert_eq!(bytes, "😀b");
     });
-
-    let session = Session::open_for_test(
+    let error = Session::open_for_test(
         client,
         AgentId("root".into()),
         Sink::default(),
-        keyboard_input.as_raw_fd(),
+        -1,
         (80, 24),
     )
-    .unwrap();
-    attached_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap();
-    keyboard_writer.write_all(b"a\xf0").unwrap();
-    keyboard_writer.flush().unwrap();
-    prefix_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap();
-    keyboard_writer.write_all(b"\x9f\x98\x80b").unwrap();
-    keyboard_writer.flush().unwrap();
+    .err()
+    .expect("a pane without a Ready boundary must be refused");
+    assert!(error.contains("omitted its Ready"), "{error}");
     server_thread.join().unwrap();
-    drop(session);
 }
 
 #[test]
@@ -1143,165 +1054,6 @@ fn writable_pane_v1_sends_arbitrary_keyboard_bytes_on_node_pane_write() {
 }
 
 #[test]
-fn legacy_retry_refuses_an_unsolicited_v1_ready_descriptor() {
-    let (client, mut server) = UnixStream::pair().unwrap();
-    let server_thread = std::thread::spawn(move || {
-        let mut lines = BufReader::new(server.try_clone().unwrap());
-        let mut line = String::new();
-        lines.read_line(&mut line).unwrap();
-        server
-            .write_all(
-                Frame::Response(marion_core::proto::Response::err(
-                    RequestId::Number(1),
-                    marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
-                ))
-                .to_line()
-                .as_bytes(),
-            )
-            .unwrap();
-        server.flush().unwrap();
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        server
-            .write_all(
-                pane_attach_response_with_id(
-                    RequestId::Number(2),
-                    marion_core::proto::result::PaneAttach {
-                        cols: 80,
-                        rows: 24,
-                        writable: false,
-                        held_by: Some(7),
-                        ended: false,
-                        pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
-                            token: pane_token(),
-                            cut: 0,
-                        }),
-                    },
-                )
-                .to_line()
-                .as_bytes(),
-            )
-            .unwrap();
-        server.flush().unwrap();
-    });
-    let error = Session::open_for_test(
-        client,
-        AgentId("root".into()),
-        Sink::default(),
-        -1,
-        (80, 24),
-    )
-    .err()
-    .expect("an unsolicited v1 descriptor must be refused");
-    assert!(error.contains("unsolicited"), "{error}");
-    server_thread.join().unwrap();
-}
-
-#[test]
-fn legacy_retry_preserves_same_agent_pty_that_precedes_its_response() {
-    let (client, mut server) = UnixStream::pair().unwrap();
-    let server_thread = std::thread::spawn(move || {
-        let mut lines = BufReader::new(server.try_clone().unwrap());
-        let mut line = String::new();
-        lines.read_line(&mut line).unwrap();
-        server
-            .write_all(
-                Frame::Response(marion_core::proto::Response::err(
-                    RequestId::Number(1),
-                    marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
-                ))
-                .to_line()
-                .as_bytes(),
-            )
-            .unwrap();
-        server.flush().unwrap();
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        let prefix = Frame::Notification(marion_core::proto::Notification::new(Event::NodePty {
-            agent_id: AgentId("root".into()),
-            seq: 0,
-            mono_ns: 0,
-            bytes: "legacy-prefix".into(),
-        }));
-        let response = pane_attach_response_with_id(
-            RequestId::Number(2),
-            marion_core::proto::result::PaneAttach {
-                cols: 80,
-                rows: 24,
-                writable: false,
-                held_by: Some(7),
-                ended: false,
-                pane_ready: None,
-            },
-        );
-        server
-            .write_all(format!("{}{}", prefix.to_line(), response.to_line()).as_bytes())
-            .unwrap();
-        server.flush().unwrap();
-    });
-    let session = Session::open_for_test(
-        client,
-        AgentId("root".into()),
-        Sink::default(),
-        -1,
-        (80, 24),
-    )
-    .unwrap();
-    assert_eq!(
-        session.view.as_ref().unwrap().term.viewport_lines()[0],
-        "legacy-prefix"
-    );
-    assert!(session.legacy_prefix.is_empty());
-    drop(session);
-    server_thread.join().unwrap();
-}
-
-#[test]
-fn legacy_retry_refuses_a_pane_v1_frame_before_its_response() {
-    let (client, mut server) = UnixStream::pair().unwrap();
-    let server_thread = std::thread::spawn(move || {
-        let mut lines = BufReader::new(server.try_clone().unwrap());
-        let mut line = String::new();
-        lines.read_line(&mut line).unwrap();
-        server
-            .write_all(
-                Frame::Response(marion_core::proto::Response::err(
-                    RequestId::Number(1),
-                    marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
-                ))
-                .to_line()
-                .as_bytes(),
-            )
-            .unwrap();
-        server.flush().unwrap();
-        line.clear();
-        lines.read_line(&mut line).unwrap();
-        server
-            .write_all(
-                Frame::Notification(marion_core::proto::Notification::new(pane_event(
-                    0,
-                    PaneFrameKindV1::End {},
-                )))
-                .to_line()
-                .as_bytes(),
-            )
-            .unwrap();
-        server.flush().unwrap();
-    });
-    let error = Session::open_for_test(
-        client,
-        AgentId("root".into()),
-        Sink::default(),
-        -1,
-        (80, 24),
-    )
-    .err()
-    .expect("hybrid legacy/v1 response prefix must be refused");
-    assert!(error.contains("explicit legacy"), "{error}");
-    server_thread.join().unwrap();
-}
-
-#[test]
 fn pane_v1_transport_loss_before_end_is_visible() {
     let (client, server) = UnixStream::pair().unwrap();
     let (v, _sink) = view(80, 24);
@@ -1319,30 +1071,29 @@ fn pane_v1_transport_loss_before_end_is_visible() {
 }
 
 #[test]
-fn legacy_terminal_state_flushes_the_final_dirty_output() {
-    use marion_core::contract::ExitStatus;
-    use marion_core::node::{NodeState, ReapState};
-
+fn the_end_frame_flushes_the_final_dirty_output() {
     let (stream, _peer) = UnixStream::pair().unwrap();
     let (v, sink) = view(80, 24);
-    let mut session = bare_session(stream, PaneStream::Legacy, Some(v));
+    let mut session = bare_session(
+        stream,
+        PaneStream::V1 {
+            next_seq: 0,
+            cut: 0,
+        },
+        Some(v),
+    );
     session
-        .consume_pane_event(Event::NodePty {
-            agent_id: AgentId("root".into()),
-            seq: 0,
-            mono_ns: 0,
-            bytes: "final-dirty-tail".into(),
-        })
+        .consume_pane_event(pane_event(
+            0,
+            PaneFrameKindV1::Output {
+                bytes: marion_core::proto::OpaquePaneBytesV1::new(b"final-dirty-tail"),
+            },
+        ))
         .unwrap();
     assert!(written(&sink).is_empty(), "output painted before an edge");
     assert_eq!(
         session
-            .consume_pane_event(Event::NodeState {
-                agent_id: AgentId("root".into()),
-                state: NodeState::Exited(ExitStatus::Ok),
-                reap_state: ReapState::Live,
-                ts: marion_core::encoding::SystemTime::from_unix_millis(1),
-            })
+            .consume_pane_event(pane_event(1, PaneFrameKindV1::End {}))
             .unwrap(),
         PaneProgress::End
     );
