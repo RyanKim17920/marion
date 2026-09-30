@@ -1303,14 +1303,16 @@ sleep 15"#,
     /// `agent_message_chunk` (the sink drops a marker file the script polls for), so a driver that
     /// only forwarded at the end would never be answered and the turn would expire. A non-JSON
     /// banner and a line written after the prompt's answer prove the sink is raw and complete. The
-    /// two go out in one write: marion stops an agent as soon as its turn is answered, so a line
-    /// the agent had yet to write when it was stopped was never in the transcript to see.
+    /// agent ignores SIGINT and leaves on stdin's EOF, which marion's shutdown sends first: marion
+    /// stops an agent as soon as its turn is answered, and a line the agent had yet to write when
+    /// it was stopped was never in the transcript to see.
     #[test]
     fn a_live_sink_sees_every_agent_line_in_order_before_the_turn_returns() {
         let dir = scratch("acp-live");
         let marker = dir.join("sink-saw-chunk");
         let script = format!(
-            r#"read init
+            r#"trap '' INT
+read init
 echo 'fake-acp banner, not JSON'
 printf '%s\n' '{HELLO}'
 read new
@@ -1318,8 +1320,9 @@ printf '%s\n' '{OPENED}'
 read prompt
 printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_fake","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"live"}}}}}}}}'
 while [ ! -f '{marker}' ]; do sleep 0.05; done
-printf '%s\nafter the answer\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
-sleep 15"#,
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+echo 'after the answer'
+while read -r _; do :; done"#,
             marker = marker.display(),
         );
         let inv = agent(&dir, &script);
