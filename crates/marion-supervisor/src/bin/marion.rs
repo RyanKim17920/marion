@@ -1373,22 +1373,20 @@ fn contract_summary(text: &str) -> Option<String> {
         #[serde(default)]
         commit: Option<Oid>,
     }
-    // A failed spawn puts a one-line account *above* the contract (`bridge::failure_line`), so the
-    // JSON starts at the first `{` rather than at byte zero.
-    let start = text.find('{')?;
-    let contract: Contract = serde_json::from_str(text[start..].trim()).ok()?;
+    // The contract rides fenced beneath marion's one-line account (`bridge::spawn_text`); a bare
+    // contract with no line above it is read whole.
+    let (json, head) = match marion_supervisor::bridge::fenced_contract(text) {
+        Some(json) => (json, text.split_once("\n\n").map_or("", |(line, _)| line)),
+        None => (text.trim(), ""),
+    };
+    let contract: Contract = serde_json::from_str(json).ok()?;
     let completion = contract.completion?;
     let mut summary = format!(
         "the {} child {}",
         contract.child.harness,
         completion.status.verb_phrase()
     );
-    if let Some(head) = text[..start]
-        .trim()
-        .lines()
-        .next()
-        .filter(|l| !l.is_empty())
-    {
+    if let Some(head) = head.trim().lines().next().filter(|l| !l.is_empty()) {
         // The failure line marion itself wrote, kept whole: it names what went wrong.
         summary = format!("{}\n{summary}", head.trim());
     }
@@ -3874,8 +3872,10 @@ mod tests {
                 {{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":{}}}]}}}}"#,
             serde_json::to_string(&format!(
                 "marion: the codex child failed — child exited with code 1; the child's stream \
-                 reported: This model is no longer available to new users.\n\n{}",
-                contract.replace(r#""status": "Ok""#, r#""status": "Failed""#)
+                 reported: This model is no longer available to new users.\n\n{}\n{}\n{}",
+                marion_supervisor::bridge::CONTRACT_OPEN,
+                contract.replace(r#""status": "Ok""#, r#""status": "Failed""#),
+                marion_supervisor::bridge::CONTRACT_CLOSE,
             ))
             .unwrap()
         ));

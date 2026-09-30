@@ -1672,9 +1672,8 @@ fn concurrent_children_never_share_a_workspace_and_never_lose_one_to_a_git_lock(
         let reply = bridge.tool("wait", json!({"task_id": id}));
         let text = text_of(&reply);
         let contract: Value = serde_json::from_str(
-            &text[text
-                .find('{')
-                .unwrap_or_else(|| panic!("a contract is json: {text}"))..],
+            marion_supervisor::bridge::fenced_contract(&text)
+                .unwrap_or_else(|| panic!("a contract is fenced json: {text}")),
         )
         .unwrap_or_else(|e| panic!("wait returned a contract for {id}: {e}: {text}"));
         let path = contract["workspace"]["Worktree"]["path"]

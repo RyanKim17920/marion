@@ -135,11 +135,8 @@ pub fn codex_call_output_text(body: &Value, call_id: &str) -> Option<String> {
     codex_output_text(item.get("output")?)
 }
 
-/// **The contract a `spawn` or `wait` result carries**: the JSON beneath marion's one summary
-/// line (`bridge::spawn_text`), or the whole text where there is no such line.
+/// **The contract a `spawn` or `wait` result carries**: the JSON marion fences beneath its one
+/// summary line (`bridge::spawn_text`), or the whole text where there is no fence.
 pub fn contract_json(result_text: &str) -> &str {
-    match result_text.split_once("\n\n") {
-        Some((line, rest)) if line.starts_with("marion: ") => rest,
-        _ => result_text,
-    }
+    marion_supervisor::bridge::fenced_contract(result_text).unwrap_or(result_text)
 }
