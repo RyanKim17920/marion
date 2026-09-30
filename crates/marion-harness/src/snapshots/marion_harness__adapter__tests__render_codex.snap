@@ -98,6 +98,8 @@ args:
   features.plugins=false
   -c
   features.shell_snapshot=false
+  -c
+  approval_policy="never"
 env:
 
 ## live pane
@@ -490,6 +492,8 @@ args:
   features.plugins=false
   -c
   features.shell_snapshot=false
+  -c
+  approval_policy="never"
 env:
 
 ## live resume pane

@@ -3562,6 +3562,44 @@ mod tests {
         }
     }
 
+    /// **A headless live codex node never waits on an approval nobody can give.** Measured live
+    /// (2026-09-30, codex-cli 0.155.1 over app-server): with the operator's config stating no
+    /// `approval_policy` and marion's trust pin leaving the worktree `untrusted`, codex asked
+    /// `item/commandExecution/requestApproval` for every command, `pwd` included; a headless node
+    /// has no one to answer, marion declines, and the child reported it could run nothing. `codex
+    /// exec` never asks (its policy is `never`); the app-server surface must say so itself, the
+    /// sandbox still bounding what runs. A pane keeps the operator's policy: a person answers it.
+    #[test]
+    fn a_live_headless_codex_node_asks_for_no_approval_and_a_pane_keeps_the_operators() {
+        let spec = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..codex_spec()
+        };
+        let pairs = |inv: &Invocation| -> Vec<String> {
+            inv.args
+                .windows(2)
+                .filter(|w| w[0] == "-c")
+                .map(|w| w[1].clone())
+                .collect()
+        };
+        let headless = CodexAdapter.compile(&spec, &ctx()).unwrap();
+        assert!(
+            pairs(&headless).contains(&r#"approval_policy="never""#.to_string()),
+            "{:?}",
+            headless.args
+        );
+        let pane = CodexAdapter.compile_pane(&spec, &ctx()).unwrap();
+        assert!(
+            !pairs(&pane)
+                .iter()
+                .any(|p| p.starts_with("approval_policy=")),
+            "{:?}",
+            pane.args
+        );
+    }
+
     /// **Live mode is pure removal on Claude Code, and this is the list of what is removed.**
     ///
     /// Asserted by *name*, not by comparing the whole env: the failure being defended against is one

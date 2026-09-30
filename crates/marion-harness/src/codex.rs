@@ -73,7 +73,8 @@ use crate::spec::{
 /// **`-s/--sandbox` and `-a/--ask-for-approval`.** Neither flag is used. A canned node sets both
 /// in the generated [`config_toml`] (`sandbox_mode`, `approval_policy`); a live node carries the
 /// sandbox as the `-c sandbox_mode=…` pair ([`live_sandbox_override`]), the same key the document
-/// writes, and keeps the operator's approval policy. A second spelling on argv is the drift
+/// writes; a headless live node asks for no approval ([`live_approval_override`]) and a pane keeps
+/// the operator's approval policy. A second spelling on argv is the drift
 /// [`SANDBOX_MODE`] exists to prevent.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Codex,
@@ -939,6 +940,21 @@ pub fn live_sandbox_override() -> (String, String) {
     (SANDBOX_KEY.to_string(), toml_str(SANDBOX_MODE))
 }
 
+/// **The `-c` pair that keeps a headless live node from waiting on an approval nobody can give.**
+///
+/// Measured live on 0.155.1 over app-server (2026-09-30, `tests/fixtures/live-smoke-2026-09-30`
+/// s1 and s4): with the operator's `config.toml` stating no `approval_policy` and the worktree
+/// `untrusted` ([`live_trust_override`]), codex sent `item/commandExecution/requestApproval` for
+/// every command, `pwd` included. marion declines a server's approval requests (a headless node has
+/// no one to ask), so the child could run nothing and reported so. `codex exec` never asks; this is
+/// the same policy stated for the thread server, with the sandbox still bounding what runs.
+pub fn live_approval_override() -> (String, String) {
+    (APPROVAL_KEY.to_string(), toml_str("never"))
+}
+
+/// The config key an approval policy is set under, in the generated `config.toml` and on `-c`.
+pub const APPROVAL_KEY: &str = "approval_policy";
+
 /// **The `-c` pair that keeps [`live_sandbox_override`] from trusting the operator's repository.**
 ///
 /// Measured on 0.155.1 (2026-09-28, scratch `CODEX_HOME`): `codex exec` asked for
@@ -1206,7 +1222,7 @@ impl HarnessAdapter for CodexAdapter {
         &self,
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
-        _shape: spec::Shape,
+        shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         // The trait's default `axes` runs the refusal owed to a `tools:` declaration on every
         // harness; nothing in the row reads the result — see `Self::tool_name` for why a codex
@@ -1233,6 +1249,11 @@ impl HarnessAdapter for CodexAdapter {
                 .and_then(|d| std::fs::read_to_string(d.join("config.toml")).ok());
             f.pairs
                 .extend(live_trust_override(&spec.cwd, theirs.as_deref()));
+            // A headless node has no one to answer an approval, so it asks for none
+            // ([`live_approval_override`]); a pane keeps the operator's policy for them to answer.
+            if shape == spec::Shape::Headless {
+                f.pairs.push(live_approval_override());
+            }
         }
         Ok(f)
     }
