@@ -24,6 +24,12 @@
 //! `tests/fixtures/conformance/` and is `MARION_CONFORMANCE_OUT` when set. With
 //! `MARION_CONFORMANCE_BASELINE` naming a committed `matrix.json`, a cell that was PASS there and is
 //! not now fails the test (admission's diff); every other change is printed.
+//!
+//! **Rows from files.** The operator's rows (`~/.config/marion/harnesses/`) and every directory in
+//! `MARION_HARNESS_DIRS` (`:`-separated) are loaded first and are rows like any other here. They are
+//! not marion's, so they stay out of the committed matrix: each one's transcripts go to
+//! `<state>/conformance/<row>-<version>/`, and its admission (`row_file::admits`) to
+//! `<state>/conformance/<row>-<version>.json`, which `marion doctor` reads back.
 
 mod driver;
 mod hygiene;
@@ -40,6 +46,7 @@ use serde_json::{Value, json};
 const SELECT: &str = "MARION_CONFORMANCE";
 const OUT: &str = "MARION_CONFORMANCE_OUT";
 const BASELINE: &str = "MARION_CONFORMANCE_BASELINE";
+const HARNESS_DIRS: &str = "MARION_HARNESS_DIRS";
 
 fn default_out() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/conformance")
@@ -61,6 +68,8 @@ fn battery() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_out());
     let scratch = marion_testsupport::scratch("conformance");
+    let state = marion_core::paths::state_dir_from_env(None);
+    load_row_files();
 
     let mut results = Vec::new();
     let mut skipped = Vec::new();
@@ -85,6 +94,16 @@ fn battery() {
             skipped.push(format!("{selector}: {why}"));
             continue;
         }
+        // A row from a file is recorded under the operator's state, never in marion's matrix.
+        let from_file = !t.agent_type.harness.is_builtin();
+        let out = match (&state, from_file) {
+            (_, false) => out.clone(),
+            (Some(state), true) => state.join("conformance"),
+            (None, true) => {
+                skipped.push(format!("{selector}: no state directory to record it in"));
+                continue;
+            }
+        };
         let staging = out.join(format!(".staging-{}", selector.replace(':', "-")));
         let _ = std::fs::remove_dir_all(&staging);
         let mut ctx = probes::Ctx {
@@ -115,13 +134,17 @@ fn battery() {
                 .unwrap_or_default(),
             outcomes,
         };
-        results.push((result, dir));
+        if from_file {
+            record_admission(&out, &result, &t);
+        } else {
+            results.push((result, dir));
+        }
     }
     for s in &skipped {
         eprintln!("conformance: skipped {s}");
     }
     assert!(
-        !results.is_empty() || !skipped.is_empty(),
+        !results.is_empty() || !skipped.is_empty() || admitted_any(),
         "{SELECT}={selection} names no row; rows are {:?}",
         target::all()
             .into_iter()
@@ -157,6 +180,83 @@ fn battery() {
             "conformance regressions against the committed matrix:\n{}",
             regressions.join("\n")
         );
+    }
+}
+
+/// The operator's row files, then each `MARION_HARNESS_DIRS` directory's, into this process.
+fn load_row_files() {
+    use marion_harness::row_file;
+    let mut refused: Vec<String> = row_file::install_user_rows()
+        .refused
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for dir in std::env::var(HARNESS_DIRS).unwrap_or_default().split(':') {
+        if !dir.is_empty() {
+            refused.extend(
+                row_file::install_dir(Path::new(dir))
+                    .refused
+                    .iter()
+                    .map(ToString::to_string),
+            );
+        }
+    }
+    for e in refused {
+        eprintln!("conformance: harness row not loaded: {e}");
+    }
+}
+
+static ADMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn admitted_any() -> bool {
+    ADMITTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A row from a file: its probes' verdicts and whether they admit it, beside its transcripts, with
+/// the digest of the row's text, so doctor can tell a result for an earlier edit.
+fn record_admission(out: &Path, r: &report::TargetResult, t: &target::Target) {
+    use marion_harness::row_file;
+    let probes: Vec<(String, String)> = r
+        .outcomes
+        .iter()
+        .map(|o| (o.probe.to_string(), o.status.word().to_string()))
+        .collect();
+    let verdict = row_file::admits(&probes);
+    let h = t.agent_type.harness;
+    let record = json!({
+        "row": r.selector,
+        "version": r.version,
+        "admitted": verdict.is_ok(),
+        "why": verdict.as_ref().err().cloned().unwrap_or_default(),
+        "probes": probes.iter().map(|(p, w)| (p.clone(), Value::from(w.clone()))).collect::<serde_json::Map<_, _>>(),
+        "sha256": row_file::source(h).map(|s| s.sha256),
+        "transcripts": r.dir,
+    });
+    let path = row_file::admission_path(
+        out.parent().expect("<state>/conformance"),
+        h.as_str(),
+        &r.version,
+    );
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&record).expect("record serialises") + "\n",
+    )
+    .expect("write the admission record");
+    ADMITTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    match verdict {
+        Ok(()) => eprintln!(
+            "conformance: {} {} admitted ({})",
+            r.selector,
+            r.version,
+            path.display()
+        ),
+        Err(why) => eprintln!(
+            "conformance: {} {} NOT admitted: {} ({})",
+            r.selector,
+            r.version,
+            why.join("; "),
+            path.display()
+        ),
     }
 }
 

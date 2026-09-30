@@ -308,6 +308,16 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         resolved.as_deref(),
         &mut notes,
     );
+    if let Some(source) = marion_harness::row_file::source(h) {
+        let state = marion_core::paths::state_dir_from_env(None);
+        notes.extend(row_file_notes(
+            h,
+            &source,
+            adapter.spec(),
+            identity.version.as_deref(),
+            state.as_deref(),
+        ));
+    }
     let adapter_check = match opts.mode {
         ProbeMode::Capabilities => None,
         ProbeMode::Adapter => Some(micro_contract(
@@ -340,6 +350,84 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
             )
         })
         .collect()
+}
+
+/// **What doctor says of a row loaded from a file**, read fresh: the file and whose it is, the digest
+/// it was built from and whether the file still has it (and, for a repository's, whether it is still
+/// trusted), each strategy the row declares none of, and the row's last conformance result on
+/// `version` — the evidence a row marion does not ship has in place of the version gate's pins.
+fn row_file_notes(
+    h: Harness,
+    source: &marion_harness::row_file::Source,
+    spec: &marion_harness::spec::HarnessSpec,
+    version: Option<&str>,
+    state: Option<&Path>,
+) -> Vec<String> {
+    use marion_harness::row_file::{self, Layer};
+    let path = source.path.display();
+    let short = &source.sha256[..12];
+    let whose = match source.layer {
+        Layer::User => "yours",
+        Layer::Repo => "the repository's, trusted by its digest",
+    };
+    let mut notes = vec![format!("row: from {path} ({whose}), sha256 {short}")];
+    match std::fs::read(&source.path) {
+        Ok(now) if marion_harness::sha256_hex(&now) == source.sha256 => {
+            if source.layer == Layer::Repo
+                && let Err(e) =
+                    crate::trust::require_row(&source.path, &String::from_utf8_lossy(&now))
+            {
+                notes.push(format!("row: WARNING — {e}"));
+            }
+        }
+        Ok(_) => notes.push(format!(
+            "row: WARNING — {path} has changed since this process loaded it; `marion harness \
+             check {path}` checks the new text, and the next marion process loads it"
+        )),
+        Err(e) => notes.push(format!("row: WARNING — {path}: {e}")),
+    }
+    for (strategy, note) in row_file::declared_none(spec) {
+        notes.push(format!("declared none: {strategy} — {note}"));
+    }
+    let name = h.as_str();
+    let run = format!("scripts/conformance.sh --harness {name}");
+    let Some(version) = version else {
+        notes.push(format!(
+            "conformance: no version read, so no result can be matched to it; {run}"
+        ));
+        return notes;
+    };
+    let record = state.map(|s| row_file::admission_path(s, name, version));
+    let read = record
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+    notes.push(match read {
+        None => {
+            format!("conformance: never run against {version}; {run} (a launch never waits on it)")
+        }
+        Some(r) => {
+            let stale = r["sha256"].as_str() != Some(source.sha256.as_str());
+            let edited = if stale {
+                ", against an earlier text of the row"
+            } else {
+                ""
+            };
+            if r["admitted"] == serde_json::Value::Bool(true) {
+                format!("conformance: admitted on {version}{edited}")
+            } else {
+                let why: Vec<&str> = r["why"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|w| w.as_str()).collect())
+                    .unwrap_or_default();
+                format!(
+                    "conformance: NOT admitted on {version}{edited}: {}",
+                    why.join("; ")
+                )
+            }
+        }
+    });
+    notes
 }
 
 /// **How a cancel ends this row's running turn**, per shape: the verb's kind and its grace — a
@@ -3241,6 +3329,81 @@ mod tests {
         assert!(
             rows[0].report.adapter_check.is_some(),
             "--adapter always reaches a verdict, even when steps were skipped"
+        );
+    }
+
+    /// **A row from a file is described by its source, its digest, what it declares none of and its
+    /// last conformance result** — and an edit since load, a stale result, or a failed admission is
+    /// said in so many words.
+    #[test]
+    fn a_row_files_notes_say_where_it_came_from_and_what_conformance_found() {
+        use marion_harness::row_file::{Layer, Source, admission_path};
+        let dir = marion_testsupport::scratch("doctor-row-notes");
+        let path = dir.join("tb8-doc.toml");
+        std::fs::write(&path, "row text").unwrap();
+        let sha256 = marion_harness::sha256_hex(b"row text");
+        let source = Source {
+            path: path.clone(),
+            layer: Layer::User,
+            sha256: sha256.clone(),
+        };
+        let h = Harness::load("tb8-doc").unwrap();
+        let mut spec = *marion_harness::adapter::harness_spec(Harness::Qwen);
+        spec.updates = marion_harness::spec::UpdatePolicy::None {
+            note: "searched `--help`",
+        };
+        let state = dir.join("state");
+        let notes = |v: Option<&str>| row_file_notes(h, &source, &spec, v, Some(&state)).join("\n");
+
+        let first = notes(Some("1.0.0"));
+        assert!(
+            first.contains(&format!(
+                "row: from {} (yours), sha256 {}",
+                path.display(),
+                &sha256[..12]
+            )),
+            "{first}"
+        );
+        assert!(
+            first.contains("declared none: updates — searched `--help`"),
+            "{first}"
+        );
+        assert!(
+            first.contains("conformance: never run against 1.0.0"),
+            "{first}"
+        );
+        assert!(!first.contains("WARNING"), "{first}");
+
+        let record = admission_path(&state, "tb8-doc", "1.0.0");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(
+            &record,
+            serde_json::json!({"admitted": false, "sha256": sha256, "why": ["P-tools FAIL (must PASS)"]})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            notes(Some("1.0.0"))
+                .contains("conformance: NOT admitted on 1.0.0: P-tools FAIL (must PASS)"),
+            "{}",
+            notes(Some("1.0.0"))
+        );
+        std::fs::write(
+            &record,
+            serde_json::json!({"admitted": true, "sha256": "an older text"}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            notes(Some("1.0.0")).contains("admitted on 1.0.0, against an earlier text of the row"),
+            "{}",
+            notes(Some("1.0.0"))
+        );
+
+        std::fs::write(&path, "edited").unwrap();
+        assert!(
+            notes(None).contains("has changed since this process loaded it"),
+            "{}",
+            notes(None)
         );
     }
 }

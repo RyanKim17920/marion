@@ -355,8 +355,9 @@ impl AgentType {
         }
     }
 
-    /// A type carrying every §3.1 default, so a built-in only states what it changes.
-    fn defaults(name: &str, description: &str, harness: Harness) -> Self {
+    /// A type carrying every §3.1 default, so a built-in only states what it changes — and what an
+    /// `[[agent]]` stating only its name and harness resolves to.
+    pub fn defaults(name: &str, description: &str, harness: Harness) -> Self {
         Self {
             name: name.into(),
             description: description.into(),

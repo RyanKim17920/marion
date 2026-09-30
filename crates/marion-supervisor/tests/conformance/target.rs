@@ -1,10 +1,11 @@
 //! **What the battery runs against: every row marion has**, and each launch compiled the way a
 //! marion spawn compiles it.
 //!
-//! The target list is `Harness::ALL`, with the ACP row expanded over `acp::AGENTS` exactly as
-//! `marion doctor` expands it — so a new row, or a new ACP refinement, is in the battery the day it
-//! lands and nothing here names it. Each target's agent type is the built-in marion would spawn
-//! for that harness (the plain implementer), and each launch goes through
+//! The target list is `adapter::every()` — the built-ins, then each row loaded from a file — with
+//! the ACP row expanded over `acp::AGENTS` exactly as `marion doctor` expands it, so a new row, or a
+//! new ACP refinement, is in the battery the day it lands and nothing here names it. Each target's
+//! agent type is the built-in marion would spawn for that harness (the plain implementer), or for a
+//! row from a file the type an agent-types file naming it gets by default; each launch goes through
 //! `run::child_launch_spec` → `config_files` → `compile` → `session_declaration`, the one
 //! derivation a real child takes; the battery adds nothing to the launch but the provider URL.
 
@@ -14,7 +15,7 @@ use marion_core::agent_type::{AgentType, builtin, builtin_names};
 use marion_core::contract::Isolation;
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
-use marion_harness::adapter::harness_spec;
+use marion_harness::adapter::{every, harness_spec};
 use marion_harness::invocation::Invocation;
 use marion_harness::spec::HarnessSpec;
 use marion_harness::{Auth, HarnessAdapter, SpawnCtx, acp, adapter_for_type};
@@ -53,7 +54,7 @@ impl Target {
 /// Every row, as `(selector, target or the reason none could be built)`.
 pub fn all() -> Vec<(String, Result<Target, String>)> {
     let mut out = Vec::new();
-    for h in Harness::ALL {
+    for h in every() {
         if h == Harness::Acp {
             for a in acp::AGENTS {
                 let selector = format!("acp:{}", a.id);
@@ -67,9 +68,22 @@ pub fn all() -> Vec<(String, Result<Target, String>)> {
     out
 }
 
+/// The model name marion's canned plumbing carries (`agent_type::GOOSE_DEFAULT_MODEL` and its
+/// siblings); the canned endpoint answers any name.
+const CANNED_MODEL: &str = "marion-canned";
+
 /// The built-in marion spawns for a harness when asked for it by name: the first built-in on that
-/// harness that is not an orchestrator.
+/// harness that is not an orchestrator. A row from a file has no built-in, and gets the type a
+/// `[[agent]]` naming only its harness would.
 fn plain_type(h: Harness) -> Option<AgentType> {
+    if !h.is_builtin() {
+        return Some(AgentType {
+            // Every probe runs against marion's canned endpoint, which ignores the name: the one
+            // every canned built-in carries, for a row that must name a model.
+            model: Some(CANNED_MODEL.into()),
+            ..AgentType::defaults(h.as_str(), "A harness row loaded from a file.", h)
+        });
+    }
     builtin_names()
         .iter()
         .filter(|n| !n.ends_with("-orchestrator"))

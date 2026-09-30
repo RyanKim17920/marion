@@ -24,6 +24,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use marion_core::harness::Harness;
 use marion_core::provider::{KeyHeader, Wire};
@@ -233,13 +234,13 @@ pub fn install_user_rows() -> &'static Installed {
     ONCE.get_or_init(|| user_dir().map_or_else(Installed::default, |d| install_dir(&d)))
 }
 
-/// [`install_user_rows`] over `dir`, for a test with a directory of its own.
+/// [`install_user_rows`] over `dir`: the operator's own rows, wherever they named them.
 pub fn install_dir(dir: &Path) -> Installed {
     let mut out = Installed::default();
     for path in row_files(dir) {
         let installed = std::fs::read_to_string(&path)
             .map_err(|e| refused(&path, e.to_string()))
-            .and_then(|text| install_one(&path, &text, &out.loaded));
+            .and_then(|text| install_one(&path, &text, &out.loaded, Layer::User));
         match installed {
             Ok(h) => out.loaded.push((h, path)),
             Err(e) => out.refused.push(e),
@@ -270,6 +271,7 @@ pub fn install_one(
     path: &Path,
     text: &str,
     loaded: &[(Harness, PathBuf)],
+    layer: Layer,
 ) -> Result<Harness, RowFileError> {
     let stem = path
         .file_stem()
@@ -295,7 +297,98 @@ pub fn install_one(
         spec,
         serve: Serve::Data,
     })));
+    SOURCES.write().unwrap_or_else(|e| e.into_inner()).push((
+        harness,
+        Source {
+            path: path.to_path_buf(),
+            layer,
+            sha256: crate::sha256_hex(text.as_bytes()),
+        },
+    ));
     Ok(harness)
+}
+
+/// Whose a row file is: the operator's own directory, or a repository's (loaded only trusted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    User,
+    Repo,
+}
+
+/// **Where a loaded row came from**: its file, whose it is, and the digest of the bytes it was
+/// built from — so doctor can say when the file has changed since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub path: PathBuf,
+    pub layer: Layer,
+    pub sha256: String,
+}
+
+static SOURCES: RwLock<Vec<(Harness, Source)>> = RwLock::new(Vec::new());
+
+/// The file `h`'s row was loaded from; `None` for a built-in and for a name no file loaded.
+pub fn source(h: Harness) -> Option<Source> {
+    SOURCES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(n, _)| *n == h)
+        .map(|(_, s)| s.clone())
+}
+
+/// **The strategies a row declares it has none of**, each with the row's own note: what marion
+/// cannot do on this harness, as the row states it rather than as a probe found it.
+pub fn declared_none(spec: &HarnessSpec) -> Vec<(&'static str, &'static str)> {
+    let mut out = Vec::new();
+    if let UpdatePolicy::None { note } = spec.updates {
+        out.push(("updates", note));
+    }
+    if let Approval::None { note } = spec.approval {
+        out.push(("approval", note));
+    }
+    if let TurnDelivery::None { note } = spec.delivery.headless {
+        out.push(("headless delivery", note));
+    }
+    if let TurnDelivery::None { note } = spec.delivery.interactive {
+        out.push(("interactive delivery", note));
+    }
+    out
+}
+
+/// **The probes a row loaded from a file must pass** before marion calls it admitted: it answers
+/// its version, launches, calls marion's tools, and is approved headless. Every other probe must
+/// pass or be unsupported by the row's own declaration. Admission is advice: a launch never waits
+/// on it.
+pub const ADMISSION: &[&str] = &["P-version", "P-launch", "P-tools", "P-approval"];
+
+/// Where a row's last conformance result is kept: `<state>/conformance/<name>-<version>.json`.
+pub fn admission_path(state: &Path, name: &str, version: &str) -> PathBuf {
+    state
+        .join("conformance")
+        .join(format!("{name}-{version}.json"))
+}
+
+/// **Whether `probes` (each probe's name and its verdict's word) admit a row**: every
+/// [`ADMISSION`] probe `PASS`, every other `PASS` or `UNSUPPORTED`. The reasons it does not, else.
+pub fn admits(probes: &[(String, String)]) -> Result<(), Vec<String>> {
+    let word = |p: &str| {
+        probes
+            .iter()
+            .find(|(n, _)| n == p)
+            .map_or("NOT RUN", |(_, w)| w.as_str())
+    };
+    let mut why: Vec<String> = ADMISSION
+        .iter()
+        .filter(|p| word(p) != "PASS")
+        .map(|p| format!("{p} {} (must PASS)", word(p)))
+        .collect();
+    why.extend(
+        probes
+            .iter()
+            .filter(|(n, w)| !ADMISSION.contains(&n.as_str()) && w != "PASS" && w != "UNSUPPORTED")
+            .map(|(n, w)| format!("{n} {w}")),
+    );
+    if why.is_empty() { Ok(()) } else { Err(why) }
 }
 
 /// Where a repository's rows live: `<repo>/.marion/harnesses/`.
@@ -1733,6 +1826,106 @@ mod tests {
             out.refused[0].to_string().contains("marion ships"),
             "{}",
             out.refused[0]
+        );
+        // The row knows the file it came from and the digest of the bytes it was built from.
+        let text = std::fs::read(dir.join("tb8-installed.toml")).unwrap();
+        assert_eq!(
+            source(*h),
+            Some(Source {
+                path: dir.join("tb8-installed.toml"),
+                layer: Layer::User,
+                sha256: crate::sha256_hex(&text),
+            })
+        );
+        assert_eq!(source(Harness::Codex), None);
+    }
+
+    /// **Two files may not define one harness**: the second is refused naming the first, and a
+    /// refused file leaves no name behind that parses to nothing.
+    #[test]
+    fn a_second_file_for_one_name_is_refused_naming_the_first() {
+        let text = QWEN_TWIN.replace("name = \"qwen-twin\"", "name = \"tb8-twice\"");
+        let first = PathBuf::from("/first/tb8-twice.toml");
+        let loaded = [(Harness::load("tb8-twice-held").unwrap(), first.clone())];
+        let held = QWEN_TWIN.replace("name = \"qwen-twin\"", "name = \"tb8-twice-held\"");
+        let e = install_one(
+            Path::new("/second/tb8-twice-held.toml"),
+            &held,
+            &loaded,
+            Layer::Repo,
+        )
+        .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("already defined by /first/tb8-twice.toml"),
+            "{e}"
+        );
+
+        use std::os::unix::fs::PermissionsExt;
+        let dir = marion_testsupport::scratch("row-twice");
+        let path = dir.join("tb8-twice.toml");
+        std::fs::write(&path, text.replace("[updates.env]", "[updates-typo.env]")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let broken = std::fs::read_to_string(&path).unwrap();
+        let e = install_one(&path, &broken, &[], Layer::User).unwrap_err();
+        assert!(e.to_string().contains("updates"), "{e}");
+        assert!(
+            "tb8-twice".parse::<Harness>().is_err(),
+            "a refused row's name stays unknown"
+        );
+    }
+
+    /// **Admission**: the four probes a row cannot work without must pass; every other probe
+    /// passes or is unsupported by the row's own declaration.
+    #[test]
+    fn admission_needs_the_four_probes_passed_and_no_other_failure() {
+        let run = |cells: &[(&str, &str)]| -> Vec<(String, String)> {
+            cells
+                .iter()
+                .map(|(p, w)| (p.to_string(), w.to_string()))
+                .collect()
+        };
+        let all_pass: Vec<(&str, &str)> = ADMISSION.iter().map(|p| (*p, "PASS")).collect();
+        assert_eq!(admits(&run(&all_pass)), Ok(()));
+        let mut extra = all_pass.clone();
+        extra.extend([("P-interrupt", "UNSUPPORTED"), ("P-resume", "PASS")]);
+        assert_eq!(admits(&run(&extra)), Ok(()));
+
+        let mut unsupported_core = all_pass.clone();
+        unsupported_core[3] = ("P-approval", "UNSUPPORTED");
+        assert_eq!(
+            admits(&run(&unsupported_core)),
+            Err(vec!["P-approval UNSUPPORTED (must PASS)".into()])
+        );
+        let mut failed_other = all_pass.clone();
+        failed_other.push(("P-errors", "FAIL"));
+        assert_eq!(
+            admits(&run(&failed_other)),
+            Err(vec!["P-errors FAIL".into()])
+        );
+        assert_eq!(
+            admits(&run(&all_pass[..3])),
+            Err(vec!["P-approval NOT RUN (must PASS)".into()])
+        );
+    }
+
+    #[test]
+    fn declared_none_names_each_strategy_the_row_says_it_lacks() {
+        assert!(
+            declared_none(crate::adapter::harness_spec(Harness::Qwen))
+                .iter()
+                .all(|(k, _)| *k != "updates" && *k != "approval")
+        );
+        let mut spec = *crate::adapter::harness_spec(Harness::Qwen);
+        spec.updates = UpdatePolicy::None {
+            note: "searched `--help`",
+        };
+        spec.delivery.interactive = TurnDelivery::None { note: "no pane" };
+        let none = declared_none(&spec);
+        assert!(none.contains(&("updates", "searched `--help`")), "{none:?}");
+        assert!(
+            none.contains(&("interactive delivery", "no pane")),
+            "{none:?}"
         );
     }
 }

@@ -521,6 +521,20 @@ A repository can carry rows too, in `.marion/harnesses/<name>.toml`. marion load
 update policy, and trusts those exact bytes; any edit revokes it, as for agent types and workflows.
 Your own row by the same name wins, and the repository's is refused naming both files.
 
+A row marion does not ship has no pinned versions behind it, so its evidence is the conformance
+battery, run against marion's canned endpoint ($0, nobody's login):
+
+```sh
+scripts/conformance.sh --harness mytool     # loads ~/.config/marion/harnesses/ first
+```
+
+It records `<state>/conformance/mytool-<version>.json`. The row is *admitted* when P-version,
+P-launch, P-tools and P-approval pass and every other probe passes or is unsupported by the row's
+own declaration. `marion doctor --harness mytool` shows the file the row came from and whether it
+has changed since, each strategy the row declares none of, and that result. Admission is advice: a
+launch never waits on it. (The `goose` row's TOML twin runs the battery to the same verdicts as the
+built-in, P-approval's FAIL included, because `GOOSE_MODE=auto` approves without marion's grant.)
+
 ### ACP agents
 
 Any ACP agent runs through `acp:<command> [args…]`. These have a refinement row, probed on

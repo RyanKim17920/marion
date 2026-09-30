@@ -244,7 +244,7 @@ pub fn install_repo_rows(repo: &std::path::Path) -> RepoRows {
             out.refused.push(e.to_string());
             continue;
         }
-        match row_file::install_one(&path, &text, &loaded) {
+        match row_file::install_one(&path, &text, &loaded, row_file::Layer::Repo) {
             Ok(h) => {
                 loaded.push((h, path.clone()));
                 out.loaded.push((h, path));
