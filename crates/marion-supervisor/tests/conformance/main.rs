@@ -123,8 +123,12 @@ fn battery() {
             }
         }
         let dir = probes::fixture_dir(&out, &selector, &version);
-        let partial = outcomes.iter().any(|o| o.status == report::Status::NotRun);
-        replace_fixture_dir(&out, &selector, &staging, &dir, partial);
+        let not_run: Vec<&str> = outcomes
+            .iter()
+            .filter(|o| o.status == report::Status::NotRun)
+            .map(|o| o.probe)
+            .collect();
+        replace_fixture_dir(&out, &selector, &staging, &dir, &not_run);
         let result = report::TargetResult {
             selector: selector.clone(),
             version,
@@ -270,19 +274,45 @@ fn not_installed(t: &target::Target) -> Option<String> {
     (!found).then(|| format!("`{program}` is not on PATH"))
 }
 
+/// Whether `file`, in a row's directory, is the transcript of one of `not_run`: `p-errors-401.jsonl`
+/// is P-errors'.
+fn carried(file: &str, not_run: &[&str]) -> bool {
+    not_run.iter().any(|p| {
+        let stem = p.to_ascii_lowercase();
+        file.strip_prefix(&stem)
+            .is_some_and(|rest| rest.starts_with('-') || rest.starts_with('.'))
+    })
+}
+
+#[test]
+fn a_partial_run_carries_only_the_transcripts_of_probes_it_did_not_run() {
+    let not_run = ["P-errors", "P-tui"];
+    assert!(carried("p-errors-401.jsonl", &not_run));
+    assert!(carried("p-tui.jsonl", &not_run));
+    assert!(
+        !carried("p-approval-ungranted.jsonl", &not_run),
+        "P-approval ran"
+    );
+    assert!(
+        !carried("summary.json", &not_run),
+        "written fresh every run"
+    );
+    assert!(!carried("p-tuix.jsonl", &not_run));
+}
+
 /// Move this run's transcripts into `<row>-<version>/`, removing the row's older directories:
 /// git keeps the history, and the matrix names one directory per row.
 ///
-/// `partial`: some probes were not run, so a transcript this run did not write is carried over
-/// from the row's directory for the same version rather than lost with it.
-fn replace_fixture_dir(out: &Path, selector: &str, staging: &Path, dir: &Path, partial: bool) {
-    if partial {
-        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let to = staging.join(e.file_name());
-            if !to.exists() {
-                let _ = std::fs::create_dir_all(staging);
-                let _ = std::fs::copy(e.path(), to);
-            }
+/// `not_run`: the probes left out this time, whose transcripts are carried over from the row's
+/// directory for the same version rather than lost with it. A probe that did run keeps only what
+/// it wrote now — none, where it was unsupported before a process started.
+fn replace_fixture_dir(out: &Path, selector: &str, staging: &Path, dir: &Path, not_run: &[&str]) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let to = staging.join(&name);
+        if carried(&name, not_run) && !to.exists() {
+            let _ = std::fs::create_dir_all(staging);
+            let _ = std::fs::copy(e.path(), to);
         }
     }
     let prefix = format!("{}-", selector.replace(':', "-"));

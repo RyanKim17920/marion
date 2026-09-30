@@ -134,6 +134,12 @@ in the `system`/`init` frame; each name was replaced by a same-length `skillNNâ€
 1.0.89 summaries named the scratch npm prefix the releases were installed under; it reads
 `<NPM_PREFIX>`.
 
+**2026-09-30, goose 1.52.0 P-approval refresh.** Only P-approval (and P-version, which every run
+reads) was rerun, canned, after goose's row declared approve-all: the cell is now UNSUPPORTED with
+the row's note, and the stripped-grant transcript `goose-1.52.0/p-approval-ungranted.jsonl` is gone
+because no launch is made; git history keeps it as the measurement behind the note. Read by the
+author: a version line and a summary, no host names or catalogue.
+
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
 `TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Four later passes changed fixture
 bytes, all on 2026-08-01:**

@@ -15,7 +15,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | cline | 3.0.66 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | n/a | **FAIL** | **FAIL** | n/a |
 | codex | 0.159.2 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | copilot | 1.0.89 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a |
-| goose | 1.52.0 | PASS | PASS | PASS | PASS | **FAIL** | n/a | PASS | n/a | PASS | PASS | n/a |
+| goose | 1.52.0 | PASS | PASS | PASS | PASS | n/a | n/a | PASS | n/a | PASS | PASS | n/a |
 | opencode | 1.18.33 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
 | pi | 0.99.1 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | n/a |
 | qwen | 0.24.7 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
@@ -178,11 +178,11 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 
 ### goose 1.52.0
 
-- **P-version** PASS: 1.52.0 (admitted in PINNED_HARNESSES); row states no switch (1.49.0 never updates itself on `run`/`session`: no update check in the binary's strings, no `GOOSE_*` update variable; `goose update` is explicit only)
+- **P-version** PASS: 1.52.0 (admitted in PINNED_HARNESSES); binary never updates itself (1.49.0 never updates itself on `run`/`session`: no update check in the binary's strings, no `GOOSE_*` update variable; `goose update` is explicit only)
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; exit 0; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.4 s after the spawn and listed marion's tools
 - **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 547, output: 41, cache_read: 25, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session none (row: no session rule) ; activity marion__report
-- **P-approval** FAIL: granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion — the grant is NOT load-bearing: the harness ran marion's tool without it
+- **P-approval** UNSUPPORTED: the row declares approve-all: every tool runs without asking (auto runs every tool the node is offered, which under --no-profile is marion's and the declared builtins, unasked. S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest and chat withholds every call. S37 on 1.52.0 (s37-goose-mode): unset, a fresh config runs marion's tool and a granted write unasked, and conformance's P-approval ran `report` with the variable stripped, so no grant of marion's is load-bearing. The row's env states GOOSE_MODE=auto because `GOOSE_MODE: approve` in the operator's config.yaml aborts a headless run at exit 1 and the env overrides it)
 - **P-midturn** UNSUPPORTED: headless delivery None { note: "S31 p0b/goose (1.51.0): `run --resume -n <name>` continues a session by a name the caller chooses, which needs this row's --no-session dropped; until it is, there is no second turn" }
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (exit 0); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
 - **P-resume** UNSUPPORTED: the row states no resume spelling (`resume: None`)

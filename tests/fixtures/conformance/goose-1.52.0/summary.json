@@ -8,9 +8,10 @@
         "status": "PASS"
       },
       "P-approval": {
-        "expected": "granted (env-var), `report` is answered; ungranted, the harness asks or refuses",
-        "observed": "granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion — the grant is NOT load-bearing: the harness ran marion's tool without it",
-        "status": "FAIL"
+        "expected": "",
+        "observed": "the row declares approve-all: every tool runs without asking (auto runs every tool the node is offered, which under --no-profile is marion's and the declared builtins, unasked. S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest and chat withholds every call. S37 on 1.52.0 (s37-goose-mode): unset, a fresh config runs marion's tool and a granted write unasked, and conformance's P-approval ran `report` with the variable stripped, so no grant of marion's is load-bearing. The row's env states GOOSE_MODE=auto because `GOOSE_MODE: approve` in the operator's config.yaml aborts a headless run at exit 1 and the env overrides it)",
+        "reason": "the row declares approve-all: every tool runs without asking (auto runs every tool the node is offered, which under --no-profile is marion's and the declared builtins, unasked. S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest and chat withholds every call. S37 on 1.52.0 (s37-goose-mode): unset, a fresh config runs marion's tool and a granted write unasked, and conformance's P-approval ran `report` with the variable stripped, so no grant of marion's is load-bearing. The row's env states GOOSE_MODE=auto because `GOOSE_MODE: approve` in the operator's config.yaml aborts a headless run at exit 1 and the env overrides it)",
+        "status": "UNSUPPORTED"
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
@@ -57,7 +58,7 @@
       },
       "P-version": {
         "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-        "observed": "1.52.0 (admitted in PINNED_HARNESSES); row states no switch (1.49.0 never updates itself on `run`/`session`: no update check in the binary's strings, no `GOOSE_*` update variable; `goose update` is explicit only)",
+        "observed": "1.52.0 (admitted in PINNED_HARNESSES); binary never updates itself (1.49.0 never updates itself on `run`/`session`: no update check in the binary's strings, no `GOOSE_*` update variable; `goose update` is explicit only)",
         "status": "PASS"
       }
     },
