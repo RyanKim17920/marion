@@ -826,10 +826,17 @@ pub fn prepare_watched(
         None => None,
     };
     // The launch as it was before the endpoint, for a rotation to point at the next credential.
+    // Every headless path: a thread server's opening request names no credential, so the rotated
+    // launch's config and environment are the whole of what changes.
     let unapplied = endpoint
         .as_ref()
         .filter(|e| !e.fallbacks.is_empty())
-        .filter(|_| matches!(path, RootPath::Duplex | RootPath::LaunchOnly))
+        .filter(|_| {
+            matches!(
+                path,
+                RootPath::Duplex | RootPath::LaunchOnly | RootPath::AppServer
+            )
+        })
         .map(|_| launch.clone());
     if let Some(ep) = &endpoint {
         crate::endpoint::apply(&mut launch, ep, gateway.as_deref());
