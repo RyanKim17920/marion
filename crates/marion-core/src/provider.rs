@@ -429,6 +429,12 @@ pub enum ProviderError {
     #[error("provider `{id}`: base_url `{url}` must start with http:// or https://")]
     BadUrl { id: String, url: String },
     #[error(
+        "provider `{id}`: base_url `{url}` is plain http to another machine, and a key would \
+         cross the network readable; use https://, or http:// only to this machine (127.0.0.1, \
+         localhost, [::1]), or `--auth none` for a server that takes no key"
+    )]
+    PlainHttpWithKey { id: String, url: String },
+    #[error(
         "provider `{id}`: unknown wire `{wire}` (known: anthropic, openai-chat, openai-responses, gemini)"
     )]
     UnknownWire { id: String, wire: String },
@@ -535,6 +541,24 @@ pub fn valid_id(id: &str) -> bool {
 
 /// A validated custom provider: the one constructor both the file and `marion login custom` go
 /// through, so the two cannot accept different things.
+/// Whether an `http://` URL names this machine: `127.x.x.x`, `localhost` or `[::1]`, the only
+/// hosts a key may be sent to without TLS.
+fn is_loopback_http(url: &str) -> bool {
+    let rest = url.strip_prefix("http://").unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|a| a.is_loopback())
+}
+
 pub fn custom_provider(
     id: &str,
     base_url: &str,
@@ -552,6 +576,12 @@ pub fn custom_provider(
     let url = base_url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(ProviderError::BadUrl {
+            id: id.to_string(),
+            url: base_url.to_string(),
+        });
+    }
+    if url.starts_with("http://") && !matches!(auth, AuthKind::None) && !is_loopback_http(url) {
+        return Err(ProviderError::PlainHttpWithKey {
             id: id.to_string(),
             url: base_url.to_string(),
         });
@@ -1038,6 +1068,37 @@ mod tests {
         gw.custom = true;
         let text = render_custom(&[gw.clone()], &BTreeMap::new());
         assert_eq!(parse_custom(&text).unwrap(), vec![gw]);
+    }
+
+    /// **A key never goes over plain http to another machine**: http is refused for a remote host
+    /// when the provider takes a key, and allowed to this machine or for a keyless server.
+    #[test]
+    fn plain_http_with_a_key_is_refused_unless_the_host_is_this_machine() {
+        let with =
+            |url: &str, auth| custom_provider("gw", url, &[Wire::OpenAiChat], auth, None, None);
+        for remote in [
+            "http://gw.example/v1",
+            "http://10.0.0.5:8080/v1",
+            "http://127.0.0.1.evil.example/v1",
+            "http://localhost@evil.example/v1",
+        ] {
+            assert!(
+                matches!(
+                    with(remote, AuthKind::ApiKey),
+                    Err(ProviderError::PlainHttpWithKey { .. })
+                ),
+                "{remote}"
+            );
+        }
+        for local in [
+            "http://127.0.0.1:8080/v1",
+            "http://localhost:1/v1",
+            "http://[::1]:9/v1",
+        ] {
+            assert!(with(local, AuthKind::ApiKey).is_ok(), "{local}");
+        }
+        assert!(with("http://gw.example/v1", AuthKind::None).is_ok());
+        assert!(with("https://gw.example/v1", AuthKind::ApiKey).is_ok());
     }
 
     #[test]
