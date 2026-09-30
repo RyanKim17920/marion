@@ -5455,36 +5455,16 @@ impl RegistryHandle {
     /// never got far enough to write — so the second life runs with the empty scope, which is its
     /// agent type's ceiling (`run::requested_scope`, still checked against that ceiling), and an
     /// empty criteria list. Narrowing them again would need a second record, not a guess here.
-    fn relaunch_child(
+    /// A resumed child's parent, read back and checked: on this journal, and no longer waiting on
+    /// the child — so the child's outcome is owed to nobody still holding a `spawn`.
+    fn decided_parent(
         &self,
-        me: Arc<RegistryHandle>,
         node: &marion_core::registry::ReplayedNode,
-        env: &crate::run::Env,
-        prompt: &str,
-        repo: PathBuf,
-        session: String,
-    ) -> Result<(AgentId, NodeState), RpcError> {
-        // **§7.5's immutable parent link, read back.** The intent is the only record that names it,
-        // and a child that has one always has a parent — `run_spawn` writes `parent_id: Some(..)`
-        // unconditionally.
-        let parent_id = node
-            .intent
-            .as_ref()
-            .and_then(|i| i.parent_id.clone())
-            .ok_or_else(|| {
-                RpcError::refused(
-                    "agent_id",
-                    format!(
-                        "`{}` records a depth below the root and no parent, so marion cannot say \
-                         whose child it is or what gates its relaunch. Refused by name.",
-                        node.agent_id.0
-                    ),
-                    "§7.5",
-                )
-            })?;
+        parent_id: &AgentId,
+    ) -> Result<marion_core::registry::ReplayedNode, RpcError> {
         let parent = self
             .live
-            .read(|r| r.tree().get(&parent_id).cloned())
+            .read(|r| r.tree().get(parent_id).cloned())
             .ok_or_else(|| {
                 RpcError::refused(
                     "agent_id",
@@ -5514,6 +5494,46 @@ impl RegistryHandle {
                 "§8, §7.2",
             ));
         }
+        Ok(parent)
+    }
+
+    fn relaunch_child(
+        &self,
+        me: Arc<RegistryHandle>,
+        node: &marion_core::registry::ReplayedNode,
+        env: &crate::run::Env,
+        prompt: &str,
+        repo: PathBuf,
+        session: String,
+    ) -> Result<(AgentId, NodeState), RpcError> {
+        // **§7.5's immutable parent link, read back.** The intent is the only record that names it:
+        // a node's child names its caller, and a contracted node the operator asked for directly
+        // names none and carries a contract — the operator is its requester again.
+        let parent_id = node.intent.as_ref().and_then(|i| i.parent_id.clone());
+        let operators = node
+            .intent
+            .as_ref()
+            .is_some_and(|i| i.parent_id.is_none() && i.task_id.is_some());
+        let parent_id = match parent_id {
+            Some(p) => Some(p),
+            None if operators => None,
+            None => {
+                return Err(RpcError::refused(
+                    "agent_id",
+                    format!(
+                        "`{}` records a depth below the root and neither a parent nor a contract, \
+                         so marion cannot say whose node it is or what gates its relaunch. Refused \
+                         by name.",
+                        node.agent_id.0
+                    ),
+                    "§7.5",
+                ));
+            }
+        };
+        let parent = match &parent_id {
+            Some(parent_id) => Some(self.decided_parent(node, parent_id)?),
+            None => None,
+        };
         let Some(workspace) = node.launch_workspace.clone() else {
             return Err(RpcError::refused(
                 "agent_id",
@@ -5543,11 +5563,16 @@ impl RegistryHandle {
             ));
         }
         let parent_type = parent
-            .intent
             .as_ref()
-            .map(|i| recorded_type(Some(&env.project_dir), &repo, i))
-            .transpose()?
-            .ok_or_else(spawn_refused_before_the_node_existed)?;
+            .map(|parent| {
+                parent
+                    .intent
+                    .as_ref()
+                    .map(|i| recorded_type(Some(&env.project_dir), &repo, i))
+                    .transpose()?
+                    .ok_or_else(spawn_refused_before_the_node_existed)
+            })
+            .transpose()?;
         let agent_type = node
             .intent
             .as_ref()
@@ -5576,11 +5601,19 @@ impl RegistryHandle {
         // intent derived from it are one decision, and this launch is gated exactly as a fresh
         // child's is (`run_spawn_watched` calls `check_spawn_gates` with this caller).
         let decision = lock(&self.spawn_decision);
-        let caller = crate::run::Caller {
-            agent_id: parent_id.0.clone(),
-            agent_type: parent_type,
-            depth: parent.depth().unwrap_or(0),
-            live_children: self.live_children_of(&parent_id),
+        let requester = match (parent_id, parent, parent_type) {
+            (Some(parent_id), Some(parent), Some(parent_type)) => {
+                crate::run::Requester::from(crate::run::Caller {
+                    live_children: self.live_children_of(&parent_id),
+                    agent_id: parent_id.0,
+                    agent_type: parent_type,
+                    depth: parent.depth().unwrap_or(0),
+                })
+            }
+            // Its own tree's table is in its agent directory, read back by the resume.
+            _ => crate::run::Requester::Operator {
+                allow_wider_children: false,
+            },
         };
         // A reviewer's second life is a reviewer's: read-only, against the same reviewed work.
         let review = node
@@ -5635,7 +5668,7 @@ impl RegistryHandle {
             env.clone(),
             req,
             task_id,
-            caller.into(),
+            requester,
             repo,
             decision,
             None,

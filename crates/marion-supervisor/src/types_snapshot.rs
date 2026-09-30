@@ -225,11 +225,28 @@ pub fn for_caller(
 /// marion made for a node, which that node can edit, and is refused for [`for_caller`]'s reason.
 ///
 /// `allow_wider_children` is the operator's flag for this node; their config file can also say so.
+///
+/// A **resumed** node's tree keeps the table its first life started with, from its own agent
+/// directory, never a fresh read: the repository may have changed its file since.
 pub fn for_operator(
+    project: &ProjectDir,
+    resumed: Option<&AgentId>,
     tree: &Path,
     agent_type: &str,
     allow_wider_children: bool,
 ) -> Result<TypesSnapshot, SpawnError> {
+    if let Some(node) = resumed {
+        return TypesSnapshot::read(project.agent(node).path())?.ok_or_else(|| {
+            SpawnError::AgentTypesFile {
+                path: project.agent(node).path().join(SNAPSHOT_FILE),
+                error: format!(
+                    "marion holds no record of the agent types node `{}`'s tree started with, \
+                     and will not read them afresh for its second life",
+                    node.0
+                ),
+            }
+        });
+    }
     let allow = allow_wider_children
         || crate::user_config::allow_wider_children().map_err(|error| {
             SpawnError::AgentTypesFile {

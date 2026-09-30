@@ -20,7 +20,7 @@ use marion_core::contract::{ExitStatus, Isolation};
 use marion_core::journal::RecordKind;
 use marion_core::paths::ProjectDir;
 use marion_core::proto::notify::Event as Note;
-use marion_core::proto::params::AgentSpawnParams;
+use marion_core::proto::params::{AgentSpawnParams, NodeResumeParams};
 use marion_core::proto::{Call, Method, MethodResult, Outcome};
 use marion_core::race::{DecidedBy, SeatVerdict};
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
@@ -230,6 +230,24 @@ fn a_spawn_with_no_parent_that_asks_for_a_worktree_is_a_contracted_top_level_nod
         .find(|n| n.agent_id == agent)
         .expect("in the tree");
     assert!(node.parent_id.is_none() && !node.is_root(), "{node:?}");
+
+    // **A second life is asked for on the child path, as the operator's node again**, not refused
+    // as a node with no parent. This one finished and its worktree is gone once its end is filed,
+    // so the relaunch is refused for that, by name — a refusal only the child path reaches.
+    let worktree = bed.project.agent(&agent).path().join("worktree");
+    assert!(
+        marion_testsupport::until_within(BOUND, Duration::from_millis(20), || !worktree.exists()),
+        "the finished node's worktree is removed"
+    );
+    let id = c.send(Call::NodeResume(NodeResumeParams {
+        agent_id: agent.clone(),
+        prompt: format!("{MARKER}: carry on."),
+    }));
+    let (_, outcome) = c.read_to_response(id);
+    assert!(
+        matches!(&outcome, Outcome::Error(e) if e.message.contains("no longer exists")),
+        "{outcome:?}"
+    );
 
     // A root's own fields are refused on it, before anything is written.
     for (field, edit) in [

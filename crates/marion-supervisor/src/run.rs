@@ -1952,9 +1952,13 @@ pub fn run_spawn_watched(
         )?,
         Requester::Operator {
             allow_wider_children,
-        } => {
-            crate::types_snapshot::for_operator(&req.repo, &req.agent_type, *allow_wider_children)?
-        }
+        } => crate::types_snapshot::for_operator(
+            &env.project_dir,
+            req.resume.as_ref().map(|r| &r.agent_id),
+            &req.repo,
+            &req.agent_type,
+            *allow_wider_children,
+        )?,
     };
     let agent_type = snapshot.launch_type(&req.agent_type)?;
     // What the operator passes this type's nodes past the inherit filter, read now so a broken
