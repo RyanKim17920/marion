@@ -13,7 +13,7 @@ use std::path::Path;
 
 use marion_core::contract::{AgentId, ExitStatus, FailureCause, TaskContract};
 use marion_core::encoding::SystemTime;
-use marion_core::harness::Harness;
+use marion_core::harness::RecordedHarness;
 use marion_core::node::ReapState;
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::ActivityCursor;
@@ -58,15 +58,17 @@ pub fn collect(
         _ => format!("reading {}: {e}", path.display()),
     })?;
     let replay = marion_core::registry::replay(&bytes);
+    // A node on a retired harness is described too: its placement and its files still read.
+    let described = |n: &&ReplayedNode| n.recorded_harness().is_some();
     let known = replay
         .nodes()
         .iter()
-        .filter(|n| n.intent.is_some())
+        .filter(described)
         .map(|n| n.agent_id.0.as_str());
     let id = crate::tree::resolve_node(target, known)?;
     let root = replay
         .get(&id)
-        .filter(|n| n.intent.is_some())
+        .filter(described)
         .ok_or_else(|| format!("no node `{target}` in this project's journal"))?;
 
     let mut messages = crate::node_detail::messages_by_node(&bytes);
@@ -161,23 +163,24 @@ impl Walk<'_> {
         parent: Option<&str>,
         depth: usize,
     ) -> (NodeReport, Own) {
-        let intent = node
-            .intent
-            .as_ref()
-            .expect("the walk visits only nodes with an intent");
+        // Every node with a parent edge has one: its intent, or a retired harness's placement.
+        let harness = node
+            .recorded_harness()
+            .expect("the walk visits only nodes with a recorded harness");
+        let agent_type = node.agent_type().unwrap_or_default().to_string();
         let dir = self.project.agent(&node.agent_id);
         let contract = node
             .contracts
             .last()
             .map(|c| &c.task_id)
-            .or(intent.task_id.as_ref())
+            .or(node.task_id())
             .and_then(|t| std::fs::read(dir.contract(t)).ok())
             .and_then(|b| serde_json::from_slice::<TaskContract>(&b).ok());
         let completion = contract.as_ref().and_then(|c| c.completion.as_ref());
 
         // A child's task is its contract's. A root has none; its kept prompt is the operator's own
         // words, and a shared report carries them only when asked to.
-        let root_prompt = contract.is_none() && intent.is_root();
+        let root_prompt = contract.is_none() && node.is_root();
         let (task, task_withheld) = match &contract {
             Some(c) => (Some(crate::node_detail::task_sent(c)), false),
             None if root_prompt => match std::fs::read_to_string(dir.prompt()) {
@@ -203,7 +206,7 @@ impl Walk<'_> {
         let short = short_id(&node.agent_id.0).to_string();
         let label = crate::handler::summarize(node, false)
             .map(|s| crate::tree::label_of(&s))
-            .unwrap_or_else(|_| format!("{} {short}", intent.agent_type));
+            .unwrap_or_else(|_| format!("{agent_type} {short}"));
         let usage = node.usage.or(completion.and_then(|c| c.usage));
         let changed = completion.map(|c| c.changed_paths.len() + c.changed_paths_omitted);
         let report = NodeReport {
@@ -211,8 +214,8 @@ impl Walk<'_> {
             label,
             parent: parent.map(str::to_string),
             depth,
-            harness: intent.harness.cli_name().to_string(),
-            agent_type: intent.agent_type.clone(),
+            harness: harness.cli_name(),
+            agent_type,
             model: node.model.clone(),
             status: crate::tree::state_label(node.state, node.reap_state),
             task,
@@ -234,7 +237,7 @@ impl Walk<'_> {
                     ..m
                 })
                 .collect(),
-            timeline: timeline(&dir.events(), intent.harness, started, self.opts.timeline),
+            timeline: timeline(&dir.events(), harness, started, self.opts.timeline),
             checks: completion
                 .map(|c| c.evidence.iter().map(check_line).collect())
                 .unwrap_or_default(),
@@ -386,7 +389,7 @@ fn review_line(r: &marion_core::review::ReviewRecord) -> String {
 /// runs of one verb merged, timed from `start`, and cut to `mode`.
 fn timeline(
     events: &Path,
-    harness: Harness,
+    harness: RecordedHarness,
     start: Option<SystemTime>,
     mode: TimelineMode,
 ) -> Timeline {
@@ -566,12 +569,12 @@ mod tests {
     fn every_harness_is_read_by_its_row_or_said_to_be_unread() {
         let dir = marion_testsupport::scratch("export-generality");
         let missing = dir.join("events.jsonl");
-        for h in Harness::ALL {
+        for h in marion_core::harness::Harness::ALL {
             let rule = marion_harness::adapter::adapter_for(h)
                 .ok()
                 .and_then(|a| a.activity())
                 .is_some();
-            let t = timeline(&missing, h, None, TimelineMode::All);
+            let t = timeline(&missing, h.into(), None, TimelineMode::All);
             assert_eq!(t.unread.is_none(), rule, "{h:?}: {t:?}");
             assert!(
                 t.head.is_empty() && t.tail.is_empty(),

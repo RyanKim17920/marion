@@ -1849,6 +1849,53 @@ pub fn finished_project(project: &marion_core::paths::ProjectDir) -> FinishedPro
     }
 }
 
+/// **`agent`'s files as a build that ran it on the retired harness `retired` left them**: its
+/// journal `SpawnIntent`, every contract under its dir and every vendor frame of its
+/// `events.jsonl` name `retired` in place of the harness they were written with. Everything else
+/// is byte-for-byte what the project held, so a test reads exactly an old state dir.
+pub fn retire_node(
+    project: &marion_core::paths::ProjectDir,
+    agent: &marion_core::contract::AgentId,
+    retired: &str,
+) {
+    use serde_json::Value;
+    let rewrite = |path: &std::path::Path, edit: &dyn Fn(&mut Value)| {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let mut out = String::new();
+        for line in text.lines() {
+            let mut v: Value = serde_json::from_str(line).unwrap();
+            edit(&mut v);
+            out.push_str(&serde_json::to_string(&v).unwrap());
+            out.push('\n');
+        }
+        std::fs::write(path, out).unwrap();
+    };
+    let name = Value::from(retired);
+    // `get_mut`, never `v[key]` on a miss: indexing would add the key to every other record.
+    rewrite(&project.journal(), &|v| {
+        let intent = v.pointer_mut("/kind/SpawnIntent");
+        if let Some(i) = intent.filter(|i| i["agent_id"] == agent.0.as_str()) {
+            i["harness"] = name.clone();
+        }
+    });
+    let dir = project.agent(agent);
+    if let Ok(contracts) = std::fs::read_dir(dir.contracts_dir()) {
+        for c in contracts {
+            let path = c.unwrap().path();
+            let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            v["child"]["harness"] = name.clone();
+            std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+        }
+    }
+    rewrite(&dir.events(), &|v| {
+        if let Some(frame) = v.pointer_mut("/payload/Vendor") {
+            frame["harness"] = name.clone();
+        }
+    });
+}
+
 // --- persisted contracts ---------------------------------------------------------------------------
 
 /// One `contracts/<task_id>.json` marion persisted, and what reading it back produced.

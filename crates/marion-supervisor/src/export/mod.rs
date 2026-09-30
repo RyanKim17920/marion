@@ -166,6 +166,48 @@ mod tests {
         assert!(none.unwrap_err().contains("no node `zzzz`"));
     }
 
+    /// **A tree holding a node from before its harness was retired still exports**: its journal
+    /// intent, contract and stream all name gemini, and its section keeps everything its contract
+    /// says — the branch, the changed paths, the narrative, the checks — under the harness
+    /// `retired harness (gemini)`, with a timeline that says why it is not read. It exports as a
+    /// target of its own too.
+    #[test]
+    fn a_node_on_a_retired_harness_exports_with_its_contract_and_says_it_is_retired() {
+        let f = fixture::build("export-retired");
+        let landed = marion_core::contract::AgentId(fixture::LANDED.into());
+        marion_testsupport::retire_node(&f.project, &landed, "gemini");
+        let c = collect(&f.project, &f.repo, "8ea3", &opts(false), fixture::now())
+            .expect("the tree exports");
+        let r = &c.report;
+        assert_eq!(
+            r.tree[1],
+            "├── codex 1b2c · exited:ok · retired harness (gemini) (gpt-5.5-codex) · 84.4k tokens"
+        );
+        let [_, old, _] = &r.nodes[..] else {
+            panic!("three nodes: {:?}", r.nodes);
+        };
+        assert_eq!(old.harness, "retired harness (gemini)");
+        assert_eq!(old.agent_type, "codex");
+        assert_eq!(old.parent.as_deref(), Some("8ea3"));
+        assert!(old.task.is_some(), "its contract's task");
+        assert!(old.narrative.is_some(), "its contract's narrative");
+        assert_eq!(old.branch.as_deref(), Some("marion/t-1"));
+        assert_eq!(old.changed_paths.len(), 2);
+        assert_eq!(old.checks.len(), 2);
+        let why = old
+            .timeline
+            .unread
+            .as_deref()
+            .expect("the timeline says why");
+        assert!(why.contains("`gemini`") && why.contains("retired"), "{why}");
+        assert_eq!(r.totals.changed, 2, "its changed files still count");
+
+        let alone = collect(&f.project, &f.repo, "1b2c", &opts(false), fixture::now())
+            .expect("the retired node exports as a target");
+        assert_eq!(alone.report.nodes.len(), 1);
+        assert_eq!(alone.report.nodes[0].harness, "retired harness (gemini)");
+    }
+
     /// **A condensed timeline keeps how the node started and how it ended**, and counts what it
     /// left out between them.
     #[test]

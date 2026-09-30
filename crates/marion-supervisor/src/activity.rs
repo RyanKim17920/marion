@@ -18,7 +18,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use marion_core::event::{EventLog, Payload};
-use marion_core::harness::Harness;
+use marion_core::harness::{Harness, RecordedHarness};
 use marion_core::proto::params::ActivityCursor;
 use marion_core::proto::result::{ActionKind, ActionLine, ActivityPage};
 use marion_harness::adapter::adapter_for;
@@ -82,21 +82,31 @@ pub const PAGE_BYTES: u64 = TAIL_BYTES;
 /// replaced) reads from the start again. Paths under `workspace`, the node's own tree, are shown
 /// relative to it. A call that started on an earlier page is seen again on this one where it ends
 /// here: [`fold`] is how a reader keeps it one line.
+///
+/// `harness` is the one its records name: a node on a retired harness has no row to read its
+/// frames by, so its page says so by name rather than guessing at them.
 pub fn page(
     events: &Path,
-    harness: Harness,
+    harness: RecordedHarness,
     cursor: ActivityCursor,
     workspace: Option<&Path>,
 ) -> ActivityPage {
+    let unread = |why: String| ActivityPage {
+        unread: Some(why),
+        ..ActivityPage::default()
+    };
+    let Some(harness) = harness.known() else {
+        return unread(format!(
+            "this node ran on the `{harness}` harness, which this build of marion has retired, \
+             so marion no longer reads its stream."
+        ));
+    };
     // The adapter's reading, as the peek asks it: a row's grammar, or ACP's protocol frames.
     let Some(rule) = adapter_for(harness).ok().and_then(|a| a.activity()) else {
-        return ActivityPage {
-            unread: Some(format!(
-                "marion reads no {harness:?} stream by a row, so it cannot say which tools this \
-                 node called."
-            )),
-            ..ActivityPage::default()
-        };
+        return unread(format!(
+            "marion reads no {harness:?} stream by a row, so it cannot say which tools this node \
+             called."
+        ));
     };
     let Ok(mut file) = std::fs::File::open(events) else {
         return ActivityPage::default();
@@ -702,7 +712,7 @@ mod tests {
         for line in &lines[..half] {
             sink.record_line(line);
         }
-        let first = page(&path, Harness::Codex, ActivityCursor::Tail, None);
+        let first = page(&path, Harness::Codex.into(), ActivityCursor::Tail, None);
         assert_eq!(first.from, 0);
         let len = std::fs::metadata(&path).unwrap().len();
         assert_eq!(first.next, len, "a whole file is consumed whole");
@@ -711,12 +721,12 @@ mod tests {
         }
         let second = page(
             &path,
-            Harness::Codex,
+            Harness::Codex.into(),
             ActivityCursor::From(first.next),
             None,
         );
         assert_eq!(second.from, first.next);
-        let everything = page(&path, Harness::Codex, ActivityCursor::From(0), None);
+        let everything = page(&path, Harness::Codex.into(), ActivityCursor::From(0), None);
         let mut paged = Vec::new();
         fold(&mut paged, first.lines.clone());
         fold(&mut paged, second.lines.clone());
@@ -742,10 +752,20 @@ mod tests {
             .unwrap()
             .write_all(b"{\"agent_id\":")
             .unwrap();
-        let torn = page(&path, Harness::Codex, ActivityCursor::From(end), None);
+        let torn = page(
+            &path,
+            Harness::Codex.into(),
+            ActivityCursor::From(end),
+            None,
+        );
         assert_eq!((torn.next, torn.lines.len()), (end, 0), "{torn:?}");
 
-        let replaced = page(&path, Harness::Codex, ActivityCursor::From(u64::MAX), None);
+        let replaced = page(
+            &path,
+            Harness::Codex.into(),
+            ActivityCursor::From(u64::MAX),
+            None,
+        );
         assert_eq!(replaced.from, 0);
     }
 
@@ -797,7 +817,7 @@ mod tests {
         // A poll after every record: each started call's end arrives on the page after it.
         for item in &items {
             sink.record_line(item);
-            let p = page(&path, Harness::Codex, next, Some(&worktree));
+            let p = page(&path, Harness::Codex.into(), next, Some(&worktree));
             next = ActivityCursor::From(p.next);
             fold(&mut held, p.lines);
         }
@@ -834,7 +854,7 @@ mod tests {
             &mut whole,
             page(
                 &path,
-                Harness::Codex,
+                Harness::Codex.into(),
                 ActivityCursor::From(0),
                 Some(&worktree),
             )
@@ -899,10 +919,28 @@ mod tests {
             let out = peek(&missing, h);
             assert!(out.contains("nothing recorded yet"), "{h:?}: {out}");
             assert_eq!(
-                page(&missing, h, ActivityCursor::Tail, None),
+                page(&missing, h.into(), ActivityCursor::Tail, None),
                 ActivityPage::default(),
                 "{h:?}"
             );
         }
+    }
+
+    /// **A retired harness's stream is named, not guessed at**: its node's page reads no frame and
+    /// says why, in words naming the harness, whatever its file holds.
+    #[test]
+    fn a_retired_harness_s_page_says_it_is_retired() {
+        let dir = marion_testsupport::scratch("activity-retired");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let got = page(
+            &path,
+            RecordedHarness::Retired("gemini"),
+            ActivityCursor::Tail,
+            None,
+        );
+        assert!(got.lines.is_empty(), "{got:?}");
+        let why = got.unread.expect("the page says why it read nothing");
+        assert!(why.contains("`gemini`") && why.contains("retired"), "{why}");
     }
 }

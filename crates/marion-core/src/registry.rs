@@ -279,6 +279,17 @@ impl ReplayedNode {
         self.retired.as_ref().map(|r| r.harness.as_str())
     }
 
+    /// The harness this node's records name, known or retired — what a view reads its files by.
+    /// `None` only for a node whose intent was never read.
+    pub fn recorded_harness(&self) -> Option<crate::harness::RecordedHarness> {
+        use crate::harness::{RecordedHarness, retired};
+        self.harness().map(RecordedHarness::Known).or_else(|| {
+            self.retired_harness()
+                .and_then(retired)
+                .map(RecordedHarness::Retired)
+        })
+    }
+
     pub fn agent_type(&self) -> Option<&str> {
         match &self.intent {
             Some(i) => Some(i.agent_type.as_str()),
@@ -1358,6 +1369,10 @@ mod tests {
             "no harness, so nothing relaunches or resumes it"
         );
         assert_eq!(g.retired_harness(), Some("gemini"));
+        assert_eq!(
+            g.recorded_harness(),
+            Some(crate::harness::RecordedHarness::Retired("gemini"))
+        );
         assert!(g.intent.is_none());
         assert_eq!(g.parent_id(), Some(&id("root")));
         assert_eq!(g.agent_type(), Some("gemini-impl"));
@@ -1394,6 +1409,7 @@ mod tests {
         );
         let root = r.get(&id("root")).unwrap();
         assert_eq!(root.harness(), Some(Harness::ClaudeCode));
+        assert_eq!(root.recorded_harness(), Some(Harness::ClaudeCode.into()));
         assert_eq!(root.state, NodeState::Exited(ExitStatus::Ok));
         assert_eq!(r.get(&id("c-1")).unwrap().harness(), Some(Harness::Codex));
     }

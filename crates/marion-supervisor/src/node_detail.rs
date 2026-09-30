@@ -11,7 +11,7 @@
 use crate::spending::Spent;
 use marion_core::contract::Oid;
 use marion_core::contract::{AgentId, TaskContract, TaskId, Workspace};
-use marion_core::harness::Harness;
+use marion_core::harness::RecordedHarness;
 use marion_core::journal::{self, MessageSource, RecordKind};
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::ActivityCursor;
@@ -23,7 +23,8 @@ use std::path::Path;
 /// What [`read`] needs from the replayed node, taken under the registry lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inputs {
-    pub harness: Harness,
+    /// The harness its records name — a retired one too, whose files still read.
+    pub harness: RecordedHarness,
     pub exited: bool,
     /// Its latest contract: the last one persisted, else the one its spawn intent names.
     pub task_id: Option<TaskId>,
@@ -34,17 +35,17 @@ pub struct Inputs {
 }
 
 /// [`Inputs`] from a replayed node, or `None` for one whose spawn intent was never read — there is
-/// then no harness to read its stream by.
+/// then no harness to read its stream by. A node on a retired harness has its intent's placement
+/// ([`ReplayedNode::retired`]), and its contract and stream are read as any other's.
 pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
-    let intent = node.intent.as_ref()?;
     Some(Inputs {
-        harness: intent.harness,
+        harness: node.recorded_harness()?,
         exited: node.state.is_exited(),
         task_id: node
             .contracts
             .last()
             .map(|c| c.task_id.clone())
-            .or_else(|| intent.task_id.clone()),
+            .or_else(|| node.task_id().cloned()),
         launch_workspace: node.launch_workspace.clone(),
         recorded: Spent::recorded(node),
     })
@@ -334,6 +335,7 @@ mod tests {
     use crate::spawn::ChildOutcome;
     use marion_core::contract::{Glob, Oid, RepoIdentity};
     use marion_core::encoding::SystemTime;
+    use marion_core::harness::Harness;
     use marion_core::journal::{JournalRecord, MessageDelivered, MessageDropped, MessageQueued};
     use std::time::Duration;
 
@@ -414,7 +416,7 @@ mod tests {
 
     fn inputs(exited: bool, task: Option<&TaskId>) -> Inputs {
         Inputs {
-            harness: Harness::Codex,
+            harness: Harness::Codex.into(),
             exited,
             task_id: task.cloned(),
             launch_workspace: Some(Workspace::SharedCwd {
@@ -454,6 +456,47 @@ mod tests {
             (Some(tokens(95)), vec![90, 5])
         );
         assert_eq!(read(&p, &id, &inputs(true, None), None, None).usage, None);
+    }
+
+    /// **A node on a retired harness keeps its detail**: its contract, written while gemini ran,
+    /// still gives the task and how it ended, and its activity says the harness is retired rather
+    /// than the whole detail going blank on "unknown harness".
+    #[test]
+    fn a_retired_harness_s_node_reads_its_contract_and_names_its_stream_retired() {
+        let (p, id) = project("detail-retired");
+        let task = TaskId("t-1".into());
+        write_contract(&p, &id, &task, true);
+        let path = p.agent(&id).contract(&task);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""harness":"codex""#), "{text}");
+        std::fs::write(
+            &path,
+            text.replace(r#""harness":"codex""#, r#""harness":"gemini""#),
+        )
+        .unwrap();
+        let retired = Inputs {
+            harness: RecordedHarness::Retired("gemini"),
+            ..inputs(true, Some(&task))
+        };
+        let d = read(&p, &id, &retired, Some(ActivityCursor::Tail), None);
+        let t = d.task.expect("the old contract's task");
+        assert_eq!(t.prompt, "add a token-bucket limiter");
+        let done = d.completion.expect("the old contract's completion");
+        assert_eq!(done.branch.as_deref(), Some("marion/t-1"));
+        let why = d
+            .stream
+            .and_then(|s| s.unread)
+            .expect("the stream says why");
+        assert!(why.contains("`gemini`") && why.contains("retired"), "{why}");
+
+        // A harness that was never marion's is not history: that contract is still unreadable.
+        std::fs::write(
+            &path,
+            text.replace(r#""harness":"codex""#, r#""harness":"bard""#),
+        )
+        .unwrap();
+        let d = read(&p, &id, &inputs(true, Some(&task)), None, None);
+        assert_eq!((d.task, d.completion), (None, None));
     }
 
     /// A landed child: its task, its recorded usage, its worktree, and a completion naming the
