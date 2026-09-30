@@ -1,0 +1,37 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 80, 24)"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  STREAM   impl a1f0 · editing src/limits/bucket.rs
+
+  14:26:59  “142 passed; committing.”
+  14:27:06  $ git commit -am limiter
+  14:27:13  report "limiter in, tests green"
+  14:27:20  read_file src/limits/mod.rs
+  14:27:27  read_file Cargo.toml
+  14:27:34  “I'll add a token bucket keyed by API key.”
+  14:27:41  ~ src/limits/bucket.rs
+  14:28:48  ~ src/routes/orders.rs +1 more
+  14:28:55  $ cargo build -q
+  14:28:02  $ cargo test -q limits
+  14:28:09  “142 passed; committing.”
+  14:28:16  $ git commit -am limiter
+  14:28:23  report "limiter in, tests green"
+  ↑ 17 earlier   K scrolls back
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯                                                                          │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge      ? shortcuts
+--- styles ---
+  220  Style::new().fg(Color::Reset).bg(Color::Reset)  "$gitcommit-amlimiterrepo"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "STREAMj/kentersxc?"
+  547  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
+    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "WatchK❯"
+    2  Style::new().yellow().bg(Color::Reset)  "◐2"

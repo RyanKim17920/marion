@@ -314,6 +314,8 @@ pub struct Watch {
     pub feed: Vec<FeedItem>,
     /// Every node's subtree totals, rebuilt with the forest ([`crate::rollup`]).
     pub rollup: crate::rollup::Rollup,
+    /// The selected agent's stream fills the screen: Enter on a headless agent, Esc back.
+    pub full_stream: bool,
 }
 
 /// One change in the forest, as the feed shows it.
@@ -340,6 +342,7 @@ impl Default for Watch {
             scroll: 0,
             feed: Vec::new(),
             rollup: crate::rollup::Rollup::default(),
+            full_stream: false,
         }
     }
 }
@@ -487,11 +490,13 @@ impl Home {
         }
     }
 
-    /// What Enter would do on Watch: the effect the box echoes before it is pressed.
+    /// What Enter would do on Watch: the effect the box echoes before it is pressed. Only a pane
+    /// agent has a terminal to attach to; Enter on a headless one opens its stream instead, which
+    /// is no command.
     pub fn watch_default(&self) -> Effect {
         match self.selected() {
-            Some(n) => Effect::Attach(n.agent_id.clone()),
-            None => Effect::None,
+            Some(n) if n.pane => Effect::Attach(n.agent_id.clone()),
+            _ => Effect::None,
         }
     }
 
@@ -779,7 +784,15 @@ impl Home {
                 self.notice = (!hit).then(|| "nothing needs you".to_string());
                 self.selection_moved();
             }
-            Key::Enter => return self.watch_default(),
+            Key::Enter => match self.selected() {
+                Some(n) if n.pane => return Effect::Attach(n.agent_id.clone()),
+                Some(_) => {
+                    self.watch.full_stream = !self.watch.full_stream;
+                    self.watch.scroll = 0;
+                }
+                None => self.notice = Some("nothing selected".into()),
+            },
+            Key::Esc if self.watch.full_stream => self.watch.full_stream = false,
             Key::Char('s') => match self.selected() {
                 Some(n) if !n.state.is_exited() => {
                     self.mode = Mode::Compose {

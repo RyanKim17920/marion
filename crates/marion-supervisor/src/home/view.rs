@@ -274,6 +274,7 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
             })
             .collect(),
         filter: None,
+        full_stream: w.full_stream && home.selected().is_some(),
     }
 }
 
@@ -816,7 +817,12 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
         "Watch",
         &[
             ("j/k", "move", ""),
-            ("enter", "attach", "marion attach <id>"),
+            (
+                "enter",
+                "its stream full-screen; a pane agent: attach",
+                "marion attach <id>",
+            ),
+            ("esc", "back from the stream", ""),
             ("s", "steer", "marion steer <id> <text>"),
             ("x", "cancel, asks first", "marion cancel <id>"),
             ("u", "resume an ended node", "marion resume <id>"),
@@ -891,9 +897,22 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("^o", "read-only"),
             ("tab", "screens"),
         ]),
+        (_, Tab::Watch) if home.watch.full_stream => h(&[
+            ("J/K", "scroll"),
+            ("esc", "back"),
+            ("s", "steer"),
+            ("x", "cancel"),
+        ]),
         (_, Tab::Watch) => h(&[
             ("j/k", "move"),
-            ("enter", "attach"),
+            (
+                "enter",
+                if home.selected().is_some_and(|n| n.pane) {
+                    "attach"
+                } else {
+                    "stream"
+                },
+            ),
             ("s", "steer"),
             ("x", "cancel"),
             ("u", "resume"),

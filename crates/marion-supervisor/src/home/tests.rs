@@ -436,6 +436,48 @@ fn stream_scrolls_back_and_follows_again() {
     assert_eq!(h.watch.scroll, 0);
 }
 
+/// **Enter opens a headless agent's stream, and attaches only to a pane agent.** Start runs
+/// agents headless, so Enter on Watch used to attach to a node with no terminal and be refused;
+/// now it toggles the selected agent's stream full-height, Esc goes back, and the hint says which.
+#[test]
+fn enter_streams_a_headless_agent_and_attaches_only_to_a_pane_one() {
+    let mut h = home();
+    h.tab = Tab::Watch;
+    assert_eq!(
+        h.watch_default(),
+        Effect::None,
+        "no attach on a headless agent"
+    );
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert!(h.watch.full_stream, "Enter opens its stream");
+    let f = view::frame(&h, &view::Places::default());
+    assert!(f.watch.full_stream);
+    assert!(f.hints.iter().any(|x| x.key == "esc"), "{:?}", f.hints);
+    assert_eq!(h.key(Key::Esc), Effect::None);
+    assert!(!h.watch.full_stream, "Esc goes back to the forest");
+    let f = view::frame(&h, &view::Places::default());
+    assert!(
+        f.hints
+            .iter()
+            .any(|x| x.key == "enter" && x.verb == "stream"),
+        "{:?}",
+        f.hints
+    );
+
+    let mut paned = node("root", None, NodeState::Running);
+    paned.pane = true;
+    h.set_nodes(vec![paned]);
+    assert_eq!(h.key(Key::Enter), Effect::Attach(AgentId("root".into())));
+    let f = view::frame(&h, &view::Places::default());
+    assert!(
+        f.hints
+            .iter()
+            .any(|x| x.key == "enter" && x.verb == "attach"),
+        "{:?}",
+        f.hints
+    );
+}
+
 #[test]
 fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
     let id = AgentId("0199-abc".into());

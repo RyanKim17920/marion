@@ -404,6 +404,7 @@ fn watch_view(cursor: usize, expanded: Option<Expanded>) -> WatchView {
         feed: feed(),
         attention_note: None,
         filter: None,
+        full_stream: false,
     }
 }
 
@@ -916,6 +917,23 @@ fn watch_running_stream_scrolled_back() {
     let v = watch_view(1, Some(e));
     let input = command("marion attach 01a093dc-a1f0", "same as enter");
     insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
+}
+
+/// **Enter on a headless agent: its stream, full-height.** The forest gives way to the selected
+/// agent's action stream, as many lines as the screen has.
+#[test]
+fn watch_full_stream_fills_the_screen() {
+    let e = Expanded {
+        live: true,
+        stream: stream(30),
+        ..Default::default()
+    };
+    let v = WatchView {
+        full_stream: true,
+        ..watch_view(1, Some(e))
+    };
+    let input = command("", "");
+    insta::assert_snapshot!(report(&screen(Body::Watch(&v), input, "watch"), 80, 24));
 }
 
 /// The TASK block by itself: the prompt ellipsised at three rows, marion's appended instruction dim,

@@ -169,6 +169,9 @@ pub struct WatchView {
     pub feed: Vec<FeedRow>,
     /// The filter the operator typed after `/`, when one is on.
     pub filter: Option<String>,
+    /// The selected agent's stream fills the screen (Enter on a headless agent), rather than the
+    /// forest with it expanded in place.
+    pub full_stream: bool,
 }
 
 /// Below this width the tokens column goes; the expanded block still carries them.
@@ -223,6 +226,17 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
     }
     if let Some(f) = &v.filter {
         note.push_str(&format!(" · /{f}"));
+    }
+    if v.full_stream
+        && let (Some(n), Some(e)) = (v.rows.get(v.cursor), &v.expanded)
+    {
+        let title = format!("{} {} · {}", n.kind, n.short, n.doing);
+        buf.set_line(x, area.y, &section("Stream", &title), w as u16);
+        let h = area.height.saturating_sub(2) as usize;
+        for (y, l) in (area.y + 2..area.bottom()).zip(stream_block(e, h, w, theme)) {
+            buf.set_line(x, y, &Line::from(fit(l, w)), w as u16);
+        }
+        return;
     }
     buf.set_line(x, area.y, &section("Nodes", &note), w as u16);
     if v.rows.is_empty() {
