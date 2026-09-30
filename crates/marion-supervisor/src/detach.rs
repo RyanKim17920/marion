@@ -895,8 +895,8 @@ mod tests {
             auth: marion_harness::Auth::Canned,
             base_url: None,
         };
-        let e = ensure_supervisor(&paths, &launch)
-            .expect_err("nothing may start into that directory");
+        let e =
+            ensure_supervisor(&paths, &launch).expect_err("nothing may start into that directory");
         let _ = std::fs::remove_dir_all(&squatted);
         assert!(
             matches!(e, DetachError::Socket(SocketError::UnsafeDir { .. })),

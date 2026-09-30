@@ -13216,6 +13216,36 @@ mod tests {
             );
         }
 
+        /// **A child's typed budget is the one its tree started with**: the parent's types
+        /// snapshot, not the repository's live `.marion/agents.toml`, which a node can edit to
+        /// lift its children's caps.
+        #[test]
+        fn a_childs_typed_budget_is_read_from_the_trees_snapshot_not_the_live_file() {
+            let fx = owning(
+                "owns-budget-snapshot",
+                vec![intent("root", None, "claude", 0)],
+            );
+            let row = |tokens: u64| {
+                format!(
+                    "[[agent]]\nname = \"capped\"\nharness = \"codex\"\ndescription = \"x\"\n\
+                     budget = {{ tokens = {tokens} }}\n"
+                )
+            };
+            let file = fx.repo.join(crate::run::AGENT_TYPES_FILE);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, row(100)).unwrap();
+            crate::types_snapshot::TypesSnapshot::take(&fx.repo, Some("claude"))
+                .unwrap()
+                .write(fx.project.agent(&id("root")).path())
+                .unwrap();
+            std::fs::write(&file, row(999_999)).unwrap();
+            let budget = fx
+                .handle
+                .child_budget(&fx.repo, "capped", None, &id("root"))
+                .expect("the snapshot's row states a budget");
+            assert_eq!(budget.tokens, Some(100), "{budget:?}");
+        }
+
         /// **`notify/configure` turns a running supervisor's notices off and on**: a node that
         /// fails while they are off is told nobody, one that fails after they are back on is, and
         /// turning them back on does not replay what happened while they were off.

@@ -65,10 +65,21 @@ impl RegistryHandle {
         asked: Option<u64>,
         parent: &AgentId,
     ) -> Option<marion_core::budget::Budget> {
-        let typed = crate::run::agent_types(repo)
-            .ok()
-            .and_then(|t| t.resolve(agent_type))
-            .and_then(|t| t.budget);
+        // The table the parent's tree started with, as the spawn itself resolves the type — never
+        // the repository's live file, which a node can edit (see `crate::types_snapshot`).
+        let typed = self.spawn_env.as_ref().and_then(|env| {
+            let parent_type = self.live.read(|r| {
+                r.tree()
+                    .get(parent)
+                    .and_then(|n| n.intent.as_ref())
+                    .map(|i| i.agent_type.clone())
+            })?;
+            crate::types_snapshot::for_caller(&env.project_dir, parent, repo, &parent_type)
+                .and_then(|s| s.resolve(agent_type))
+                .ok()
+                .flatten()
+                .and_then(|t| t.budget)
+        });
         marion_core::budget::resolve(typed, asked, self.budgets.remaining_tree(parent))
     }
 
