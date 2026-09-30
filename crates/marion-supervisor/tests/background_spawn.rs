@@ -1738,9 +1738,13 @@ fn a_timeout_the_clock_cannot_represent_is_answered_rather_than_killing_the_brid
     );
 
     // **The clamp is recorded, not silently substituted.** §6.7's rule everywhere else is that the
-    // contract names the compiled value rather than the asked-for one.
+    // contract names the compiled value rather than the asked-for one: at most marion's ceiling, and
+    // at most what the root's own wall clock had left, since a child never outlives its root.
+    let contract: Value = serde_json::from_str(common::mcp_result::contract_json(&text))
+        .unwrap_or_else(|e| panic!("a contract: {e}: {text}"));
+    let recorded = contract["timeout"].as_u64().expect("a recorded bound");
     assert!(
-        text.contains(&marion_supervisor::run::MAX_TIMEOUT_SECS.to_string()),
+        recorded > 0 && recorded <= marion_supervisor::run::MAX_TIMEOUT_SECS,
         "the contract records the bound marion actually enforced: {text}"
     );
     assert!(

@@ -1087,6 +1087,17 @@ fn root_surfaces(
     })
 }
 
+/// **Whether a root on `harness` runs under a wall clock** — in a pane or headless, as `pane`
+/// says. Every path does but the duplex one, whose bound is §9's `Blocked`-only budget (see
+/// [`launch`]); a child's clock is clamped under its root's only where the root has one.
+pub(crate) fn wall_clocked(harness: Harness, pane: bool) -> bool {
+    adapter_for(harness)
+        .ok()
+        .and_then(|a| root_surfaces(a.as_ref(), pane, harness).ok())
+        .and_then(|s| root_path(&s))
+        .is_some_and(|path| path != RootPath::Duplex)
+}
+
 /// The compile half of [`root_surfaces`]'s selection. Two methods rather than a flag inside one,
 /// for the reason `HarnessAdapter::pane_surfaces` states: the pane's argv is a different launch of
 /// the same harness (a TUI with a seeded composer), not the headless launch with a switch on it.

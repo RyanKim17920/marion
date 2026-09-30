@@ -1404,6 +1404,7 @@ fn child_request(
     model: Option<String>,
     race: Option<marion_core::race::RaceSeat>,
     budget: Option<marion_core::budget::Budget>,
+    timeout_secs: u64,
 ) -> crate::run::SpawnRequest {
     crate::run::SpawnRequest {
         budget,
@@ -1415,10 +1416,9 @@ fn child_request(
         verification: p.verification.clone(),
         race,
         writable_scope: p.writable_scope.clone(),
-        // **Resolved here, not defaulted in the params.** `params.rs` argues why the wire
-        // carries `Option`; this is the one place that turns absence into a number, and
-        // `effective_timeout` clamps it exactly as it clamps a stated one.
-        timeout_secs: p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+        // Resolved by the caller from `p.timeout_secs` and the clock above it; `effective_timeout`
+        // clamps it exactly as it clamps a stated one.
+        timeout_secs,
         model,
         // **Absence resolved here, once.** §3.1's agent-type key defaults to `shared-cwd`;
         // marion resolves an absent *`spawn` parameter* to `Worktree` instead, and
@@ -3910,6 +3910,11 @@ impl RegistryHandle {
 
         let task_id = mint_task_id()?;
         let budget = self.child_budget(&repo, &p.agent_type, p.budget_tokens, &caller_id.agent_id);
+        // Never past what is left of the clock above it: a child cannot outlive its parent.
+        let wall = self.child_wall_secs(
+            p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+            &caller_id.agent_id,
+        )?;
         let req = child_request(
             p,
             repo.clone(),
@@ -3917,6 +3922,7 @@ impl RegistryHandle {
             p.model.clone(),
             None,
             budget,
+            wall,
         );
         // A background spawn's end is owed to its caller as a message (turn delivery).
         let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
@@ -4043,6 +4049,11 @@ impl RegistryHandle {
         let caller = self.resolve_caller(caller_id)?;
         self.refuse_if_cancelling(caller_id)?;
         let repo = self.caller_repo(caller_id)?;
+        // Every seat's clock, never past what is left of the caller's: refused before any seat.
+        let wall = self.child_wall_secs(
+            p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+            &caller_id.agent_id,
+        )?;
         let types = crate::run::agent_types(&repo)
             .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))?;
         let policy = RacePolicy::try_from(
@@ -4126,6 +4137,7 @@ impl RegistryHandle {
                         p.budget_tokens,
                         &caller_id.agent_id,
                     ),
+                    wall,
                 );
                 let sent = sent_task(&req);
                 let (agent_id, state) = self.launch_child(
@@ -4468,7 +4480,8 @@ impl RegistryHandle {
             acceptance_criteria: vec![],
             verification: vec![],
             writable_scope: vec![],
-            timeout_secs: p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+            timeout_secs: self
+                .child_wall_secs(p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS), target)?,
             model: p.model.clone(),
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,

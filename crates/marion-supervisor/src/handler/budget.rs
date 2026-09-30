@@ -72,6 +72,64 @@ impl RegistryHandle {
         marion_core::budget::resolve(typed, asked, self.budgets.remaining_tree(parent))
     }
 
+    /// **What is left of the nearest wall clock at or above `agent`**: each node's recorded bound
+    /// from its latest launch, less the time since — a child's always, a root's where its path has
+    /// one ([`crate::root::wall_clocked`]) — the least of them. `None` where none on the way up
+    /// has a clock.
+    pub(super) fn remaining_wall_secs(&self, agent: &AgentId) -> Option<u64> {
+        self.live.refresh();
+        let chain = self.live.read(|r| {
+            let mut chain = Vec::new();
+            let mut at = Some(agent.clone());
+            while let Some(id) = at {
+                let Some(n) = r.tree().get(&id) else { break };
+                let clock = n
+                    .intent
+                    .as_ref()
+                    .and_then(|i| i.timeout_secs)
+                    .zip(n.spawned_ts);
+                chain.push((id.clone(), n.parent_id().cloned(), n.harness(), clock));
+                at = n
+                    .parent_id()
+                    .cloned()
+                    .filter(|p| p != &id && chain.len() < 64);
+            }
+            chain
+        });
+        chain
+            .into_iter()
+            .filter_map(|(id, parent, harness, clock)| {
+                let (bound, started) = clock?;
+                let timed = parent.is_some()
+                    || harness.is_some_and(|h| {
+                        crate::root::wall_clocked(h, super::lock(&self.panes).has_live(&id))
+                    });
+                let elapsed = started.0.elapsed().unwrap_or_default().as_secs();
+                timed.then(|| bound.saturating_sub(elapsed))
+            })
+            .min()
+    }
+
+    /// **A child's wall clock, never longer than what is left above it**: `asked`, clamped to
+    /// [`Self::remaining_wall_secs`] of `parent`. Refused where nothing is left — a child that
+    /// could only be killed at once.
+    pub(super) fn child_wall_secs(
+        &self,
+        asked: u64,
+        parent: &AgentId,
+    ) -> Result<u64, marion_core::proto::RpcError> {
+        match self.remaining_wall_secs(parent) {
+            Some(0) => Err(marion_core::proto::RpcError::refused(
+                "timeout_secs",
+                "the calling node's wall clock — or its root's — is spent, so a child of it could \
+                 only be killed as it started. Nothing was spawned.",
+                "§3.1",
+            )),
+            Some(left) => Ok(asked.min(left)),
+            None => Ok(asked),
+        }
+    }
+
     /// One line crossed: journal it, then warn the owner or cancel its subtree.
     pub(super) fn budget_crossed(&self, c: Crossing) {
         let record = RecordKind::BudgetCrossed(BudgetCrossed {
@@ -148,6 +206,75 @@ mod tests {
 
     use super::*;
     use crate::registry::{LiveRegistry, Registry};
+    use marion_core::journal::RecordKind;
+
+    /// A node journaled as launched just now, under `parent`, on `harness`, with `timeout_secs`.
+    fn launched(
+        path: &std::path::Path,
+        agent: &str,
+        parent: Option<&str>,
+        harness: marion_core::harness::Harness,
+        timeout_secs: u64,
+    ) {
+        use marion_core::journal::{SpawnIntent, Spawned};
+        crate::journal::append_at(
+            path,
+            RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: AgentId(agent.into()),
+                parent_id: parent.map(|p| AgentId(p.into())),
+                agent_type: "t".into(),
+                harness,
+                depth: u32::from(parent.is_some()),
+                task_id: None,
+                timeout_secs: Some(timeout_secs),
+                verification: vec![],
+                review_of: None,
+                budget: None,
+                race: None,
+            }),
+        )
+        .unwrap();
+        crate::journal::append_at(
+            path,
+            RecordKind::Spawned(Spawned {
+                agent_id: AgentId(agent.into()),
+                harness_version: "test".into(),
+                model: None,
+                pid: None,
+                start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
+            }),
+        )
+        .unwrap();
+    }
+
+    /// **A child never outlives the clock above it**: its bound is clamped to what its parent has
+    /// left, a spent parent refuses it, and a root whose path has no wall clock (claude's duplex
+    /// root, §9's `Blocked`-only budget) clamps nothing while one that has (codex's launch-only
+    /// root) does.
+    #[test]
+    fn a_childs_wall_clock_is_clamped_to_what_is_left_above_it() {
+        use marion_core::harness::Harness;
+        let dir = marion_testsupport::scratch("budget-wall");
+        let path = dir.join("journal.jsonl");
+        let live = Arc::new(LiveRegistry::follow(Registry::boot_path(&path).unwrap()));
+        launched(&path, "duplex-root", None, Harness::ClaudeCode, 0);
+        launched(&path, "child", Some("duplex-root"), Harness::Codex, 100);
+        launched(&path, "spent", Some("duplex-root"), Harness::Codex, 0);
+        launched(&path, "timed-root", None, Harness::Codex, 50);
+        let h = RegistryHandle::new(live);
+        let id = |s: &str| AgentId(s.into());
+
+        assert_eq!(h.child_wall_secs(900, &id("duplex-root")).unwrap(), 900);
+        let clamped = h.child_wall_secs(900, &id("child")).unwrap();
+        assert!((98..=100).contains(&clamped), "{clamped}");
+        assert_eq!(h.child_wall_secs(30, &id("child")).unwrap(), 30);
+        assert!(h.child_wall_secs(900, &id("spent")).is_err());
+        let under_root = h.child_wall_secs(900, &id("timed-root")).unwrap();
+        assert!((48..=50).contains(&under_root), "{under_root}");
+    }
 
     /// **A child is given no more than its tree has left**: its spawn's tree limit is narrowed to
     /// the nearest budgeted ancestor's remainder, and a child of an unbudgeted tree that asks for
