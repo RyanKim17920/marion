@@ -15,6 +15,23 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+/// **No core file of this process, or of any process it starts**: `RLIMIT_CORE` 0, soft and hard.
+/// A crashing supervisor or harness would otherwise write its whole memory — node tokens, endpoint
+/// keys, the operator's inherited login — to a core file wherever the system puts them. Children
+/// inherit the limit, and a process cannot raise a hard limit back, so every harness marion
+/// launches is covered by one call at each binary's start.
+pub fn forbid_core_dumps() -> io::Result<()> {
+    use rustix::process::{Resource, Rlimit, setrlimit};
+    setrlimit(
+        Resource::Core,
+        Rlimit {
+            current: Some(0),
+            maximum: Some(0),
+        },
+    )
+    .map_err(io::Error::from)
+}
+
 /// `create_dir_all`, with every directory it creates made `0700`. A directory that already exists
 /// keeps its mode: an operator who widened one did so on purpose.
 pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
@@ -108,6 +125,20 @@ mod tests {
 
     fn mode(p: &Path) -> u32 {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    /// **No core file, here or in any child**: after the call the limit is 0 soft and hard, and a
+    /// process started afterwards reports 0 too, so every harness marion launches inherits it.
+    #[test]
+    fn core_dumps_are_off_for_the_process_and_everything_it_starts() {
+        forbid_core_dumps().unwrap();
+        let limit = rustix::process::getrlimit(rustix::process::Resource::Core);
+        assert_eq!((limit.current, limit.maximum), (Some(0), Some(0)));
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -c; ulimit -H -c"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&child.stdout), "0\n0\n");
     }
 
     /// Mutation: drop the `set_permissions` and a pre-existing `0644` file stays `0644`.

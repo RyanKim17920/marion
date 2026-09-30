@@ -2365,6 +2365,8 @@ impl SupervisorSession {
 }
 
 fn main() -> ExitCode {
+    // Before anything holds a secret: `marion login` reads a key, and every child inherits this.
+    let _ = marion_supervisor::private_fs::forbid_core_dumps();
     let native_facades = production_native_facades();
     dispatch_native_facade_or_legacy(
         std::env::args_os().skip(1),
