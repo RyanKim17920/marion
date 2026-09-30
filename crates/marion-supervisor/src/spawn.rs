@@ -667,7 +667,7 @@ pub fn make_worktree_at(
 
 /// The branch the worktree at `wt` has checked out, or `None` where it is detached, gone, or not
 /// a worktree at all.
-pub fn checked_out_branch(wt: &Path) -> Option<String> {
+pub fn checked_out_branch(wt: Tree<'_>) -> Option<String> {
     git(wt, &["symbolic-ref", "--short", "-q", "HEAD"])
         .ok()
         .map(|b| b.trim().to_string())
@@ -2325,7 +2325,7 @@ mod tests {
     ) -> (marion_testsupport::Scratch, PathBuf, PathBuf, Oid, PathBuf) {
         let (dir, repo, base) = committed_repo(name);
         let wt = dir.join("child-wt");
-        make_worktree(Tree::Operator(&repo), &wt, "marion/child", false)
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
             .expect("the child's worktree");
         std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
         let evil = dir.join("evil");

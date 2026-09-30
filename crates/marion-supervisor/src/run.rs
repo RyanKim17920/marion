@@ -5222,17 +5222,31 @@ mod tests {
         let s = scratch("worktree-branch-taken");
         let repo = fixture_repo(&s);
         let names = |t: &str| vec!["marion/433f-add".to_string(), format!("marion/{t}")];
-        let (_, first) =
-            crate::spawn::make_worktree(&repo, &s.join("wt1"), &names("t-1"), false).unwrap();
+        let (_, first) = crate::spawn::make_worktree(
+            crate::spawn::Tree::Operator(&repo),
+            &s.join("wt1"),
+            &names("t-1"),
+            false,
+        )
+        .unwrap();
         assert_eq!(first, "marion/433f-add");
-        let (_, second) =
-            crate::spawn::make_worktree(&repo, &s.join("wt2"), &names("t-2"), false).unwrap();
+        let (_, second) = crate::spawn::make_worktree(
+            crate::spawn::Tree::Operator(&repo),
+            &s.join("wt2"),
+            &names("t-2"),
+            false,
+        )
+        .unwrap();
         assert_eq!(second, "marion/t-2");
         assert_eq!(
-            crate::spawn::checked_out_branch(&s.join("wt2")).as_deref(),
+            crate::spawn::checked_out_branch(crate::spawn::Tree::Operator(&s.join("wt2")))
+                .as_deref(),
             Some("marion/t-2")
         );
-        assert_eq!(crate::spawn::checked_out_branch(&s.join("gone")), None);
+        assert_eq!(
+            crate::spawn::checked_out_branch(crate::spawn::Tree::Operator(&s.join("gone"))),
+            None
+        );
     }
 
     /// A repo with one commit, which is all `make_worktree` needs to get past `rev-parse HEAD`.

@@ -80,6 +80,7 @@ fn script() -> Script {
 
 fn race_params(caller: SpawnCaller) -> AgentSpawnParams {
     AgentSpawnParams {
+        wider_children: None,
         review_of: None,
         notify_parent: false,
         agent_type: String::new(),

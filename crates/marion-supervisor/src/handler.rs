@@ -1795,7 +1795,7 @@ fn listed_workspace(
     Some(if same(dir, &worktree) {
         // The branch it has checked out, whichever way it was named; a tree too far gone to say
         // is on the name its task's branch had before names were readable.
-        let branch = crate::spawn::checked_out_branch(&worktree)
+        let branch = crate::spawn::checked_out_branch(crate::run::tree_of(env, &worktree))
             .unwrap_or_else(|| crate::run::legacy_worktree_branch(task));
         Workspace::Worktree {
             path: worktree,
@@ -13887,8 +13887,10 @@ mod tests {
             let child_b = child_of("root-b", &side_b);
 
             let base_of = |child: &AgentId| -> String {
-                let branch = crate::spawn::checked_out_branch(&fx.project.agent(child).worktree())
-                    .expect("the child's worktree is on the branch marion cut for it");
+                let branch = crate::spawn::checked_out_branch(crate::spawn::Tree::Operator(
+                    &fx.project.agent(child).worktree(),
+                ))
+                .expect("the child's worktree is on the branch marion cut for it");
                 // Read out of the **main** repository: refs are shared across every worktree of one
                 // repository, so this cannot be reading "the tree it was made in".
                 let out = std::process::Command::new("git")

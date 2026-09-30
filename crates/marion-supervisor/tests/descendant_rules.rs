@@ -31,6 +31,7 @@ tools = ["read"]
 
 fn request(repo: &Path, agent_type: &str) -> SpawnRequest {
     SpawnRequest {
+        race: None,
         review: None,
         agent_type: agent_type.into(),
         prompt: "go".into(),

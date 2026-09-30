@@ -5265,6 +5265,7 @@ mod tests {
     fn the_detail_shows_a_landed_diff_stat_only_when_there_is_one() {
         use marion_core::proto::result::{CompletionSummary, DiffStat, NodeDetail};
         let node = marion_core::proto::NodeSummary {
+            widened: vec![],
             agent_id: marion_core::contract::AgentId("019f-a".into()),
             parent_id: None,
             name: None,

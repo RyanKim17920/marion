@@ -1814,6 +1814,7 @@ mod tests {
         use marion_core::proto::model::{NodeSummary, RaceBadge};
         let race = marion_core::race::RaceId("r-1".into());
         let node = |id: &str, badge: Option<RaceBadge>| NodeSummary {
+            widened: vec![],
             review_of: None,
             review: None,
             agent_id: AgentId(id.into()),

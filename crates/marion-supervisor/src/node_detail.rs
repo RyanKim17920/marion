@@ -509,7 +509,7 @@ mod tests {
             "test \"$(cat out)\" = 'a b'".to_string(),
         ];
         let live = task_of("p", Vec::new(), lines.clone());
-        let ended: Vec<String> = crate::run::verification_commands(&lines, Path::new("/wt"))
+        let ended: Vec<String> = crate::run::verification_commands(&lines, Path::new("/wt"), None)
             .iter()
             .map(crate::bridge::command_line)
             .collect();
