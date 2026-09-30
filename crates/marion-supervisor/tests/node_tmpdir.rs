@@ -135,8 +135,14 @@ fn the_inner_run_spawns_one_opencode_child() {
         agent: Mutex::new(None),
     };
 
-    let contract = run_spawn_watched(&env, &req, &TaskId("node-tmpdir".into()), &caller, &watcher)
-        .expect("the child runs");
+    let contract = run_spawn_watched(
+        &env,
+        &req,
+        &TaskId("node-tmpdir".into()),
+        &caller.into(),
+        &watcher,
+    )
+    .expect("the child runs");
 
     let status = contract.completion.as_ref().map(|c| c.status);
     assert_eq!(status, Some(ExitStatus::Ok), "{contract:#?}");

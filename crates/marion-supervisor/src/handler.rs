@@ -1471,6 +1471,41 @@ fn unminted_token(agent: &AgentId) -> RpcError {
     )
 }
 
+/// **A spawn with no `caller` that asks for a worktree**: the operator asking for a contracted node
+/// rather than starting a root in their checkout. A race with no caller is one too, seat by seat.
+fn operator_contracted(p: &marion_core::proto::params::AgentSpawnParams) -> bool {
+    p.caller.is_none() && p.isolation == Some(Isolation::Worktree)
+}
+
+/// What a contracted node the operator asked for cannot carry: a root's own fields. It runs in a
+/// worktree under a contract, so there is no checkout to snapshot, no terminal for an operator to
+/// drive (a TUI takes no turn and would only time out), and no native session to adopt.
+fn check_operator_contracted(
+    p: &marion_core::proto::params::AgentSpawnParams,
+) -> Result<(), RpcError> {
+    let root_only = [
+        ("no_change_record", p.no_change_record.is_some()),
+        ("pane", p.pane.is_some()),
+        ("native_launch", p.native_launch.is_some()),
+        (
+            "allow_concurrent_writes",
+            p.allow_concurrent_writes.is_some(),
+        ),
+    ];
+    match root_only.into_iter().find(|(_, stated)| *stated) {
+        Some((field, _)) => Err(RpcError::refused(
+            field,
+            format!(
+                "a spawn with no `caller` and a worktree is a contracted node the operator asked \
+                 for: it runs in its own worktree under a contract, and `{field}` belongs to a \
+                 root in the operator's checkout. Refused rather than dropped (§11 item 23)."
+            ),
+            "§6.6, §9, §11 item 23",
+        )),
+        None => Ok(()),
+    }
+}
+
 fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
     let own = crate::socket::own_uid();
     match peer {
@@ -3822,6 +3857,8 @@ impl RegistryHandle {
         // directory they never asked marion to make.
         if p.caller.is_none()
             && let Some(iso) = p.isolation
+            && !operator_contracted(p)
+            && p.candidates.is_empty()
         {
             return Err(RpcError::refused(
                 "isolation",
@@ -3845,7 +3882,7 @@ impl RegistryHandle {
     fn check_root_allow_concurrent_writes(
         p: &marion_core::proto::params::AgentSpawnParams,
     ) -> Result<(), RpcError> {
-        if p.caller.is_none() && p.allow_concurrent_writes.is_some() {
+        if p.caller.is_none() && p.allow_concurrent_writes.is_some() && !operator_contracted(p) {
             return Err(RpcError::refused(
                 "allow_concurrent_writes",
                 "a spawn without a `caller` creates a root, and §6.6's write-conflict rule is about \
@@ -3871,7 +3908,8 @@ impl RegistryHandle {
     fn check_root_contract_fields(
         p: &marion_core::proto::params::AgentSpawnParams,
     ) -> Result<(), RpcError> {
-        if p.caller.is_some() {
+        // A child's, and a contracted node's the operator asked for: both run under a contract.
+        if p.caller.is_some() || operator_contracted(p) || !p.candidates.is_empty() {
             return Ok(());
         }
         let stated = [
@@ -3998,24 +4036,31 @@ impl RegistryHandle {
             return self.spawn_review(me, env, p, target, peer);
         }
         let Some(caller_id) = p.caller.as_ref() else {
-            if racing {
-                return Err(RpcError::refused(
-                    "candidates",
-                    "a race is asked for by a node, for its own task: its seats are that node's \
-                     children, each under a contract it reads back. A spawn with no `caller` \
-                     starts a root, which has no contract to race on.",
-                    "§9",
-                ));
+            // **The operator asking for a contracted node** — a race's seats, or one node in a
+            // worktree: the child path, with the operator as its requester. Authorized as a root
+            // is, by the connection, and for the tree the call names.
+            if racing || operator_contracted(p) {
+                root_spawn_authorized(peer)?;
+                check_operator_contracted(p)?;
+                let repo = p.repo.clone().ok_or_else(|| {
+                    RpcError::internal("a spawn with no caller reached the launcher with no repo")
+                })?;
+                check_project(&env, &repo)?;
+                return if racing {
+                    self.spawn_race(me, env, p, None, repo)
+                } else {
+                    self.spawn_contracted(me, env, p, repo)
+                };
             }
-            // **A client creating a root** — §11 item 28 step 6. Answered on its own path rather
-            // than folded into the child one: `run_spawn` writes `parent_id: Some(caller)`
-            // unconditionally, so serving a root through it would put a node in the tree whose
-            // parent is a fabrication. `root::prepare` owns everything that makes a root a root —
-            // its agent-dir layout, `ROOT_DEPTH`, §9's change record, `parent_id: None`.
+            // **A client creating a root** — §11 item 28 step 6. Answered on its own path: a root
+            // is not a contracted node with no parent but the operator's own session, and
+            // `root::prepare` owns everything that makes it one — its agent-dir layout,
+            // `ROOT_DEPTH`, §9's change record over the operator's checkout, no contract.
             return self.spawn_root(me, env, p, peer);
         };
         if racing {
-            return self.spawn_race(me, env, p, caller_id);
+            let repo = self.caller_repo(caller_id)?;
+            return self.spawn_race(me, env, p, Some(caller_id), repo);
         }
 
         // **Held from here to the child's durable intent, and no further.** See
@@ -4033,7 +4078,12 @@ impl RegistryHandle {
             .map_err(gate_refusal)?;
 
         let task_id = mint_task_id()?;
-        let budget = self.child_budget(&repo, &p.agent_type, p.budget_tokens, &caller_id.agent_id);
+        let budget = self.child_budget(
+            &repo,
+            &p.agent_type,
+            p.budget_tokens,
+            Some(&caller_id.agent_id),
+        );
         // Never past what is left of the clock above it: a child cannot outlive its parent.
         let wall = self.child_wall_secs(
             p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
@@ -4050,7 +4100,49 @@ impl RegistryHandle {
         );
         // A background spawn's end is owed to its caller as a message (turn delivery).
         let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
-        self.start_child(me, env, req, task_id, caller, repo, decision, announce_to)
+        self.start_child(
+            me,
+            env,
+            req,
+            task_id,
+            caller.into(),
+            repo,
+            decision,
+            announce_to,
+        )
+    }
+
+    /// **A contracted node the operator asked for directly**: the child path — a worktree on a
+    /// `marion/` branch, verification, a contract, usage on the record — with the operator as its
+    /// requester ([`crate::run::Requester::Operator`]) and a top-level place in the tree. No caller
+    /// gates it or bounds its clock or budget; its type's own ceilings and the operator's config
+    /// do. Its end is announced to nobody: the client that asked reads the contract.
+    fn spawn_contracted(
+        &self,
+        me: Arc<RegistryHandle>,
+        env: crate::run::Env,
+        p: &marion_core::proto::params::AgentSpawnParams,
+        repo: PathBuf,
+    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
+        // Held to the intent for the same reason a child's spawn holds it: a quit or a race's
+        // count must see this node once it is decided.
+        let decision = lock(&self.spawn_decision);
+        self.live.refresh();
+        let task_id = mint_task_id()?;
+        let budget = self.child_budget(&repo, &p.agent_type, p.budget_tokens, None);
+        let req = child_request(
+            p,
+            repo.clone(),
+            p.agent_type.clone(),
+            p.model.clone(),
+            None,
+            budget,
+            p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+        );
+        let requester = crate::run::Requester::Operator {
+            allow_wider_children: p.wider_children == Some(true),
+        };
+        self.start_child(me, env, req, task_id, requester, repo, decision, None)
     }
 
     /// The end every `agent/spawn` of a child shares, ordinary or review: launch it through
@@ -4062,7 +4154,7 @@ impl RegistryHandle {
         env: crate::run::Env,
         req: crate::run::SpawnRequest,
         task_id: TaskId,
-        caller: crate::run::Caller,
+        requester: crate::run::Requester,
         repo: PathBuf,
         decision: std::sync::MutexGuard<'_, ()>,
         announce_to: Option<AgentId>,
@@ -4071,8 +4163,16 @@ impl RegistryHandle {
         // `contracts/<task_id>.json` and cannot mint this id itself (see `AgentSpawnResult`).
         let answered_task_id = task_id.clone();
         let sent = sent_task(&req);
-        let (agent_id, state) =
-            self.launch_child(me, env, req, task_id, caller, repo, decision, announce_to)?;
+        let (agent_id, state) = self.launch_child(
+            me,
+            env,
+            req,
+            task_id,
+            requester,
+            repo,
+            decision,
+            announce_to,
+        )?;
         self.remember_sent(&agent_id, sent);
         Ok(marion_core::proto::result::AgentSpawnResult {
             state,
@@ -4135,7 +4235,8 @@ impl RegistryHandle {
         me: Arc<RegistryHandle>,
         env: crate::run::Env,
         p: &marion_core::proto::params::AgentSpawnParams,
-        caller_id: &marion_core::proto::SpawnCaller,
+        caller_id: Option<&marion_core::proto::SpawnCaller>,
+        repo: PathBuf,
     ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
         use marion_core::proto::result::{RaceStarted, SeatStarted};
         use marion_core::race::{self, RacePolicy, RaceRole, RaceSeat};
@@ -4170,14 +4271,21 @@ impl RegistryHandle {
 
         let decision = lock(&self.spawn_decision);
         self.live.refresh();
-        let caller = self.resolve_caller(caller_id)?;
-        self.refuse_if_cancelling(caller_id)?;
-        let repo = self.caller_repo(caller_id)?;
+        // A node's race seats its children; the operator's seats contracted nodes of its own.
+        let caller = match caller_id {
+            Some(c) => {
+                let caller = self.resolve_caller(c)?;
+                self.refuse_if_cancelling(c)?;
+                Some(caller)
+            }
+            None => None,
+        };
+        let asked = p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS);
         // Every seat's clock, never past what is left of the caller's: refused before any seat.
-        let wall = self.child_wall_secs(
-            p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
-            &caller_id.agent_id,
-        )?;
+        let wall = match caller_id {
+            Some(c) => self.child_wall_secs(asked, &c.agent_id)?,
+            None => asked,
+        };
         let types = crate::run::agent_types(&repo)
             .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))?;
         let policy = RacePolicy::try_from(
@@ -4202,14 +4310,22 @@ impl RegistryHandle {
             ));
         }
         // Every seat is one more child of the caller, counted now: the gate passes only if the
-        // last seat would still fit.
-        let extra = u32::try_from(candidates.len() - 1).unwrap_or(u32::MAX);
-        agent_type::check_spawn_gates(
-            &caller.agent_type,
-            caller.depth,
-            caller.live_children.saturating_add(extra),
-        )
-        .map_err(gate_refusal)?;
+        // last seat would still fit. The operator's seats have no caller to gate them.
+        if let Some(caller) = &caller {
+            let extra = u32::try_from(candidates.len() - 1).unwrap_or(u32::MAX);
+            agent_type::check_spawn_gates(
+                &caller.agent_type,
+                caller.depth,
+                caller.live_children.saturating_add(extra),
+            )
+            .map_err(gate_refusal)?;
+        }
+        let requester = match &caller {
+            Some(c) => crate::run::Requester::from(c.clone()),
+            None => crate::run::Requester::Operator {
+                allow_wider_children: p.wider_children == Some(true),
+            },
+        };
 
         let race_id = crate::run::entropy()
             .map(|e| race::new_race_id(crate::run::unix_millis(), e))
@@ -4218,12 +4334,12 @@ impl RegistryHandle {
                     "marion could not mint a race id, so nothing was started: {e}"
                 ))
             })?;
-        self.races.open(&race_id, &caller_id.agent_id);
+        self.races.open(&race_id, &requester.id());
         // Before the first seat's intent, whose fsync makes this durable too.
         if let Err(e) =
             self.journal_append(RecordKind::RaceOpened(marion_core::journal::RaceOpened {
                 race_id: race_id.clone(),
-                parent_id: Some(caller_id.agent_id.clone()),
+                parent_id: requester.parent_id(),
                 policy,
                 seats: candidates.clone(),
             }))
@@ -4259,7 +4375,7 @@ impl RegistryHandle {
                         &repo,
                         &candidate.agent_type,
                         p.budget_tokens,
-                        &caller_id.agent_id,
+                        caller_id.map(|c| &c.agent_id),
                     ),
                     wall,
                 );
@@ -4269,7 +4385,7 @@ impl RegistryHandle {
                     env.clone(),
                     req,
                     task_id.clone(),
-                    caller.clone(),
+                    requester.clone(),
                     repo.clone(),
                     &decision,
                     None,
@@ -4345,7 +4461,9 @@ impl RegistryHandle {
             self.races.end_drive(race_id);
             return;
         };
-        let requester_running = self.owned_running(&requester) == Some(true);
+        // The operator is not a node, and does not end: only a node's race can be abandoned.
+        let requester_running = requester.0 == crate::run::OPERATOR_REQUESTER
+            || self.owned_running(&requester) == Some(true);
         let Some((policy, state)) = crate::race::gather(
             &nodes,
             &env.project_dir,
@@ -4455,8 +4573,14 @@ impl RegistryHandle {
                 .iter()
                 .filter(|race| race.decided.is_none())
                 .filter_map(|race| {
-                    let parent = race.opened.as_ref()?.parent_id.clone()?;
-                    Some((race.race_id.clone(), parent))
+                    // A race with no parent is the operator's.
+                    let requester = race
+                        .opened
+                        .as_ref()?
+                        .parent_id
+                        .clone()
+                        .unwrap_or_else(|| AgentId(crate::run::OPERATOR_REQUESTER.into()));
+                    Some((race.race_id.clone(), requester))
                 })
                 .collect()
         });
@@ -4597,7 +4721,7 @@ impl RegistryHandle {
             .map(str::to_string);
         let req = crate::run::SpawnRequest {
             race: None,
-            budget: self.child_budget(&repo, &reviewer, None, target),
+            budget: self.child_budget(&repo, &reviewer, None, Some(target)),
             agent_type: reviewer,
             prompt: crate::review::prompt(&review, &contract),
             repo: repo.clone(),
@@ -4619,8 +4743,17 @@ impl RegistryHandle {
             .as_ref()
             .filter(|_| p.notify_parent)
             .map(|c| c.agent_id.clone());
-        self.start_child(me, env, req, task_id, caller, repo, decision, announce_to)
-            .map(|r| marion_core::proto::result::AgentSpawnResult { note, ..r })
+        self.start_child(
+            me,
+            env,
+            req,
+            task_id,
+            caller.into(),
+            repo,
+            decision,
+            announce_to,
+        )
+        .map(|r| marion_core::proto::result::AgentSpawnResult { note, ..r })
     }
 
     /// **The child launcher, driven from a fully-built [`crate::run::SpawnRequest`]** — the mirror
@@ -4644,7 +4777,7 @@ impl RegistryHandle {
         env: crate::run::Env,
         req: crate::run::SpawnRequest,
         task_id: TaskId,
-        caller: crate::run::Caller,
+        requester: crate::run::Requester,
         repo: PathBuf,
         decision: Decision,
         announce_to: Option<AgentId>,
@@ -4668,7 +4801,7 @@ impl RegistryHandle {
             // **A panic here must still resolve the node.** See [`caught`]: without this the
             // outcome stays `None` for ever and the supervisor can never exit.
             let outcome = caught(&agent_type, spawn_panicked, || {
-                crate::run::run_spawn_watched(&env, &req, &task_id, &caller, &observer)
+                crate::run::run_spawn_watched(&env, &req, &task_id, &requester, &observer)
             });
             // The agent id is known only if `identified` fired. A spawn refused above it — an
             // unknown agent type, a scope outside the ceiling — never minted a node, so there is
@@ -5497,7 +5630,16 @@ impl RegistryHandle {
             race: node.intent.as_ref().and_then(|i| i.race.clone()),
         };
         // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.
-        self.launch_child(me, env.clone(), req, task_id, caller, repo, decision, None)
+        self.launch_child(
+            me,
+            env.clone(),
+            req,
+            task_id,
+            caller.into(),
+            repo,
+            decision,
+            None,
+        )
     }
 
     /// §7.3.2's voluntary path. The mutex is not throughput machinery; it makes the rendered-set
@@ -13242,7 +13384,7 @@ mod tests {
             std::fs::write(&file, row(999_999)).unwrap();
             let budget = fx
                 .handle
-                .child_budget(&fx.repo, "capped", None, &id("root"))
+                .child_budget(&fx.repo, "capped", None, Some(&id("root")))
                 .expect("the snapshot's row states a budget");
             assert_eq!(budget.tokens, Some(100), "{budget:?}");
         }

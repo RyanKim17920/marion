@@ -120,9 +120,13 @@ generation is per harness; see [Harness detail](#harness-detail).
 
 `marion mcp` serves marion's tools over stdio for any MCP client: `spawn`, `wait`, `status`,
 `list`, `steer`, and `report` (which answers only inside a child marion started, so a root sees
-five). Its `spawn` creates a root over the same socket `marion run` uses, so the result shows up
-in `marion ls` like any other. It is not a command to type at a terminal; configure a client with
-it:
+five). Its `spawn` goes over the same socket `marion run` uses, so the result shows up in `marion
+ls` like any other, at the top of the tree. An agent type that can change files, or a spawn that
+states `verification`, gets what a child gets: its own worktree on a `marion/` branch, the checks
+run there, and a contract to read back. `isolation: "shared-cwd"` runs it in your checkout
+instead, with nothing checked; a read-only type runs there too. A `spawn` with `candidates` races
+them, each seat in its own worktree. It is not a command to type at a terminal; configure a client
+with it:
 
 ```sh
 claude mcp add marion -- marion mcp --repo "$PWD"   # Claude Code

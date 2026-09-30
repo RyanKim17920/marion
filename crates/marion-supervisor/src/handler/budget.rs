@@ -63,24 +63,34 @@ impl RegistryHandle {
         repo: &std::path::Path,
         agent_type: &str,
         asked: Option<u64>,
-        parent: &AgentId,
+        parent: Option<&AgentId>,
     ) -> Option<marion_core::budget::Budget> {
-        // The table the parent's tree started with, as the spawn itself resolves the type — never
-        // the repository's live file, which a node can edit (see `crate::types_snapshot`).
-        let typed = self.spawn_env.as_ref().and_then(|env| {
-            let parent_type = self.live.read(|r| {
-                r.tree()
-                    .get(parent)
-                    .and_then(|n| n.intent.as_ref())
-                    .map(|i| i.agent_type.clone())
-            })?;
-            crate::types_snapshot::for_caller(&env.project_dir, parent, repo, &parent_type)
-                .and_then(|s| s.resolve(agent_type))
+        let typed = match parent {
+            // The table the parent's tree started with, as the spawn itself resolves the type —
+            // never the repository's live file, which a node can edit (see
+            // `crate::types_snapshot`).
+            Some(parent) => self.spawn_env.as_ref().and_then(|env| {
+                let parent_type = self.live.read(|r| {
+                    r.tree()
+                        .get(parent)
+                        .and_then(|n| n.intent.as_ref())
+                        .map(|i| i.agent_type.clone())
+                })?;
+                crate::types_snapshot::for_caller(&env.project_dir, parent, repo, &parent_type)
+                    .and_then(|s| s.resolve(agent_type))
+                    .ok()
+                    .flatten()
+                    .and_then(|t| t.budget)
+            }),
+            // The operator's own node reads the operator's own checkout, as a root does.
+            None => crate::run::agent_types(repo)
                 .ok()
-                .flatten()
-                .and_then(|t| t.budget)
-        });
-        marion_core::budget::resolve(typed, asked, self.budgets.remaining_tree(parent))
+                .and_then(|t| t.resolve(agent_type))
+                .and_then(|t| t.budget),
+        };
+        // The operator's own node has no tree above it to clamp to.
+        let above = parent.and_then(|p| self.budgets.remaining_tree(p));
+        marion_core::budget::resolve(typed, asked, above)
     }
 
     /// **What is left of the nearest wall clock at or above `agent`**: each node's recorded bound
@@ -304,17 +314,19 @@ mod tests {
         };
         h.budgets.register(&root, None, Some(tree), 0);
         h.budgets.observe(&root, 700);
-        let b = h.child_budget(&dir, "codex", Some(5_000), &root).unwrap();
+        let b = h
+            .child_budget(&dir, "codex", Some(5_000), Some(&root))
+            .unwrap();
         assert_eq!(b.tree_tokens, Some(300), "5000 asked, 300 left above");
         assert_eq!(
-            h.child_budget(&dir, "codex", None, &root)
+            h.child_budget(&dir, "codex", None, Some(&root))
                 .unwrap()
                 .tree_tokens,
             Some(300),
             "an unasked child inherits the remainder"
         );
         assert_eq!(
-            h.child_budget(&dir, "codex", None, &AgentId("elsewhere".into())),
+            h.child_budget(&dir, "codex", None, Some(&AgentId("elsewhere".into()))),
             None
         );
     }

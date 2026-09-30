@@ -399,20 +399,6 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
         };
         assert!(e.message.contains(why), "{why}: {}", e.message);
     }
-    let mut rootless = race_params(SpawnCaller {
-        agent_id: root.clone(),
-        node_token: Secret::new(String::new()),
-    });
-    rootless.caller = None;
-    rootless.repo = Some(repo.clone());
-    let id = c.send(Call::AgentSpawn(rootless));
-    let (_, outcome) = c.read_to_response(id);
-    // Refused either by the race ("no contract to race on") or, first, by the supervisor's rule
-    // that a root states no verification ("gives a root no contract"): a root has none either way.
-    assert!(
-        matches!(outcome, Outcome::Error(ref e) if e.message.contains("no contract")),
-        "{outcome:?}"
-    );
     let opened = records(&project.journal())
         .iter()
         .filter(|k| matches!(k, RecordKind::RaceOpened(_)))

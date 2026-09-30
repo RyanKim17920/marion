@@ -319,18 +319,9 @@ fn tool_spawn(
     // **First, and before the environment is even consulted**, because the answer does not
     // depend on it. Routed through `spawn_result` so a refusal reads like every other one
     // a `spawn` can return.
-    // A race names its candidates instead of one type, each held to the same rule a top-level
-    // spawn is (`race_in_checkout`).
+    // A race names its candidates instead of one type. From a top-level client its seats are
+    // contracted nodes of the operator's, each in its own worktree, like a node's seats.
     if !string_list(&args["candidates"]).is_empty() || !args["race"].is_null() {
-        let top_level;
-        let args = match who {
-            Principal::TopLevel(t) => {
-                top_level = race_in_checkout(&t.repo, args)
-                    .map_err(|e| bridge::tool_result(id, &e, true))?;
-                &top_level
-            }
-            Principal::Node => args,
-        };
         return tool_spawn_race(who, bg, id, args);
     }
     // **Required, never defaulted**, as the schema says: a default would name one harness's type
@@ -353,7 +344,7 @@ fn tool_spawn(
     let top_level;
     let args = match who {
         Principal::TopLevel(t) => {
-            top_level = root_in_checkout(&t.repo, &agent_type, args)
+            top_level = top_level_workspace(&t.repo, &agent_type, args)
                 .map_err(|e| bridge::tool_result(id, &e, true))?;
             &top_level
         }
@@ -426,60 +417,47 @@ fn tool_spawn(
 
 /// **A top-level `spawn` never puts a writer in the operator's checkout without being told to.**
 ///
-/// A spawn from `marion mcp` is a root (§9): no parent owns a worktree or a contract for it, so it
-/// runs in the checkout at `repo` with nothing checked. For a child, silence means a worktree; a
-/// model that called `spawn` here expecting the same would have had its implementer edit the
-/// operator's own tree (live smoke, 2026-09-27). So a type that can change files is refused unless
-/// the call states `isolation: "shared-cwd"`, which is exactly what a root's workspace is; the
-/// statement is consumed here, because the supervisor refuses `isolation` on a root. A read-only
-/// type passes unchanged, and it is the way to a worktree: its children get one each, with a
-/// contract and verification.
+/// A spawn from `marion mcp` has no parent node. A type that can change files, or a spawn that
+/// states what a contract checks (`verification`, `writable_scope`), becomes a **contracted node**
+/// the operator asked for: its own worktree on a `marion/` branch, a contract, verification — what a
+/// child gets, at the top of the tree (`isolation: "worktree"` on the wire, which is how a spawn
+/// with no `caller` asks for one). Stating `isolation: "shared-cwd"` asks for the other thing, a
+/// **root** in the checkout at `repo` with nothing checked (§9), and the statement is consumed here
+/// because the supervisor refuses `isolation` on a root. A read-only type with nothing to check
+/// stays a root, as it always was: the orchestrator whose children get worktrees.
 ///
 /// An agent type this cannot resolve passes through for the supervisor to refuse in its own words.
-fn root_in_checkout(
+fn top_level_workspace(
     repo: &std::path::Path,
     agent_type: &str,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let types = crate::run::agent_types(repo).map_err(|e| format!("marion: {e}"))?;
-    let writes = |name: &str| {
-        types
-            .resolve(name)
-            .is_some_and(|t| marion_harness::adapter::writes_files(&t))
-    };
+    let writes = types
+        .resolve(agent_type)
+        .is_some_and(|t| marion_harness::adapter::writes_files(&t));
     let mut args = args.clone();
-    let acknowledged = args["isolation"].as_str() == Some(Isolation::SharedCwd.as_wire());
-    if acknowledged && let Some(o) = args.as_object_mut() {
+    let Some(o) = args.as_object_mut() else {
+        return Ok(args);
+    };
+    let stated = o
+        .get("isolation")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    if stated.as_deref() == Some(Isolation::SharedCwd.as_wire()) {
         o.remove("isolation");
-    }
-    if acknowledged || !writes(agent_type) {
         return Ok(args);
     }
-    let mut readers: Vec<&str> = types.names().into_iter().filter(|n| !writes(n)).collect();
-    readers.dedup();
-    Err(format!(
-        "marion: `{agent_type}` can change files, and a `spawn` from `marion mcp` creates a root: \
-         no parent owns a worktree or a contract for it, so it would run directly in the checkout at \
-         {} with nothing verified. Nothing was started. To run it there knowingly, state \
-         `isolation: \"shared-cwd\"`. For a worktree, a contract and verification, spawn a \
-         read-only type ({}) and have it spawn `{agent_type}` as its child.",
-        repo.display(),
-        readers.join(", ")
-    ))
-}
-
-/// [`root_in_checkout`] for a race: a top-level race's seats are roots in the checkout too, so every
-/// candidate (`agent_type[:model]`) that can change files needs the checkout stated.
-fn race_in_checkout(
-    repo: &std::path::Path,
-    args: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let mut sent = args.clone();
-    for candidate in string_list(&args["candidates"]) {
-        let agent_type = candidate.split(':').next().unwrap_or(&candidate);
-        sent = root_in_checkout(repo, agent_type, args)?;
+    let checked = ["verification", "writable_scope"]
+        .iter()
+        .any(|k| o.get(*k).is_some_and(|v| !string_list(v).is_empty()));
+    if stated.is_none() && (writes || checked) {
+        o.insert(
+            "isolation".into(),
+            serde_json::Value::from(Isolation::Worktree.as_wire()),
+        );
     }
-    Ok(sent)
+    Ok(args)
 }
 
 /// **`spawn` with `candidates`: a race.** The supervisor starts one seat per candidate and decides
@@ -1842,49 +1820,43 @@ fn answer(
 mod tests {
     use super::*;
 
-    /// **A top-level writer is refused unless the call states the checkout; a reader passes.**
+    /// **A top-level writer gets a worktree; the checkout only when stated; a reader stays a
+    /// root.** A spawn with no parent that can change files, or that states what a contract checks,
+    /// is sent as a contracted node (`isolation: "worktree"`); `shared-cwd` is consumed and makes a
+    /// root in the checkout; a read-only type with nothing to check is a root, unchanged.
     ///
     /// Mutation: return `Ok(args)` unconditionally and the implementer runs in the operator's tree.
     #[test]
-    fn a_top_level_writer_needs_the_checkout_stated_and_a_reader_does_not() {
-        let dir = marion_testsupport::scratch("mcp-root-in-checkout");
+    fn a_top_level_writer_gets_a_worktree_and_the_checkout_only_when_stated() {
+        let dir = marion_testsupport::scratch("mcp-top-level-workspace");
         let spawn = serde_json::json!({"prompt": "p"});
-        let e = root_in_checkout(&dir, "codex-impl", &spawn).expect_err("a writer, unstated");
-        assert!(
-            e.contains("`codex-impl` can change files")
-                && e.contains(&dir.display().to_string())
-                && e.contains("isolation: \"shared-cwd\"")
-                && e.contains("claude-orchestrator"),
-            "the refusal names the type, the tree, the opt-in and a read-only way round: {e}"
-        );
         let worktree = serde_json::json!({"prompt": "p", "isolation": "worktree"});
-        assert!(root_in_checkout(&dir, "codex-impl", &worktree).is_err());
+        let sent = top_level_workspace(&dir, "codex-impl", &spawn).expect("a writer");
+        assert_eq!(
+            sent, worktree,
+            "a writer is a contracted node in its own worktree"
+        );
+        assert_eq!(
+            top_level_workspace(&dir, "codex-impl", &worktree).unwrap(),
+            worktree,
+            "a stated worktree is sent as stated"
+        );
 
         let stated = serde_json::json!({"prompt": "p", "isolation": "shared-cwd"});
-        let sent = root_in_checkout(&dir, "codex-impl", &stated).expect("stated, so served");
+        let sent = top_level_workspace(&dir, "codex-impl", &stated).expect("stated, so served");
         assert_eq!(
             sent, spawn,
             "the statement is consumed, since a root takes no isolation"
         );
 
-        let reader = root_in_checkout(&dir, "claude-orchestrator", &spawn).expect("a reader");
-        assert_eq!(reader, spawn);
-    }
-
-    /// **A top-level race holds every seat to the same rule**: one writer among its candidates
-    /// needs the checkout stated, and a race of readers passes.
-    #[test]
-    fn a_top_level_race_with_a_writer_needs_the_checkout_stated() {
-        let dir = marion_testsupport::scratch("mcp-race-in-checkout");
-        let race = serde_json::json!({"candidates": ["claude-orchestrator", "codex-impl:gpt"]});
-        let e = race_in_checkout(&dir, &race).expect_err("a writer seat, unstated");
-        assert!(e.contains("codex-impl"), "{e}");
-        let mut stated = race.clone();
-        stated["isolation"] = serde_json::json!("shared-cwd");
-        assert!(race_in_checkout(&dir, &stated).is_ok());
-        let readers =
-            serde_json::json!({"candidates": ["claude-orchestrator", "codex-orchestrator"]});
-        assert!(race_in_checkout(&dir, &readers).is_ok());
+        let reader = top_level_workspace(&dir, "claude-orchestrator", &spawn).expect("a reader");
+        assert_eq!(reader, spawn, "a reader with nothing to check stays a root");
+        let checked = serde_json::json!({"prompt": "p", "verification": ["true"]});
+        let sent = top_level_workspace(&dir, "claude-orchestrator", &checked).unwrap();
+        assert_eq!(
+            sent["isolation"], "worktree",
+            "a spawn that states verification is contracted, whatever its type"
+        );
     }
 
     /// **`status` on a race lists only that race's seats**, in seat order, with each verdict once

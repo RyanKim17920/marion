@@ -310,6 +310,64 @@ impl Caller {
     }
 }
 
+/// **Who asked for a contracted node**: a node, through its own bridge, or the operator directly.
+///
+/// Both get the same node — a worktree, a contract, verification, usage on the record — through
+/// the one spawn path ([`run_spawn_watched`]). They differ in what bounds it:
+///
+/// * a **node**'s child is gated by its caller's type and depth (§6.1 step 2) and may hold no more
+///   authority than its caller (`marion_harness::authority`);
+/// * the **operator**'s is the implicit root above it, at [`crate::depth::ROOT_DEPTH`]: there is no
+///   caller's type to gate by or to bound the node's authority, so the node holds its requested
+///   type's authority, bounded by the type's own scope ceiling and the operator's config — whether
+///   its own children may be wider than it ([`crate::user_config`]). Its tree's agent types are
+///   read from the repository it was asked for, once, as a root's are, and its type is that
+///   tree's top: its `max_depth` bounds its descendants.
+#[derive(Debug, Clone)]
+pub enum Requester {
+    /// Boxed for its size: a caller carries its whole agent type.
+    Node(Box<Caller>),
+    /// `marion mcp`, `marion run --worktree`, `marion race`. `allow_wider_children` is the
+    /// operator's own `--allow-wider-children` for this node's tree.
+    Operator { allow_wider_children: bool },
+}
+
+/// [`TaskContract::requester`] for a node the operator asked for directly: not a node's id, because
+/// no node asked.
+pub const OPERATOR_REQUESTER: &str = "operator";
+
+impl Requester {
+    /// The contract's requester.
+    pub fn id(&self) -> AgentId {
+        match self {
+            Requester::Node(c) => AgentId(c.agent_id.clone()),
+            Requester::Operator { .. } => AgentId(OPERATOR_REQUESTER.into()),
+        }
+    }
+
+    /// The node's parent in the tree: the calling node, or none — a top-level entry.
+    pub fn parent_id(&self) -> Option<AgentId> {
+        match self {
+            Requester::Node(c) => Some(AgentId(c.agent_id.clone())),
+            Requester::Operator { .. } => None,
+        }
+    }
+
+    /// The requester's depth; the node lands one below it.
+    pub fn depth(&self) -> u32 {
+        match self {
+            Requester::Node(c) => c.depth,
+            Requester::Operator { .. } => crate::depth::ROOT_DEPTH,
+        }
+    }
+}
+
+impl From<Caller> for Requester {
+    fn from(caller: Caller) -> Self {
+        Requester::Node(Box::new(caller))
+    }
+}
+
 /// Where `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER` went, since §11 item 23, `MILESTONES.md` and
 /// `spawn::SpawnError` all cite that name and a reader grepping it should land somewhere.
 ///
@@ -1610,7 +1668,13 @@ pub fn run_spawn(
     task_id: &TaskId,
     caller: &Caller,
 ) -> Result<TaskContract, SpawnError> {
-    run_spawn_watched(env, req, task_id, caller, &Unwatched)
+    run_spawn_watched(
+        env,
+        req,
+        task_id,
+        &Requester::from(caller.clone()),
+        &Unwatched,
+    )
 }
 
 /// **How far marion trusts the git configuration of `dir`.** A tree under this project's agent
@@ -1761,37 +1825,15 @@ pub fn child_prompt(ty: &AgentType, prompt: &str) -> String {
     )
 }
 
-/// §6.1's spawn, with the node's owner told about it as it happens. See [`SpawnObserver`].
-pub fn run_spawn_watched(
-    env: &Env,
-    req: &SpawnRequest,
-    task_id: &TaskId,
+/// §6.1 step 2's gates and the delegation rule for a node's child: the caller's type and depth
+/// admit one more child, and the child holds no more authority than its caller on any axis. Answers
+/// the writable scope the child is asked for and the axes the operator's opt-in let it widen.
+fn node_authority(
+    snapshot: &crate::types_snapshot::TypesSnapshot,
     caller: &Caller,
-    observer: &dyn SpawnObserver,
-) -> Result<TaskContract, SpawnError> {
-    // **The table the caller's tree started with**, never the file in the tree the caller runs in:
-    // a child's worktree is its own to edit, and what it writes there must not decide what its
-    // descendants are (see [`crate::types_snapshot`]). A type the table does not define is refused
-    // here, before the intent is journaled.
-    let caller_id = AgentId(caller.agent_id.clone());
-    let snapshot = crate::types_snapshot::for_caller(
-        &env.project_dir,
-        &caller_id,
-        &req.repo,
-        &caller.agent_type.name,
-    )?;
-    let agent_type = snapshot.launch_type(&req.agent_type)?;
-    // What the operator passes this type's nodes past the inherit filter, read now so a broken
-    // file refuses before any side effect.
-    let passthrough =
-        crate::child_env::passthrough(&agent_type.name).map_err(SpawnError::EnvFile)?;
-    // The type's standing instruction and marion's report instruction, once, here — and `req` is
-    // the child's full request from this line on, so the four places that read its prompt read
-    // one value.
-    let req = &SpawnRequest {
-        prompt: child_prompt(&agent_type, &req.prompt),
-        ..req.clone()
-    };
+    agent_type: &AgentType,
+    req: &SpawnRequest,
+) -> Result<(Vec<marion_core::contract::Glob>, Vec<String>), SpawnError> {
     // **§6.1 step 2, and it runs before every side effect there is** — before the worktree, before
     // `config_files`, before `compile`, before any process. That ordering is the whole point: the
     // things this refuses are a real git worktree, a real branch, a real agent-dir and a real OS
@@ -1843,7 +1885,7 @@ pub fn run_spawn_watched(
         caller_authority = caller_authority.in_read_only_session();
     }
     // A reviewer runs read-only whatever its type, so that is the authority it is judged by.
-    let mut child_authority = marion_harness::authority::Authority::of(&agent_type);
+    let mut child_authority = marion_harness::authority::Authority::of(agent_type);
     if req.review.is_some() {
         child_authority = child_authority.in_read_only_session();
     }
@@ -1884,6 +1926,53 @@ pub fn run_spawn_watched(
             r.axes.iter().map(|a| a.as_str().to_string()).collect()
         }
         Some(r) => return Err(SpawnError::WiderThanParent(r)),
+    };
+    Ok((requested, widened))
+}
+
+/// §6.1's spawn, with the node's owner told about it as it happens. See [`SpawnObserver`].
+pub fn run_spawn_watched(
+    env: &Env,
+    req: &SpawnRequest,
+    task_id: &TaskId,
+    requester: &Requester,
+    observer: &dyn SpawnObserver,
+) -> Result<TaskContract, SpawnError> {
+    // **The table the caller's tree started with**, never the file in the tree the caller runs in:
+    // a child's worktree is its own to edit, and what it writes there must not decide what its
+    // descendants are (see [`crate::types_snapshot`]). A type the table does not define is refused
+    // here, before the intent is journaled. The operator's node starts a tree of its own, so its
+    // table is read from the repository it was asked for, as a root's is.
+    let snapshot = match requester {
+        Requester::Node(caller) => crate::types_snapshot::for_caller(
+            &env.project_dir,
+            &AgentId(caller.agent_id.clone()),
+            &req.repo,
+            &caller.agent_type.name,
+        )?,
+        Requester::Operator {
+            allow_wider_children,
+        } => {
+            crate::types_snapshot::for_operator(&req.repo, &req.agent_type, *allow_wider_children)?
+        }
+    };
+    let agent_type = snapshot.launch_type(&req.agent_type)?;
+    // What the operator passes this type's nodes past the inherit filter, read now so a broken
+    // file refuses before any side effect.
+    let passthrough =
+        crate::child_env::passthrough(&agent_type.name).map_err(SpawnError::EnvFile)?;
+    // The type's standing instruction and marion's report instruction, once, here — and `req` is
+    // the child's full request from this line on, so the four places that read its prompt read
+    // one value.
+    let req = &SpawnRequest {
+        prompt: child_prompt(&agent_type, &req.prompt),
+        ..req.clone()
+    };
+    let (requested, widened) = match requester {
+        Requester::Node(caller) => node_authority(&snapshot, caller, &agent_type, req)?,
+        // No caller to gate by or to bound it: the requested type's own authority, held to its
+        // scope ceiling below like every other node's.
+        Requester::Operator { .. } => (requested_scope(req), Vec::new()),
     };
     check_spawn_scope(&agent_type.scope_ceiling, &requested)?;
     // The verification lines ride on the intent below, so a set too large to journal is refused
@@ -1954,15 +2043,16 @@ pub fn run_spawn_watched(
             timeout_secs: Some(bound.as_secs()),
             // The lines a restart re-runs when it resumes this child, sized by the check above.
             verification: req.verification.clone(),
-            // §7.5: immutable, written once. The caller is the parent by construction.
-            parent_id: Some(AgentId(caller.agent_id.clone())),
+            // §7.5: immutable, written once. The caller is the parent by construction; the
+            // operator's node is a top-level entry.
+            parent_id: requester.parent_id(),
             // The canonical name off the resolved type, not the alias `req.agent_type` used —
             // the same value `SpawnCtx` carries to the child's own bridge.
             agent_type: agent_type.name.clone(),
             harness: agent_type.harness,
             // §3.1's depth, one level below the caller's — the same derivation `SpawnCtx` uses, so
             // the journal and the child's declaration can never disagree about where it sits.
-            depth: caller.depth + 1,
+            depth: requester.depth() + 1,
             // A child runs under a contract; §9's `None` is for a root.
             task_id: Some(task_id.clone()),
             // A seat keeps its seat across a resume: the resume rebuilds this request from the
@@ -1981,7 +2071,10 @@ pub fn run_spawn_watched(
             &env.project_dir,
             RecordKind::WiderDelegation(marion_core::journal::WiderDelegation {
                 agent_id: agent_id.clone(),
-                caller_type: caller.agent_type.name.clone(),
+                caller_type: match requester {
+                    Requester::Node(c) => c.agent_type.name.clone(),
+                    Requester::Operator { .. } => OPERATOR_REQUESTER.into(),
+                },
                 child_type: agent_type.name.clone(),
                 axes: widened.clone(),
             }),
@@ -2063,7 +2156,7 @@ pub fn run_spawn_watched(
         // §3.1's depth, one level below the caller's. This is what reaches the child's own bridge
         // through the per-server `env` block, and it is what makes the gate above evaluable at all
         // when *this* child spawns in turn.
-        depth: caller.depth + 1,
+        depth: requester.depth() + 1,
         // `Some` only on the duplex path. On a `LaunchOnly` child the prompt rides argv, so there
         // is no frame to withhold and no marker to wait on (§6.1 step 8); its MCP readiness is
         // asserted post hoc from its JSONL stream.
@@ -2279,7 +2372,7 @@ pub fn run_spawn_watched(
             &agent_type,
             adapter.as_ref(),
             path,
-            caller.depth + 1,
+            requester.depth() + 1,
             &wt,
             &ch,
         );
@@ -2736,7 +2829,7 @@ pub fn run_spawn_watched(
     };
     let mut contract = build_contract(
         task_id.clone(),
-        AgentId(caller.agent_id.clone()),
+        requester.id(),
         // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so
         // the harness it names must be the one that actually produced the work, never the one that
         // was asked for. Sourcing it here makes that an invariant the code enforces rather than one
@@ -2869,7 +2962,7 @@ pub fn run_spawn_watched(
             review: tally,
             agent_id: agent_id.clone(),
             task_id: task_id.clone(),
-            requester: AgentId(caller.agent_id.clone()),
+            requester: requester.id(),
             status: contract.completion.as_ref().map(|c| c.status),
             changed: contract
                 .completion
@@ -5085,7 +5178,7 @@ mod tests {
             &env,
             &req,
             &TaskId("intent-barrier".into()),
-            &Caller::root("root", builtin("codex").unwrap()),
+            &Requester::from(Caller::root("root", builtin("codex").unwrap())),
             &observer,
         )
         .expect_err("no durable intent, no child");
@@ -5249,7 +5342,7 @@ mod tests {
             &req,
             &TaskId("prelaunch".into()),
             // Unsandboxed, so the containment gate is not what refuses this spawn.
-            &Caller::root("root", builtin("claude").unwrap()),
+            &Requester::from(Caller::root("root", builtin("claude").unwrap())),
             &Unwatched,
         )
         .expect_err("the protocol row with no agent cannot be launched");
@@ -5616,7 +5709,7 @@ mod tests {
             &env,
             &req,
             &TaskId("observer".into()),
-            &Caller::root("root", builtin("claude").unwrap()),
+            &Requester::from(Caller::root("root", builtin("claude").unwrap())),
             &observer,
         );
 

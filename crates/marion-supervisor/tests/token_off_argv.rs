@@ -274,7 +274,7 @@ fn spawn_and_inspect(tag: &str, agent_type: &str, provider: &Provider) -> TaskCo
     let run = {
         let observer = Arc::clone(&observer);
         std::thread::spawn(move || {
-            run_spawn_watched(&env, &req, &task, &caller, observer.as_ref())
+            run_spawn_watched(&env, &req, &task, &caller.clone().into(), observer.as_ref())
                 .map_err(|e| e.to_string())
         })
     };

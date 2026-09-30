@@ -219,6 +219,27 @@ pub fn for_caller(
     Ok(TypesSnapshot::take(tree, Some(caller_type))?.allowing_wider_children(allow))
 }
 
+/// **The table a node the operator asked for directly starts its tree with**: `tree`'s, read now,
+/// with the requested type as the tree's top — as a root's table is ([`TypesSnapshot::take`]), since
+/// no node's snapshot is above it. A tree under this project's agent directories is a worktree
+/// marion made for a node, which that node can edit, and is refused for [`for_caller`]'s reason.
+///
+/// `allow_wider_children` is the operator's flag for this node; their config file can also say so.
+pub fn for_operator(
+    tree: &Path,
+    agent_type: &str,
+    allow_wider_children: bool,
+) -> Result<TypesSnapshot, SpawnError> {
+    let allow = allow_wider_children
+        || crate::user_config::allow_wider_children().map_err(|error| {
+            SpawnError::AgentTypesFile {
+                path: crate::user_config::path().unwrap_or_default(),
+                error,
+            }
+        })?;
+    Ok(TypesSnapshot::take(tree, Some(agent_type))?.allowing_wider_children(allow))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
