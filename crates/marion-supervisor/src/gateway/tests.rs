@@ -166,6 +166,32 @@ fn a_request_without_the_nodes_bearer_is_refused_and_never_reaches_the_provider(
     assert!(server.requests().unwrap().is_empty());
 }
 
+/// **The credential is checked from the head, before any body is read**: a caller without the
+/// bearer that announces the largest body the gateway takes, and sends none of it, is answered 401
+/// at once. Mutation: read the body before `presents`; the gateway then waits on 64 MiB that never
+/// come and this read times out.
+#[test]
+fn an_unauthenticated_request_is_refused_before_its_body_is_read() {
+    let (_d, server) = canned("unauth-head", report_script());
+    let gw = gateway_for(&server.base_url());
+    let addr = gw.addr.to_string();
+    let mut s = TcpStream::connect(&addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        s,
+        "POST /v1/messages HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\n\r\n",
+        http::MAX_BODY
+    )
+    .unwrap();
+    let mut head = [0u8; 12];
+    s.read_exact(&mut head)
+        .expect("answered from the head, without waiting for the body");
+    assert_eq!(&head, b"HTTP/1.1 401", "{}", String::from_utf8_lossy(&head));
+    assert!(server.requests().unwrap().is_empty());
+}
+
 /// **A streamed tool-calling turn, both ways**: Anthropic in, Chat Completions to the provider with
 /// the stored key and the endpoint's model, the provider's streamed `tool_calls` back as one
 /// `tool_use` block with its arguments rejoined, and — with the tool's result in the history — the

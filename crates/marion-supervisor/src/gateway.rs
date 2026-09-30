@@ -42,6 +42,10 @@ use translate::{Collected, Event, StreamTranslator};
 /// Connections served at once. A harness opens a handful (a turn plus a background title call);
 /// the bound is what keeps a local process that is not the node from pinning threads.
 const MAX_CONNS: usize = 16;
+
+/// What a refused request's unread body may still be drained of before its connection closes: a
+/// harness's own request with a wrong credential, not a body sent to occupy the gateway.
+const DISCARD: u64 = 1024 * 1024;
 /// How long a stopping gateway waits for its connection threads to see their sockets closed.
 const DRAIN: Duration = Duration::from_secs(5);
 /// How much of a provider's error body is read, for its message.
@@ -472,20 +476,34 @@ fn serve(shared: &Shared, conn: &Conn, stream: &TcpStream) {
     // No read timeout: a connection that never sends holds one of `MAX_CONNS` permits until the
     // gateway stops, which shuts it — and a timer would be a wakeup an idle node does not need.
     let w = stream;
-    let req = match http::read_request(&mut BufReader::new(stream)) {
-        Ok(r) => r,
-        Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-            return error_response(t, w, 400, &format!("marion gateway: {e}"));
+    let mut reader = BufReader::new(stream);
+    let bad = |e: io::Error| {
+        if e.kind() == io::ErrorKind::InvalidData {
+            error_response(t, w, 400, &format!("marion gateway: {e}"));
         }
-        Err(_) => return,
     };
+    let mut req = match http::read_head(&mut reader) {
+        Ok(r) => r,
+        Err(e) => return bad(e),
+    };
+    // **The credential before the body**: a caller without the node's bearer is answered from the
+    // head alone, before marion reads or allocates for anything it sent after it.
     if !presents(&req, &shared.bearer) {
-        return error_response(
+        error_response(
             t,
             w,
             401,
             "marion gateway: this request does not carry the node's gateway credential",
         );
+        // Closing with the caller's body unread would reset the connection and could lose the
+        // answer just written, so the answer is finished (FIN) and what the caller already sent is
+        // discarded, bounded: a body past `DISCARD` is not waited for.
+        let _ = stream.shutdown(Shutdown::Write);
+        let _ = io::copy(&mut reader.take(DISCARD), &mut io::sink());
+        return;
+    }
+    if let Err(e) = http::read_body(&mut reader, &mut req) {
+        return bad(e);
     }
     let method = req.method.to_ascii_uppercase();
     match method.as_str() {

@@ -49,8 +49,18 @@ fn head_line(r: &mut impl BufRead, budget: &mut usize) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&line).trim_end().to_string())
 }
 
-/// Read one request: its head, then a `Content-Length` or chunked body, each bounded.
+/// Read one request: its head, then a `Content-Length` or chunked body, each bounded. The gateway
+/// reads the two apart, the credential between ([`read_head`]); this is the whole of it, for tests.
+#[cfg(test)]
 pub fn read_request(r: &mut impl BufRead) -> io::Result<Request> {
+    let mut req = read_head(r)?;
+    read_body(r, &mut req)?;
+    Ok(req)
+}
+
+/// Read a request's head alone, its body left unread: what the gateway checks the credential
+/// against **before** it reads, or allocates for, a body an unauthenticated caller sent.
+pub fn read_head(r: &mut impl BufRead) -> io::Result<Request> {
     let mut budget = MAX_HEAD;
     let line = head_line(r, &mut budget)?;
     let mut parts = line.split_whitespace();
@@ -68,12 +78,16 @@ pub fn read_request(r: &mut impl BufRead) -> io::Result<Request> {
             headers.push((k.trim().to_string(), v.trim().to_string()));
         }
     }
-    let mut req = Request {
+    Ok(Request {
         method: method.to_string(),
         path,
         headers,
         body: Vec::new(),
-    };
+    })
+}
+
+/// Read the body [`read_head`] left: `Content-Length` or chunked, bounded by [`MAX_BODY`].
+pub fn read_body(r: &mut impl BufRead, req: &mut Request) -> io::Result<()> {
     if req
         .header("transfer-encoding")
         .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"))
@@ -88,7 +102,7 @@ pub fn read_request(r: &mut impl BufRead) -> io::Result<Request> {
         r.read_exact(&mut body)?;
         req.body = body;
     }
-    Ok(req)
+    Ok(())
 }
 
 fn read_chunked(r: &mut impl BufRead) -> io::Result<Vec<u8>> {
