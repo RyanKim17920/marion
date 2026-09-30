@@ -71,13 +71,13 @@ use std::sync::{Arc, Mutex};
 
 use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::journal::{RecordKind, SupervisorExited};
-use marion_core::proto::notify::Event;
 use marion_core::proto::result::{NodeGetResult, TreeSubscribeResult};
-use marion_core::proto::{Call, ClientGone, MethodResult, ReplayPoint, RpcError};
+use marion_core::proto::{Call, ClientGone, MethodResult, RpcError};
 use marion_core::secret::Secret;
 
 use crate::registry::LiveRegistry;
 use crate::serve::{ConnId, Departure, Handle, Outbound, Peer};
+use broadcast::{deliver, notify_claimer, notify_seed_for};
 use launch::{check_project, decoy_token, mint_task_id, root_spawn_authorized, unminted_token};
 use lifecycle::{
     QuitRuntime, SystemQuitRuntime, journal_failure_after_signal, journal_failure_after_signal_in,
@@ -86,6 +86,7 @@ use lifecycle::{
 use panes::{Attachment, Panes};
 use summary::{Told, collect, project};
 
+pub use broadcast::read_point;
 pub(crate) use launch::mint_token;
 pub use summary::{Unprojectable, summarize};
 pub(crate) use summary::{clock, summarize_spent};
@@ -105,7 +106,11 @@ use marion_core::journal::{KillConfirmed, ReapConfirmed, ReapIntent};
 #[cfg(test)]
 use marion_core::node::{NodeState, ReapState};
 #[cfg(test)]
-use marion_core::proto::{AttachMode, FailureKind, NativeLaunchContext, ResidentReason};
+use marion_core::proto::notify::Event;
+#[cfg(test)]
+use marion_core::proto::{
+    AttachMode, FailureKind, NativeLaunchContext, ReplayPoint, ResidentReason,
+};
 #[cfg(test)]
 use marion_core::registry::{Replay, ReplayedNode};
 #[cfg(test)]
@@ -335,6 +340,7 @@ mod steer;
 /// `node/cancel`: freeze a subtree, abort it bottom-up, kill what outlives its grace.
 mod cancel;
 
+mod broadcast;
 /// Token budgets: register each node's, and act on a line its spend crosses.
 mod budget;
 mod delivery;
@@ -1154,84 +1160,9 @@ impl Handle for RegistryHandle {
     }
 }
 
-/// Send to every subscriber, dropping the ones that have gone.
-///
-/// [`Outbound::send`] never blocks, so this cannot be slowed by a client — see `serve.rs`: a full
-/// queue is a verdict about that client, and §5.7 is what makes it the right one.
-/// What the operator's `notify.toml` and `MARION_NOTIFY` ask for, titled with the project's
-/// directory name: the notifier's seed, whether notices start on or off.
-fn notify_seed_for(project_root: &std::path::Path) -> crate::notify::NotifySeed {
-    let config = crate::notify::NotifyConfig::load(
-        crate::credentials::config_dir().ok().as_deref(),
-        std::env::var(crate::notify::NOTIFY_ENV).ok().as_deref(),
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("marion: notifications are off: {e}");
-        crate::notify::NotifyConfig::default()
-    });
-    let backend =
-        crate::notify::Backend::resolve(std::env::var(crate::notify::BACKEND_ENV).ok().as_deref());
-    let shown = match project_root.file_name().and_then(|f| f.to_str()) {
-        Some(".git") => project_root.parent().unwrap_or(project_root),
-        _ => project_root,
-    };
-    let project = shown
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("project")
-        .to_string();
-    crate::notify::NotifySeed {
-        config,
-        backend,
-        project,
-    }
-}
-
-/// Send `shown` to the first claimer still connected; a claimer whose send fails is gone, and the
-/// next is tried.
-fn notify_claimer(
-    g: &mut Shared,
-    ring: crate::notify::TerminalRing,
-    shown: &[crate::notify::Shown],
-) {
-    while let Some(head) = g.claimers.first() {
-        let sent = shown.iter().all(|s| {
-            head.send(&marion_core::proto::Frame::Notification(
-                marion_core::proto::Notification::new(Event::NotifyNotice {
-                    title: s.title.clone(),
-                    body: s.body.clone(),
-                    ring: ring.word().to_string(),
-                }),
-            ))
-        });
-        if sent {
-            return;
-        }
-        g.claimers.remove(0);
-    }
-}
-
-fn deliver(g: &mut Shared, events: &[Event]) {
-    if events.is_empty() {
-        return;
-    }
-    g.subs.retain(|s| {
-        events.iter().all(|e| {
-            s.send(&marion_core::proto::Frame::Notification(
-                marion_core::proto::Notification::new(e.clone()),
-            ))
-        })
-    });
-}
-
 /// A poisoned lock is taken, not unwrapped — `registry.rs`'s rule and §5.7's requirement.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// The read point the registry is currently serving, for a caller that wants it without a client.
-pub fn read_point(live: &LiveRegistry) -> ReplayPoint {
-    live.read(|r| r.read_point())
 }
 
 #[cfg(test)]
