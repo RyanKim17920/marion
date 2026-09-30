@@ -176,6 +176,36 @@ mod tests {
         assert_eq!(snapshot.bounded(shallow).unwrap().max_depth, 1);
     }
 
+    /// **A tree's table is not read through a symlink that leaves the tree**: the file is the
+    /// tree's, and a link to a file elsewhere would let a checkout name rows it does not hold.
+    #[test]
+    fn a_table_linked_from_outside_the_tree_is_refused() {
+        let dir = marion_testsupport::scratch("types-snapshot-symlink");
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(tree.join(".marion")).unwrap();
+        let outside = dir.join("elsewhere.toml");
+        std::fs::write(
+            &outside,
+            "[[agent]]\nname = \"r\"\nharness = \"codex\"\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join(crate::run::AGENT_TYPES_FILE)).unwrap();
+        let err = crate::run::agent_types(&tree).expect_err("a link out of the tree is refused");
+        assert!(err.to_string().contains("outside"), "{err}");
+
+        // A link that stays inside the tree is the tree's own file.
+        std::fs::remove_file(tree.join(crate::run::AGENT_TYPES_FILE)).unwrap();
+        std::fs::copy(&outside, tree.join("types.toml")).unwrap();
+        std::os::unix::fs::symlink("../types.toml", tree.join(crate::run::AGENT_TYPES_FILE))
+            .unwrap();
+        assert!(
+            crate::run::agent_types(&tree)
+                .unwrap()
+                .resolve("r")
+                .is_some()
+        );
+    }
+
     /// A snapshot survives its round trip through the agent directory byte for byte.
     #[test]
     fn a_snapshot_reads_back_as_written() {

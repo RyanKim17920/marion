@@ -1255,6 +1255,44 @@ fn git_path(repo: &Path, leaf: &str) -> Result<PathBuf, SpawnError> {
     })
 }
 
+/// **The changed paths that are symlinks pointing outside `root`**, in their listed order.
+///
+/// Resolved lexically — the link's own directory joined with its target, `..` folded — rather than
+/// by following it, so a link to a path that does not exist yet is judged the same as one that
+/// does, and nothing outside the tree is touched to decide.
+pub fn escaping_symlinks(root: &Path, changed: &[PathBuf]) -> Vec<PathBuf> {
+    changed
+        .iter()
+        .filter(|p| {
+            let full = root.join(p);
+            let Ok(target) = std::fs::read_link(&full) else {
+                return false;
+            };
+            let base = full.parent().unwrap_or(root);
+            !lexically_within(root, &base.join(target))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Whether `path`, with `.` and `..` folded without touching the filesystem, stays under `root`.
+pub fn lexically_within(root: &Path, path: &Path) -> bool {
+    use std::path::Component;
+    let mut folded = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                if !folded.pop() {
+                    return false;
+                }
+            }
+            Component::CurDir => {}
+            other => folded.push(other.as_os_str()),
+        }
+    }
+    folded.starts_with(root)
+}
+
 /// What marion knows about a finished child: what its stream said, plus what marion observed of
 /// the process.
 ///
@@ -1347,11 +1385,18 @@ pub fn build_contract(
     let scope = Scope::new(ceiling, requested).ok();
     let scope_enforced = scope.is_some() && changed.is_some();
     let changed = changed.unwrap_or_default();
-    let violations = scope
+    let mut violations = scope
         .as_ref()
         .filter(|_| scope_enforced)
         .map(|s| s.violations(&changed))
         .unwrap_or_default();
+    // A link out of the tree is a violation whatever the scope allows: merged, it points the
+    // caller's checkout at a path the child chose.
+    for link in escaping_symlinks(workspace.path(), &changed) {
+        if !violations.contains(&link) {
+            violations.push(link);
+        }
+    }
     // A child that never reported is Unreported even if everything else looks clean — the status
     // is never silently promoted from a final message.
     let status = if outcome.timed_out {
@@ -1973,6 +2018,58 @@ mod tests {
             comp.status,
             ExitStatus::Ok,
             "detective, not preventive: the run still succeeded"
+        );
+    }
+
+    /// **A committed symlink that points outside the worktree is a scope violation**, whatever the
+    /// scope allows: merging it would put a link to anywhere into the caller's tree. One that stays
+    /// inside is ordinary work.
+    #[test]
+    fn a_symlink_pointing_outside_the_worktree_is_a_scope_violation() {
+        let dir = marion_testsupport::scratch("spawn-escaping-symlink");
+        let wt = dir.join("wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join("src/a.rs"), "a\n").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", wt.join("src/abs")).unwrap();
+        std::os::unix::fs::symlink("../../outside", wt.join("src/rel")).unwrap();
+        std::os::unix::fs::symlink("a.rs", wt.join("src/inside")).unwrap();
+        let c = build_contract(
+            TaskId("t".into()),
+            AgentId("r".into()),
+            marion_core::Harness::Codex,
+            RepoIdentity {
+                git_common_dir: Some("/r/.git".into()),
+                head_branch: None,
+            },
+            Some(Oid("a".repeat(40))),
+            Workspace::Worktree {
+                path: wt.clone(),
+                branch: "b".into(),
+            },
+            "do it",
+            &["passes".to_string()],
+            &[Glob("**".into())],
+            &[Glob("**".into())],
+            Duration::from_secs(900),
+            now(),
+            &ChildOutcome {
+                narrative: Some("done".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            Some(
+                ["src/a.rs", "src/abs", "src/rel", "src/inside"]
+                    .map(PathBuf::from)
+                    .to_vec(),
+            ),
+            None,
+            vec![],
+            vec![],
+        );
+        let comp = c.completion.unwrap();
+        assert_eq!(
+            comp.scope_violations,
+            ["src/abs", "src/rel"].map(PathBuf::from).to_vec()
         );
     }
 

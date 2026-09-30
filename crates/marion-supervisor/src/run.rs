@@ -1592,8 +1592,27 @@ pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
 }
 
 /// [`AGENT_TYPES_FILE`]'s path and text, or `None` where the tree has none.
+///
+/// **Never through a link that leaves the tree.** The file is the tree's own; a `.marion` or an
+/// `agents.toml` that resolves outside it would let a checkout name rows it does not hold — a
+/// file another user can write, or one a child planted elsewhere — so it is refused by name.
 pub(crate) fn read_agent_types(tree: &Path) -> Result<Option<(PathBuf, String)>, SpawnError> {
     let path = tree.join(AGENT_TYPES_FILE);
+    if std::fs::symlink_metadata(&path).is_ok() {
+        let (real, root) = (path.canonicalize(), tree.canonicalize());
+        if let (Ok(real), Ok(root)) = (&real, &root)
+            && !real.starts_with(root)
+        {
+            return Err(SpawnError::AgentTypesFile {
+                path,
+                error: format!(
+                    "it is a link to {}, outside the tree it belongs to; marion reads a tree's \
+                     agent types only from the tree itself",
+                    real.display()
+                ),
+            });
+        }
+    }
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(Some((path, text))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
