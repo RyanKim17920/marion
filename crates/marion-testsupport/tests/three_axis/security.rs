@@ -7,9 +7,11 @@
 //! Rules, each emitted under its own name:
 //! - `secret-debug`: a type named for a secret, holding a string, derives `Debug`, or implements
 //!   `Display`; or any type deriving `Debug` carries a string field named like a secret.
-//! - `secret-format`: a formatting/logging macro reads a secret-named value.
+//! - `secret-format`: a formatting/logging macro reads a secret-named value, or a local bound to a
+//!   secret's plaintext (`let k = key.expose();` then `format!("{k}")`).
 //! - `secret-doc-mode`: a file that writes credential-bearing documents creates one without an
-//!   owner-only mode in the same function.
+//!   owner-only mode set **at open** in the same function — a `set_permissions` after the create
+//!   leaves a window in which the file is readable under the umask, and does not count.
 //! - `secret-argv`: a secret-named value, or a `--api-key`-style flag, goes onto a command line —
 //!   including a node's whole bridge (`bridge_env(…)`, whose declaration carries the node token)
 //!   written into an argv-bound place: a row's config `pairs`, an ACP agent's `agent_args`, an
@@ -96,7 +98,7 @@ const FORMAT_MACROS: &[&str] = &[
 /// asks an adapter for its `config_files` (which embed the node's bridge token and, in endpoint
 /// mode, the provider key), writes such documents.
 const SECRET_DOC_MARKERS: &[&str] = &["mcp.json", "credentials", "auth.json", "oauth"];
-const SECRET_DOC_CALLS: &[&str] = &["config_files"];
+const SECRET_DOC_CALLS: &[&str] = &["config_files", "launch_documents"];
 
 /// Fields whose contents become argv: a row's config pairs, an ACP agent's own argv, a compiled
 /// invocation's argv, a native launch's argv prefix.
@@ -110,7 +112,7 @@ const FILLING_METHODS: &[&str] = &["push", "extend", "insert", "append"];
 const FULL_BRIDGE_FNS: &[&str] = &["bridge_env"];
 
 /// Token-carrier variants that keep the node token out of the declaration.
-const WITHHOLDING_CARRIERS: &[&str] = &["InheritedEnv", "ForwardedEnv"];
+const WITHHOLDING_CARRIERS: &[&str] = &["InheritedEnv", "ForwardedEnv", "DeclaredFile"];
 
 /// Test-code literals that start a login: an argv token (`"login"`, `"/login"`, a device-flow
 /// flag) or a short command line (`"codex login"`, `"gemini auth login"`). Prose that mentions a
@@ -344,11 +346,61 @@ fn inline_captures(fmt: &str) -> Vec<String> {
     out
 }
 
+/// `let k = <… .expose() …>;`: `k` holds a secret's plaintext from here to the end of the function.
+pub fn check_local(s: &mut Scanner, l: &syn::Local) {
+    let Some(init) = &l.init else { return };
+    let expr = &init.expr;
+    let exposes = flatten(&quote::quote!(#expr)).windows(2).any(|w| {
+        matches!((&w[0], &w[1]), (TokenTree::Punct(p), TokenTree::Ident(m))
+            if p.as_char() == '.' && EXPOSING_METHODS.contains(&m.to_string().as_str()))
+    });
+    if !exposes {
+        return;
+    }
+    let pat = &l.pat;
+    let names: Vec<String> = flatten(&quote::quote!(#pat))
+        .into_iter()
+        .filter_map(|t| match t {
+            TokenTree::Ident(id) if id != "mut" && id != "ref" => Some(id.to_string()),
+            _ => None,
+        })
+        .collect();
+    if let Some(f) = s.current_fn() {
+        f.exposed.extend(names);
+    }
+}
+
+/// The locals of the current function bound to a secret's plaintext that `tokens` reads, directly
+/// or as an inline `{name}` capture.
+fn exposed_reads(s: &mut Scanner, tokens: &TokenStream) -> Vec<String> {
+    let Some(exposed) = s.current_fn().map(|f| f.exposed.clone()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for t in flatten(tokens) {
+        match t {
+            TokenTree::Ident(id) if exposed.contains(&id.to_string()) => out.push(id.to_string()),
+            TokenTree::Literal(l) => {
+                if let Ok(syn::Lit::Str(lit)) = syn::parse_str::<syn::Lit>(&l.to_string()) {
+                    out.extend(
+                        inline_captures(&lit.value())
+                            .into_iter()
+                            .filter(|n| exposed.contains(n)),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 pub fn check_macro(s: &mut Scanner, name: &str, m: &syn::Macro) {
     if !FORMAT_MACROS.contains(&name) || s.in_redaction_helper() {
         return;
     }
     let mut found = secret_idents(&m.tokens);
+    found.extend(exposed_reads(s, &m.tokens));
     found.sort();
     found.dedup();
     for f in found {
@@ -579,9 +631,15 @@ pub fn check_method(s: &mut Scanner, m: &syn::ExprMethodCall) {
         }
     }
     match method.as_str() {
-        "mode" | "set_permissions" | "set_mode" => {
+        "mode" => {
             if let Some(f) = s.current_fn() {
                 f.sets_mode = true;
+            }
+        }
+        "set_permissions" | "set_mode" => {
+            let line = crate::scan::line(m.span());
+            if let Some(f) = s.current_fn() {
+                f.chmods.push(line);
             }
         }
         "create" | "create_new" if m.args.len() == 1 => {
@@ -595,6 +653,7 @@ pub fn check_method(s: &mut Scanner, m: &syn::ExprMethodCall) {
             let args = &m.args;
             let tokens = quote::quote!(#args);
             let mut bad = secret_idents(&tokens);
+            bad.extend(exposed_reads(s, &tokens));
             for t in flatten(&tokens) {
                 if let TokenTree::Literal(l) = t
                     && let Ok(syn::Lit::Str(lit)) = syn::parse_str::<syn::Lit>(&l.to_string())
@@ -626,15 +685,24 @@ pub fn end_of_fn(s: &mut Scanner, frame: &FnFrame) {
         return;
     }
     for (line, what) in &frame.writes {
+        let detail = if frame.chmods.iter().any(|c| c > line) {
+            format!(
+                "`{what}` creates a file in a module that writes credential-bearing documents and \
+                 chmods it afterwards: until then it is readable under the umask. Give the mode at \
+                 open (`OpenOptionsExt::mode(0o600)`)"
+            )
+        } else {
+            format!(
+                "`{what}` in a module that writes credential-bearing documents, with no owner-only mode set"
+            )
+        };
         s.out.push(crate::scan::Finding {
             axis: Axis::Security,
             file: s.file.to_string(),
             item: s.item(),
             line: *line,
             rule: "secret-doc-mode",
-            detail: format!(
-                "`{what}` in a module that writes credential-bearing documents, with no owner-only mode set"
-            ),
+            detail,
         });
     }
 }

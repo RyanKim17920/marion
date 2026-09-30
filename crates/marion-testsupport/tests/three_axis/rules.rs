@@ -231,6 +231,24 @@ fn formatting_a_secret_is_flagged_but_its_presence_is_not() {
     assert!(rules(r#"fn redact(t: &str) -> String { format!("{}…", &token[..4]) }"#).is_empty());
 }
 
+/// **A secret's plaintext stays one when it is bound to a local**: `let k = key.expose();` makes
+/// `k` secret-named for the rest of the function, in a format macro (positional or captured) and
+/// on argv. An unrelated local of the same function is not.
+#[test]
+fn a_local_bound_to_an_exposed_secret_is_still_a_secret() {
+    assert!(
+        rules(r#"fn f() { let k = key.expose(); eprintln!("{}", k); }"#).contains(&"secret-format")
+    );
+    assert!(
+        rules(
+            r#"fn f() { let raw = s.api_key.expose().to_string(); let m = format!("x {raw}"); }"#
+        )
+        .contains(&"secret-format")
+    );
+    assert!(rules(r#"fn f() { let k = key.expose(); cmd.arg(k); }"#).contains(&"secret-argv"));
+    assert!(rules(r#"fn f() { let k = key.expose(); let n = 3; eprintln!("{n}"); }"#).is_empty());
+}
+
 #[test]
 fn secrets_on_argv_are_flagged() {
     assert!(rules("fn f() { cmd.arg(api_key); }").contains(&"secret-argv"));
@@ -342,6 +360,9 @@ fn credential_docs_need_an_owner_only_mode() {
     assert!(rules(unsafe_write).contains(&"secret-doc-mode"));
     let safe = r#"fn f() { let p = "mcp.json"; OpenOptions::new().write(true).create(true).mode(0o600).open(p); }"#;
     assert!(!rules(safe).contains(&"secret-doc-mode"));
+    // A chmod after the create leaves a window: not an owner-only mode.
+    let chmod_after = r#"fn f() { let p = "mcp.json"; let file = std::fs::File::create(p); OpenOptions::new().write(true).create(true).open(p); std::fs::set_permissions(p, perms); }"#;
+    assert!(rules(chmod_after).contains(&"secret-doc-mode"));
     // A module with no credential-bearing document is not asked for a mode.
     assert!(rules(r#"fn f() { std::fs::write("notes.txt", s); }"#).is_empty());
 }

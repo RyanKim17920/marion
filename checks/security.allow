@@ -8,6 +8,7 @@
 crates/marion-harness/src/acp.rs:AcpAdapter::config_files  safe: `api_key` is a field init inside the opencode config document, written 0600 by run::write_config_documents
 crates/marion-harness/src/goose.rs:GooseAdapter::fields  safe: `token` is a whitespace-split argv word in an error message, not a credential
 crates/marion-supervisor/src/credentials.rs:Keychain::put  safe: the exposed key is formatted into the `security -i` command line sent on stdin, never argv or a log
+crates/marion-supervisor/src/root.rs:record_the_roots_change  safe: writes root-change.json (file counts only, no credential); root.rs is marked only because it asks for launch_documents
 crates/marion-supervisor/tests/endpoint_matrix.rs:a_provider_with_no_stored_key_is_refused_by_name_with_the_login_command  safe: "marion login …" is the expected refusal text, never run
 crates/marion-supervisor/tests/login.rs:a_custom_provider_is_added_listed_and_can_hold_a_key  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
 crates/marion-supervisor/tests/login.rs:a_key_piped_with_stdin_is_stored_in_the_file_backend_and_never_printed  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login

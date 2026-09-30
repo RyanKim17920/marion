@@ -76,7 +76,14 @@ pub struct Scanner<'a> {
 pub struct FnFrame {
     pub name: String,
     pub writes: Vec<(usize, String)>,
+    /// Set by an owner-only mode given **at open** (`OpenOptionsExt::mode`).
     pub sets_mode: bool,
+    /// Lines of a `set_permissions`/`set_mode` after the file exists: a chmod after create, which
+    /// leaves the file readable under the umask until it runs.
+    pub chmods: Vec<usize>,
+    /// Locals bound to a secret's plaintext (`let k = key.expose();`), read as secret-named for
+    /// the rest of the function.
+    pub exposed: Vec<String>,
 }
 
 pub fn scan(src: &Source, vocab: &Vocabulary, facts: FileFacts) -> Vec<Finding> {
@@ -338,6 +345,13 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
             security::check_call(self, i);
         }
         visit::visit_expr_call(self, i);
+    }
+
+    fn visit_local(&mut self, i: &'ast syn::Local) {
+        if !self.in_test() {
+            security::check_local(self, i);
+        }
+        visit::visit_local(self, i);
     }
 
     fn visit_expr_assign(&mut self, i: &'ast syn::ExprAssign) {
