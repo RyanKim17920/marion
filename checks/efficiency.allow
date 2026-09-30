@@ -23,3 +23,4 @@ crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads 
 # --- home-polish (2026-09-27): the event-driven home loop ---------------------------------------
 crates/marion-supervisor/src/home/session.rs:TICK  bounded: the home screen wakes on it only while something on the tab moves (a running node's elapsed time, a harness being checked); an idle screen has no timeout at all
 crates/marion-supervisor/src/home/session.rs:Session::reports  not a poll: drains the side threads' channel once the wake pipe says a report arrived; never loops on a timer
+crates/marion-supervisor/src/client_auth.rs:hello  bounded: one read timeout per connection, the handshake deadline HELLO_WAIT (5 s), cleared once the hello is answered; a silent listener would otherwise hang the client for ever
