@@ -474,6 +474,20 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             crate::os_sandbox::WritePath::HomeProject(".claude/projects"),
             crate::os_sandbox::WritePath::TmpUserProject("claude"),
         ],
+        // Expected on the operator's own login: its per-session state beside the transcripts
+        // above, and the credential file a Linux login refreshes (macOS keeps it in the
+        // Keychain). Not `~/.claude.json`, which holds its MCP and project settings. Confirmed only
+        // by an admission run (`scripts/sandbox-admit.sh`).
+        live: crate::os_sandbox::Live {
+            writes: &[
+                crate::os_sandbox::WritePath::Home(".claude/todos"),
+                crate::os_sandbox::WritePath::Home(".claude/statsig"),
+                crate::os_sandbox::WritePath::Home(".claude/shell-snapshots"),
+                crate::os_sandbox::WritePath::Home(".claude/session-env"),
+            ],
+            files: &[".claude/.credentials.json"],
+            admitted: None,
+        },
     },
     // claude's own `--permission-mode plan`: plans and reads, edits nothing.
     read_only_modes: &[crate::authority::ReadOnlyMode {

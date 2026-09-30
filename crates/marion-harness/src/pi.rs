@@ -266,7 +266,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // and `--tools ""` offers nothing at all.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
-    os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap { writes: &[] },
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap {
+        writes: &[],
+        // Expected on the operator's own login: its sessions under its agent dir, and the login
+        // it refreshes. Confirmed only by an admission run (`scripts/sandbox-admit.sh`).
+        live: crate::os_sandbox::Live {
+            writes: &[crate::os_sandbox::WritePath::Home(".pi/agent/sessions")],
+            files: &[".pi/agent/auth.json"],
+            admitted: None,
+        },
+    },
     read_only_modes: &[],
 };
 

@@ -366,7 +366,21 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // marion compiles no constraint whatsoever (`NO_COMPILED_TOOL_CONSTRAINT`).
     writes_without_grant: true,
     containment: crate::containment::ContainmentRule::ToolsOnly,
-    os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap { writes: &[] },
+    os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap {
+        writes: &[],
+        // Expected on the operator's own login, from its XDG layout; confirmed only by an
+        // admission run (`scripts/sandbox-admit.sh`).
+        live: crate::os_sandbox::Live {
+            writes: &[
+                crate::os_sandbox::WritePath::Home(".local/share/opencode/storage"),
+                crate::os_sandbox::WritePath::Home(".local/share/opencode/log"),
+                crate::os_sandbox::WritePath::Home(".local/state/opencode"),
+                crate::os_sandbox::WritePath::Home(".cache/opencode"),
+            ],
+            files: &[".local/share/opencode/auth.json"],
+            admitted: None,
+        },
+    },
     read_only_modes: &[],
 };
 

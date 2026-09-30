@@ -8,18 +8,23 @@
 //! has measured under the profile is **unsupported**, so it keeps the containment it had. Nothing
 //! here is per harness: a row's strategy and its extra write paths are data.
 //!
-//! Phase 1 applies the sandbox only where a node's harness home is marion's own — canned and
-//! endpoint auth, where the home lives in the agent dir. Under the operator's own login a
-//! harness writes its real home, and a writable home is a way out of the sandbox (a hook the
-//! operator's next unsandboxed session runs), so those nodes keep their old label until each
-//! row's home rule is narrowed and measured.
+//! Canned and endpoint nodes are covered wherever their row states a strategy: their harness home
+//! lives in the agent dir. Under the operator's own login a harness writes its real home, and a
+//! writable home is a way out of the sandbox (a hook the operator's next unsandboxed session
+//! runs), so a row is covered there only once its [`Live`] list — session and state paths, and
+//! single files such as a credential a login refresh rewrites, never settings or hooks — has
+//! passed an admission run: one live task under the profile, with nothing written outside it.
 
 /// How marion's sandbox meets one row's harness. Row data, stated by every row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsSandboxRule {
     /// The harness has no sandbox of its own on by default: marion's profile wraps its process.
-    /// `writes` are the paths beyond the node's own that it measured it needs.
-    Wrap { writes: &'static [WritePath] },
+    /// `writes` are the paths beyond the node's own that it measured it needs; `live` what it
+    /// needs more on the operator's own login.
+    Wrap {
+        writes: &'static [WritePath],
+        live: Live,
+    },
     /// The harness's own sandbox cannot run inside marion's, so it is switched off where marion's
     /// applies: `off` is `(field, JSON value)` on the thread's opening request, which beats every
     /// other switch the harness reads. A read-only node keeps the harness's own read-only sandbox
@@ -27,9 +32,50 @@ pub enum OsSandboxRule {
     ReplaceOwn {
         writes: &'static [WritePath],
         off: &'static [(&'static str, &'static str)],
+        live: Live,
     },
     /// Not applied, and why: the node keeps the containment its row had without it.
     Unsupported { why: &'static str },
+}
+
+/// **What a row's harness writes on the operator's own login**, beyond what it writes anywhere:
+/// its session and state directories, and single files it rewrites (a credential a login refresh
+/// replaces, a history it appends to) — never its settings, hooks, agents or skills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Live {
+    pub writes: &'static [WritePath],
+    /// Files relative to the operator's home, each writable alone — never its directory.
+    pub files: &'static [&'static str],
+    /// The admission run that showed these are enough and nothing else was written — harness
+    /// version, date, task. `None` until one passes: the row is then not covered on the
+    /// operator's own login, and its nodes keep the containment their row has without it.
+    pub admitted: Option<&'static str>,
+}
+
+/// A row with nothing measured for the operator's own login.
+pub const UNMEASURED: Live = Live {
+    writes: &[],
+    files: &[],
+    admitted: None,
+};
+
+impl OsSandboxRule {
+    /// The row's list for the operator's own login, where it states a strategy.
+    pub fn live(self) -> Option<Live> {
+        match self {
+            OsSandboxRule::Wrap { live, .. } | OsSandboxRule::ReplaceOwn { live, .. } => Some(live),
+            OsSandboxRule::Unsupported { .. } => None,
+        }
+    }
+}
+
+/// The variable an operator sets to `1` for an **admission run**: a live node on a row whose
+/// [`Live`] list is stated but not yet admitted runs under the profile, so the run can show the
+/// list is enough. It only ever adds a sandbox; the node's containment is judged as before.
+pub const ADMIT_ENV: &str = "MARION_SANDBOX_ADMIT";
+
+fn admitting() -> bool {
+    std::env::var(ADMIT_ENV).is_ok_and(|v| v.trim() == "1")
 }
 
 /// A path a harness writes beyond its node's own dirs, relative to the **node's** home: the
@@ -140,7 +186,11 @@ pub fn enabled_by_operator() -> bool {
 /// states a strategy, a harness home that is marion's own (canned or endpoint), and — on a row
 /// replacing its own sandbox — a node that writes, since a read-only one keeps the harness's.
 pub fn covers(rule: OsSandboxRule, auth: crate::Auth, read_only: bool) -> bool {
-    matches!(auth, crate::Auth::Canned | crate::Auth::Endpoint)
+    let home_ok = match auth {
+        crate::Auth::Canned | crate::Auth::Endpoint => true,
+        crate::Auth::Inherited => rule.live().is_some_and(|l| l.admitted.is_some()),
+    };
+    home_ok
         && match rule {
             OsSandboxRule::Wrap { .. } => true,
             OsSandboxRule::ReplaceOwn { .. } => !read_only,
@@ -148,11 +198,25 @@ pub fn covers(rule: OsSandboxRule, auth: crate::Auth, read_only: bool) -> bool {
         }
 }
 
+/// Whether an admission run puts this live launch under the profile: [`ADMIT_ENV`] set, the
+/// operator's own login, and a row with a [`Live`] list stated.
+fn admits(rule: OsSandboxRule, auth: crate::Auth, read_only: bool, admitting: bool) -> bool {
+    admitting
+        && auth == crate::Auth::Inherited
+        && rule
+            .live()
+            .is_some_and(|l| !l.writes.is_empty() || !l.files.is_empty())
+        && !(matches!(rule, OsSandboxRule::ReplaceOwn { .. }) && read_only)
+}
+
 /// Whether it applies to **this launch**: asked for (the supervisor's node launches set
 /// [`crate::adapter::Extras::os_sandbox`]; a probe does not), [`covers`], and a host that
 /// supports it.
 pub fn applies(rule: OsSandboxRule, spec: &crate::adapter::LaunchSpec) -> bool {
-    spec.extra.os_sandbox && covers(rule, spec.auth, spec.extra.read_only) && support().available()
+    let (auth, read_only) = (spec.auth, spec.extra.read_only);
+    spec.extra.os_sandbox
+        && (covers(rule, auth, read_only) || admits(rule, auth, read_only, admitting()))
+        && support().available()
 }
 
 /// The fields a row replacing its own sandbox sets on its thread's opening request where marion's
@@ -172,6 +236,8 @@ pub fn replaced_fields(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxPlan {
     dirs: Vec<std::path::PathBuf>,
+    /// Single files writable alone ([`Live::files`]), on the operator's own login.
+    files: Vec<std::path::PathBuf>,
 }
 
 impl SandboxPlan {
@@ -186,9 +252,14 @@ impl SandboxPlan {
         inv: &crate::invocation::Invocation,
     ) -> Result<SandboxPlan, String> {
         use std::path::PathBuf;
-        let writes: &[WritePath] = match rule {
-            OsSandboxRule::Wrap { writes } | OsSandboxRule::ReplaceOwn { writes, .. } => writes,
+        let (writes, live): (&[WritePath], Live) = match rule {
+            OsSandboxRule::Wrap { writes, live }
+            | OsSandboxRule::ReplaceOwn { writes, live, .. } => (writes, live),
             OsSandboxRule::Unsupported { why } => return Err(why.to_string()),
+        };
+        let (live_writes, live_files): (&[WritePath], &[&str]) = match spec.auth {
+            crate::Auth::Inherited => (live.writes, live.files),
+            crate::Auth::Canned | crate::Auth::Endpoint => (&[], &[]),
         };
         let agent_dir = spec.config_dir.parent().ok_or_else(|| {
             format!(
@@ -208,7 +279,7 @@ impl SandboxPlan {
         if let Some(admin) = worktree_admin_dir(&cwd) {
             dirs.push(canonical(&admin)?);
         }
-        for w in writes {
+        for w in writes.iter().chain(live_writes) {
             let path = match w {
                 WritePath::Home(rel) => home.join(rel),
                 WritePath::HomeProject(rel) => home.join(rel).join(project_key(&cwd)),
@@ -221,7 +292,23 @@ impl SandboxPlan {
             dirs.push(canonical(&path)?);
         }
         dirs.dedup();
-        Ok(SandboxPlan { dirs })
+        let mut files = Vec::new();
+        for f in live_files {
+            let path = home.join(f);
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(format!("{} names no file", path.display()));
+            };
+            // The file may not exist yet (a login never refreshed); its directory must.
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+            files.push(canonical(parent)?.join(name));
+        }
+        Ok(SandboxPlan { dirs, files })
+    }
+
+    /// The single files, in order.
+    pub fn files(&self) -> &[std::path::PathBuf] {
+        &self.files
     }
 
     /// The directories, in order.
@@ -233,7 +320,7 @@ impl SandboxPlan {
     /// and to the terminal and null devices; everything else — reads, exec, the network, the
     /// supervisor's socket — is left as it was. Paths arrive only as parameters (`W0`…), never in
     /// the profile's text, so no path can change what the profile says.
-    pub fn seatbelt_profile(n: usize) -> String {
+    pub fn seatbelt_profile(n: usize, files: usize) -> String {
         let mut p = String::from(
             "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*\n  \
              (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\")\n  \
@@ -242,6 +329,9 @@ impl SandboxPlan {
         );
         for i in 0..n {
             p.push_str(&format!("(allow file-write* (subpath (param \"W{i}\")))\n"));
+        }
+        for i in 0..files {
+            p.push_str(&format!("(allow file-write* (literal (param \"F{i}\")))\n"));
         }
         p
     }
@@ -260,22 +350,26 @@ impl SandboxPlan {
         {
             dirs.push(t);
         }
-        platform_command(&dirs, program, args)
+        platform_command(&dirs, &self.files, program, args)
     }
 }
 
 #[cfg(target_os = "macos")]
 fn platform_command(
     dirs: &[std::path::PathBuf],
+    files: &[std::path::PathBuf],
     program: &str,
     args: &[String],
 ) -> std::process::Command {
     let mut cmd = std::process::Command::new(SANDBOX_EXEC);
-    cmd.arg("-p").arg(SandboxPlan::seatbelt_profile(dirs.len()));
-    for (i, d) in dirs.iter().enumerate() {
-        let mut kv = std::ffi::OsString::from(format!("W{i}="));
-        kv.push(d.as_os_str());
-        cmd.arg("-D").arg(kv);
+    cmd.arg("-p")
+        .arg(SandboxPlan::seatbelt_profile(dirs.len(), files.len()));
+    for (key, paths) in [("W", dirs), ("F", files)] {
+        for (i, d) in paths.iter().enumerate() {
+            let mut kv = std::ffi::OsString::from(format!("{key}{i}="));
+            kv.push(d.as_os_str());
+            cmd.arg("-D").arg(kv);
+        }
     }
     cmd.arg(program).args(args);
     cmd
@@ -284,18 +378,20 @@ fn platform_command(
 #[cfg(target_os = "linux")]
 fn platform_command(
     dirs: &[std::path::PathBuf],
+    files: &[std::path::PathBuf],
     program: &str,
     args: &[String],
 ) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
-    landlock::restrict_on_exec(&mut cmd, dirs);
+    landlock::restrict_on_exec(&mut cmd, dirs, files);
     cmd
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn platform_command(
     _dirs: &[std::path::PathBuf],
+    _files: &[std::path::PathBuf],
     program: &str,
     args: &[String],
 ) -> std::process::Command {
@@ -417,7 +513,11 @@ mod landlock {
     }
 
     /// Restrict `cmd`'s child to writing only beneath `dirs` (and the terminal and null devices).
-    pub(super) fn restrict_on_exec(cmd: &mut std::process::Command, dirs: &[std::path::PathBuf]) {
+    pub(super) fn restrict_on_exec(
+        cmd: &mut std::process::Command,
+        dirs: &[std::path::PathBuf],
+        files: &[std::path::PathBuf],
+    ) {
         let handled = handled(abi().unwrap_or(0));
         let file_rights = handled & (WRITE_FILE | TRUNCATE);
         let mut rules: Vec<(CString, u64)> = dirs
@@ -425,6 +525,14 @@ mod landlock {
             .filter_map(|d| CString::new(d.as_os_str().as_bytes()).ok())
             .map(|c| (c, handled))
             .collect();
+        // A single file is a rule on the file itself, with file rights only: it exists by exec or
+        // it is not the node's to create.
+        rules.extend(
+            files
+                .iter()
+                .filter_map(|f| CString::new(f.as_os_str().as_bytes()).ok())
+                .map(|c| (c, file_rights)),
+        );
         for dev in ["/dev/null", "/dev/zero", "/dev/tty", "/dev/ptmx"] {
             rules.push((CString::new(dev).expect("no NUL"), file_rights));
         }
@@ -531,10 +639,14 @@ mod tests {
     /// read-only node on a row whose own read-only sandbox it keeps.
     #[test]
     fn the_sandbox_covers_a_measured_row_whose_home_is_marions() {
-        let wrap = OsSandboxRule::Wrap { writes: &[] };
+        let wrap = OsSandboxRule::Wrap {
+            writes: &[],
+            live: UNMEASURED,
+        };
         let replace = OsSandboxRule::ReplaceOwn {
             writes: &[],
             off: &[],
+            live: UNMEASURED,
         };
         let unsupported = OsSandboxRule::Unsupported { why: "unmeasured" };
         assert!(covers(wrap, Auth::Canned, false));
@@ -549,13 +661,130 @@ mod tests {
     /// contains can change what the profile says.
     #[test]
     fn the_seatbelt_profile_names_no_path_only_parameters() {
-        let p = SandboxPlan::seatbelt_profile(3);
+        let p = SandboxPlan::seatbelt_profile(3, 0);
         assert!(p.contains("(deny file-write*)"));
         for i in 0..3 {
             assert!(p.contains(&format!("(subpath (param \"W{i}\"))")), "{p}");
         }
         assert!(!p.contains("W3"));
         assert!(!p.contains("/Users") && !p.contains("/home"), "{p}");
+    }
+
+    const MEASURED: Live = Live {
+        writes: &[WritePath::Home(".h/sessions")],
+        files: &[".h/auth.json"],
+        admitted: None,
+    };
+
+    /// **The operator's own login is covered only once a row's list is admitted**; an admission
+    /// run puts a stated but unadmitted row under the profile without covering it.
+    #[test]
+    fn a_live_login_is_covered_only_once_its_list_is_admitted() {
+        let stated = OsSandboxRule::Wrap {
+            writes: &[],
+            live: MEASURED,
+        };
+        let admitted = OsSandboxRule::Wrap {
+            writes: &[],
+            live: Live {
+                admitted: Some("h 1.0, 2026-10-01: create hello.txt"),
+                ..MEASURED
+            },
+        };
+        let unmeasured = OsSandboxRule::Wrap {
+            writes: &[],
+            live: UNMEASURED,
+        };
+        assert!(!covers(stated, Auth::Inherited, false));
+        assert!(covers(admitted, Auth::Inherited, false));
+        assert!(
+            covers(stated, Auth::Canned, false),
+            "canned needs no admission"
+        );
+        assert!(admits(stated, Auth::Inherited, false, true));
+        assert!(
+            !admits(stated, Auth::Inherited, false, false),
+            "only when asked"
+        );
+        assert!(
+            !admits(stated, Auth::Canned, false, true),
+            "only on the operator's login"
+        );
+        assert!(
+            !admits(unmeasured, Auth::Inherited, false, true),
+            "nothing to admit"
+        );
+    }
+
+    /// **On the operator's own login a plan adds the row's session paths and its single files**,
+    /// each file alone; a canned launch of the same row adds neither.
+    #[test]
+    fn a_live_plan_adds_the_rows_session_paths_and_single_files() {
+        let dir = marion_testsupport::scratch("osb-live-plan");
+        let (canned, inv) = node_in(&dir, Auth::Canned);
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            ..canned.clone()
+        };
+        let rule = OsSandboxRule::Wrap {
+            writes: &[],
+            live: MEASURED,
+        };
+        let c = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        let plan = SandboxPlan::for_launch(rule, &live, &inv).expect("a plan");
+        assert!(plan.dirs().contains(&c(&dir.join("home/.h/sessions"))));
+        assert_eq!(plan.files(), [c(&dir.join("home/.h")).join("auth.json")]);
+        assert!(
+            !dir.join("home/.h/auth.json").exists(),
+            "a file is allowed, not created"
+        );
+        let plan = SandboxPlan::for_launch(rule, &canned, &inv).expect("a plan");
+        assert!(plan.files().is_empty());
+        assert!(!plan.dirs().iter().any(|d| d.ends_with("sessions")));
+        let p = SandboxPlan::seatbelt_profile(2, 1);
+        assert!(p.contains("(literal (param \"F0\"))"), "{p}");
+    }
+
+    /// **A single file is writable, and its directory is not**: the process may rewrite the file,
+    /// and a sibling it tries to create beside it is refused.
+    #[test]
+    fn a_single_file_is_writable_and_its_directory_is_not() {
+        if !support().available() {
+            eprintln!("skipped: {}", support().describe());
+            return;
+        }
+        let dir = marion_testsupport::scratch("osb-live-file");
+        let (canned, mut inv) = node_in(&dir, Auth::Canned);
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            ..canned
+        };
+        let auth = dir.join("home/.h/auth.json");
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(&auth, "old").unwrap();
+        let sibling = dir.join("home/.h/other.json");
+        inv.args = vec![
+            "-c".into(),
+            format!(
+                "echo new > '{}'; echo x > '{}'",
+                auth.display(),
+                sibling.display()
+            ),
+        ];
+        let rule = OsSandboxRule::Wrap {
+            writes: &[],
+            live: MEASURED,
+        };
+        inv.sandbox = Some(SandboxPlan::for_launch(rule, &live, &inv).unwrap());
+        let tmp = dir.join("agent/tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = inv.command(&tmp).output().expect("the process runs");
+        assert_eq!(
+            std::fs::read_to_string(&auth).unwrap().trim(),
+            "new",
+            "{out:?}"
+        );
+        assert!(!sibling.exists(), "the directory stays unwritable: {out:?}");
     }
 
     /// **A plan holds the node's own dirs and its row's paths under the node's home**, resolved,
@@ -569,6 +798,7 @@ mod tests {
                 WritePath::Home(".local/state/goose"),
                 WritePath::HomeProject(".claude/projects"),
             ],
+            live: UNMEASURED,
         };
         let plan = SandboxPlan::for_launch(rule, &spec, &inv).expect("a plan");
         let c = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
@@ -616,7 +846,15 @@ mod tests {
             ),
         ];
         inv.sandbox = Some(
-            SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+            SandboxPlan::for_launch(
+                OsSandboxRule::Wrap {
+                    writes: &[],
+                    live: UNMEASURED,
+                },
+                &spec,
+                &inv,
+            )
+            .unwrap(),
         );
         let tmp = dir.join("agent/tmp");
         std::fs::create_dir_all(&tmp).unwrap();
@@ -722,7 +960,9 @@ mod tests {
         for h in Harness::ALL {
             let rule = crate::adapter::harness_spec(h).os_sandbox;
             let writes: &[WritePath] = match rule {
-                OsSandboxRule::Wrap { writes } | OsSandboxRule::ReplaceOwn { writes, .. } => writes,
+                OsSandboxRule::Wrap { writes, .. } | OsSandboxRule::ReplaceOwn { writes, .. } => {
+                    writes
+                }
                 OsSandboxRule::Unsupported { why } => {
                     assert!(
                         !why.trim().is_empty(),

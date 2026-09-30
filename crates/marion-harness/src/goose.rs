@@ -313,6 +313,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     os_sandbox: crate::os_sandbox::OsSandboxRule::Wrap {
         // Its log appender aborts the start when it cannot open `~/.local/state/goose` (measured).
         writes: &[crate::os_sandbox::WritePath::Home(".local/state/goose")],
+        live: crate::os_sandbox::UNMEASURED,
     },
     read_only_modes: &[],
 };

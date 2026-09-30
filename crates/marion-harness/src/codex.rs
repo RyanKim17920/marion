@@ -363,6 +363,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // Its Seatbelt cannot apply inside marion's (`sandbox_apply: EPERM`, measured), and the
         // thread's own `sandbox` beats every other switch (S36 P3).
         off: &[("sandbox", "\"danger-full-access\"")],
+        // Expected on the operator's own login: its session rollouts and logs, the history it
+        // appends to, and the login it refreshes. Not `config.toml`, which holds its settings and
+        // MCP servers. Confirmed only by an admission run (`scripts/sandbox-admit.sh`).
+        live: crate::os_sandbox::Live {
+            writes: &[
+                crate::os_sandbox::WritePath::Home(".codex/sessions"),
+                crate::os_sandbox::WritePath::Home(".codex/archived_sessions"),
+                crate::os_sandbox::WritePath::Home(".codex/log"),
+            ],
+            files: &[".codex/auth.json", ".codex/history.jsonl"],
+            admitted: None,
+        },
     },
     // codex's own `-s/--sandbox read-only`: its sandbox refuses every write.
     read_only_modes: &[crate::authority::ReadOnlyMode {
