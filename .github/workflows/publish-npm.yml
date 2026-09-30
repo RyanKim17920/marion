@@ -4,7 +4,10 @@
 # The body is dist 0.33's own `publish-npm` job with one change: without the NPM_TOKEN secret it
 # prints a notice and succeeds instead of failing, so a release made before the owner creates the
 # token still publishes its archives, installer and checksums. Adding the secret turns publishing
-# on with no change here. See CONTRIBUTING.md, "Releasing".
+# on with no change here. See CONTRIBUTING.md, "Releasing". The publish also carries
+# `--provenance`: npm records a signed statement linking the package to this repository, workflow
+# and commit, shown on the package page and checkable with `npm audit signatures`. It needs the
+# `id-token: write` below and a `repository` in the package that matches this one (Cargo.toml's).
 
 name: Publish npm package
 
@@ -14,6 +17,11 @@ on:
       plan:
         required: true
         type: string
+
+# The OIDC token npm's provenance statement is signed with, and nothing else: the package comes
+# from this run's artifacts and the registry login is NPM_TOKEN.
+permissions:
+  id-token: write
 
 jobs:
   publish:
@@ -34,13 +42,13 @@ jobs:
           fi
       - name: Fetch npm packages
         if: steps.token.outputs.present == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: artifacts-*
           path: npm/
           merge-multiple: true
       - if: steps.token.outputs.present == 'true'
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '20.x'
           registry-url: 'https://registry.npmjs.org'
@@ -48,7 +56,7 @@ jobs:
         run: |
           for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
             pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
-            npm publish --access public "./npm/${pkg}"
+            npm publish --access public --provenance "./npm/${pkg}"
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
