@@ -95,6 +95,28 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Under(HOME_DIR),
             when: When::Overlay,
         },
+        // goose reads the XDG base dirs over `HOME`, so an operator's own would pull the node's
+        // config, sessions and logs back into their home. Each is pinned under the node's.
+        Env {
+            key: "XDG_CONFIG_HOME",
+            val: Val::Under("home/.config"),
+            when: When::Overlay,
+        },
+        Env {
+            key: "XDG_DATA_HOME",
+            val: Val::Under("home/.local/share"),
+            when: When::Overlay,
+        },
+        Env {
+            key: "XDG_STATE_HOME",
+            val: Val::Under("home/.local/state"),
+            when: When::Overlay,
+        },
+        Env {
+            key: "XDG_CACHE_HOME",
+            val: Val::Under("home/.cache"),
+            when: When::Overlay,
+        },
         Env {
             key: PROVIDER_ENV,
             val: Val::Lit(PROVIDER),
@@ -801,6 +823,23 @@ mod tests {
         let mut b = bridge();
         b.bridge = "/opt/marion bin/supervisor".into();
         assert_eq!(unspellable(&b), Some("/opt/marion bin/supervisor".into()));
+    }
+
+    /// **Every XDG base dir stays in the node's home**, not only `HOME`: goose reads
+    /// `XDG_CONFIG_HOME` and the rest over `HOME`, so an operator who sets them would otherwise
+    /// have a canned node write their own goose config (and, under marion's sandbox, abort at
+    /// start: `Failed to create config directory`).
+    #[test]
+    fn every_xdg_base_dir_stays_in_the_nodes_home() {
+        let inv = compile(&spec());
+        for (key, under) in [
+            ("XDG_CONFIG_HOME", "/tmp/cfg/home/.config"),
+            ("XDG_DATA_HOME", "/tmp/cfg/home/.local/share"),
+            ("XDG_STATE_HOME", "/tmp/cfg/home/.local/state"),
+            ("XDG_CACHE_HOME", "/tmp/cfg/home/.cache"),
+        ] {
+            assert_eq!(env_of(&inv, key).as_deref(), Some(under), "{key}");
+        }
     }
 
     #[test]

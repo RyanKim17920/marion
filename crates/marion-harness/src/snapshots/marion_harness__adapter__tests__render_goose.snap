@@ -20,6 +20,10 @@ args:
   marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
 env:
   HOME=/state/x/config/home
+  XDG_CONFIG_HOME=/state/x/config/home/.config
+  XDG_DATA_HOME=/state/x/config/home/.local/share
+  XDG_STATE_HOME=/state/x/config/home/.local/state
+  XDG_CACHE_HOME=/state/x/config/home/.cache
   GOOSE_PROVIDER=openai
   GOOSE_MODEL=canned-1
   OPENAI_HOST=http://127.0.0.1:8099/v1
@@ -65,6 +69,10 @@ args:
   marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=endpoint MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
 env:
   HOME=/state/x/config/home
+  XDG_CONFIG_HOME=/state/x/config/home/.config
+  XDG_DATA_HOME=/state/x/config/home/.local/share
+  XDG_STATE_HOME=/state/x/config/home/.local/state
+  XDG_CACHE_HOME=/state/x/config/home/.cache
   GOOSE_PROVIDER=openai
   GOOSE_MODEL=vendor/model-1
   OPENAI_HOST=https://provider.example/v1
@@ -95,6 +103,10 @@ args:
   marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
 env:
   HOME=/state/x/config/home
+  XDG_CONFIG_HOME=/state/x/config/home/.config
+  XDG_DATA_HOME=/state/x/config/home/.local/share
+  XDG_STATE_HOME=/state/x/config/home/.local/state
+  XDG_CACHE_HOME=/state/x/config/home/.cache
   GOOSE_PROVIDER=openai
   GOOSE_MODEL=canned-1
   OPENAI_HOST=http://127.0.0.1:8099/v1
@@ -122,6 +134,10 @@ args:
   marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
 env:
   HOME=/state/x/config/home
+  XDG_CONFIG_HOME=/state/x/config/home/.config
+  XDG_DATA_HOME=/state/x/config/home/.local/share
+  XDG_STATE_HOME=/state/x/config/home/.local/state
+  XDG_CACHE_HOME=/state/x/config/home/.cache
   GOOSE_PROVIDER=openai
   GOOSE_MODEL=canned-1
   OPENAI_HOST=http://127.0.0.1:8099/v1
@@ -149,6 +165,10 @@ args:
   marion:MARION_REPO=/repo MARION_STATE_DIR=/state MARION_AUTH=canned MARION_AGENT_ID=019f-root MARION_AGENT_TYPE=claude MARION_DEPTH=0 MARION_BASE_URL=http://127.0.0.1:8099/v1 MARION_READY_FILE=/state/x/mcp-ready /bin/marion-supervisor mcp
 env:
   HOME=/state/x/config/home
+  XDG_CONFIG_HOME=/state/x/config/home/.config
+  XDG_DATA_HOME=/state/x/config/home/.local/share
+  XDG_STATE_HOME=/state/x/config/home/.local/state
+  XDG_CACHE_HOME=/state/x/config/home/.cache
   GOOSE_PROVIDER=openai
   GOOSE_MODEL=canned-1
   OPENAI_HOST=http://127.0.0.1:8099/v1
