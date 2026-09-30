@@ -16,16 +16,36 @@ use std::path::{Path, PathBuf};
 
 /// The server half, in Python so it can read frames while it waits on nothing else.
 const SERVER: &str = r#"#!/usr/bin/env python3
-import json, os, subprocess, sys
+import json, os, subprocess, sys, threading
 hook = os.path.abspath(__file__) + "-hook.sh"
 if sys.argv[1:2] != ["app-server"]:
     # `--version`, `login status`, anything that is not the server: the hook's, with its argv.
     os.execv("/bin/sh", ["/bin/sh", hook] + sys.argv[1:])
 os.environ["MARION_SHIM_ARGV"] = " ".join(sys.argv[1:])
+# One writer at a time: a turn's frames come from its own thread while this one answers requests.
+lock = threading.Lock()
+def write(line):
+    with lock:
+        sys.stdout.write(line + "\n"); sys.stdout.flush()
 def out(o):
-    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+    write(json.dumps(o))
 thread = "shim-thread-%d" % os.getpid()
 turn = 0
+# **A turn runs beside the reader, as in the real server**: a `turn/steer` sent while the hook
+# blocks is answered then, not after the turn, so a folded message is delivered mid-turn rather
+# than left unanswered in marion's driver. Turns stay one at a time: a `turn/start` waits for the
+# previous turn, and stdin EOF lets the running one finish before exit. A daemon thread, so a signal
+# that ends the reader (SIGINT's KeyboardInterrupt) ends the server as it did when the turn ran here.
+running = None
+def run_turn(u, text):
+    p = subprocess.Popen(["/bin/sh", hook, text], stdout=subprocess.PIPE, text=True,
+                         env=dict(os.environ, MARION_SHIM_TURN="1"))
+    for frame in p.stdout:
+        frame = frame.strip()
+        if frame:
+            write(frame)
+    failed = p.wait() != 0
+    out({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": u, "status": "failed" if failed else "completed", "items": [], "error": {"message": "the shim's hook exited non-zero"} if failed else None}}})
 for line in sys.stdin:
     try:
         m = json.loads(line)
@@ -39,24 +59,22 @@ for line in sys.stdin:
         out({"id": i, "result": {"thread": {"id": thread}}})
         out({"method": "mcpServer/startupStatus/updated", "params": {"threadId": thread, "name": "marion", "status": "ready", "error": None}})
     elif meth == "turn/start":
+        if running is not None:
+            running.join()
         turn += 1; u = "shim-turn-%d" % turn
         text = "".join(p.get("text", "") for p in m.get("params", {}).get("input", []))
         out({"id": i, "result": {"turn": {"id": u, "status": "inProgress"}}})
         out({"method": "turn/started", "params": {"threadId": thread, "turn": {"id": u}}})
-        p = subprocess.Popen(["/bin/sh", hook, text], stdout=subprocess.PIPE, text=True,
-                             env=dict(os.environ, MARION_SHIM_TURN="1"))
-        for frame in p.stdout:
-            frame = frame.strip()
-            if frame:
-                sys.stdout.write(frame + "\n"); sys.stdout.flush()
-        failed = p.wait() != 0
-        out({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": u, "status": "failed" if failed else "completed", "items": [], "error": {"message": "the shim's hook exited non-zero"} if failed else None}}})
+        running = threading.Thread(target=run_turn, args=(u, text), daemon=True)
+        running.start()
     elif meth == "turn/steer":
         out({"id": i, "result": {"turnId": m["params"].get("expectedTurnId")}})
     elif meth == "turn/interrupt":
         out({"id": i, "result": {}})
     elif i is not None and meth is not None:
         out({"id": i, "error": {"code": -32601, "message": "the shim does not serve " + meth}})
+if running is not None:
+    running.join()
 "#;
 
 /// Write the shim as `codex` in `dir`, running `hook` (a `/bin/sh` body) for every turn — the
