@@ -333,11 +333,11 @@ fn stub_codex(dir: &Path, body: &str) -> PathBuf {
     bin
 }
 
-/// The same stub under the name the gemini adapter launches, for the grant-gate test — `gemini-impl`
-/// is the built-in that declares a tool *and* runs on a `LaunchOnly` surface, so a shell script is
-/// a whole harness for it.
-fn stub_gemini(dir: &Path, body: &str) -> PathBuf {
-    stub(dir, "gemini", body)
+/// The same stub under the name the copilot adapter launches, for the grant-gate test — `copilot`
+/// is a built-in that declares tools *and* runs on a `LaunchOnly` surface, so a shell script is a
+/// whole harness for it.
+fn stub_copilot(dir: &Path, body: &str) -> PathBuf {
+    stub(dir, "copilot", body)
 }
 
 fn stub(dir: &Path, program_name: &str, body: &str) -> PathBuf {
@@ -357,36 +357,37 @@ fn stub(dir: &Path, program_name: &str, body: &str) -> PathBuf {
 /// `BridgeNeverReached` — which is a case this file tests deliberately and must not stumble into.
 const REACHED_THE_BRIDGE: &str = r#"echo '{"method":"item/completed","params":{"item":{"id":"item_0","type":"mcpToolCall","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}}'"#;
 
-/// The same claim in **gemini's** stream shape: a `tool_use` naming the verb in gemini's own
-/// `mcp_marion_*` spelling, plus the separate `tool_result` frame that says it was answered. Two
-/// frames rather than one because gemini pairs them by `tool_id` — a call with no result reads as
-/// `CallOutcome::Unknown`, which §6.1 step 8 refuses just as firmly as no call at all.
-const REACHED_THE_BRIDGE_GEMINI: &str = concat!(
-    r#"echo '{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}'"#,
+/// The same claim in **copilot's** stream shape: a `tool.execution_start` naming the verb in
+/// copilot's own `marion-*` spelling, plus the separate `tool.execution_complete` frame that says it
+/// was answered. Two frames rather than one because copilot pairs them by `toolCallId` — a call with
+/// no result reads as `CallOutcome::Unknown`, which §6.1 step 8 refuses just as firmly as no call at
+/// all.
+const REACHED_THE_BRIDGE_COPILOT: &str = concat!(
+    r#"echo '{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}'"#,
     "\n",
-    r#"echo '{"type":"tool_result","tool_id":"g1","status":"success","output":"ok"}'"#,
+    r#"echo '{"type":"tool.execution_complete","data":{"toolCallId":"c1","success":true}}'"#,
 );
 
-/// The file the gemini stub writes **only when it was actually granted an edit tool**.
+/// The file the copilot stub writes **only when it was actually granted an edit tool**.
 ///
-/// gemini has no `--tools` flag: its availability axis *is* `--approval-mode auto_edit`, which is
-/// what makes `write_file` and `replace` exist at all (§11 item 24, `gemini::AUTO_EDIT_APPROVAL_MODE`).
-/// So a stub that consults its own argv and writes only under that mode is doing exactly what the
-/// real harness does with the same grant, one layer down.
+/// copilot's availability axis is `--available-tools=<names>`, which withholds every built-in it
+/// does not name (s24): `create` exists only when the declaration's `write` compiled into it. So a
+/// stub that consults its own argv and writes only when `create` is available is doing exactly what
+/// the real harness does with the same grant, one layer down.
 const WRITE_GRANT_WITNESS: &str = "granted.txt";
 
-/// A gemini stub that honours its own permission axis.
+/// A copilot stub that honours its own permission axis.
 ///
 /// **Not a stub that always writes.** A test whose harness writes unconditionally proves the file
 /// got there, never that the grant did — and the failure being guarded against is precisely a
 /// marion that hands out a declaration it has no record behind.
-const GRANT_HONOURING_GEMINI: &str = concat!(
-    "case \" $* \" in *auto_edit*) printf 'the grant reached the harness\\n' > ",
+const GRANT_HONOURING_COPILOT: &str = concat!(
+    "for a in \"$@\"; do case \"$a\" in --available-tools=*create*) printf 'the grant reached the harness\\n' > ",
     "granted.txt",
-    " ;; esac\n",
-    r#"echo '{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}'"#,
+    " ;; esac; done\n",
+    r#"echo '{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}'"#,
     "\n",
-    r#"echo '{"type":"tool_result","tool_id":"g1","status":"success","output":"ok"}'"#,
+    r#"echo '{"type":"tool.execution_complete","data":{"toolCallId":"c1","success":true}}'"#,
     "\nexit 0",
 );
 
@@ -405,7 +406,7 @@ fn run_marion(dir: &Path, repo: &Path, state: &Path, bin: &Path, timeout_secs: &
 /// [`run_marion`], with the agent type and any extra flags spelled out.
 ///
 /// The two tests below that drive §9's **grant gate** need a type that declares a tool, since the
-/// gate is co-extensive with the grant and `codex` declares none. `gemini-impl` is the one used,
+/// gate is co-extensive with the grant and `codex` declares none. `copilot` is the one used,
 /// and it needs no stub on `PATH`: the gate is evaluated inside `root::prepare`, before any harness
 /// process exists.
 fn run_marion_as(
@@ -780,7 +781,7 @@ fn the_record_is_written_on_every_exit_path_and_not_only_a_clean_one() {
 /// **§9's grant gate, through the real binary, in both directions — and `--no-change-record` is
 /// the way through it.**
 ///
-/// `gemini-impl` declares `[read, write]`. In a directory marion cannot snapshot there is no record
+/// `copilot` declares `[read, write, edit, bash]`. In a directory marion cannot snapshot there is no record
 /// to put behind that grant, so the run is **refused** rather than launched with a silently empty
 /// tool axis — which would be a node that does no work, exits 0, and says nothing anywhere (§12).
 /// The refusal has to be actionable, so all three of the directory, the declaration and the remedy
@@ -800,9 +801,9 @@ fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_
     std::fs::create_dir_all(&state).unwrap();
     // A stub for every half but the first. The first never starts a process: the gate is decided
     // in `prepare`, before anything is spawned or written.
-    let bin = stub_gemini(&dir, GRANT_HONOURING_GEMINI);
+    let bin = stub_copilot(&dir, GRANT_HONOURING_COPILOT);
 
-    let refused = run_marion_as(&dir, &repo, &state, &bin, "30", "gemini-impl", &[]);
+    let refused = run_marion_as(&dir, &repo, &state, &bin, "30", "copilot", &[]);
     assert_ne!(
         refused.code,
         Some(0),
@@ -833,7 +834,7 @@ fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_
         &state,
         &bin,
         "30",
-        "gemini-impl",
+        "copilot",
         &["--no-change-record"],
     );
     assert_eq!(
@@ -866,7 +867,7 @@ fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_
     // journalled `NotAttempted` go red. So: same fixture, same stub, one flag different, and the
     // stub does with its axis what a real harness does — writes only if it was granted the tool.
     let recordable = fixture_repo(&dir);
-    let granted = run_marion_as(&dir, &recordable, &state, &bin, "30", "gemini-impl", &[]);
+    let granted = run_marion_as(&dir, &recordable, &state, &bin, "30", "copilot", &[]);
     assert_eq!(
         granted.code,
         Some(0),
@@ -888,7 +889,7 @@ fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_
         &state,
         &bin,
         "30",
-        "gemini-impl",
+        "copilot",
         &["--no-change-record"],
     );
     assert_eq!(declined.code, Some(0), "{}", declined.stderr);
@@ -919,8 +920,8 @@ fn a_root_whose_state_dir_is_inside_the_repository_is_refused_on_the_command_lin
     let repo = fixture_repo(&dir);
     let state = repo.join(".marion-state");
     std::fs::create_dir_all(&state).unwrap();
-    let bin = stub_gemini(&dir, &format!("{REACHED_THE_BRIDGE_GEMINI}\nexit 0"));
-    let run = run_marion_as(&dir, &repo, &state, &bin, "30", "gemini-impl", &[]);
+    let bin = stub_copilot(&dir, &format!("{REACHED_THE_BRIDGE_COPILOT}\nexit 0"));
+    let run = run_marion_as(&dir, &repo, &state, &bin, "30", "copilot", &[]);
     assert_ne!(
         run.code,
         Some(0),
