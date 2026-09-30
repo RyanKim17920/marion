@@ -131,6 +131,13 @@ pub const VERBS: &[Verb] = &[
         main: super::trust_main,
     },
     Verb {
+        name: "notify",
+        aliases: &[],
+        summary: Some("turn desktop notices of an agent's end on or off"),
+        help: notify_help,
+        main: super::notify_main,
+    },
+    Verb {
         name: "doctor",
         aliases: &[],
         summary: Some("check each harness is installed and ready"),
@@ -551,6 +558,16 @@ fn trust_help() -> String {
          what you have allowed.",
         marion_supervisor::trust::USAGE
     )
+}
+
+fn notify_help() -> String {
+    "usage: marion notify on | off | status | test\n\
+     \n\
+     Tell you when an agent ends or needs you, by a desktop notice or, where there is no\n\
+     notifier, a ring in the terminal marion is showing. Off unless you turn it on; a\n\
+     supervisor reads the setting when it starts. `status` shows what is on and how it is\n\
+     shown; `test` sends one notice now."
+        .to_string()
 }
 
 fn doctor_help() -> String {

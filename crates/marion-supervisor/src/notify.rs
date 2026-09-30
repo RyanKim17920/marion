@@ -467,6 +467,93 @@ pub fn show(backend: &Backend, shown: &Shown) {
     }
 }
 
+/// **`marion notify on | off | status | test`**: turn desktop notifications on or off in
+/// `notify.toml`, say what is configured and where notices would go, or show one now.
+pub fn main(args: &[String]) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let dir = match crate::credentials::config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let env = std::env::var(NOTIFY_ENV).ok();
+    let config = match NotifyConfig::load(Some(&dir), None) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let backend = Backend::resolve(std::env::var(BACKEND_ENV).ok().as_deref());
+    match args.first().map(String::as_str) {
+        Some(verb @ ("on" | "off")) => {
+            let next = NotifyConfig {
+                enabled: verb == "on",
+                ..config
+            };
+            if let Err(e) = next.save(&dir) {
+                eprintln!("marion: writing {}: {e}", dir.join(CONFIG_FILE).display());
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "marion: notifications {verb}, in {}. A supervisor reads it when it starts, so \
+                 one already running keeps what it had.",
+                dir.join(CONFIG_FILE).display()
+            );
+            ExitCode::SUCCESS
+        }
+        Some("status") | None => {
+            let effective = NotifyConfig::load(Some(&dir), env.as_deref())
+                .map_or(config.enabled, |c| c.enabled);
+            println!(
+                "notifications: {}{}",
+                if effective { "on" } else { "off" },
+                match env.as_deref() {
+                    Some(v) => format!(" ({NOTIFY_ENV}={v})"),
+                    None => String::new(),
+                }
+            );
+            println!("finished: {}", config.finished.word());
+            println!("terminal: {}", config.terminal.word());
+            println!("shown by: {}", backend.name());
+            println!("config: {}", dir.join(CONFIG_FILE).display());
+            ExitCode::SUCCESS
+        }
+        Some("test") => {
+            let shown = Shown {
+                title: "marion".into(),
+                body: "a test notification: this is how a node's news reaches you".into(),
+            };
+            match &backend {
+                Backend::Terminal => {
+                    let mut out = std::io::stdout();
+                    let _ = std::io::Write::write_all(
+                        &mut out,
+                        &terminal_bytes(config.terminal, &shown),
+                    );
+                    let _ = std::io::Write::flush(&mut out);
+                }
+                Backend::Off => {
+                    eprintln!("marion: {BACKEND_ENV}=off, so nothing was shown");
+                    return ExitCode::FAILURE;
+                }
+                other => show(other, &shown),
+            }
+            println!(
+                "marion: sent a test notification through {}",
+                backend.name()
+            );
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("marion: `notify {other}` is not a verb; try on, off, status or test");
+            ExitCode::from(2)
+        }
+    }
+}
+
 /// The escape a terminal client writes for `shown` under `ring`, between frames.
 pub fn terminal_bytes(ring: TerminalRing, shown: &Shown) -> Vec<u8> {
     let clean = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };

@@ -51,6 +51,13 @@ larger one, and an agent type may carry its own:
 `budget = { tokens = 50000, tree_tokens = 200000, warn_pct = 80 }` in `.marion/agents.toml`.
 Budgets are tokens only, and are refused on a harness whose stream reports no usage.
 
+**Desktop notifications** are off until you run `marion notify on`. Then the supervisor tells
+you when a node needs you, fails, hits a limit or a root finishes, through `osascript` on macOS or
+`notify-send` elsewhere, else as a bell (or OSC 9 or OSC 777, `terminal = "osc9"` in
+`notify.toml`) in an open `marion` screen. A notice names the node's type, short id, harness and
+state, never a prompt or what the model wrote. `marion notify status` says what is set and where
+notices go; `marion notify test` shows one. `MARION_NOTIFY=on|off` overrides the file.
+
 `marion resume` survives the supervisor's own death: `kill -9` it, and `resume` relaunches the
 lost root under the same id against the same harness session, recorded as a second generation.
 
