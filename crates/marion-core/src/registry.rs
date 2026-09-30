@@ -69,6 +69,12 @@ pub struct ReplayedNode {
     /// ([`RecordKind::WiderDelegation`]). Empty for every child within its caller's authority.
     pub widened: Vec<String>,
     pub intent: Option<SpawnIntent>,
+    /// **A node on a harness this build has retired** ([`crate::journal::RetiredHarness`]): the
+    /// harness's wire spelling and, from its intent, where it sits in the tree. `Some` exactly
+    /// where the journal's intent for this node named a retired harness, and then [`Self::intent`]
+    /// is `None` — there is no [`Harness`] to hold — so [`Self::harness`] is `None` and nothing
+    /// relaunches, resumes or steers it, while [`Self::parent_id`] and its siblings still answer.
+    pub retired: Option<crate::journal::RetiredHarness>,
     /// §6.1 step 7's confirmation arrived.
     pub spawn_confirmed: bool,
     /// How many `Spawned` records this node has folded — how many process lifetimes the journal
@@ -204,6 +210,7 @@ impl ReplayedNode {
             agent_id,
             widened: Vec::new(),
             intent: None,
+            retired: None,
             spawn_confirmed: false,
             spawn_generation: 0,
             harness_version: None,
@@ -245,31 +252,57 @@ impl ReplayedNode {
 
     /// §7.5: immutable, so this is whatever the intent said and nothing later can move it.
     pub fn parent_id(&self) -> Option<&AgentId> {
-        self.intent.as_ref().and_then(|i| i.parent_id.as_ref())
+        match &self.intent {
+            Some(i) => i.parent_id.as_ref(),
+            None => self.placement().and_then(|p| p.parent_id.as_ref()),
+        }
     }
 
     /// [`crate::journal::SpawnIntent::is_root`], off this node's intent: `false` for a node whose
     /// intent was never read, which has no parent edge to call it one by.
     pub fn is_root(&self) -> bool {
-        self.intent
-            .as_ref()
-            .is_some_and(crate::journal::SpawnIntent::is_root)
+        match &self.intent {
+            Some(i) => i.is_root(),
+            None => self
+                .placement()
+                .is_some_and(|p| p.parent_id.is_none() && p.task_id.is_none()),
+        }
     }
 
+    /// `None` for a node whose intent was never read, and for one on a retired harness.
     pub fn harness(&self) -> Option<Harness> {
         self.intent.as_ref().map(|i| i.harness)
     }
 
+    /// The wire spelling of the retired harness this node ran on, where it ran on one.
+    pub fn retired_harness(&self) -> Option<&str> {
+        self.retired.as_ref().map(|r| r.harness.as_str())
+    }
+
     pub fn agent_type(&self) -> Option<&str> {
-        self.intent.as_ref().map(|i| i.agent_type.as_str())
+        match &self.intent {
+            Some(i) => Some(i.agent_type.as_str()),
+            None => self.placement().map(|p| p.agent_type.as_str()),
+        }
     }
 
     pub fn depth(&self) -> Option<u32> {
-        self.intent.as_ref().map(|i| i.depth)
+        match &self.intent {
+            Some(i) => Some(i.depth),
+            None => self.placement().map(|p| p.depth),
+        }
     }
 
     pub fn task_id(&self) -> Option<&TaskId> {
-        self.intent.as_ref().and_then(|i| i.task_id.as_ref())
+        match &self.intent {
+            Some(i) => i.task_id.as_ref(),
+            None => self.placement().and_then(|p| p.task_id.as_ref()),
+        }
+    }
+
+    /// A retired node's placement, off its [`Self::retired`] record.
+    fn placement(&self) -> Option<&crate::journal::RetiredPlacement> {
+        self.retired.as_ref().and_then(|r| r.placement.as_ref())
     }
 
     pub fn exit_status(&self) -> Option<ExitStatus> {
@@ -425,6 +458,13 @@ impl ReplayedNode {
             | RecordKind::MessageDropped(_) => {}
             // An audit of why the node was relaunched; the relaunch's own records move the node.
             RecordKind::ProfileFailover(_) => {}
+            // A retired harness's intent places the node, first writer winning as for any intent;
+            // its session and failover records carry nothing a node without a harness can use.
+            RecordKind::RetiredHarness(r) => {
+                if r.placement.is_some() && self.intent.is_none() && self.retired.is_none() {
+                    self.retired = Some(r);
+                }
+            }
             RecordKind::SupervisorExited(_)
             | RecordKind::RaceOpened(_)
             | RecordKind::RaceDecided(_)
@@ -1269,6 +1309,93 @@ mod tests {
                 y.agent_id.0
             );
         }
+    }
+
+    /// **A journal written while the gemini CLI was a supported harness replays whole** after
+    /// its retirement — the bytes below are what an earlier build wrote, record kinds and
+    /// spellings exactly. Every record is read, none is a gap, the tree keeps the retired node and
+    /// its edges both ways, its later records still move it, and it has no [`Harness`], so
+    /// nothing can relaunch or resume it.
+    #[test]
+    fn a_journal_naming_a_retired_harness_replays_whole_and_the_node_cannot_be_relaunched() {
+        const P: &str = r#""provenance":{"source":"Marion","source_id":null,"observed_live":true,"authoritative":true,"completeness":"Complete","transformation":"Native"}"#;
+        let kinds = [
+            r#"{"SpawnIntent":{"agent_id":"root","parent_id":null,"agent_type":"claude-orchestrator","harness":"claude-code","depth":0}}"#,
+            r#"{"Spawned":{"agent_id":"root","harness_version":"2.1.220","pid":4100}}"#,
+            r#"{"SpawnIntent":{"agent_id":"g-1","parent_id":"root","agent_type":"gemini-impl","harness":"gemini","depth":1,"task_id":"t-g1","timeout_secs":900}}"#,
+            r#"{"Spawned":{"agent_id":"g-1","harness_version":"0.53.0","model":"gemini-2.5-flash","pid":4242}}"#,
+            r#"{"SessionObserved":{"agent_id":"g-1","harness":"gemini","session_id":"ses-g1"}}"#,
+            r#"{"StateChanged":{"agent_id":"g-1","state":"Running"}}"#,
+            r#"{"ProfileFailover":{"agent_id":"g-1","harness":"gemini","from":"work","to":"home","cause":"auth"}}"#,
+            r#"{"SpawnIntent":{"agent_id":"c-1","parent_id":"g-1","agent_type":"codex","harness":"codex","depth":2,"task_id":"t-c1"}}"#,
+            r#"{"Exited":{"agent_id":"g-1","status":"Ok","exit":{"code":0,"signal":null,"description":"exit 0"}}}"#,
+            r#"{"ContractPersisted":{"agent_id":"g-1","task_id":"t-g1","requester":"root","status":"Ok"}}"#,
+            r#"{"Exited":{"agent_id":"root","status":"Ok","exit":{"code":0,"signal":null,"description":"exit 0"}}}"#,
+        ];
+        let journal: String = kinds
+            .iter()
+            .enumerate()
+            .map(|(seq, kind)| {
+                format!(
+                    r#"{{"writer":"w-old","seq":{seq},"ts":"2026-09-10T12:00:0{}.000Z","mono_ns":{seq},{P},"kind":{kind}}}"#,
+                    seq % 10
+                ) + "\n"
+            })
+            .collect();
+        let r = replay(journal.as_bytes());
+        assert_eq!(r.truncation, None, "no line of an old journal stops replay");
+        assert_eq!(r.records, kinds.len(), "every record was read");
+        assert!(
+            r.gaps.is_empty(),
+            "the writer's ordinals are still gapless: {:?}",
+            r.gaps
+        );
+
+        let g = r.get(&id("g-1")).expect("the retired node is kept");
+        assert_eq!(
+            g.harness(),
+            None,
+            "no harness, so nothing relaunches or resumes it"
+        );
+        assert_eq!(g.retired_harness(), Some("gemini"));
+        assert!(g.intent.is_none());
+        assert_eq!(g.parent_id(), Some(&id("root")));
+        assert_eq!(g.agent_type(), Some("gemini-impl"));
+        assert_eq!(g.depth(), Some(1));
+        assert_eq!(g.task_id(), Some(&TaskId("t-g1".into())));
+        assert!(!g.is_root());
+        assert_eq!(g.state, NodeState::Exited(ExitStatus::Ok));
+        assert_eq!(g.pid, Some(4242));
+        assert_eq!(
+            g.harness_session, None,
+            "a session no harness can take back is not kept"
+        );
+        assert_eq!(g.contracts.len(), 1);
+        assert!(!g.is_unresolved(), "its fate is on record");
+
+        let children = |of: &str| -> Vec<&str> {
+            r.children(&id(of))
+                .into_iter()
+                .map(|n| n.agent_id.0.as_str())
+                .collect()
+        };
+        assert_eq!(children("root"), ["g-1"]);
+        assert_eq!(
+            children("g-1"),
+            ["c-1"],
+            "the retired node's own children keep their edge"
+        );
+        assert_eq!(
+            r.roots()
+                .into_iter()
+                .map(|n| n.agent_id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["root"]
+        );
+        let root = r.get(&id("root")).unwrap();
+        assert_eq!(root.harness(), Some(Harness::ClaudeCode));
+        assert_eq!(root.state, NodeState::Exited(ExitStatus::Ok));
+        assert_eq!(r.get(&id("c-1")).unwrap().harness(), Some(Harness::Codex));
     }
 
     #[test]

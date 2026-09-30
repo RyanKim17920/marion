@@ -85,6 +85,29 @@ fn node_of(records: &[Vec<u8>], agent: &str) -> ReplayedNode {
     replay_of(records).get(&id(agent)).unwrap().clone()
 }
 
+/// **A node on a retired harness is kept by replay and refused by name here**, not described
+/// as some other harness and not mistaken for a node whose intent was lost. The line is the one a
+/// build that still had the gemini CLI row wrote: a codex intent's bytes with the harness it
+/// named.
+#[test]
+fn a_node_on_a_retired_harness_is_named_rather_than_described() {
+    let written = String::from_utf8(line(0, 1, intent("g", None, "gemini-impl", 0))).unwrap();
+    assert!(written.contains(r#""harness":"codex""#), "{written}");
+    let old = written.replace(r#""harness":"codex""#, r#""harness":"gemini""#);
+    let node = node_of(&[old.into_bytes()], "g");
+    assert_eq!(node.harness(), None);
+    assert_eq!(
+        summarize(&node, false),
+        Err(Unprojectable::RetiredHarness("gemini".into()))
+    );
+    let e = Unprojectable::RetiredHarness("gemini".into()).as_error(&id("g"));
+    assert_eq!(e.kind(), Some(FailureKind::Unsupported));
+    assert!(
+        e.message.contains("`gemini`") && e.message.contains("retired"),
+        "{e}"
+    );
+}
+
 /// **A seat's summary carries its badge, and the verdict arrives with the decision** — with
 /// no change to the node's own state, so the badge is one of the facts `Extra` watches.
 #[test]

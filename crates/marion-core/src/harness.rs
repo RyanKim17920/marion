@@ -93,6 +93,16 @@ impl Harness {
     ];
 }
 
+/// **Wire spellings of harnesses marion once launched and no longer has a row for.**
+///
+/// Not a harness: nothing parses to one, and an agent type naming one is refused like any other
+/// unknown name. It exists for the journal, which is append-only and outlives a retirement — a
+/// record written while the harness was supported still names it, and replay must keep that
+/// record rather than stop at it ([`crate::journal::decode`]).
+///
+/// `gemini`: Google's gemini CLI, retired upstream in favour of Antigravity (`agy`).
+pub const RETIRED: &[&str] = &["gemini"];
+
 /// An unrecognised `harness:` value. §3.1: unknown keys are a **load error**, never a silent
 /// default — defaulting would compile some other harness's argv for a type that asked for one
 /// marion has never heard of.

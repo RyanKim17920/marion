@@ -236,6 +236,17 @@ pub enum RecordKind {
     /// the owner once, or the limit, which the [`Self::CancelRequested`] it precedes acts on. Not a
     /// barrier: the cancel that follows a `Stop` is.
     BudgetCrossed(BudgetCrossed),
+    /// **A record about a node on a harness this build has retired** ([`crate::harness::RETIRED`]).
+    ///
+    /// Never written. [`decode`] produces it from a line that names a retired harness where a
+    /// [`Harness`] belongs — a `SpawnIntent`, `SessionObserved` or `ProfileFailover` a supported
+    /// build wrote — because that line no longer parses as its own kind, and replay stops at the
+    /// first line it cannot read. Keeping the record, rather than skipping it, keeps the writer's
+    /// sequence gapless and the node's place in the tree; decoding it as this kind rather than as
+    /// its own keeps every reader that dispatches on a `Harness` from being handed one that does
+    /// not exist. The node replays with no [`Harness`] at all, so nothing can relaunch, resume or
+    /// steer it.
+    RetiredHarness(RetiredHarness),
 }
 
 impl RecordKind {
@@ -293,6 +304,7 @@ impl RecordKind {
             RecordKind::MessageDropped(r) => Some(&r.agent_id),
             RecordKind::ProfileFailover(r) => Some(&r.agent_id),
             RecordKind::BudgetCrossed(r) => Some(&r.agent_id),
+            RecordKind::RetiredHarness(r) => Some(&r.agent_id),
             RecordKind::SupervisorExited(_)
             | RecordKind::RaceOpened(_)
             | RecordKind::RaceDecided(_)
@@ -725,6 +737,31 @@ pub struct SessionObserved {
     pub profile: Option<String>,
 }
 
+/// See [`RecordKind::RetiredHarness`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetiredHarness {
+    pub agent_id: AgentId,
+    /// The retired harness's wire spelling, as the line wrote it.
+    pub harness: String,
+    /// The kind the line was written as: `SpawnIntent`, `SessionObserved` or `ProfileFailover`.
+    pub was: String,
+    /// On a `SpawnIntent`, the node's immutable placement — so the tree keeps the node, its
+    /// parent edge and its children's. `None` on the other two kinds, which place nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<RetiredPlacement>,
+}
+
+/// The part of a retired node's `SpawnIntent` that places it in the tree. The launch-shaped
+/// fields (bounds, verification, race and workflow seats) are dropped: nothing will launch it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetiredPlacement {
+    pub parent_id: Option<AgentId>,
+    pub agent_type: String,
+    pub depth: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+}
+
 /// See [`RecordKind::BudgetCrossed`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetCrossed {
@@ -891,8 +928,65 @@ pub fn encode(record: &JournalRecord) -> Result<Vec<u8>, EncodeError> {
 
 /// One line back to a record. `None` for anything that is not a complete, valid record — replay
 /// treats that as the end of the intact prefix.
+///
+/// A line that is a complete record of a kind naming a **retired** harness decodes as
+/// [`RecordKind::RetiredHarness`]: it was valid when written, and a retirement must not turn an
+/// operator's history into a truncated journal. Nothing else is rescued — a line naming a harness
+/// that never existed is still not a record.
 pub fn decode(line: &[u8]) -> Option<JournalRecord> {
-    serde_json::from_slice(line).ok()
+    serde_json::from_slice(line)
+        .ok()
+        .or_else(|| decode_retired(line))
+}
+
+/// [`decode`]'s retired-harness reading: the record's own header, and a [`RetiredHarness`] in
+/// place of the kind whose `harness` no longer parses.
+fn decode_retired(line: &[u8]) -> Option<JournalRecord> {
+    #[derive(Deserialize)]
+    struct Header {
+        writer: WriterId,
+        seq: u64,
+        ts: crate::encoding::SystemTime,
+        mono_ns: u64,
+        provenance: Provenance,
+        #[serde(default)]
+        src_seq: Option<SrcSeq>,
+        kind: std::collections::BTreeMap<String, serde_json::Value>,
+    }
+    #[derive(Deserialize)]
+    struct Named {
+        agent_id: AgentId,
+        harness: String,
+    }
+    let h: Header = serde_json::from_slice(line).ok()?;
+    let mut kinds = h.kind.into_iter();
+    let (was, body) = kinds.next()?;
+    if kinds.next().is_some() {
+        return None;
+    }
+    let named: Named = serde_json::from_value(body.clone()).ok()?;
+    if !crate::harness::RETIRED.contains(&named.harness.as_str()) {
+        return None;
+    }
+    let placement = match was.as_str() {
+        "SpawnIntent" => Some(serde_json::from_value::<RetiredPlacement>(body).ok()?),
+        "SessionObserved" | "ProfileFailover" => None,
+        _ => return None,
+    };
+    Some(JournalRecord {
+        writer: h.writer,
+        seq: h.seq,
+        ts: h.ts,
+        mono_ns: h.mono_ns,
+        provenance: h.provenance,
+        src_seq: h.src_seq,
+        kind: RecordKind::RetiredHarness(RetiredHarness {
+            agent_id: named.agent_id,
+            harness: named.harness,
+            was,
+            placement,
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -1665,6 +1759,65 @@ mod tests {
     #[test]
     fn decode_rejects_rather_than_guesses() {
         crate::encoding::assert_decode_rejects_rather_than_guesses(decode, b"{\"writer\":\"w\"");
+    }
+
+    /// **A record a supported build wrote about a since-retired harness still decodes**, as
+    /// [`RecordKind::RetiredHarness`], with its header intact — and nothing else is rescued: a
+    /// harness that never existed, a kind that carries no harness, and a malformed body are still
+    /// not records.
+    #[test]
+    fn a_record_naming_a_retired_harness_decodes_as_retired_and_nothing_else_is_rescued() {
+        let line = |kind: &str| {
+            format!(
+                r#"{{"writer":"w-1","seq":7,"ts":"2026-08-01T23:07:08.619Z","mono_ns":42,"provenance":{{"source":"Marion","source_id":null,"observed_live":true,"authoritative":true,"completeness":"Complete","transformation":"Native"}},"kind":{kind}}}"#
+            )
+        };
+        let intent = line(
+            r#"{"SpawnIntent":{"agent_id":"g-1","parent_id":"root","agent_type":"gemini-impl","harness":"gemini","depth":1,"task_id":"t-1","timeout_secs":900}}"#,
+        );
+        let r = decode(intent.as_bytes()).expect("a retired harness's intent still decodes");
+        assert_eq!((r.writer.0.as_str(), r.seq, r.mono_ns), ("w-1", 7, 42));
+        assert_eq!(
+            r.kind,
+            RecordKind::RetiredHarness(RetiredHarness {
+                agent_id: AgentId("g-1".into()),
+                harness: "gemini".into(),
+                was: "SpawnIntent".into(),
+                placement: Some(RetiredPlacement {
+                    parent_id: Some(AgentId("root".into())),
+                    agent_type: "gemini-impl".into(),
+                    depth: 1,
+                    task_id: Some(TaskId("t-1".into())),
+                }),
+            })
+        );
+        assert_eq!(r.agent_id(), Some(&AgentId("g-1".into())));
+        for kind in [
+            r#"{"SessionObserved":{"agent_id":"g-1","harness":"gemini","session_id":"s"}}"#,
+            r#"{"ProfileFailover":{"agent_id":"g-1","harness":"gemini","from":"a","to":"b","cause":"auth"}}"#,
+        ] {
+            let r = decode(line(kind).as_bytes()).unwrap_or_else(|| panic!("{kind}"));
+            assert!(
+                matches!(&r.kind, RecordKind::RetiredHarness(h) if h.placement.is_none() && h.harness == "gemini"),
+                "{kind}: {:?}",
+                r.kind
+            );
+        }
+        for bad in [
+            // A harness that never existed is corruption, not history.
+            r#"{"SpawnIntent":{"agent_id":"g-1","parent_id":null,"agent_type":"x","harness":"no-such","depth":0}}"#,
+            // A retired name where no harness belongs changes nothing.
+            r#"{"Spawned":{"agent_id":"g-1","harness_version":"gemini","harness":"gemini"}}"#,
+            // An intent missing its depth is not a record, retired or not.
+            r#"{"SpawnIntent":{"agent_id":"g-1","parent_id":null,"agent_type":"x","harness":"gemini"}}"#,
+        ] {
+            let got = decode(line(bad).as_bytes());
+            assert!(
+                !matches!(&got, Some(r) if matches!(r.kind, RecordKind::RetiredHarness(_))),
+                "{bad}: {got:?}"
+            );
+        }
+        assert!(decode(line(r#"{"SpawnIntent":{"harness":"gemini"}}"#).as_bytes()).is_none());
     }
 
     /// **`race` is additive too**: a seat's intent names its race and seat and round-trips, and

@@ -338,6 +338,7 @@ fn record_kinds(journal: &Path) -> Vec<&'static str> {
             RecordKind::WorkflowStepDecided(_) => "WorkflowStepDecided",
             RecordKind::WorkflowClosed(_) => "WorkflowClosed",
             RecordKind::WorkflowCancelRequested(_) => "WorkflowCancelRequested",
+            RecordKind::RetiredHarness(_) => "RetiredHarness",
         })
         .collect()
 }
@@ -896,6 +897,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
             RecordKind::WorkflowStepDecided(_) => "WorkflowStepDecided",
             RecordKind::WorkflowClosed(_) => "WorkflowClosed",
             RecordKind::WorkflowCancelRequested(_) => "WorkflowCancelRequested",
+            RecordKind::RetiredHarness(_) => "RetiredHarness",
         })
         .collect();
     for expected in ["SpawnIntent", "Spawned", "Exited", "ContractPersisted"] {

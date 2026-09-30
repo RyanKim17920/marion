@@ -24,6 +24,10 @@ pub enum Unprojectable {
     /// The journal names an agent type this build does not have, so the node's `timeout` — §3.1's
     /// bound, which §9 re-resolves from the type — cannot be resolved from anywhere.
     UnknownAgentType(String),
+    /// The node ran on a harness this build has retired
+    /// ([`marion_core::harness::RETIRED`]). The journal keeps it and replay places it, but a
+    /// `NodeSummary` names a `Harness`, and there is none to name.
+    RetiredHarness(String),
     /// A depth `NodeSummary`'s `u8` cannot hold. §6.1's default `max_depth` is 3, so this is a
     /// writer producing nonsense rather than a deep tree, and saturating it would silently place the
     /// node somewhere it is not.
@@ -53,6 +57,16 @@ impl Unprojectable {
                 ),
                 "§3.1",
             ),
+            Unprojectable::RetiredHarness(h) => RpcError::of(
+                FailureKind::Unsupported,
+                Some(&agent.0),
+                format!(
+                    "this node ran on the `{h}` harness, which this build of marion has retired. \
+                     The journal keeps its record and its place in the tree, but marion no longer \
+                     has a row to describe, resume or steer it."
+                ),
+                "§3.1",
+            ),
             Unprojectable::DepthOutOfRange(d) => RpcError::of(
                 FailureKind::Internal,
                 Some(&agent.0),
@@ -79,6 +93,9 @@ impl Unprojectable {
 /// makes every caller state which answer it is giving, which is what stops a caller that has no
 /// pty map from quietly defaulting one.
 pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unprojectable> {
+    if let Some(h) = node.retired_harness() {
+        return Err(Unprojectable::RetiredHarness(h.to_string()));
+    }
     let intent = node.intent.as_ref().ok_or(Unprojectable::NoIntent)?;
     // A built-in resolves here; a `.marion/agents.toml` row does not, because this runs under
     // the shared registry lock and reads no file. The type was only ever needed for the bound,
