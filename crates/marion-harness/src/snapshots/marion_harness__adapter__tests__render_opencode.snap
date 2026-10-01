@@ -12,6 +12,9 @@ args:
   --pure
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -89,6 +92,9 @@ args:
   run
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -113,6 +119,9 @@ args:
   --pure
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -190,6 +199,9 @@ args:
   --pure
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -268,6 +280,9 @@ args:
   --pure
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -346,6 +361,9 @@ args:
   --pure
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -424,6 +442,9 @@ args:
   --pure
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -502,6 +523,9 @@ args:
   --pure
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m
@@ -581,6 +605,9 @@ args:
   session-1
   --format
   json
+  --print-logs
+  --log-level
+  ERROR
   --title
   marion-019f-root
   -m

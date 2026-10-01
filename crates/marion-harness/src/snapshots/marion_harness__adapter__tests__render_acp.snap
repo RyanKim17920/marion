@@ -9,6 +9,9 @@ model: Some("marion/canned-1")
 session_mode: None
 args:
   acp
+  --print-logs
+  --log-level
+  ERROR
 env:
   OPENCODE_DISABLE_MODELS_FETCH=1
   OPENCODE_DISABLE_LSP_DOWNLOAD=1
@@ -25,6 +28,9 @@ model: Some("marion/canned-1")
 session_mode: None
 args:
   acp
+  --print-logs
+  --log-level
+  ERROR
 env:
   OPENCODE_DISABLE_MODELS_FETCH=1
   OPENCODE_DISABLE_LSP_DOWNLOAD=1
@@ -56,6 +62,9 @@ model: Some("marion/canned-1")
 session_mode: None
 args:
   acp
+  --print-logs
+  --log-level
+  ERROR
 env:
   OPENCODE_DISABLE_MODELS_FETCH=1
   OPENCODE_DISABLE_LSP_DOWNLOAD=1

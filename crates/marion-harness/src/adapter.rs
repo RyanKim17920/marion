@@ -6783,7 +6783,11 @@ mod tests {
         // The measured one: a launch, an isolated home, and the document that points it at marion.
         let inv = acp_adapter().compile(&canned_acp_spec(), &ctx()).unwrap();
         assert_eq!(inv.program, "opencode");
-        assert_eq!(inv.args, vec!["acp"], "still the agent's own argv");
+        assert_eq!(
+            inv.args,
+            vec!["acp", "--print-logs", "--log-level", "ERROR"],
+            "still the agent's own argv"
+        );
         let env: std::collections::BTreeMap<&str, &str> = inv
             .env
             .iter()
@@ -7056,7 +7060,10 @@ mod tests {
         };
         let inv = acp_adapter().compile(&spec, &ctx()).unwrap();
         assert_eq!(inv.program, "opencode");
-        assert_eq!(inv.args, vec!["acp"]);
+        assert_eq!(
+            inv.args,
+            vec!["acp", "--print-logs", "--log-level", "ERROR"]
+        );
         assert_eq!(
             inv.model.as_deref(),
             Some("anthropic/claude-opus-5"),

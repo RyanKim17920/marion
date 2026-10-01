@@ -768,7 +768,9 @@ pub enum CannedRecipe {
 pub const OPENCODE: Agent = Agent {
     boot: crate::opencode::BOOT,
     id: "opencode",
-    argv: &["opencode", "acp"],
+    // `--print-logs --log-level ERROR`: a retried 429 or 500 is named only in opencode's log
+    // (the `opencode` row's argv says why), so it is asked for on stderr.
+    argv: &["opencode", "acp", "--print-logs", "--log-level", "ERROR"],
     tools: Some(ToolSpelling::ServerUnderscoreTool),
     canned: Some(CannedRecipe::OpencodeConfigDocument),
     declaration: Declaration::Session,
@@ -3550,7 +3552,7 @@ mod tests {
         let expected: &[Row] = &[
             (
                 "opencode",
-                &["opencode", "acp"],
+                &["opencode", "acp", "--print-logs", "--log-level", "ERROR"],
                 Some(ToolSpelling::ServerUnderscoreTool),
                 Some(MidTurn::Fold),
             ),

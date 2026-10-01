@@ -110,6 +110,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::CannedLit("--pure"),
         Arg::Lit("--format"),
         Arg::Lit("json"),
+        // A 429 or 500 is retried with nothing on stdout; only opencode's log names each retry
+        // (`message="stream error" … error.error="AI_APICallError: rate limit exceeded"`, 1.18.33,
+        // 2026-09-30). At ERROR, on stderr, it is what the failure classifier reads.
+        Arg::Lit("--print-logs"),
+        Arg::Lit("--log-level"),
+        Arg::Lit("ERROR"),
         // **Required.** Without `--title` opencode issues an extra `You are a title generator`
         // request against `small_model` — S13 measured 3 POSTs instead of 2. The title is the node's
         // own (`grammar::session_title`): stable, and how a node whose stream never named its
@@ -1504,6 +1510,52 @@ mod tests {
                 ),
                 None,
                 "{not_a_listing:?}"
+            );
+        }
+    }
+
+    /// **A retried 429 or 500 reaches stderr, where the classifier reads it.** opencode 1.18.33
+    /// retries both with nothing on stdout and exit code none, for as long as its backoff runs; only
+    /// its log names them, each retry as `level=ERROR message="stream error" … error.error=
+    /// "AI_APICallError: rate limit exceeded"` (measured 2026-09-30 in a conformance node's
+    /// `$XDG_DATA_HOME/opencode/log`, and on the ACP agent alike). Both headless launches — `run`
+    /// and the ACP agent — ask for that log on stderr, at ERROR only.
+    #[test]
+    fn a_retried_limit_or_outage_reaches_stderr_where_it_is_classified() {
+        use crate::auth::Billing;
+        use marion_core::contract::FailureCause;
+        let run = compile_run(&spec()).args.join(" ");
+        assert!(run.contains("--print-logs --log-level ERROR"), "{run}");
+        let acp = crate::acp::agent("opencode").unwrap().argv.join(" ");
+        assert!(acp.contains("--print-logs --log-level ERROR"), "{acp}");
+
+        let logged = |words: &str| {
+            format!(
+                "timestamp=2026-09-30T22:38:57.446Z level=ERROR run=69ed76f2 message=\"stream \
+                 error\" providerID=marion modelID=default small=false agent=build mode=primary \
+                 error.error=\"AI_APICallError: {words}\"\n"
+            )
+        };
+        for adapter in [
+            crate::adapter::adapter_for(Harness::OpenCode).unwrap(),
+            crate::adapter::adapter_for_type(Harness::Acp, Some("opencode")).unwrap(),
+        ] {
+            let cause = |words: &str| adapter.failure_cause(&logged(words), "", Billing::ApiKey);
+            assert!(
+                matches!(
+                    cause("rate limit exceeded"),
+                    Some(FailureCause::RateLimit { .. })
+                ),
+                "{:?}",
+                cause("rate limit exceeded")
+            );
+            assert!(
+                matches!(
+                    cause("internal server error"),
+                    Some(FailureCause::Outage { .. })
+                ),
+                "{:?}",
+                cause("internal server error")
             );
         }
     }
