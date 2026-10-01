@@ -12,13 +12,13 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | acp:opencode | OpenCode 1.18.33 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | **FAIL** | n/a |
 | acp:qwen | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| claude-code | 2.1.285 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | **FAIL** |
+| claude-code | 2.1.286 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | **FAIL** |
 | cline | 3.0.66 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | n/a | **FAIL** | **FAIL** | n/a |
 | codex | 0.159.2 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | copilot | 1.0.89 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a |
-| goose | 1.52.0 | PASS | PASS | PASS | PASS | **FAIL** | n/a | PASS | n/a | PASS | PASS | n/a |
+| goose | 1.52.0 | PASS | PASS | PASS | PASS | n/a | n/a | PASS | n/a | PASS | PASS | n/a |
 | opencode | 1.18.33 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
-| pi | 0.99.1 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | n/a |
+| pi | 0.99.1 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS | n/a |
 | qwen | 0.24.7 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
 
 ## Findings per cell
@@ -135,16 +135,16 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** UNSUPPORTED: marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### claude-code 2.1.285
+### claude-code 2.1.286
 
-- **P-version** PASS: 2.1.285 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried
+- **P-version** PASS: 2.1.286 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"anthropic"}; still running; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.4 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 63905d7f-f0af-4c39-b298-6591748548cb ; activity mcp__marion__report
+- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.6 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 934affe2-e7cf-4614-934b-af9daf81c40d ; activity mcp__marion__report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("marion denies `mcp__marion__report`: no operator answers a child's ask")), 1 permission ask(s) reached marion
 - **P-midturn** PASS: folded into the running turn (1 turn end; requests [4])
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session bb43061b-affd-4021-ae38-4c50db1c274b -> bb43061b-affd-4021-ae38-4c50db1c274b; resume refusal: none
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session 08f64076-23ab-434f-9cfa-281fdefd326e -> 08f64076-23ab-434f-9cfa-281fdefd326e; resume refusal: none
 - **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 143, left []
 - **P-errors** PASS: 401: still running after 45.3 s, 7 request(s), still running; cause Auth { line: "HTTP 401 authentication_failed" }; stream failure None; refused credential read off a frame: "HTTP 401 authentication_failed" | 429: still running after 45.5 s, 7 request(s), still running; cause RateLimit { line: "HTTP 429 rate_limit" }; stream failure None | 500: still running after 45.4 s, 7 request(s), still running; cause Outage { line: "HTTP 500 server_error" }; stream failure None
 - **P-tui** FAIL: DECSET 2004 at boot: true; first screen ["  1  function greet() {", "  2 -  console.log(\"Hello, World!\");", "  2 +  console.log(\"Hello, Claude!\");", "  3  }", " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌", "  Syntax theme: Monokai Extended (ctrl+t to disable)"]; boot dialog none of the row's on the first screen; bracketed paste + CR submitted: NO; output quiet 1500 ms after the turn: false; `/mcp` screen names marion: false
@@ -197,7 +197,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; exit 0; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.3 s after the spawn and listed marion's tools
 - **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 747, output: 81, cache_read: 45, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session none (row: no session rule) ; activity marion__report
-- **P-approval** FAIL: granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion — the grant is NOT load-bearing: the harness ran marion's tool without it
+- **P-approval** UNSUPPORTED: the row declares approve-all: every tool runs without asking (auto runs every tool the node is offered, which under --no-profile is marion's and the declared builtins, unasked. S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest and chat withholds every call. S37 on 1.52.0 (s37-goose-mode): unset, a fresh config runs marion's tool and a granted write unasked, and conformance's P-approval ran `report` with the variable stripped, so no grant of marion's is load-bearing. The row's env states GOOSE_MODE=auto because `GOOSE_MODE: approve` in the operator's config.yaml aborts a headless run at exit 1 and the env overrides it)
 - **P-midturn** UNSUPPORTED: headless delivery None { note: "S31 p0b/goose (1.51.0): `run --resume -n <name>` continues a session by a name the caller chooses, which needs this row's --no-session dropped; until it is, there is no second turn" }
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (exit 0); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
 - **P-resume** UNSUPPORTED: the row states no resume spelling (`resume: None`)
@@ -225,7 +225,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; still running; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.7 s after the spawn and listed marion's tools
 - **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f45f-abdf-73a0-96ea-f4242d614c15 ; activity mcp__marion__report
-- **P-approval** PASS: `report` answered with no grant: true (S34 on 0.80.2: pi asks nothing headless; a tool named in --tools runs, and marion's verb reaches the bridge with no prompt)
+- **P-approval** UNSUPPORTED: the row declares approve-all: every tool runs without asking (S34 on 0.80.2: pi asks nothing headless; a tool named in --tools runs, and marion's verb reaches the bridge with no prompt)
 - **P-midturn** PASS: folded into the running turn (1 turn end; requests [3])
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
 - **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session 01a0f45f-f44c-739b-8835-bad2b5da2b6e -> 01a0f45f-f44c-739b-8835-bad2b5da2b6e; resume refusal: none
