@@ -31,6 +31,10 @@ const MAX_PARAMS: usize = 64;
 /// The DEC private mode for bracketed paste.
 const BRACKETED_PASTE: &[u8] = b"2004";
 
+/// The DEC private modes that switch between the main and the alternate screen: a switch shows
+/// a screen whose text was written before it, so the grid may show an ask no word since did.
+const SCREEN_SWITCHES: [&[u8]; 3] = [b"47", b"1047", b"1049"];
+
 /// Longest OSC command number kept: every command marion reads is one digit.
 const MAX_OSC_DIGITS: usize = 4;
 
@@ -182,9 +186,10 @@ pub(crate) struct ModeScan {
     asks: &'static [Ask],
     /// The ask on the grid as of the last read.
     ask: Option<&'static Ask>,
-    /// The words of [`Self::asks`]' lines, four letters or longer: a prompt cannot
-    /// come onto the screen without one of them written in the stream, so the grid is read whole
-    /// only after one is (or while an ask is up, to see it leave).
+    /// The longest word of each of [`Self::asks`]' lines, four letters or longer: a prompt drawn
+    /// in words has each of them written in the stream, so a chunk's grid is read only after one
+    /// is (or while an ask is up, to see it leave). A prompt drawn otherwise is caught by the
+    /// writer's own read ([`Self::read_asks`]).
     ask_words: Vec<&'static str>,
     /// The last of the visible text written, words joined by one space, searched for
     /// [`Self::ask_words`]; bounded by [`ASK_TAIL`].
@@ -275,7 +280,7 @@ impl ModeScan {
         self.ask_words = asks
             .iter()
             .flat_map(|a| [a.header, a.footer, a.option])
-            .flat_map(|line| line.split(' '))
+            .filter_map(|line| line.split(' ').max_by_key(|w| w.chars().count()))
             .filter(|w| w.chars().count() >= 4)
             .collect();
         self.ask_words.sort_unstable();
@@ -572,12 +577,10 @@ impl ModeScan {
                 }
                 b'h' | b'l' if !self.overflowed => {
                     // A screen switched back (the alternate screen's end) shows what was on it.
-                    self.ask_hint = true;
-                    if self
-                        .params
-                        .split(|&c| c == b';')
-                        .any(|p| p == BRACKETED_PASTE)
-                    {
+                    // No other mode does: `?2026` (synchronized output) wraps every frame.
+                    let mut modes = self.params.split(|&c| c == b';');
+                    self.ask_hint |= modes.clone().any(|p| SCREEN_SWITCHES.contains(&p));
+                    if modes.any(|p| p == BRACKETED_PASTE) {
                         let on = b == b'h';
                         if on && !self.bracketed_paste {
                             // What counts is a screen drawn under this mode, not before it.
@@ -1184,9 +1187,10 @@ mod tests {
         );
     }
 
-    /// **The grid is read whole only when it may show something new**: an ask word written, or
-    /// an ask up (to see it leave). A model streaming a reply that names none costs no read of
-    /// the screen per chunk — one per chunk before (a thousand here), none now.
+    /// **The grid is read whole only when it may show something new**: an ask word written, the
+    /// screen switched or reset, or an ask up (to see it leave). A model streaming a reply that
+    /// names none costs no read of the screen per chunk — one per chunk before (a thousand
+    /// here), none now — and neither do the mode toggles around each frame.
     #[test]
     fn the_screen_is_read_only_after_an_ask_word_or_while_an_ask_is_up() {
         let mut scan = asked();
@@ -1203,6 +1207,38 @@ mod tests {
             );
         }
         assert_eq!(looks(&scan) - before, 0, "no ask word, no read");
+        for i in 0..100 {
+            scan.feed(
+                format!(
+                    "\x1b[?2026h\x1b[?25l\x1b[{};3Hframe {i}\x1b[?25h\x1b[?2026l",
+                    i % 20 + 1
+                )
+                .as_bytes(),
+                Instant::now(),
+            );
+        }
+        assert_eq!(
+            looks(&scan) - before,
+            0,
+            "a frame's mode toggles are no hint"
+        );
+        for (n, switch) in [
+            &b"\x1b[?1049l"[..],
+            b"\x1b[?47h",
+            b"\x1b[?2004;1047l",
+            b"\x1bc",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            scan.feed(switch, Instant::now());
+            assert_eq!(
+                looks(&scan) - before,
+                n as u64 + 1,
+                "a screen switch or reset is"
+            );
+        }
+        scan.feed(b"\x1b[?2004h", Instant::now());
         // An ask word cut by a read boundary is still seen, once.
         scan.feed(b"\x1b[5;3HWould you like to run the follo", Instant::now());
         scan.feed(b"wing command?", Instant::now());
