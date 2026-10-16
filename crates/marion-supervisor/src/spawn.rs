@@ -961,6 +961,35 @@ pub fn commit_child_work(
     commit_all(wt, branch, base, message)
 }
 
+/// **Whether the child tree `wt` holds the repository's own harness config `paths` exactly as
+/// the operator's history has them** — the condition for a trusted repository's config to load
+/// in it. Trust is by place, and a child writes its own tree: a `.mcp.json` it edited (or added,
+/// tracked, untracked or ignored), or one it carried in on a parent's commit, is the child's and
+/// not the repository's the operator trusted. The reference is where `base` meets the operator's
+/// own `HEAD` (the common dir's, which no child writes), so a carried or resumed tree is held to
+/// the operator's commit, not to one a parent made. Any git failure answers `false`.
+pub fn repo_config_unchanged(wt: Tree<'_>, base: &Oid, common: &Path, paths: &[&str]) -> bool {
+    if paths.is_empty() {
+        return true;
+    }
+    let Ok(reference) = git(Tree::Operator(common), &["merge-base", "HEAD", &base.0]) else {
+        return false;
+    };
+    let reference = reference.trim();
+    let mut diff = vec![
+        "diff",
+        "--quiet",
+        "--no-ext-diff",
+        "--no-textconv",
+        reference,
+        "--",
+    ];
+    diff.extend(paths);
+    let mut others = vec!["ls-files", "--others", "-z", "--"];
+    others.extend(paths);
+    git(wt, &diff).is_ok() && git(wt, &others).is_ok_and(|o| o.is_empty())
+}
+
 /// The commit `refs/heads/<branch>` names now.
 fn branch_tip(wt: Tree<'_>, branch: &str) -> Result<Oid, SpawnError> {
     let named = format!("refs/heads/{branch}^{{commit}}");
@@ -2591,6 +2620,64 @@ mod tests {
         assert_eq!(
             tgit(&repo, &["show", "marion/child:keep.txt"]),
             "the child's edit"
+        );
+    }
+
+    /// **A child tree's harness config counts as the repository's only while it is the
+    /// operator's**: a fresh worktree holds it as committed; an edit, a new untracked file and a
+    /// new ignored one in a config path each make it the child's; and a grandchild cut from a
+    /// parent that carried an edit in is held to the operator's commit, not the parent's.
+    #[test]
+    fn a_child_trees_repo_config_is_trusted_only_as_the_operator_committed_it() {
+        let (dir, repo, _) = committed_repo("spawn-config-unchanged");
+        std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), ".pi/secret\n").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "config"]);
+        let base = Oid(tgit(&repo, &["rev-parse", "HEAD"]));
+        let common = crate::socket::project_root(&repo);
+        let paths = [".mcp.json", ".pi"];
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        let same = |w: Tree<'_>, b: &Oid| repo_config_unchanged(w, b, &common, &paths);
+        assert!(
+            same(child, &base),
+            "a fresh tree holds the operator's config"
+        );
+        assert!(repo_config_unchanged(child, &base, &common, &[]));
+        std::fs::write(wt.join(".mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
+        assert!(!same(child, &base), "an edit");
+        tgit(&wt, &["checkout", "--", ".mcp.json"]);
+        std::fs::create_dir_all(wt.join(".pi")).unwrap();
+        std::fs::write(wt.join(".pi/secret"), "x").unwrap();
+        assert!(!same(child, &base), "an ignored new file");
+        std::fs::remove_file(wt.join(".pi/secret")).unwrap();
+        std::fs::write(wt.join(".pi/ext.js"), "x").unwrap();
+        assert!(!same(child, &base), "an untracked new file");
+        std::fs::remove_file(wt.join(".pi/ext.js")).unwrap();
+        assert!(same(child, &base));
+
+        std::fs::write(wt.join(".mcp.json"), "{\"planted\":1}\n").unwrap();
+        let grand = dir.join("grand-wt");
+        let (carried, _) = make_worktree(
+            child,
+            &grand,
+            &["marion/grand".into()],
+            Some("marion/child"),
+        )
+        .expect("the grandchild, carrying the edit");
+        let grandchild = Tree::Child {
+            wt: &grand,
+            repo: &repo,
+        };
+        assert!(
+            !same(grandchild, &carried),
+            "a parent's carried edit is not the operator's"
         );
     }
 

@@ -2513,6 +2513,20 @@ pub fn run_spawn_watched(
     // after the last attempt's process has been reaped. See [`crate::node_tmp`].
     let node_tmp = crate::node_tmp::NodeTmp::create(&agent_dir)?;
     let launched_at = Instant::now();
+    // Trust is by place, and a child writes its own tree: in a worktree marion made, the
+    // repository's own harness config loads only while it is exactly the operator's.
+    let repo_trusted = crate::trust::repo_trusted(&env.project_root)
+        && match tree_of(env, &wt) {
+            tree @ crate::spawn::Tree::Child { .. } => base.as_ref().is_some_and(|b| {
+                crate::spawn::repo_config_unchanged(
+                    tree,
+                    b,
+                    &env.project_root,
+                    &crate::trust::repo_config_paths(),
+                )
+            }),
+            crate::spawn::Tree::Operator(_) => true,
+        };
     // The profile this attempt runs on: an index into `profiles`, 0 for the first.
     let mut at = 0;
     let (launch, inv, mut run, version) = loop {
@@ -2541,6 +2555,7 @@ pub fn run_spawn_watched(
             &ch,
         );
         launch.extra.env_passthrough = passthrough.clone();
+        launch.extra.repo_trusted = repo_trusted;
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep, gateway.as_ref());
         }
@@ -3657,8 +3672,9 @@ pub fn child_launch_spec(
             read_only: req.is_read_only(),
             // A node: marion's own sandbox applies wherever its row and auth allow.
             os_sandbox: env.os_sandbox,
-            // The repository's own harness config loads only where the operator trusted it.
-            repo_trusted: crate::trust::repo_trusted(&env.project_root),
+            // Decided by the spawn, which can compare the tree with the operator's commit: the
+            // repository must be trusted and the child's tree hold its config unchanged.
+            repo_trusted: false,
             // The only admin dir the sandbox writes: proven against the registration.
             git_admin_dir: crate::gitcmd::admin_dir(wt, &env.project_root),
             acp_agent: agent_type.acp_agent.clone(),

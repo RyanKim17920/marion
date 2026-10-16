@@ -26,7 +26,9 @@
 //! its canonical git directory ([`crate::socket::project_root`], shared by every worktree of it)
 //! in the same store, and [`repo_trusted`] is what each launch asks. Trust here is by **place**,
 //! as a harness's own folder trust is, because the files it covers are many and the repository
-//! edits them; any repository not recorded is untrusted. The harness rows decide what that means
+//! edits them; any repository not recorded is untrusted. In a worktree marion made for a child,
+//! place is not enough, since the child writes its tree: the config there must also be exactly
+//! the operator's commit ([`crate::spawn::repo_config_unchanged`]). The harness rows decide what that means
 //! for each harness ([`marion_harness::spec::repo_config_rule`]); marion never answers a harness's
 //! own folder-trust dialog in an untrusted repository.
 //!

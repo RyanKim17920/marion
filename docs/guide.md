@@ -398,7 +398,9 @@ runs at startup), `.pi/` extensions, `.codex/config.toml`. A node on your own lo
 it until you trust the repository: `marion trust allow --repo [<dir>]` (default: the current
 directory) records the repository's git directory, which covers every worktree of it, and
 `marion trust deny --repo [<dir>]` declines it; `marion trust list` shows each repository you
-decided about.
+decided about. In a child's worktree the config must also be exactly what your history holds (as
+of where the child's base meets your `HEAD`): a child that edited or added any of it, or carried
+such an edit in from its parent, runs as in an untrusted repository.
 
 When `marion` or `marion run` starts at your terminal, on your own login, in a repository that
 holds any of that config and that you have not decided about, it asks once: `this repository has
