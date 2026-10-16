@@ -61,7 +61,7 @@ fn mcp_tool_names() -> Vec<String> {
 /// Bare `marion` with no terminal, or a first word that is an option marion does not have:
 /// `marion --help`'s text on stderr, and exit 2.
 fn usage() -> ! {
-    err!("{}", cli::top_help());
+    marion_supervisor::printable::err_text(&cli::top_help());
     std::process::exit(2)
 }
 
@@ -2580,15 +2580,17 @@ fn legacy_main() -> ExitCode {
     };
     match first {
         "--help" | "-h" | "help" => match argv.get(1).map(|w| (w, cli::verb(w))) {
-            None => out!("{}", cli::top_help()),
-            Some((_, Some(verb))) => out!("{}", (verb.help)()),
+            None => marion_supervisor::printable::out_text(&cli::top_help()),
+            Some((_, Some(verb))) => marion_supervisor::printable::out_text(&(verb.help)()),
             Some((word, None)) => return unknown_command(word),
         },
         "--version" | "-V" => out!("marion {}", env!("CARGO_PKG_VERSION")),
         word => match cli::verb(word) {
             Some(verb) => return cli::dispatch(verb, &argv),
             // `marion <anything> --help` still answers with the help, as it always has.
-            None if cli::asks_for_help(&argv[1..]) => out!("{}", cli::top_help()),
+            None if cli::asks_for_help(&argv[1..]) => {
+                marion_supervisor::printable::out_text(&cli::top_help())
+            }
             None => return unknown_command(word),
         },
     }

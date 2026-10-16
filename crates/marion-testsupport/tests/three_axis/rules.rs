@@ -460,6 +460,10 @@ fn a_raw_print_of_a_value_in_the_cli_is_flagged() {
         r#"fn f(o: &mut W, x: &str) { let _ = writeln!(o, "{x}"); }"#,
         r#"fn f(o: &mut W, x: &str) { let _ = write!(o, "{}", x); }"#,
         r#"fn f() { println!("{USAGE}"); }"#,
+        r#"fn f(x: &[u8]) { let _ = std::io::stdout().write_all(x); }"#,
+        r#"fn f(a: std::fmt::Arguments) { let _ = io::stderr().lock().write_fmt(a); }"#,
+        r#"fn f(x: &str) { out!("{x}\ndone"); }"#,
+        r#"fn f(o: &mut W, x: &str) { let _ = out_to!(o, "a\n{x}"); }"#,
     ] {
         assert!(cli(raw).contains(&"raw-print"), "{raw}");
     }
@@ -469,10 +473,22 @@ fn a_raw_print_of_a_value_in_the_cli_is_flagged() {
         r#"fn f(o: &mut W) { let _ = writeln!(o); }"#,
         r#"fn f(o: &mut W) { let _ = writeln!(o, "{{literal braces}}"); }"#,
         r#"fn f(x: &str) { out!("{x}"); err!("{}", x); }"#,
+        r#"fn f(o: &mut W, x: &[u8]) { let _ = o.write_all(x); }"#,
     ] {
         assert!(!cli(clean).contains(&"raw-print"), "{clean}");
     }
     assert!(!rules(r#"fn f(x: &str) { println!("{x}"); }"#).contains(&"raw-print"));
+    assert!(
+        scan_at(
+            "crates/marion-supervisor/src/facade_cli.rs",
+            r#"fn f(x: &str) { eprintln!("{x}"); }"#,
+            false,
+            false
+        )
+        .into_iter()
+        .any(|(_, r)| r == "raw-print"),
+        "the facade's CLI prints are the CLI's"
+    );
     assert!(
         scan_at(
             "crates/marion-supervisor/src/bin/marion.rs",

@@ -97,7 +97,8 @@ pub fn main(
     let args = match parse(argv) {
         Ok(a) => a,
         Err(e) => {
-            err!("marion export: {e}\nusage: {USAGE}");
+            err!("marion export: {e}");
+            crate::printable::err_text(&format!("usage: {USAGE}"));
             return ExitCode::from(2);
         }
     };
@@ -135,10 +136,8 @@ fn export(args: &Args, repo: &std::path::Path, state: &std::path::Path) -> Resul
             err!("marion: wrote {} ({nodes} nodes)", path.display());
         }
         None => {
-            use std::io::Write;
             // To a terminal as `marion ls` prints: node-authored text carries no escape sequence.
-            std::io::stdout()
-                .write_all(crate::printable::printable(&text).as_bytes())
+            crate::printable::show(&mut std::io::stdout(), &crate::printable::printable(&text))
                 .map_err(|e| format!("writing the report: {e}"))?;
         }
     }

@@ -109,7 +109,12 @@ const CLI_FILES: &[&str] = &[
     "crates/marion-supervisor/src/profile_cli.rs",
     "crates/marion-supervisor/src/notify.rs",
     "crates/marion-supervisor/src/export/cli.rs",
+    "crates/marion-supervisor/src/facade_cli.rs",
 ];
+
+/// The sanitizing prints, each of which prints one line: a line break in their format string is
+/// one they would spell rather than print.
+const ONE_LINE_PRINTS: &[&str] = &["out", "err", "out_to"];
 
 /// The std prints, by whether their first argument is the writer.
 const RAW_PRINTS: &[&str] = &["print", "println", "eprint", "eprintln"];
@@ -450,6 +455,26 @@ fn check_raw_print(s: &mut Scanner, name: &str, m: &syn::Macro) {
         return;
     }
     let flat: Vec<TokenTree> = m.tokens.clone().into_iter().collect();
+    if ONE_LINE_PRINTS.contains(&name) {
+        let breaks = flat.iter().any(|t| {
+            matches!(t, TokenTree::Literal(l) if {
+                let lit = l.to_string();
+                lit.starts_with('"') && lit.replace("\\\\", "").contains("\\n")
+            })
+        });
+        if breaks {
+            s.emit(
+                Axis::Security,
+                "raw-print",
+                m.span(),
+                format!(
+                    "`{name}!` prints one line, so its own line break would be spelled; print each \
+                     line with its own call, or composed text with `printable::show`"
+                ),
+            );
+        }
+        return;
+    }
     let args = if RAW_PRINTS.contains(&name) {
         &flat[..]
     } else if RAW_WRITES.contains(&name) {
@@ -466,6 +491,45 @@ fn check_raw_print(s: &mut Scanner, name: &str, m: &syn::Macro) {
             "raw-print",
             m.span(),
             format!("`{name}!` prints a value raw; print it with `out!`, `err!` or `out_to!`"),
+        );
+    }
+}
+
+/// Does `e` name the process's own stdout or stderr: a call to a path ending `stdout`/`stderr`,
+/// anywhere along a method chain (`std::io::stdout().lock()`)?
+fn is_std_stream(e: &syn::Expr) -> bool {
+    match e {
+        syn::Expr::Call(c) => match &*c.func {
+            syn::Expr::Path(p) => p
+                .path
+                .segments
+                .last()
+                .is_some_and(|s| s.ident == "stdout" || s.ident == "stderr"),
+            _ => false,
+        },
+        syn::Expr::MethodCall(m) => is_std_stream(&m.receiver),
+        syn::Expr::Paren(p) => is_std_stream(&p.expr),
+        syn::Expr::Reference(r) => is_std_stream(&r.expr),
+        _ => false,
+    }
+}
+
+/// `write_all`/`write_fmt` straight onto stdout or stderr in a CLI file: a print that skips
+/// [`check_raw_print`]'s macros, rule `raw-print` all the same.
+fn check_raw_write(s: &mut Scanner, m: &syn::ExprMethodCall) {
+    if !CLI_FILES.iter().any(|f| s.file.starts_with(f)) {
+        return;
+    }
+    let method = m.method.to_string();
+    if matches!(method.as_str(), "write_all" | "write_fmt") && is_std_stream(&m.receiver) {
+        s.emit(
+            Axis::Security,
+            "raw-print",
+            m.span(),
+            format!(
+                "`{method}` writes to the terminal raw; print with `out!`/`err!`, or composed text \
+                 with `printable::show`"
+            ),
         );
     }
 }
@@ -697,6 +761,7 @@ pub fn check_struct_literal(s: &mut Scanner, st: &syn::ExprStruct) {
 }
 
 pub fn check_method(s: &mut Scanner, m: &syn::ExprMethodCall) {
+    check_raw_write(s, m);
     let method = m.method.to_string();
     if FILLING_METHODS.contains(&method.as_str())
         && let Some(sink) = argv_sink(&m.receiver)

@@ -107,11 +107,11 @@ pub fn relay_native_facade(handoff: NativeFacadeHandoff) -> ExitCode {
     match crate::native_relay::run(handoff) {
         Ok(crate::native_relay::RelayExit::Ended) => ExitCode::SUCCESS,
         Ok(crate::native_relay::RelayExit::Detached(agent)) => {
-            eprintln!("{}", crate::attach::reattach_hint(&agent.0));
+            crate::err!("{}", crate::attach::reattach_hint(&agent.0));
             ExitCode::SUCCESS
         }
         Err(refusal) => {
-            eprintln!("marion: {refusal}");
+            crate::err!("marion: {refusal}");
             ExitCode::FAILURE
         }
     }
@@ -161,8 +161,8 @@ pub fn dispatch_native_facade_or_legacy<'a>(
     let witness = match capture_process_stdio() {
         Ok(witness) => witness,
         Err(_) => {
-            writeln!(
-            stderr,
+            crate::out_to!(
+stderr,
             "marion: native facade \"{}\" requires stdin and stdout on the same foreground controlling terminal; use 'marion run <agent-type> --prompt <text>' for structured execution",
             request.requested_selector()
         )
@@ -174,7 +174,7 @@ pub fn dispatch_native_facade_or_legacy<'a>(
     let connection = match connect_native() {
         Ok(connection) => connection,
         Err(error) => {
-            writeln!(
+            crate::out_to!(
                 stderr,
                 "marion: native facade bootstrap authorization was refused: {error}"
             )
@@ -200,7 +200,7 @@ pub fn dispatch_native_facade_or_legacy<'a>(
     match authorized {
         Ok(handoff) => authorized_native(handoff),
         Err(_) => {
-            writeln!(
+            crate::out_to!(
                 stderr,
                 "marion: native facade bootstrap authorization was refused"
             )

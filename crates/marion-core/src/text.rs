@@ -111,6 +111,12 @@ pub fn visible(text: &str) -> Cow<'_, str> {
     spell(text, |_| false)
 }
 
+/// [`visible`], keeping `\t` as the column it moves to (a tab only moves the cursor on, it cannot
+/// overwrite): one printed line, whatever its values carry, a line break among them spelled.
+pub fn visible_line(text: &str) -> Cow<'_, str> {
+    spell(text, |c| c == '\t')
+}
+
 /// [`visible`], keeping `\n` and `\t` as the layout they are: for output whose own code writes
 /// several lines and aligns columns (a tab only moves the cursor on, it cannot overwrite). A value
 /// that may carry a newline of its own is passed through [`visible`] first, so it cannot add a

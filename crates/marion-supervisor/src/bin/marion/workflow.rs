@@ -210,7 +210,7 @@ fn run_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> Result<ExitCo
         marion_supervisor::mcp::wait_bound(None).saturating_mul(u32::from(opened.steps.max(1)));
     match courier::await_workflow(&sock, &project, &opened.wf_id, bound) {
         Ok(courier::WorkflowDelivered::Closed(result)) => {
-            out!("{}", result.scoreboard());
+            marion_supervisor::printable::out_text(&result.scoreboard());
             Ok(
                 if result.outcome == marion_core::workflow::Outcome::Succeeded {
                     ExitCode::SUCCESS

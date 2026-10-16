@@ -51,7 +51,7 @@ pub fn main(argv: &[String]) -> ExitCode {
     match run(argv, &paths, home.as_deref(), &mut out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(Refusal::Usage) => {
-            err!("{USAGE}");
+            crate::printable::err_text(USAGE);
             ExitCode::from(2)
         }
         Err(Refusal::Profile(e)) => {
@@ -169,9 +169,10 @@ fn add(
             shared.join(", ")
         )?;
     }
+    out_to!(out, "log in to it once, yourself (marion never runs this):")?;
     out_to!(
         out,
-        "log in to it once, yourself (marion never runs this):\n  {}",
+        "  {}",
         login_command(harness, carrier.env, &dir, carrier.login_hint)
     )?;
     out_to!(

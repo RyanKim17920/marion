@@ -8,44 +8,61 @@
 
 use std::borrow::Cow;
 
-pub use marion_core::text::visible_lines;
 use marion_core::text::{is_deceptive, visible};
+pub use marion_core::text::{visible_line, visible_lines};
 
-/// **What the operator's CLI prints, and the one way it prints it**: `text` written to `w` as
-/// [`visible_lines`] spells it, so the line breaks and tabs the CLI's own format writes stay and a
-/// control, a bidi override or a zero-width character a value carries reads as its escape. Every
-/// CLI print goes through here by [`out!`](crate::out), [`err!`](crate::err) or
-/// [`out_to!`](crate::out_to); the three-axis `raw-print` rule keeps a raw one from coming back.
+/// **Text the CLI composes over several lines, as the operator's terminal shows it**: `text`
+/// written to `w` as [`visible_lines`] spells it, so its own line breaks and tabs stay and a
+/// control, a bidi override or a zero-width character reads as its escape. For a usage, a report,
+/// a detail the CLI lays out itself — text whose line breaks are the CLI's. A line that formats a
+/// value prints with [`out!`](crate::out), [`err!`](crate::err) or [`out_to!`](crate::out_to),
+/// which keep it one line; the three-axis `raw-print` rule keeps a raw print from coming back.
 pub fn show(w: &mut dyn std::io::Write, text: &str) -> std::io::Result<()> {
     w.write_all(visible_lines(text).as_bytes())
 }
 
-/// `println!` through [`show`] to stdout. A closed stdout is not an error the caller can act on.
+/// [`show`] `text` and a newline to stdout: text the CLI composed over several lines (a help, a
+/// usage, a scoreboard), as `println!("{text}")` printed it. A closed stdout is not an error the
+/// caller can act on.
+pub fn out_text(text: &str) {
+    let _ = show(&mut std::io::stdout(), &format!("{text}\n"));
+}
+
+/// [`out_text`] to stderr.
+pub fn err_text(text: &str) {
+    let _ = show(&mut std::io::stderr(), &format!("{text}\n"));
+}
+
+/// `text` as **one** line and its newline, every control in it spelled but a tab
+/// ([`visible_line`]): a value that carries a line break cannot add a row the CLI did not write.
+pub fn line(text: &str) -> String {
+    format!("{}\n", visible_line(text))
+}
+
+/// `println!` as one [`line`] to stdout. A closed stdout is not an error the caller can act on.
 #[macro_export]
 macro_rules! out {
     () => { $crate::out!("") };
     ($($arg:tt)*) => {{
-        let _ = $crate::printable::show(
-            &mut ::std::io::stdout(),
-            &::std::format!("{}\n", ::std::format_args!($($arg)*)),
-        );
+        use ::std::io::Write as _;
+        let _ = ::std::io::stdout()
+            .write_all($crate::printable::line(&::std::format!($($arg)*)).as_bytes());
     }};
 }
 
-/// `eprintln!` through [`show`] to stderr.
+/// `eprintln!` as one [`line`] to stderr.
 #[macro_export]
 macro_rules! err {
     () => { $crate::err!("") };
     ($($arg:tt)*) => {{
-        let _ = $crate::printable::show(
-            &mut ::std::io::stderr(),
-            &::std::format!("{}\n", ::std::format_args!($($arg)*)),
-        );
+        use ::std::io::Write as _;
+        let _ = ::std::io::stderr()
+            .write_all($crate::printable::line(&::std::format!($($arg)*)).as_bytes());
     }};
 }
 
-/// `writeln!(w, …)` as [`show`] writes: the same `io::Result<()>`, and `w` taken as `writeln!`
-/// takes it (a `&mut dyn Write`, a `&mut Vec<u8>` or a writer by value).
+/// `writeln!(w, …)` as one [`line`]: the same `io::Result<()>`, and `w` taken as `writeln!` takes
+/// it (a `&mut dyn Write`, a `&mut Vec<u8>` or a writer by value).
 #[macro_export]
 macro_rules! out_to {
     ($w:expr) => { $crate::out_to!($w, "") };
@@ -53,12 +70,7 @@ macro_rules! out_to {
         // Unused where `w` is a `dyn Write`, whose methods need no import.
         #[allow(unused_imports)]
         use ::std::io::Write as _;
-        $w.write_all(
-            $crate::printable::visible_lines(
-                &::std::format!("{}\n", ::std::format_args!($($arg)*)),
-            )
-            .as_bytes(),
-        )
+        $w.write_all($crate::printable::line(&::std::format!($($arg)*)).as_bytes())
     }};
 }
 
@@ -134,17 +146,24 @@ mod tests {
         );
     }
 
-    /// **What the CLI prints shows a control as its escape**: the line breaks and tabs its own
-    /// format writes stay, an ESC, a CR or a bidi override a value carries reads as its escape.
+    /// **A CLI print is one line, whatever its values carry**: an ESC, a CR, a bidi override or a
+    /// line break in a value reads as its escape, so a value cannot add a row of its own; a tab
+    /// stays, and text the CLI composes over several lines goes through [`show`], which keeps them.
     #[test]
-    fn the_cli_print_path_spells_every_control_but_its_layout() {
+    fn a_cli_print_is_one_line_with_every_control_spelled() {
         let mut buf = Vec::new();
-        let value = "a\x1b[2Kb\rc\u{202e}d";
-        crate::out_to!(&mut buf, "{value}\t|\n{}", "e").unwrap();
+        let value = "a\x1b[2Kb\rc\u{202e}d\nmarion: trusted";
+        crate::out_to!(&mut buf, "{value}\t|{}", "e").unwrap();
         crate::out_to!(&mut buf).unwrap();
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "a\\x1b[2Kb\\rc\\u{202e}d\t|\ne\n\n"
+            "a\\x1b[2Kb\\rc\\u{202e}d\\nmarion: trusted\t|e\n\n"
+        );
+        let mut buf = Vec::new();
+        show(&mut buf, "usage: one\n       two\x1b\n").unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "usage: one\n       two\\x1b\n"
         );
     }
 }

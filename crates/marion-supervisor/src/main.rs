@@ -14,12 +14,12 @@ use marion_supervisor::{detach, doctor, mcp, preflight};
 use marion_supervisor::{err, out};
 
 fn usage() -> ! {
-    err!(
+    marion_supervisor::printable::err_text(
         "usage: marion-supervisor doctor [--adapter] [--harness <name>] …\n\
          \x20      marion-supervisor --version\n\
          \n\
          `marion-supervisor doctor` is the same as `marion doctor`. `mcp` and `serve` are \
-         internal:\nmarion starts them itself, and they are not commands to type."
+         internal:\nmarion starts them itself, and they are not commands to type.",
     );
     std::process::exit(2)
 }
@@ -94,7 +94,10 @@ fn main() {
                                 &format!("\n{text}"),
                             );
                         }
-                        Err(e) => out!("\nproviders: not checked — {e}"),
+                        Err(e) => {
+                            out!();
+                            out!("providers: not checked — {e}");
+                        }
                     }
                 }
                 // A failed machine check (a mismatched binary pair, an unwritable state dir) fails
@@ -114,7 +117,7 @@ fn main() {
             }
             Err(e) => {
                 err!("marion doctor: {e}");
-                err!("{}", doctor::USAGE);
+                marion_supervisor::printable::err_text(doctor::USAGE);
                 std::process::exit(2);
             }
         },

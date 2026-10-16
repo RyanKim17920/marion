@@ -655,7 +655,7 @@ pub fn cli_main(args: &[String]) -> ExitCode {
     match run(args, &cwd, store, &mut std::io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(None) => {
-            err!("{USAGE}");
+            crate::printable::err_text(USAGE);
             ExitCode::from(2)
         }
         Err(Some(e)) => {

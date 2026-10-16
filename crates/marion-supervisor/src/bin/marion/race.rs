@@ -197,7 +197,8 @@ fn run(args: &RaceArgs) -> Result<ExitCode, ExitCode> {
     let bound = marion_supervisor::mcp::wait_bound(args.timeout_secs);
     match courier::await_race(&sock, &project, &started.race_id, bound) {
         Ok(courier::RaceDelivered::Decided(result)) => {
-            out!("race {}:\n{}", result.race_id.0, result.scoreboard());
+            out!("race {}:", result.race_id.0);
+            marion_supervisor::printable::out_text(&result.scoreboard());
             match result.winner_row() {
                 Some(w) => {
                     err!(
