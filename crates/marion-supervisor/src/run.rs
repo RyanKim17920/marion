@@ -1708,6 +1708,13 @@ pub trait SpawnObserver: Sync {
     ) -> Option<std::sync::Arc<dyn crate::inbox::TurnSource>> {
         None
     }
+    /// **The branch marion recorded for the node whose tree is `tree`** — the worktree a caller
+    /// runs in, whose uncommitted work its child is cut from. Asked of whoever holds the tree,
+    /// never of the tree itself, whose HEAD the node can point anywhere. `None` for an owner that
+    /// records none, and then no work is carried.
+    fn recorded_branch(&self, _tree: &Path) -> Option<String> {
+        None
+    }
     /// **§7.6's subtree scan, answered by whoever holds the tree.** The live descendants of
     /// `agent_id` — the whole subtree, in the gating sense `descendant_gate::live_descendants`
     /// states — or `None` for an owner that holds no registry and so cannot see the tree at all.
@@ -2258,6 +2265,7 @@ pub fn run_spawn_watched(
         .write(&env.project_dir, &agent_id)?;
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
+    let carry_branch = observer.recorded_branch(&req.repo);
     let (workspace, base, cwd_claim, mut prelaunch) = select_workspace(
         req,
         &agent_type,
@@ -2265,6 +2273,7 @@ pub fn run_spawn_watched(
         &env.project_root,
         task_id,
         &agent_id,
+        carry_branch.as_deref(),
     )?;
     // The tree this child's own children branch from is the one it runs in.
     observer.workspace_chosen(&agent_id, &workspace);
@@ -3280,6 +3289,7 @@ fn select_workspace(
     project_root: &Path,
     task_id: &TaskId,
     agent_id: &AgentId,
+    carry_branch: Option<&str>,
 ) -> Result<
     (
         Workspace,
@@ -3335,9 +3345,9 @@ fn select_workspace(
                 .and_then(|t| t.commit.as_ref())
                 .or_else(|| req.workflow.as_ref().and_then(|w| w.base.as_ref()));
             // A caller in a worktree marion made (under this project's agent dirs) hands its child
-            // its current state; the operator's own checkout is never committed to. See
-            // `make_worktree`.
-            let carry_work = req.repo.starts_with(project.agents_dir());
+            // its current state, committed onto the branch marion recorded for it; the operator's
+            // own checkout is never committed to. See `make_worktree`.
+            let carry_onto = carry_branch.filter(|_| req.repo.starts_with(project.agents_dir()));
             let (base, branch) = crate::spawn::make_worktree_at(
                 tree_in(project, project_root, &req.repo),
                 &wt,
@@ -3346,7 +3356,7 @@ fn select_workspace(
                     legacy_worktree_branch(task_id),
                 ],
                 at,
-                carry_work,
+                carry_onto,
             )?;
             let prelaunch = PrelaunchWorktree {
                 repo: project_root.to_path_buf(),

@@ -608,13 +608,14 @@ impl CwdClaim {
 /// actually created at. §6.7 calls `base_commit` an audit record; an audit record raced against the
 /// thing it describes is worse than a slower spawn.
 ///
-/// **`carry_work`: the child starts from its parent's current state, not its parent's last
+/// **`carry_onto`: the child starts from its parent's current state, not its parent's last
 /// commit.** Measured live (s2, 2026-09-27): a claude child in its own worktree wrote the code, then
 /// spawned codex grandchildren to run its tests, and every grandchild's worktree was cut from the
 /// base commit — none of them saw the edits they were asked to test. So where `repo` is a worktree
 /// marion made for the caller, the caller's uncommitted work is first committed onto the caller's
 /// own `marion/<task_id>` branch ([`CARRIED_WORK_MESSAGE`]), by the same recipe that lands a child's
-/// work at its end ([`commit_child_work`]), and the child is cut from that commit.
+/// work at its end ([`commit_child_work`]), and the child is cut from that commit. The branch is
+/// the one marion recorded for the caller; where none is recorded, nothing is carried.
 ///
 /// Committed on the caller's branch rather than held in a commit on no branch, because that branch
 /// is marion's and is where the caller's work lands at its end anyway: the caller's tree is left
@@ -627,31 +628,32 @@ pub fn make_worktree(
     repo: Tree<'_>,
     path: &Path,
     branches: &[String],
-    carry_work: bool,
+    carry_onto: Option<&str>,
 ) -> Result<(Oid, String), SpawnError> {
-    make_worktree_at(repo, path, branches, None, carry_work)
+    make_worktree_at(repo, path, branches, None, carry_onto)
 }
 
 /// [`make_worktree`], cut at `at` where one is named — a reviewer's tree, at the reviewed node's
-/// landed commit — and at `repo`'s HEAD otherwise. `carry_work` applies only to a HEAD cut: a
-/// named commit already is the work the child is to see.
+/// landed commit — and at `repo`'s HEAD otherwise. `carry_onto` (the caller's branch, as marion
+/// recorded it) applies only to a HEAD cut: a named commit already is the work the child is to
+/// see. The work is committed onto that branch and the child cut from its new tip, never from
+/// wherever the caller's HEAD has been pointed.
 pub fn make_worktree_at(
     repo: Tree<'_>,
     path: &Path,
     branches: &[String],
     at: Option<&Oid>,
-    carry_work: bool,
+    carry_onto: Option<&str>,
 ) -> Result<(Oid, String), SpawnError> {
     let _serialized = repo_write_guard();
-    let head = match at {
-        Some(commit) => commit.0.clone(),
-        None => {
-            if carry_work {
-                let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
-                commit_all(repo, &Oid(head), CARRIED_WORK_MESSAGE)?;
-            }
-            git(repo, &["rev-parse", "HEAD"])?.trim().to_string()
+    let head = match (at, carry_onto) {
+        (Some(commit), _) => commit.0.clone(),
+        (None, Some(branch)) => {
+            let tip = branch_tip(repo, branch)?;
+            commit_all(repo, branch, &tip, CARRIED_WORK_MESSAGE)?;
+            branch_tip(repo, branch)?.0
         }
+        (None, None) => git(repo, &["rev-parse", "HEAD"])?.trim().to_string(),
     };
     let taken = |b: &str| {
         git(
@@ -951,33 +953,57 @@ pub fn commit_message(
 /// added; a tree with no changes and no commits returns `None`.
 pub fn commit_child_work(
     wt: Tree<'_>,
+    branch: &str,
     base: &Oid,
     message: &str,
 ) -> Result<Option<Oid>, SpawnError> {
     let _serialized = repo_write_guard();
-    commit_all(wt, base, message)
+    commit_all(wt, branch, base, message)
+}
+
+/// The commit `refs/heads/<branch>` names now.
+fn branch_tip(wt: Tree<'_>, branch: &str) -> Result<Oid, SpawnError> {
+    let named = format!("refs/heads/{branch}^{{commit}}");
+    Ok(Oid(git(wt, &["rev-parse", "--verify", "-q", &named])?
+        .trim()
+        .to_string()))
 }
 
 /// The subject of the commit that carries a caller's work in progress to the child it spawns
-/// ([`make_worktree`]'s `carry_work`).
+/// ([`make_worktree`]'s `carry_onto`).
 pub const CARRIED_WORK_MESSAGE: &str =
     "marion: work in progress, carried to a child spawned from it";
 
 /// [`commit_child_work`]'s body, for a caller already holding [`repo_write_guard`].
-fn commit_all(wt: Tree<'_>, base: &Oid, message: &str) -> Result<Option<Oid>, SpawnError> {
+///
+/// **Onto the branch marion recorded, never through HEAD**: HEAD lives in the worktree's admin
+/// dir, which the child may write, so a child that pointed it at the operator's `main` would
+/// otherwise have marion commit its work there. The tree is staged and written as git would
+/// commit it, then `commit-tree` on the branch's own tip and `update-ref` from that tip, so a
+/// branch moved meanwhile refuses rather than losing a commit.
+fn commit_all(
+    wt: Tree<'_>,
+    branch: &str,
+    base: &Oid,
+    message: &str,
+) -> Result<Option<Oid>, SpawnError> {
     let get = |key: &str| {
         git(wt, &["config", "--get", key])
             .ok()
             .map(|v| v.trim().to_string())
     };
     let (name, email) = commit_identity(get("user.name"), get("user.email"));
+    let tip = branch_tip(wt, branch)?;
     git(wt, &["add", "-A"])?;
-    if !git(wt, &["diff", "--cached", "--name-only"])?
+    let tree = git(wt, &["write-tree"])?.trim().to_string();
+    let tip_tree = git(wt, &["rev-parse", &format!("{}^{{tree}}", tip.0)])?
         .trim()
-        .is_empty()
-    {
+        .to_string();
+    let tip = if tree == tip_tree {
+        tip
+    } else {
         let (name, email) = (OsStr::new(&name), OsStr::new(&email));
-        git_env(
+        let made = git_env(
             wt,
             &[
                 ("GIT_AUTHOR_NAME", name),
@@ -986,19 +1012,31 @@ fn commit_all(wt: Tree<'_>, base: &Oid, message: &str) -> Result<Option<Oid>, Sp
                 ("GIT_COMMITTER_EMAIL", email),
             ],
             &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "commit",
-                "--no-verify",
+                "commit-tree",
                 "--no-gpg-sign",
-                "-q",
+                &tree,
+                "-p",
+                &tip.0,
                 "-m",
                 message,
             ],
+        )?
+        .trim()
+        .to_string();
+        git(
+            wt,
+            &[
+                "update-ref",
+                "-m",
+                "marion: land a child's work",
+                &format!("refs/heads/{branch}"),
+                &made,
+                &tip.0,
+            ],
         )?;
-    }
-    let tip = git(wt, &["rev-parse", "HEAD"])?.trim().to_string();
-    Ok((tip != base.0).then_some(Oid(tip)))
+        Oid(made)
+    };
+    Ok((tip != *base).then_some(tip))
 }
 
 /// **What became of a child's changes when its run ended**, decided before the worktree goes.
@@ -1034,7 +1072,7 @@ impl Landed {
         if changed.is_some_and(<[PathBuf]>::is_empty) {
             return Self::Nothing;
         }
-        match commit_child_work(tree, base, message) {
+        match commit_child_work(tree, branch, base, message) {
             Ok(Some(commit)) => Self::OnBranch {
                 branch: branch.clone(),
                 commit,
@@ -2454,7 +2492,7 @@ mod tests {
     ) -> (marion_testsupport::Scratch, PathBuf, PathBuf, Oid, PathBuf) {
         let (dir, repo, base) = committed_repo(name);
         let wt = dir.join("child-wt");
-        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
             .expect("the child's worktree");
         std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
         let evil = dir.join("evil");
@@ -2502,7 +2540,7 @@ mod tests {
             "{refused}"
         );
         let _ = diff_text(child, &wt.with_extension("scratch"), &base);
-        let _ = commit_child_work(child, &base, "m");
+        let _ = commit_child_work(child, "marion/child", &base, "m");
         assert!(!marker.exists(), "marion ran the child's fsmonitor program");
     }
 
@@ -2514,7 +2552,7 @@ mod tests {
         let (dir, repo, _) = committed_repo("spawn-admin-dir");
         let common = crate::socket::project_root(&repo);
         let wt = dir.join("child-wt");
-        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
             .expect("the child's worktree");
         assert_eq!(
             crate::gitcmd::admin_dir(&wt, &common),
@@ -2523,6 +2561,37 @@ mod tests {
         assert_eq!(crate::gitcmd::admin_dir(&repo, &common), None);
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", common.display())).unwrap();
         assert_eq!(crate::gitcmd::admin_dir(&wt, &common), None);
+    }
+
+    /// **A child's work lands on the branch marion recorded, wherever the child pointed HEAD.**
+    /// The child repoints its worktree's HEAD at the operator's `main` (its admin dir is the
+    /// child's to write); marion's commit still goes onto `marion/child`, and `main` is untouched.
+    #[test]
+    fn a_childs_work_lands_on_its_recorded_branch_not_where_head_points() {
+        let (dir, repo, base) = committed_repo("spawn-commit-head");
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree");
+        std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
+        tgit(&wt, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        let tip = commit_child_work(child, "marion/child", &base, "m")
+            .expect("the commit succeeds")
+            .expect("and names a tip");
+        assert_eq!(
+            tgit(&repo, &["rev-parse", "main"]),
+            base.0,
+            "main untouched"
+        );
+        assert_eq!(tgit(&repo, &["rev-parse", "marion/child"]), tip.0);
+        assert_eq!(tgit(&repo, &["rev-parse", "marion/child^"]), base.0);
+        assert_eq!(
+            tgit(&repo, &["show", "marion/child:keep.txt"]),
+            "the child's edit"
+        );
     }
 
     /// A program that leaves `marker` behind when run, for a git config value to name.
@@ -2548,7 +2617,7 @@ mod tests {
     fn a_childs_rewritten_commondir_runs_no_program_of_its_choosing() {
         let (dir, repo, base) = committed_repo("spawn-planted-commondir");
         let wt = dir.join("child-wt");
-        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
             .expect("the child's worktree");
         std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
         let evil = dir.join("evil.git");
@@ -2579,7 +2648,7 @@ mod tests {
         };
         let changed = changed_paths(child, &base).expect("the tree still measures");
         assert_eq!(changed, vec![PathBuf::from("keep.txt")]);
-        commit_child_work(child, &base, "m")
+        commit_child_work(child, "marion/child", &base, "m")
             .expect("the commit succeeds")
             .expect("and names a tip");
         assert!(!marker.exists(), "marion ran the child's planted filter");
@@ -2619,7 +2688,7 @@ mod tests {
             ],
         );
         let wt = dir.join("child-wt");
-        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
             .expect("the child's worktree");
         std::fs::write(
             wt.join(".gitattributes"),
@@ -2632,7 +2701,7 @@ mod tests {
             repo: &repo,
         };
         let _ = diff_text(child, &dir.join("scratch"), &base).expect("the diff");
-        commit_child_work(child, &base, "m")
+        commit_child_work(child, "marion/child", &base, "m")
             .expect("the commit succeeds")
             .expect("and names a tip");
         assert!(
@@ -2641,7 +2710,7 @@ mod tests {
         );
         // A grandchild cut from that tree checks it out with the attributes now committed in it.
         let grandchild = dir.join("grandchild-wt");
-        make_worktree(child, &grandchild, &["marion/grandchild".into()], false)
+        make_worktree(child, &grandchild, &["marion/grandchild".into()], None)
             .expect("the grandchild's worktree");
         assert!(
             !marker.exists(),
@@ -2656,7 +2725,7 @@ mod tests {
     fn a_childs_config_worktree_with_its_own_settings_is_refused() {
         let (dir, repo, base) = committed_repo("spawn-planted-worktree-config");
         let wt = dir.join("child-wt");
-        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
             .expect("the child's worktree");
         let admin = repo.join(".git/worktrees/child-wt");
         let child = Tree::Child {
@@ -2746,9 +2815,14 @@ mod tests {
         std::fs::write(repo.join("ignored.txt"), "never\n").unwrap();
         let changed = changed_paths(Tree::Operator(&repo), &base).unwrap();
 
-        let tip = commit_child_work(Tree::Operator(&repo), &base, "marion: t: subject\n\nbody\n")
-            .expect("the commit succeeds")
-            .expect("and names a tip beyond the base");
+        let tip = commit_child_work(
+            Tree::Operator(&repo),
+            "main",
+            &base,
+            "marion: t: subject\n\nbody\n",
+        )
+        .expect("the commit succeeds")
+        .expect("and names a tip beyond the base");
         assert_eq!(tip.0, tgit(&repo, &["rev-parse", "HEAD"]));
         assert_eq!(
             tgit(&repo, &["rev-parse", "HEAD^"]),
@@ -2782,7 +2856,7 @@ mod tests {
     /// **A child cut from a worktree marion made starts from that tree's current state**, not its
     /// last commit — the s2 grandchildren that tested old code (live smoke, 2026-09-27). The
     /// parent's uncommitted edit and its new file are committed onto the parent's own branch, its
-    /// tree is left clean, and the child's worktree holds both. Without `carry_work` — a child of
+    /// tree is left clean, and the child's worktree holds both. Without `carry_onto` — a child of
     /// the operator's own checkout — nothing is committed and the child is cut from HEAD.
     #[test]
     fn a_child_cut_from_a_marion_worktree_starts_from_its_parents_uncommitted_work() {
@@ -2792,7 +2866,7 @@ mod tests {
             Tree::Operator(&repo),
             &parent,
             &["marion/parent".into()],
-            false,
+            None,
         )
         .expect("the parent's worktree");
         std::fs::write(parent.join("keep.txt"), "the parent's edit\n").unwrap();
@@ -2806,7 +2880,7 @@ mod tests {
             },
             &child,
             &["marion/child".into()],
-            true,
+            Some("marion/parent"),
         )
         .expect("the child's worktree, carrying the parent's work");
         assert_eq!(
@@ -2845,7 +2919,7 @@ mod tests {
             Tree::Operator(&repo),
             &plain,
             &["marion/plain".into()],
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(plain_base, base, "cut from HEAD");
@@ -2856,7 +2930,7 @@ mod tests {
     fn a_tree_with_no_changes_gets_no_commit_and_no_tip() {
         let (_dir, repo, base) = committed_repo("spawn-commit-none");
         assert_eq!(
-            commit_child_work(Tree::Operator(&repo), &base, "m").unwrap(),
+            commit_child_work(Tree::Operator(&repo), "main", &base, "m").unwrap(),
             None
         );
         assert_eq!(tgit(&repo, &["rev-parse", "HEAD"]), base.0);
@@ -2871,7 +2945,7 @@ mod tests {
         tgit(&repo, &["commit", "-qam", "child's own"]);
         let own = tgit(&repo, &["rev-parse", "HEAD"]);
         assert_eq!(
-            commit_child_work(Tree::Operator(&repo), &base, "m").unwrap(),
+            commit_child_work(Tree::Operator(&repo), "main", &base, "m").unwrap(),
             Some(Oid(own))
         );
         assert_eq!(tgit(&repo, &["rev-list", "--count", "main"]), "2");

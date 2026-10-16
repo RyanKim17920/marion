@@ -231,6 +231,7 @@ impl RegistryHandle {
                 task_id,
                 token: token.clone(),
                 repo,
+                branch: None,
                 pid: None,
                 pgid: None,
                 started_at: None,

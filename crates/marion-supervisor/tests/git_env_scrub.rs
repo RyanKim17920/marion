@@ -78,7 +78,7 @@ fn a_redirecting_git_environment_reaches_no_other_repository() {
         Tree::Operator(&repo),
         &wt,
         &["marion/child".to_string()],
-        false,
+        None,
     )
     .expect("a child worktree is cut from the fixture");
     std::fs::write(wt.join("src/new.txt"), "new\n").unwrap();
@@ -87,6 +87,7 @@ fn a_redirecting_git_environment_reaches_no_other_repository() {
             wt: &wt,
             repo: &repo,
         },
+        "marion/child",
         &base,
         "child work",
     )

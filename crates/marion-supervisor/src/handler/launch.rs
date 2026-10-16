@@ -279,11 +279,19 @@ impl crate::run::SpawnObserver for NodeOwner {
     /// A worktree child's own children branch from its worktree, so its entry's tree becomes that
     /// worktree. A `shared-cwd` child runs in the tree it inherited, which its entry already names.
     fn workspace_chosen(&self, agent_id: &AgentId, workspace: &marion_core::contract::Workspace) {
-        if let marion_core::contract::Workspace::Worktree { path, .. } = workspace
+        if let marion_core::contract::Workspace::Worktree { path, branch } = workspace
             && let Some(node) = lock(&self.handle.nodes).get_mut(agent_id)
         {
             node.repo = path.clone();
+            node.branch = Some(branch.clone());
         }
+    }
+
+    fn recorded_branch(&self, tree: &std::path::Path) -> Option<String> {
+        lock(&self.handle.nodes)
+            .values()
+            .find(|n| n.repo == tree)
+            .and_then(|n| n.branch.clone())
     }
 
     fn identified(&self, agent_id: &AgentId) -> Option<Secret> {

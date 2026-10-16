@@ -181,7 +181,7 @@ fn only_a_caller_in_a_marion_worktree_hands_its_child_its_uncommitted_work() {
         crate::spawn::Tree::Operator(&repo),
         &caller_wt,
         &["marion/caller".into()],
-        false,
+        None,
     )
     .unwrap();
     std::fs::write(caller_wt.join("src/keep.txt"), "the caller's edit\n").unwrap();
@@ -196,6 +196,7 @@ fn only_a_caller_in_a_marion_worktree_hands_its_child_its_uncommitted_work() {
         &repo,
         &TaskId("t-child".into()),
         &child,
+        Some("marion/caller"),
     )
     .unwrap();
     assert_eq!(
@@ -211,6 +212,7 @@ fn only_a_caller_in_a_marion_worktree_hands_its_child_its_uncommitted_work() {
         &repo,
         &TaskId("t-sibling".into()),
         &sibling,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -280,7 +282,15 @@ fn a_resume_takes_the_recorded_workspace_instead_of_cutting_a_second_one() {
     };
     assert!(
         matches!(
-            select_workspace(&req, &agent_type, &project, &repo, &task_id, &agent_id),
+            select_workspace(
+                &req,
+                &agent_type,
+                &project,
+                &repo,
+                &task_id,
+                &agent_id,
+                None
+            ),
             Err(SpawnError::NotAGitRepo { .. })
         ),
         "the fixture's repo is deliberately not a repository, so a fresh spawn cannot cut a \
@@ -293,9 +303,16 @@ fn a_resume_takes_the_recorded_workspace_instead_of_cutting_a_second_one() {
         workspace: recorded.clone(),
         usage: None,
     });
-    let (workspace, _base, _claim, _prelaunch) =
-        select_workspace(&req, &agent_type, &project, &repo, &task_id, &agent_id)
-            .expect("the recorded tree needs no repository question asked of it");
+    let (workspace, _base, _claim, _prelaunch) = select_workspace(
+        &req,
+        &agent_type,
+        &project,
+        &repo,
+        &task_id,
+        &agent_id,
+        None,
+    )
+    .expect("the recorded tree needs no repository question asked of it");
     assert_eq!(
         workspace, recorded,
         "the relaunch runs where the journal says the session was created"
@@ -308,8 +325,16 @@ fn a_resume_takes_the_recorded_workspace_instead_of_cutting_a_second_one() {
     // **Gone by the time the launch reaches it**: removed after `node/resume` looked, so the
     // launch refuses it by name rather than starting a process in a directory that is not there.
     std::fs::remove_dir_all(&first_life).unwrap();
-    let gone =
-        select_workspace(&req, &agent_type, &project, &repo, &task_id, &agent_id).map(|(w, ..)| w);
+    let gone = select_workspace(
+        &req,
+        &agent_type,
+        &project,
+        &repo,
+        &task_id,
+        &agent_id,
+        None,
+    )
+    .map(|(w, ..)| w);
     assert!(
         matches!(&gone, Err(SpawnError::ResumeTreeGone { path }) if path == &first_life),
         "a resume into a removed tree is refused at the launch too: {gone:?}"
@@ -1487,7 +1512,7 @@ fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
         crate::spawn::Tree::Operator(&repo),
         &unchanged,
         &["marion/unchanged".into()],
-        false,
+        None,
     )
     .unwrap();
     cleanup(&repo, &unchanged, "marion/unchanged", Some(&base));
@@ -1500,7 +1525,7 @@ fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
         crate::spawn::Tree::Operator(&repo),
         &unchanged,
         &["marion/unchanged".into()],
-        false,
+        None,
     )
     .expect("so the task id can be used again");
 
@@ -1509,7 +1534,7 @@ fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
         crate::spawn::Tree::Operator(&repo),
         &advanced,
         &["marion/advanced".into()],
-        false,
+        None,
     )
     .unwrap();
     git(
@@ -1721,7 +1746,7 @@ fn a_taken_branch_name_falls_back_to_the_task_id() {
         crate::spawn::Tree::Operator(&repo),
         &s.join("wt1"),
         &names("t-1"),
-        false,
+        None,
     )
     .unwrap();
     assert_eq!(first, "marion/433f-add");
@@ -1729,7 +1754,7 @@ fn a_taken_branch_name_falls_back_to_the_task_id() {
         crate::spawn::Tree::Operator(&repo),
         &s.join("wt2"),
         &names("t-2"),
-        false,
+        None,
     )
     .unwrap();
     assert_eq!(second, "marion/t-2");

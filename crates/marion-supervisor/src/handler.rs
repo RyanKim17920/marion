@@ -203,6 +203,10 @@ pub struct NodeHandle {
     /// copy of a fact that is only ever read under the shorter lifetime, and a journal that
     /// recorded a path would then have to be right about it after the tree moved on disk.
     repo: PathBuf,
+    /// The branch marion cut this node's own worktree on (`workspace_chosen`), where it has one:
+    /// what a child carrying this node's work is committed onto
+    /// ([`crate::run::SpawnObserver::recorded_branch`]). In memory, beside [`Self::repo`].
+    branch: Option<String>,
     /// `None` until the process exists. The window is one `write(2)` plus one fsync wide — step 1
     /// made `Spawned` durable at `command.spawn()`, and this is filled from the same hook.
     pid: Option<i32>,
