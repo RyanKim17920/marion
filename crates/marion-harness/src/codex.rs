@@ -315,7 +315,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 answer: DialogAnswer::Hold,
                 note: "the same dialog with a selection S37 did not measure",
             },
-            // 0.163.0 (conformance P-tui, 2026-10-16), for a checkout whose trust is stated
+            // 0.163.0 (conformance P-tui, 2026-10-16,
+            // `tests/fixtures/s37-boot-dialogs/codex-0.163.0-restricted.raw`), for a checkout whose trust is stated
             // `untrusted` — which marion pins wherever the operator has not trusted the repository
             // in marion — opens on `Folder access`: "Config, hooks, and exec policies from untrusted
             // folders stay disabled … Opening will not change saved trust.", then
