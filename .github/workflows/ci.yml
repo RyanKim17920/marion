@@ -115,9 +115,9 @@ jobs:
         run: cargo test --workspace --lib
 
       # Integration suites in which nothing launches a harness that cannot skip. Verified green on
-      # darwin 25.5.0 against a simulated bare runner — `MARION_CI_NO_HARNESSES=1`, a `PATH` of
-      # `/usr/bin:/bin` plus cargo, and an empty `$HOME` so the shim finds no admitted release on
-      # disk either. The seventeen suites gated by a bare `on_path` are named in the header.
+      # darwin 25.5.0 against a simulated bare runner — `MARION_CI_NO_HARNESSES=1` and a `PATH` of
+      # `/usr/bin:/bin` plus cargo, so no harness is found to gate. The seventeen suites gated by a
+      # bare `on_path` are named in the header.
       - name: Integration — marion-core
         run: cargo test -p marion-core --test pane_wire
 
