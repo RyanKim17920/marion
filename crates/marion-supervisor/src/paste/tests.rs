@@ -1335,6 +1335,46 @@ fn a_steer_waits_out_an_approval_prompt_and_never_answers_it() {
     }
 }
 
+/// **One line of a prompt is enough to hold a steer**, and its Enter never reaches the node: the
+/// footer of a prompt taller than the pane, its header with the footer below the pane, and a
+/// header cut at a narrow pane's right edge.
+#[test]
+fn a_steer_waits_on_a_prompt_showing_only_one_of_its_lines() {
+    use marion_core::harness::Harness;
+    for (what, screen) in [
+        (
+            "footer only",
+            &b"\x1b[2J\x1b[40;1H  Press enter to confirm or esc to cancel"[..],
+        ),
+        (
+            "header only",
+            b"\x1b[2J\x1b[3;3HWould you like to run the following command?",
+        ),
+        (
+            "header cut at the edge",
+            b"\x1b[2J\x1b[3;90HWould you like to run the follo",
+        ),
+    ] {
+        let mut bed = Bed::for_harness(
+            &format!("paste-ask-one-line-{}", what.len()),
+            fast(),
+            Harness::Codex,
+        );
+        bed.node_writes(BOOTED_TITLED);
+        bed.steer("the first turn");
+        let first = expected_paste("the first turn");
+        assert_eq!(bed.read_slave(first.len()), first, "{what}: boot is over");
+        bed.node_writes(screen);
+        bed.steer("a steer mid-ask");
+        bed.await_decision(|d| matches!(d, Gate::Wait(Hold::Ask, _)));
+        assert!(
+            nothing_reaches(&mut bed.slave, Duration::from_millis(400)),
+            "{what}: a paste or its Enter reached the prompt"
+        );
+        assert!(bed.host.input_state().ask.is_some(), "{what}");
+    }
+}
+
 /// **A setup dialog is answered wherever marion owns the harness config** — canned or endpoint,
 /// in any directory — and held on the operator's own (a live login), while folder trust still
 /// needs marion's own workspace as well.

@@ -13,7 +13,7 @@
 //! that drops Enter while it boots, and only its real one sets the title.
 //!
 //! And the screen as it stands ([`Grid`]), for the row's mid-session asks: an approval prompt
-//! is up while its header and its footer are both on it, and gone when either leaves it.
+//! is up while its header or its footer is on it, and gone when neither is.
 //!
 //! The other is read off the operator's own writes ([`Typing`]): when a person last typed into
 //! this terminal, and whether what they typed has been submitted. A paste landing in the middle of
@@ -42,7 +42,16 @@ struct Grid {
     parser: vt100::Parser,
     /// The screen's text with every run of whitespace one space, reused across looks.
     words: String,
+    /// The rows that reach the right edge, as [`Self::words`] spells them: where a TUI cuts a
+    /// line too long for the pane.
+    edges: Vec<String>,
+    /// How many times the screen was read whole ([`Self::showing`]).
+    looks: u64,
 }
+
+/// The shortest start of a needle that, cut off at the pane's right edge, still reads as it: a
+/// pane narrower than a prompt's line shows the line's first words and nothing of the rest.
+const MIN_CUT: usize = 16;
 
 impl std::fmt::Debug for Grid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -58,21 +67,58 @@ impl Grid {
         Grid {
             parser: vt100::Parser::new(rows.max(1), cols.max(1), 0),
             words: String::new(),
+            edges: Vec::new(),
+            looks: 0,
         }
     }
 
-    /// The first of `asks` whose header and footer are both on the screen.
+    /// **The first of `asks` with its header or its footer on the screen**, whole or cut off at
+    /// the right edge. Either one is enough: a prompt taller than the pane pushes its header off
+    /// the top, and a narrow pane cuts its lines. A reply that quotes one holds a paste only while
+    /// the quote is on the screen.
     fn showing(&mut self, asks: &'static [Ask]) -> Option<&'static Ask> {
+        self.looks += 1;
+        let screen = self.parser.screen();
+        let cols = usize::from(screen.size().1);
         self.words.clear();
-        for word in self.parser.screen().contents().split_whitespace() {
-            if !self.words.is_empty() {
+        self.edges.clear();
+        let mut joined = true;
+        for (i, row) in screen.rows(0, screen.size().1).enumerate() {
+            // A row the terminal wrapped runs on into the next with no space between.
+            if !joined && !self.words.is_empty() {
                 self.words.push(' ');
             }
-            self.words.push_str(word);
+            let mut first = true;
+            for word in row.split_whitespace() {
+                if !first {
+                    self.words.push(' ');
+                }
+                first = false;
+                self.words.push_str(word);
+            }
+            if row.chars().count() + 1 >= cols || row.trim_end().ends_with('…') {
+                let edge: Vec<&str> = row.split_whitespace().collect();
+                self.edges
+                    .push(edge.join(" ").trim_end_matches('…').to_string());
+            }
+            joined = u16::try_from(i).is_ok_and(|i| screen.row_wrapped(i));
         }
-        asks.iter()
-            .find(|a| self.words.contains(a.header) && self.words.contains(a.footer))
+        let on = |needle: &str| {
+            self.words.contains(needle) || self.edges.iter().any(|row| cut_at_edge(row, needle))
+        };
+        asks.iter().find(|a| on(a.header) || on(a.footer))
     }
+}
+
+/// `row` ends with at least [`MIN_CUT`] characters of the start of `needle`: the needle, cut off
+/// by the pane's edge.
+fn cut_at_edge(row: &str, needle: &str) -> bool {
+    needle
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain([needle.len()])
+        .filter(|&at| needle[..at].chars().count() >= MIN_CUT)
+        .any(|at| row.ends_with(&needle[..at]))
 }
 
 /// **When a node's boot is over without a paste**: the row's boot mark under bracketed paste, no
@@ -84,6 +130,10 @@ pub struct BootMark {
     pub mark: BootSignal,
     pub settle: Duration,
 }
+
+/// How much visible text [`ModeScan::ask_tail`] holds before it is searched and cut: past twice
+/// the longest ask word, so a word cut by a read boundary is still whole in it.
+const ASK_TAIL: usize = 128;
 
 /// Most screen text kept for recognising a boot dialog. The longest measured first screen with a
 /// dialog carries about 1.5 KiB of text (copilot 1.0.83, banner and box included); a TUI that
@@ -134,6 +184,18 @@ pub(crate) struct ModeScan {
     asks: &'static [Ask],
     /// The ask on the grid as of the last read.
     ask: Option<&'static Ask>,
+    /// The words of [`Self::asks`]' headers and footers, four letters or longer: a prompt cannot
+    /// come onto the screen without one of them written in the stream, so the grid is read whole
+    /// only after one is (or while an ask is up, to see it leave).
+    ask_words: Vec<&'static str>,
+    /// The last of the visible text written, words joined by one space, searched for
+    /// [`Self::ask_words`]; bounded by [`ASK_TAIL`].
+    ask_tail: Vec<u8>,
+    /// How much of [`Self::ask_tail`] was searched: a word counts once, when it is written.
+    ask_searched: usize,
+    /// The grid may show an ask it did not at the last read: an ask word was written, the screen
+    /// switched or was reset.
+    ask_hint: bool,
     /// The visible text written since anyone last typed, words joined by one space — what a
     /// dialog's needle is matched against. Kept from the first byte, because a TUI can draw its
     /// dialog before a paste driver is attached, and dropped for good at [`Self::boot_over`].
@@ -212,8 +274,16 @@ impl ModeScan {
             self.boot = boot;
         }
         self.asks = asks;
+        self.ask_words = asks
+            .iter()
+            .flat_map(|a| a.header.split(' ').chain(a.footer.split(' ')))
+            .filter(|w| w.chars().count() >= 4)
+            .collect();
+        self.ask_words.sort_unstable();
+        self.ask_words.dedup();
         if asks.is_empty() {
             self.grid = None;
+            self.ask_tail = Vec::new();
         }
         self.forget_latches();
         self.scanned = 0;
@@ -231,11 +301,27 @@ impl ModeScan {
             .map(|(_, d)| d)
     }
 
-    /// **The first of the watched asks on the screen now**, in the row's order: its header and
-    /// its footer both stand on the grid. Before boot and after it, and no key clears it — only
-    /// the prompt leaving the screen does.
+    /// **The first of the watched asks on the screen now**, in the row's order: its header or its
+    /// footer stands on the grid. Before boot and after it, and no key clears it — only the
+    /// prompt leaving the screen does.
     pub(crate) fn asking(&self) -> Option<&'static Ask> {
         self.ask
+    }
+
+    /// Whether an ask word was written since the last search, and the tail cut back to what a
+    /// word cut by the next read could need.
+    fn search_ask_tail(&mut self) {
+        let (tail, searched) = (&self.ask_tail, self.ask_searched);
+        self.ask_hint |= self.ask_words.iter().any(|w| {
+            tail.windows(w.len())
+                .enumerate()
+                .any(|(at, t)| at + w.len() > searched && t == w.as_bytes())
+        });
+        let keep = ASK_TAIL / 4;
+        if self.ask_tail.len() > keep {
+            self.ask_tail.drain(..self.ask_tail.len() - keep);
+        }
+        self.ask_searched = self.ask_tail.len();
     }
 
     /// Read the grid for the watched asks.
@@ -347,7 +433,18 @@ impl ModeScan {
     }
 
     fn visible(&mut self, b: u8) {
+        if !self.ask_words.is_empty() {
+            if self.ask_tail.len() >= ASK_TAIL {
+                self.search_ask_tail();
+            }
+            if self.gap && !self.ask_tail.is_empty() {
+                self.ask_tail.push(b' ');
+            }
+            self.ask_tail.push(b);
+        }
         if self.boot_over {
+            // The gap is the screen text's to clear, and none is kept past boot.
+            self.gap = false;
             return;
         }
         if self.screen.len() >= SCREEN_TEXT_CAP {
@@ -390,7 +487,13 @@ impl ModeScan {
         if let Some(grid) = &mut self.grid {
             grid.parser.process(chunk);
             if !self.asks.is_empty() {
-                self.look_for_asks();
+                self.search_ask_tail();
+                if std::mem::take(&mut self.ask_hint)
+                    || self.ask.is_some()
+                    || self.ask_words.is_empty()
+                {
+                    self.look_for_asks();
+                }
             }
         }
     }
@@ -426,6 +529,7 @@ impl ModeScan {
                 b'P' | b'_' | b'^' | b'X' => Scan::Str,
                 // RIS: a full reset, which clears every DEC private mode.
                 b'c' => {
+                    self.ask_hint = true;
                     self.bracketed_paste = false;
                     self.drawn = false;
                     self.titled = false;
@@ -456,6 +560,8 @@ impl ModeScan {
                     Scan::Private
                 }
                 b'h' | b'l' if !self.overflowed => {
+                    // A screen switched back (the alternate screen's end) shows what was on it.
+                    self.ask_hint = true;
                     if self
                         .params
                         .split(|&c| c == b';')
@@ -962,38 +1068,115 @@ mod tests {
         }
     }
 
-    /// **A reply that quotes a prompt is not one**: the header alone, the footer alone, or the two
-    /// with the header already scrolled off the screen.
+    /// **Either line of a prompt holds, alone**: the header with its footer pushed below the
+    /// pane, the footer of a prompt taller than the pane (its header scrolled off the top), and a
+    /// reply that quotes one — for as long as the quote is on the screen, and no longer.
     #[test]
-    fn a_model_reply_with_the_prompts_words_is_not_an_ask() {
+    fn the_header_or_the_footer_alone_is_an_ask_while_it_is_on_the_screen() {
+        let mut scan = asked();
+        scan.feed(
+            b"\x1b[24;1H  Would you like to run the following command?",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), Some(&ASK), "the header alone");
+
+        let mut scan = asked();
+        scan.feed(
+            b"\x1b[2;1H  Would you like to run the following command?",
+            Instant::now(),
+        );
+        // A command longer than the pane: the header scrolls off before the footer is drawn.
+        scan.feed(&b"\r\n  $ printf line".repeat(30), Instant::now());
+        scan.feed(
+            b"\r\n  Press enter to confirm or esc to cancel",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), Some(&ASK), "the footer of a tall prompt");
+
         let mut scan = asked();
         scan.feed(
             b"\r\n  I will ask: Would you like to run the following command?\r\n",
             Instant::now(),
         );
-        assert_eq!(scan.asking(), None, "the header alone");
+        assert_eq!(scan.asking(), Some(&ASK), "a quote holds while it shows");
+        scan.feed(&b"\r\n more of the reply".repeat(30), Instant::now());
+        assert_eq!(scan.asking(), None, "and lets go once it scrolls away");
+    }
+
+    /// **A pane narrower than a prompt's lines cuts them at its edge, and the cut line still
+    /// holds**: the header's first words up to the right edge, the footer's likewise, with or
+    /// without the TUI's `…`. The same words short of the edge are not a cut line.
+    #[test]
+    fn a_line_cut_at_a_narrow_panes_edge_is_an_ask() {
+        let narrow = || {
+            let mut scan = ModeScan::new(24, 30);
+            scan.watch(&[], std::slice::from_ref(&ASK), None);
+            scan.feed(b"\x1b[?2004h\x1b[2J\x1b[H> composer", Instant::now());
+            scan
+        };
+        let mut scan = narrow();
+        // 30 columns: `  Would you like to run the fo` exactly.
+        scan.feed(b"\x1b[3;1H  Would you like to run the fo", Instant::now());
+        assert_eq!(scan.asking(), Some(&ASK), "the header cut at the edge");
+        let mut scan = narrow();
+        scan.feed(
+            b"\x1b[9;1H  Press enter to confirm or e\xe2\x80\xa6",
+            Instant::now(),
+        );
+        assert_eq!(
+            scan.asking(),
+            Some(&ASK),
+            "the footer cut, with an ellipsis"
+        );
+        let mut scan = narrow();
+        scan.feed(b"\x1b[3;1H  Would you like to run", Instant::now());
+        assert_eq!(
+            scan.asking(),
+            None,
+            "short of the edge, a phrase is a phrase"
+        );
+    }
+
+    /// **The grid is read whole only when it may show something new**: an ask word written, or
+    /// an ask up (to see it leave). A model streaming a reply that names none costs no read of
+    /// the screen per chunk — one per chunk before (a thousand here), none now.
+    #[test]
+    fn the_screen_is_read_only_after_an_ask_word_or_while_an_ask_is_up() {
         let mut scan = asked();
-        scan.feed(
-            b"\r\n  Then: Press enter to confirm or esc to cancel\r\n",
-            Instant::now(),
+        let looks = |s: &ModeScan| s.grid.as_ref().map_or(0, |g| g.looks);
+        let before = looks(&scan);
+        for i in 0..1000 {
+            scan.feed(
+                format!(
+                    "\x1b[{};3Hthe model streams its answer, token {i}",
+                    i % 20 + 1
+                )
+                .as_bytes(),
+                Instant::now(),
+            );
+        }
+        assert_eq!(looks(&scan) - before, 0, "no ask word, no read");
+        // An ask word cut by a read boundary is still seen, once.
+        scan.feed(b"\x1b[5;3HWould you like to run the follo", Instant::now());
+        scan.feed(b"wing command?", Instant::now());
+        assert_eq!(scan.asking(), Some(&ASK));
+        let up = looks(&scan);
+        scan.feed(b"\x1b[7;3Hstill drawing", Instant::now());
+        assert_eq!(
+            looks(&scan),
+            up + 1,
+            "while an ask is up, every chunk is read"
         );
-        assert_eq!(scan.asking(), None, "the footer alone");
-        let mut scan = asked();
-        scan.feed(
-            b"\x1b[24;1H Would you like to run the following command?",
-            Instant::now(),
-        );
-        scan.feed(&b"\r\n line".repeat(30), Instant::now());
-        scan.feed(
-            b"\r\n Press enter to confirm or esc to cancel",
-            Instant::now(),
-        );
-        assert_eq!(scan.asking(), None, "the header scrolled away first");
+        scan.feed(b"\x1b[2J\x1b[H> composer", Instant::now());
+        assert_eq!(scan.asking(), None);
+        let gone = looks(&scan);
+        scan.feed(b"\x1b[3;3Hthe next answer", Instant::now());
+        assert_eq!(looks(&scan), gone, "and none once it left");
     }
 
     /// **A prompt redrawn by its changed cells alone stays up**: the selection moves under an
     /// arrow key and only the option rows are written; a second prompt drawn over the first
-    /// keeps the header cells it shares. Overwriting the header takes it down.
+    /// keeps the header cells it shares. Overwriting both lines takes it down.
     #[test]
     fn a_prompt_redrawn_without_its_header_stays_up() {
         let mut scan = asked();
@@ -1013,7 +1196,13 @@ mod tests {
             "a second command, header unchanged"
         );
         scan.feed(b"\x1b[2;1H\x1b[2K> composer", Instant::now());
-        assert_eq!(scan.asking(), None, "the header was overwritten");
+        assert_eq!(
+            scan.asking(),
+            Some(&ASK),
+            "the header overwritten, the footer stands"
+        );
+        scan.feed(b"\x1b[7;1H\x1b[2K", Instant::now());
+        assert_eq!(scan.asking(), None, "both gone");
     }
 
     /// **A resize keeps the grid in step**: a prompt drawn at the new size is read at it.

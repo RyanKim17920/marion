@@ -421,8 +421,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // (`tests/fixtures/pane-asks/claude-code-2.1.301-permission.raw`): the permission
         // dialog `Do you want to proceed?` over `❯ 1. Yes` / `2. Yes, and always allow …` /
         // `4. No`, then `Esc to cancel · Tab to amend`. Enter takes the selection, `1. Yes`, so a
-        // paste's submit would run the command. Header and footer together: a reply can quote
-        // either.
+        // paste's submit would run the command. Either line holds it (`spec::Ask`).
         asks: &[Ask {
             header: "Do you want to proceed?",
             footer: "Esc to cancel · Tab to amend",

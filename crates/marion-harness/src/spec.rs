@@ -723,10 +723,11 @@ impl BootDialog {
     }
 }
 
-/// **One prompt a TUI raises mid-session**, up while its `header` and its `footer` are both on the
-/// screen as it stands now — not as it was drawn: a model's reply can quote either line, and a
-/// TUI that redraws only the cells that changed leaves a prompt's text where it was. Each is
-/// written as a [`BootDialog`]'s needle is, and the two together are what no reply draws. Never
+/// **One prompt a TUI raises mid-session**, up while its `header` or its `footer` is on the screen
+/// as it stands now — not as it was drawn: a TUI that redraws only the cells that changed leaves a
+/// prompt's text where it was, a prompt taller than the pane pushes its header off, and a narrow
+/// pane cuts both at its edge. Either one is enough; a reply that quotes one holds a paste only
+/// while the quote is on the screen. Each is written as a [`BootDialog`]'s needle is. Never
 /// answered by marion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ask {
