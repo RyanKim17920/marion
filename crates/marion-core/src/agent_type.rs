@@ -958,8 +958,21 @@ impl AgentTypes {
 
     /// The table a tree's `.marion/agents.toml` describes, or the first reason it cannot.
     pub fn parse(text: &str) -> Result<Self, AgentTypesError> {
-        let file: File =
+        let doc: toml::Value =
             toml::from_str(text).map_err(|e| AgentTypesError::Syntax(e.to_string()))?;
+        // A description and a prompt prefix are prose; a name, a harness, an ACP command line or a
+        // model a review shows may not carry a character that hides what it says.
+        let prose = |key: &str, c: char| {
+            matches!(key, "description" | "prompt_prefix") && matches!(c, '\n' | '\t')
+        };
+        if let Some((at, c)) = crate::text::deceptive_in_toml(&doc, &prose) {
+            return Err(AgentTypesError::Syntax(crate::text::deceptive_refusal(
+                &at, c,
+            )));
+        }
+        let file: File = doc
+            .try_into()
+            .map_err(|e: toml::de::Error| AgentTypesError::Syntax(e.to_string()))?;
         let mut user: Vec<AgentType> = Vec::with_capacity(file.agent.len());
         for row in file.agent {
             let ty = row.into_type()?;
@@ -2016,5 +2029,15 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
             AgentTypes::parse("[race]\nwinner = 2\n"),
             Err(AgentTypesError::Syntax(_))
         ));
+    }
+
+    /// An ACP command line that hides text behind an ESC is refused at load, naming its key.
+    #[test]
+    fn an_agent_type_hiding_text_behind_a_control_is_refused() {
+        let text = "[[agent]]\nname = \"x\"\nharness = \"acp:sh -c evil #\\u001b[2Kgemini\"\n\
+                    description = \"two\\nlines\"\n";
+        let e = AgentTypes::parse(text).expect_err("an ESC in the harness");
+        assert!(e.to_string().contains("agent[0].harness"), "{e}");
+        assert!(e.to_string().contains("\\x1b"), "{e}");
     }
 }

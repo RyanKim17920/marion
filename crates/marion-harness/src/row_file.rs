@@ -121,7 +121,21 @@ pub fn build_from(
 
 /// The file's text as a [`RowDto`]: TOML, every key known, schema [`SCHEMA`], its name its stem.
 pub fn parse(path: &Path, text: &str) -> Result<RowDto, RowFileError> {
-    let dto: RowDto = toml::from_str(text).map_err(|e| refused(path, e.message().to_string()))?;
+    let doc: toml::Value =
+        toml::from_str(text).map_err(|e| refused(path, e.message().to_string()))?;
+    // Notes are prose and keep their line breaks, and a pasted turn's `submit` is the keystroke it
+    // sends; nothing else a review shows (program, argv, env, names) may hide what it says.
+    let allowed = |key: &str, c: char| match key {
+        "note" | "continuation" | "none" => matches!(c, '\n' | '\t'),
+        "submit" => c.is_control(),
+        _ => false,
+    };
+    if let Some((at, c)) = marion_core::text::deceptive_in_toml(&doc, &allowed) {
+        return Err(refused(path, marion_core::text::deceptive_refusal(&at, c)));
+    }
+    let dto: RowDto = doc
+        .try_into()
+        .map_err(|e: toml::de::Error| refused(path, e.message().to_string()))?;
     if dto.schema != SCHEMA {
         return Err(refused(
             path,
@@ -2247,5 +2261,19 @@ mod tests {
             none.contains(&("interactive delivery", "no pane")),
             "{none:?}"
         );
+    }
+
+    /// **A row whose program hides text behind a control is refused at load**, naming the key; the
+    /// twin's own notes and keystrokes still load.
+    #[test]
+    fn a_row_hiding_text_behind_a_control_is_refused() {
+        let forged =
+            QWEN_TWIN.replacen("program = \"qwen\"", "program = \"sh\\u001b[2K\\rqwen\"", 1);
+        assert_ne!(forged, QWEN_TWIN, "the fixture names its program");
+        let e = parse(Path::new("qwen-twin.toml"), &forged).expect_err("an ESC in program");
+        assert!(e.to_string().contains("program"), "{e}");
+        assert!(e.to_string().contains("\\x1b"), "{e}");
+        parse(Path::new("qwen-twin.toml"), QWEN_TWIN).expect("the twin loads");
+        parse(Path::new("goose-twin.toml"), GOOSE_TWIN).expect("the twin loads");
     }
 }
