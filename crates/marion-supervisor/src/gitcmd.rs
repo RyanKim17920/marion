@@ -30,6 +30,8 @@
 //!   reads it whatever the variables say, so where it exists **and** the repository's own
 //!   configuration names a driver program ([`attribute_drivers`]), the call is refused by name —
 //!   a child able to write both would otherwise choose a program marion's git runs unsandboxed;
+//! * for a child tree and the checkout that makes one, turns automatic `gc` and `maintenance` off
+//!   (`gc.auto=0`, `maintenance.auto=false`);
 //! * for a [`Tree::Operator`] (the operator's own checkout: a root's tree, a `shared-cwd` child's
 //!   directory, the repository a worktree is added to) disables fsmonitor only. **Hooks stay the
 //!   operator's**: `git worktree add` runs their `post-checkout` hook exactly as their own `git`
@@ -104,17 +106,24 @@ fn built(tree: &Tree<'_>, args: &[&str], makes_child_tree: bool) -> Result<Comma
                     "core.hooksPath=/dev/null",
                 ]);
             without_tree_attributes(&mut cmd, &pinned.common_dir, repo)?;
+            cmd.args(NO_MAINTENANCE);
         }
         Tree::Operator(repo) => {
             cmd.args(["-c", "core.fsmonitor=false"]);
             if makes_child_tree {
                 without_tree_attributes(&mut cmd, &common_dir(repo)?, repo)?;
+                cmd.args(NO_MAINTENANCE);
             }
         }
     }
     cmd.args(args);
     Ok(cmd)
 }
+
+/// No automatic `gc` or `maintenance` after a call that touches a child's tree: those would
+/// repack, prune and run tasks over the shared repository, child-written objects included, as
+/// the operator and outside the call marion meant to make. The operator's own git still runs them.
+const NO_MAINTENANCE: [&str; 4] = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
 
 /// The empty tree's id in each object format git has: the attribute source that names no
 /// attributes. git knows it without its being in the object store.

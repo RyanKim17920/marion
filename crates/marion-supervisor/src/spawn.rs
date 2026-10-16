@@ -2972,6 +2972,58 @@ mod tests {
         );
     }
 
+    /// **marion's commit in a child's tree starts no repository maintenance.** The repository is
+    /// set to repack after any commit (two packs over a limit of one, run in the foreground);
+    /// committing the child's work leaves both packs where they were, because marion's git there
+    /// turns automatic gc and maintenance off rather than run them over objects the child wrote.
+    #[test]
+    fn a_childs_commit_starts_no_repository_maintenance() {
+        let (dir, repo, _) = committed_repo("spawn-no-auto-gc");
+        tgit(&repo, &["repack", "-q"]);
+        std::fs::write(repo.join("second.txt"), "second\n").unwrap();
+        tgit(&repo, &["add", "second.txt"]);
+        tgit(&repo, &["commit", "-q", "-m", "second"]);
+        tgit(&repo, &["repack", "-q"]);
+        for (key, value) in [
+            ("maintenance.auto", "true"),
+            ("gc.autoPackLimit", "1"),
+            ("gc.autoDetach", "false"),
+            ("maintenance.autoDetach", "false"),
+        ] {
+            tgit(&repo, &["config", key, value]);
+        }
+        let packs = || {
+            std::fs::read_dir(repo.join(".git/objects/pack"))
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|x| x == "pack")
+                })
+                .count()
+        };
+        assert_eq!(packs(), 2);
+        let base = Oid(tgit(&repo, &["rev-parse", "HEAD"]));
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree");
+        std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        commit_child_work(child, "marion/child", &base, "m")
+            .expect("the commit succeeds")
+            .expect("and names a tip");
+        assert_eq!(
+            packs(),
+            2,
+            "marion's commit ran gc in the shared repository"
+        );
+    }
+
     /// **A `config.worktree` a child wrote is refused unless it holds only sparse-checkout
     /// settings**: where the operator's repository enables per-worktree config, that file is read
     /// by every git call in the tree.
