@@ -57,6 +57,19 @@ pub(crate) fn create(path: &Path) -> io::Result<File> {
     open(path, OpenOptions::new().write(true).truncate(true))
 }
 
+/// [`open_append`], **refusing a symlink at `path`** (`O_NOFOLLOW`): for a file in a directory a
+/// process other than marion could have written into, where a planted link would turn marion's
+/// append into a write to whatever it names.
+pub(crate) fn open_append_no_follow(path: &Path) -> io::Result<File> {
+    use rustix::fs::OFlags;
+    open(
+        path,
+        OpenOptions::new()
+            .append(true)
+            .custom_flags(OFlags::NOFOLLOW.bits() as i32),
+    )
+}
+
 fn open(path: &Path, options: &mut OpenOptions) -> io::Result<File> {
     if let Some(dir) = path.parent() {
         create_dir_all(dir)?;
@@ -280,6 +293,22 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
         );
+    }
+
+    /// Mutation: drop the `custom_flags` and the append lands in the link's target.
+    #[test]
+    fn a_no_follow_append_refuses_a_symlink_and_leaves_its_target_alone() {
+        let dir = scratch("private-fs-no-follow");
+        let target = dir.join("elsewhere");
+        std::fs::write(&target, b"theirs\n").unwrap();
+        let link = dir.join("runs.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(open_append_no_follow(&link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"theirs\n");
+        let plain = dir.join("fresh").join("runs.jsonl");
+        open_append_no_follow(&plain).unwrap();
+        assert_eq!(mode(&plain), 0o600);
+        assert_eq!(mode(plain.parent().unwrap()), 0o700);
     }
 
     #[test]
