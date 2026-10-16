@@ -1180,11 +1180,14 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
          Keeping it under that threshold is what §6.7's cap rules exist to guarantee.\n\
          {result_text}"
     );
-    let returned: TaskContract = serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
-        panic!("{cell}: the root's tool result does not deserialize to a TaskContract: {e}\n{result_text}")
+    // The root reads `bridge::contract_view` of the record: what it sent and the quiet defaults
+    // left out, every other field the record's own.
+    let returned: serde_json::Value = serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
+        panic!("{cell}: the root's tool result does not carry a contract document: {e}\n{result_text}")
     });
     assert_eq!(
-        returned.task_id, contract.task_id,
+        returned["task_id"],
+        serde_json::json!(contract.task_id.0),
         "{cell}: the root was handed a contract for a different task than the one persisted — the \
          failure a per-cell equality below would otherwise report as a diff a reader has to \
          squint at"
@@ -1207,24 +1210,27 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
         ev.persisted[0]
     );
     let returned_comp = returned
-        .completion
-        .as_ref()
+        .get("completion")
         .unwrap_or_else(|| panic!("{cell}: the returned copy carries the same completion"));
     assert_eq!(
-        returned_comp.narrative.as_ref().map(|n| &n.value),
-        comp.narrative.as_ref().map(|n| &n.value),
+        returned_comp["narrative"]["value"].as_str(),
+        comp.narrative.as_ref().map(|n| n.value.as_str()),
         "{cell}: the child's own words are what the root is told; nothing here is near rule 0's cap"
     );
     assert_eq!(
-        returned_comp.changed_paths, comp.changed_paths,
+        returned_comp
+            .get("changed_paths")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+        serde_json::to_value(&comp.changed_paths).unwrap(),
         "{cell}: §6.7's audit of the worktree is part of what the root is answering to, and this \
          run's set is far under rule 5(b)'s cap"
     );
     assert_eq!(
-        normalize_for_cap_rules(
-            serde_json::to_value(&returned).expect("a TaskContract serializes")
-        ),
-        normalize_for_cap_rules(ev.persisted[0].clone()),
+        normalize_for_cap_rules(returned),
+        normalize_for_cap_rules(marion_supervisor::bridge::trim_contract(
+            ev.persisted[0].clone()
+        )),
         "{cell}: the tool result must BE the persisted contract, modulo only what §6.7's cap rules \
          may shorten. Every field outside those rules — the ids, the repo, the workspace, the \
          scope lists, the status, the flags, the exit, the timestamps — is the same run described \

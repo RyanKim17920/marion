@@ -581,23 +581,23 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
             !text.contains("<persisted-output>"),
             "the tool result was replaced by a stub, so the contract never reached the model:\n{text}"
         );
-        let returned: TaskContract =
-            serde_json::from_str(contract_json(&text)).unwrap_or_else(|e| {
-                panic!("turn {i}'s tool result does not deserialize to a TaskContract: {e}\n{text}")
+        let returned: serde_json::Value = serde_json::from_str(contract_json(&text))
+            .unwrap_or_else(|e| {
+                panic!("turn {i}'s tool result does not carry a contract document: {e}\n{text}")
             });
         let persisted_json = contracts
             .iter()
             .map(|(_, v)| (*v).clone())
-            .find(|v| v["task_id"] == json!(returned.task_id.0))
+            .find(|v| v["task_id"] == returned["task_id"])
             .unwrap_or_else(|| {
                 panic!(
                     "the root was handed a contract for {:?}, which is not on disk",
-                    returned.task_id
+                    returned["task_id"]
                 )
             });
         assert_eq!(
-            normalize_for_cap_rules(serde_json::to_value(&returned).unwrap()),
-            normalize_for_cap_rules(persisted_json),
+            normalize_for_cap_rules(returned),
+            normalize_for_cap_rules(marion_supervisor::bridge::trim_contract(persisted_json)),
             "the tool result must be the persisted contract, modulo what the cap rules shorten"
         );
     }
@@ -606,10 +606,10 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         .iter()
         .map(|i| {
             let text = codex_tool_output(last, &format!("{ROOT_PREFIX}_{i:02}")).unwrap();
-            serde_json::from_str::<TaskContract>(contract_json(&text))
+            serde_json::from_str::<serde_json::Value>(contract_json(&text)).unwrap()["task_id"]
+                .as_str()
                 .unwrap()
-                .task_id
-                .0
+                .to_string()
         })
         .collect();
     assert_ne!(

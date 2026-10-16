@@ -2548,7 +2548,10 @@ fn a_child_that_stops_unreported_is_asked_once_and_its_report_is_the_contract() 
     let comp = &contract["completion"];
     assert_eq!(comp["status"], "Ok", "{contract}");
     assert_eq!(comp["narrative"]["value"], ASKED_NARRATIVE, "{contract}");
-    assert_eq!(comp["narrative_synthesized"], false);
+    assert!(
+        comp.get("narrative_synthesized").is_none(),
+        "false says nothing, so the parent's view leaves it out: {contract}"
+    );
     let asked = journal_records(&journal, "MessageQueued", |q| {
         q["source"] == "ReportRequested"
     });

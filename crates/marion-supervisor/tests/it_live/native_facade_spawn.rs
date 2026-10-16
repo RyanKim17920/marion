@@ -30,7 +30,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use marion_core::contract::{AgentId, TaskContract};
+use marion_core::contract::AgentId;
 use marion_core::paths::ProjectDir;
 use marion_provider::script::{ROOT_CALL_ID, ROOT_TOOL_USE_ID};
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
@@ -401,17 +401,18 @@ fn a_native_root_delegates_a_child_through_marions_own_mcp_server() {
         .iter()
         .find_map(|r| tool_result_text(r, ROOT_TOOL_USE_ID))
         .expect("a request carries the spawn's tool_result");
-    let contract: TaskContract =
-        serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
-            panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
+    let contract: serde_json::Value = serde_json::from_str(contract_json(&result_text))
+        .unwrap_or_else(|e| {
+            panic!("the tool result does not carry a contract document: {e}\n{result_text}")
         });
     assert_eq!(
-        contract.requester, root,
+        contract["requester"],
+        serde_json::json!(root.0),
         "the contract the native root received must name it as the requester"
     );
     assert_eq!(
-        contract.child.harness,
-        marion_core::harness::Harness::Codex,
+        contract["child"]["harness"],
+        serde_json::json!(marion_core::harness::Harness::Codex),
         "the child the native root asked for"
     );
 
@@ -570,11 +571,18 @@ fn a_native_opencode_root_delegates_a_child_through_marions_own_mcp_server() {
         .iter()
         .find_map(openai_tool_result_text)
         .expect("a request carries the spawn's tool result");
-    let contract: TaskContract =
-        serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
-            panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
+    let contract: serde_json::Value = serde_json::from_str(contract_json(&result_text))
+        .unwrap_or_else(|e| {
+            panic!("the tool result does not carry a contract document: {e}\n{result_text}")
         });
-    assert_eq!(contract.requester, root, "the native root asked for it");
-    assert_eq!(contract.child.harness, marion_core::harness::Harness::Codex);
+    assert_eq!(
+        contract["requester"],
+        serde_json::json!(root.0),
+        "the native root asked for it"
+    );
+    assert_eq!(
+        contract["child"]["harness"],
+        serde_json::json!(marion_core::harness::Harness::Codex)
+    );
     assert!(op.finish().is_some(), "the native client was reaped");
 }
