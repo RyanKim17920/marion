@@ -786,10 +786,12 @@ fn listed_workspace(
         _ => a == b,
     };
     Some(if same(dir, &worktree) {
-        // The branch it has checked out, whichever way it was named; a tree too far gone to say
-        // is on the name its task's branch had before names were readable.
-        let branch = crate::spawn::checked_out_branch(crate::run::tree_of(env, &worktree))
-            .unwrap_or_else(|| crate::run::legacy_worktree_branch(task));
+        // The branch it has checked out, whichever way marion named it; a tree too far gone to
+        // say, or on a name marion would not cut, is on its task's own branch.
+        let branch = crate::run::listed_branch(
+            crate::spawn::checked_out_branch(crate::run::tree_of(env, &worktree)),
+            task,
+        );
         Workspace::Worktree {
             path: worktree,
             branch,

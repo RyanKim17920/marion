@@ -3817,12 +3817,27 @@ impl Drop for PrelaunchWorktree {
     }
 }
 
-/// The ref of a branch marion made for a task — exactly one segment under `marion/`, as
-/// [`select_workspace`] names it — or `None`, so cleanup can never be pointed at another branch.
+/// The ref of a branch marion made for a task — exactly one segment under `marion/`, made of the
+/// characters [`worktree_branch`] and [`legacy_worktree_branch`] write (ASCII letters, digits,
+/// `-`, `_`, `.`), not starting with `-` or `.` — or `None`, so cleanup can never be pointed at
+/// another branch, and a name a node picked cannot reach the operator's merge command.
 pub(crate) fn task_branch_ref(branch: &str) -> Option<String> {
     let task = branch.strip_prefix("marion/")?;
-    let one_segment = !task.is_empty() && !task.contains('/') && !task.contains("..");
-    one_segment.then(|| format!("refs/heads/{branch}"))
+    let shaped = !task.starts_with(['-', '.'])
+        && !task.contains("..")
+        && task
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (!task.is_empty() && shaped).then(|| format!("refs/heads/{branch}"))
+}
+
+/// **The branch a node's worktree is listed on**: the one it has checked out where that is a task
+/// branch ([`task_branch_ref`]), else its task's [`legacy_worktree_branch`]. A node may check out
+/// any name in its own worktree, and the listed one is what the operator's merge command names.
+pub(crate) fn listed_branch(checked_out: Option<String>, task: &TaskId) -> String {
+    checked_out
+        .filter(|b| task_branch_ref(b).is_some())
+        .unwrap_or_else(|| legacy_worktree_branch(task))
 }
 
 /// A fake harness for the `--version` probe tests: a shell script at `<dir>/<name>` that, run with

