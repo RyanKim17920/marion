@@ -134,6 +134,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use marion_core::paths::ProjectDir;
@@ -575,6 +577,9 @@ pub struct Serving {
     /// see [`Serving::still_entitled`].
     bound: Option<FileId>,
     lock_id: Option<FileId>,
+    /// Set by [`Serving::drop`] before it unlinks anything, and shared with every [`Sentry`]: the
+    /// names going away are this process retiring, not being evicted ([`Sentry::retiring`]).
+    retiring: Arc<AtomicBool>,
 }
 
 /// A file, named by the pair that actually identifies one. A **path** does not: it can be unlinked
@@ -678,6 +683,7 @@ impl Serving {
             bound: self.bound?,
             native_bootstrap_socket: self.native_bootstrap_path.clone(),
             native_bootstrap_bound: self.native_bootstrap_bound,
+            retiring: Arc::clone(&self.retiring),
         })
     }
 }
@@ -717,9 +723,19 @@ pub struct Sentry {
     )]
     native_bootstrap_socket: PathBuf,
     native_bootstrap_bound: Option<FileId>,
+    retiring: Arc<AtomicBool>,
 }
 
 impl Sentry {
+    /// **Whether this process's own [`Serving`] is unlinking its names on the way out.** Its first
+    /// unlink, the socket's, ends [`Self::still_entitled`] as an eviction would; a watcher that
+    /// stood down then would exit before the identity and bootstrap socket were removed, with a
+    /// status and a log line that call a clean exit an eviction. Set before the first unlink, so a
+    /// watcher woken by any of them sees it.
+    pub fn retiring(&self) -> bool {
+        self.retiring.load(Ordering::SeqCst)
+    }
+
     /// The same question [`Serving::still_entitled`] answers, asked from wherever this was carried.
     pub fn still_entitled(&self) -> bool {
         let ordinary = entitled(
@@ -789,6 +805,8 @@ impl Drop for Serving {
     /// eviction that caused it. One `stat` per exit makes the cleanup mean what it says: *remove
     /// what I made*.
     fn drop(&mut self) {
+        // Before the first unlink: the entitlement watcher reads it once the socket is gone.
+        self.retiring.store(true, Ordering::SeqCst);
         remove_if_still(&self.path, self.bound);
         remove_if_still(&self.native_bootstrap_path, self.native_bootstrap_bound);
         remove_if_still(&self.identity, self.identity_id);
@@ -1050,6 +1068,7 @@ fn serve_over_corpse(
         identity: paths.identity().to_path_buf(),
         lock_path: paths.lock().to_path_buf(),
         lock,
+        retiring: Arc::new(AtomicBool::new(false)),
     })
 }
 

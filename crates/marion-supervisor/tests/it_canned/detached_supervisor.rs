@@ -1326,6 +1326,14 @@ fn a_supervisor_with_nothing_left_journals_its_exit_and_leaves_no_socket_identit
         !bed.paths.identity().exists(),
         "and its identity, so nothing is left naming a pgid that no longer exists"
     );
+    // Its own socket's unlink is not an eviction: the entitlement watcher lets the exit finish
+    // rather than standing down mid-way, before the identity goes.
+    let log = std::fs::read_to_string(marion_supervisor::detach::log_path(&bed.launch()))
+        .unwrap_or_default();
+    assert!(
+        !log.contains("standing down"),
+        "a clean exit is not a stand-down: {log:?}"
+    );
     assert!(
         bed.paths.lock().exists(),
         "the lock file persists on purpose (socket.rs): unlinking it would let two processes flock \

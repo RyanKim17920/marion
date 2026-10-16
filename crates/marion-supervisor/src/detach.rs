@@ -806,6 +806,10 @@ fn watch_entitlement(sentry: Option<crate::socket::Sentry>) {
             if sentry.still_entitled() {
                 continue;
             }
+            if sentry.retiring() {
+                // This process's own clean exit is unlinking its names: let it finish.
+                return;
+            }
             eprintln!("marion-supervisor: standing down -- {}", sentry.why());
             std::process::exit(70);
         }
