@@ -84,3 +84,24 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
+
+/// The lowercase hex SHA-256 of the file at `path`, read in blocks: a harness binary is a few
+/// hundred megabytes (claude's single executable), and holding it whole to hash it buys nothing.
+pub fn file_sha256(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut block = vec![0u8; 1 << 20];
+    loop {
+        match file.read(&mut block)? {
+            0 => break,
+            n => hasher.update(&block[..n]),
+        }
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}

@@ -394,6 +394,84 @@ pub fn admits(spec: &HarnessSpec, probes: &[(String, String)]) -> Result<(), Vec
     if why.is_empty() { Ok(()) } else { Err(why) }
 }
 
+/// **What this machine's conformance record says about one installed binary** at one version —
+/// the verdict [`admits`] reached when the battery last ran against it, or why there is none to go
+/// by. Read by the test gate (a version newer than the row's `verified` list is admitted on it),
+/// doctor and the canary's drift report, so all three say the same thing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    /// The battery ran against this exact binary and admitted it.
+    Admitted,
+    /// The battery ran against this exact binary and did not admit it: [`admits`]'s reasons.
+    Refused(Vec<String>),
+    /// No readable record for this row at this version.
+    NeverRun,
+    /// A record for this version exists, but for another binary: its digest differs, or it
+    /// recorded none. A shell stub that prints a harness's version is a real shape in this repo.
+    OtherBinary,
+}
+
+impl Admission {
+    /// One clause a diagnosis or a doctor line carries, ending in the command that refreshes the
+    /// record wherever one is worth running.
+    pub fn describe(&self, name: &str, version: &str) -> String {
+        let run = format!("scripts/conformance.sh --harness {name}");
+        match self {
+            Admission::Admitted => format!("conformance admitted {name} {version}"),
+            Admission::Refused(why) => format!(
+                "conformance did NOT admit {name} {version}: {}",
+                why.join("; ")
+            ),
+            Admission::NeverRun => {
+                format!("conformance never ran against {name} {version}; {run}")
+            }
+            Admission::OtherBinary => format!(
+                "the conformance record for {name} {version} is for another binary; {run}"
+            ),
+        }
+    }
+}
+
+/// **The conformance verdict for `binary`, reporting `version`, on the row named `name`**, read
+/// from [`admission_path`]. The binary is hashed only once a record for the version exists, so a
+/// version never probed costs one failed open.
+pub fn admission_for(state: &Path, name: &str, version: &str, binary: &Path) -> Admission {
+    let Some(record) = std::fs::read_to_string(admission_path(state, name, version))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
+        return Admission::NeverRun;
+    };
+    let recorded = record["binary_sha256"].as_str();
+    if recorded.is_none() || recorded != crate::file_sha256(binary).ok().as_deref() {
+        return Admission::OtherBinary;
+    }
+    if record["admitted"] == serde_json::Value::Bool(true) {
+        Admission::Admitted
+    } else {
+        Admission::Refused(
+            record["why"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|w| w.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        )
+    }
+}
+
+/// The file `program` resolves to on `path` (a `PATH`-shaped list): the first directory holding
+/// it, with every symlink followed, so a record names the release and not the launcher symlink an
+/// updater repoints.
+pub fn binary_on_path(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|d| d.join(program))
+        .find(|p| p.is_file())
+        .and_then(|p| p.canonicalize().ok())
+}
+
 /// Where a repository's rows live: `<repo>/.marion/harnesses/`.
 pub fn repo_dir(repo: &Path) -> PathBuf {
     repo.join(".marion").join("harnesses")
@@ -1933,6 +2011,67 @@ mod tests {
         };
         assert_eq!(admits(&approve_all, &run(&unsupported_core)), Ok(()));
         assert!(admits(&approve_all, &run(&failed_other)).is_err());
+    }
+
+    /// **A record admits the binary it was taken on and no other**: never run, admitted, refused
+    /// with its reasons, and a record for another binary at the same version, which is not a pass.
+    #[test]
+    fn a_conformance_record_admits_only_the_binary_it_was_taken_on() {
+        let state = marion_testsupport::scratch("row-admission");
+        let bin = state.join("bin").join("h");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"#!/bin/sh\necho 9.9.9\n").unwrap();
+        assert_eq!(
+            admission_for(&state, "h", "9.9.9", &bin),
+            Admission::NeverRun
+        );
+
+        let record = |admitted: bool, digest: Option<String>| {
+            let path = admission_path(&state, "h", "9.9.9");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let why: Vec<&str> = if admitted { vec![] } else { vec!["P-tools FAIL"] };
+            let body = serde_json::json!({
+                "row": "h", "version": "9.9.9", "admitted": admitted, "why": why,
+                "binary_sha256": digest,
+            });
+            std::fs::write(path, body.to_string()).unwrap();
+        };
+        let digest = crate::file_sha256(&bin).unwrap();
+        assert_eq!(digest, crate::sha256_hex(b"#!/bin/sh\necho 9.9.9\n"));
+        record(true, Some(digest.clone()));
+        assert_eq!(
+            admission_for(&state, "h", "9.9.9", &bin),
+            Admission::Admitted
+        );
+        record(false, Some(digest.clone()));
+        assert_eq!(
+            admission_for(&state, "h", "9.9.9", &bin),
+            Admission::Refused(vec!["P-tools FAIL".into()])
+        );
+        record(true, Some("0".repeat(64)));
+        assert_eq!(
+            admission_for(&state, "h", "9.9.9", &bin),
+            Admission::OtherBinary
+        );
+        record(true, None);
+        assert_eq!(
+            admission_for(&state, "h", "9.9.9", &bin),
+            Admission::OtherBinary,
+            "a record that names no binary admits none"
+        );
+        assert!(
+            Admission::NeverRun
+                .describe("h", "9.9.9")
+                .ends_with("scripts/conformance.sh --harness h")
+        );
+
+        // The launcher symlink an updater repoints resolves to the release it points at.
+        let link_dir = state.join("links");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        std::os::unix::fs::symlink(&bin, link_dir.join("h")).unwrap();
+        let path = std::env::join_paths([state.join("empty"), link_dir]).unwrap();
+        assert_eq!(binary_on_path("h", &path), Some(bin.canonicalize().unwrap()));
+        assert_eq!(binary_on_path("absent", &path), None);
     }
 
     #[test]
