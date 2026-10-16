@@ -309,13 +309,20 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         resolved.as_deref(),
         &mut notes,
     );
+    let state = marion_core::paths::state_dir_from_env(None);
     if let Some(source) = marion_harness::row_file::source(h) {
-        let state = marion_core::paths::state_dir_from_env(None);
         notes.extend(row_file_notes(
             h,
             &source,
             adapter.spec(),
             identity.version.as_deref(),
+            state.as_deref(),
+        ));
+    } else if agent.is_none() {
+        notes.extend(newer_release_note(
+            h,
+            identity.version.as_deref(),
+            resolved.as_deref(),
             state.as_deref(),
         ));
     }
@@ -351,6 +358,32 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
             )
         })
         .collect()
+}
+
+/// **What doctor says of a built-in row's release newer than the last one marion verified**: the
+/// basic conformance battery's verdict on this exact binary, which is what the test gate admits
+/// such a release on (`row_file::admission_for`), or the command that would take one. `None` for a
+/// verified release, or with no version or binary to judge.
+fn newer_release_note(
+    h: Harness,
+    version: Option<&str>,
+    binary: Option<&Path>,
+    state: Option<&Path>,
+) -> Option<String> {
+    use marion_harness::row_file::{Admission, admission_for};
+    let version = version?;
+    let newest = last_verified(h)?;
+    if !marion_harness::cmp_versions(version, newest).is_gt() {
+        return None;
+    }
+    let admission = match (state, binary) {
+        (Some(state), Some(binary)) => admission_for(state, h.as_str(), version, binary),
+        _ => Admission::NeverRun,
+    };
+    Some(format!(
+        "conformance: {version} is newer than the last verified ({newest}); {}",
+        admission.describe(h.as_str(), version)
+    ))
 }
 
 /// **What doctor says of a row loaded from a file**, read fresh: the file and whose it is, the digest
@@ -2554,6 +2587,46 @@ mod tests {
         );
         let same = verdict(&[row(Harness::Codex, Some(newest), &[], None)], &[]);
         assert!(!same.contains("newer than"), "{same}");
+    }
+
+    /// **A built-in row's newer release carries the conformance verdict on its exact binary**: never
+    /// run (with the command), admitted, and nothing for a verified release.
+    #[test]
+    fn a_newer_built_in_release_notes_its_conformance_verdict() {
+        let state = marion_testsupport::scratch("doctor-newer-release");
+        let binary = state.join("codex");
+        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+        let newest = last_verified(Harness::Codex).expect("codex has a verified version");
+        assert_eq!(
+            newer_release_note(Harness::Codex, Some(newest), Some(&binary), Some(&state)),
+            None
+        );
+        let never = newer_release_note(Harness::Codex, Some("99.0.0"), Some(&binary), Some(&state))
+            .expect("a newer release is noted");
+        assert!(
+            never.contains(&format!("last verified ({newest})")),
+            "{never}"
+        );
+        assert!(
+            never.contains("scripts/conformance.sh --harness codex"),
+            "{never}"
+        );
+
+        let record = marion_harness::row_file::admission_path(&state, "codex", "99.0.0");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        let body = serde_json::json!({
+            "admitted": true,
+            "why": [],
+            "binary_sha256": marion_harness::file_sha256(&binary).unwrap(),
+        });
+        std::fs::write(&record, body.to_string()).unwrap();
+        let admitted =
+            newer_release_note(Harness::Codex, Some("99.0.0"), Some(&binary), Some(&state))
+                .unwrap();
+        assert!(
+            admitted.contains("conformance admitted codex 99.0.0"),
+            "{admitted}"
+        );
     }
 
     /// **The version probe runs the build marion's nodes run.** Each row's no-self-update
