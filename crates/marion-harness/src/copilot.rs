@@ -88,10 +88,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // file access is restricted to the working directory and its subdirectories by default,
         // so a worktree is the whole of what `create`/`view` can reach.
         Arg::Flag("-C", Field::Cwd),
-        // The GitHub MCP server, dead weight on a canned node (`--available-tools` below hides
-        // its tools anyway). **Canned only**: on the operator's own login the node starts as
-        // their `copilot` does, built-in servers and all.
-        Arg::CannedLit("--disable-builtin-mcps"),
+        // The GitHub MCP server, **under every auth**. `--available-tools` below hides its tools
+        // from the model, so starting it buys a node nothing; on the operator's own login it is a
+        // server holding their GitHub token, started for every node and a network round trip at
+        // each boot. Their repository's instructions (below) are what their login keeps.
+        Arg::Lit("--disable-builtin-mcps"),
         // `AGENTS.md`, `.github/copilot-instructions.md` and friends out of a canned node, whose
         // prompt is the whole of its instructions (§3.1). **Canned only**: on the operator's own
         // login their repository's instructions apply, as they do to their `copilot`.
@@ -903,11 +904,11 @@ mod tests {
         assert!(!none.args.iter().any(|a| a == "--additional-mcp-config"));
     }
 
-    /// Out of a canned node, whose prompt is the whole of its instructions; kept on the
-    /// operator's own login, which runs as their `copilot` does.
+    /// The repository's own instructions are kept out of a canned node, whose prompt is the
+    /// whole of its instructions, and apply on the operator's own login. The built-in GitHub MCP
+    /// server is off under every auth: its tools are hidden from the model either way.
     #[test]
-    fn the_builtin_mcp_and_the_repos_own_instructions_are_kept_out_of_a_canned_node_only() {
-        let switches = ["--disable-builtin-mcps", "--no-custom-instructions"];
+    fn the_repos_own_instructions_are_kept_out_of_a_canned_node_and_the_builtin_mcp_of_every() {
         let canned = compile_prompt(&spec());
         let live = compile_prompt(&Fields {
             auth: Auth::Inherited,
@@ -915,10 +916,11 @@ mod tests {
             api_key: None,
             ..spec()
         });
-        for s in switches {
-            assert!(canned.args.iter().any(|a| a == s), "canned keeps {s} out");
-            assert!(!live.args.iter().any(|a| a == s), "live carries no {s}");
-        }
+        let has = |inv: &Invocation, s: &str| inv.args.iter().any(|a| a == s);
+        assert!(has(&canned, "--no-custom-instructions"));
+        assert!(!has(&live, "--no-custom-instructions"));
+        assert!(has(&canned, "--disable-builtin-mcps"));
+        assert!(has(&live, "--disable-builtin-mcps"));
     }
 
     /// The whole BYOK block, and the relocated home, under canned; the base URL verbatim in its
@@ -967,10 +969,10 @@ mod tests {
             );
         }
         assert_eq!(env_of(&inv, AUTO_UPDATE_ENV).as_deref(), Some("false"));
-        // And the argv is the same argv but the two canned-only switches: the axes and the MCP
-        // route do not depend on auth.
+        // And the argv is the same argv but the canned-only switch: the axes and the MCP route do
+        // not depend on auth.
         let mut canned = compile_prompt(&spec()).args;
-        canned.retain(|a| a != "--disable-builtin-mcps" && a != "--no-custom-instructions");
+        canned.retain(|a| a != "--no-custom-instructions");
         assert_eq!(inv.args, canned);
     }
 
