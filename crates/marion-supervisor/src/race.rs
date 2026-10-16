@@ -302,17 +302,16 @@ pub fn prune_branch(repo: &Path, project: &ProjectDir, row: &marion_core::race::
         return false;
     };
     let _serialized = crate::spawn::repo_write_guard();
-    let mut command = std::process::Command::new("git");
-    command
-        .current_dir(repo)
-        .args(["update-ref", "-d", &task_ref, &commit.0])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    let Ok(mut command) = crate::gitcmd::command(
+        &crate::gitcmd::Tree::Operator(repo),
+        &["update-ref", "-d", &task_ref, &commit.0],
+    ) else {
+        return false;
+    };
     crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut command)
-        .and_then(|mut c| c.wait())
-        .is_ok_and(|s| s.success())
+        .and_then(std::process::Child::wait_with_output)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// `races/<race_id>.json`, replaced whole through [`crate::private_fs::write_atomic`] (owner-only,

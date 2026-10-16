@@ -351,14 +351,11 @@ pub fn project_root(cwd: &Path) -> PathBuf {
 /// A relative answer is joined onto `cwd`: `rev-parse --git-common-dir` answers `.git` from a
 /// repository's own root, and a bare `.git` is not a usable record of anything.
 pub fn git_common_dir(cwd: &Path) -> Option<PathBuf> {
-    let mut command = std::process::Command::new("git");
-    command
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-parse", "--git-common-dir"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    let mut command = crate::gitcmd::command(
+        &crate::gitcmd::Tree::Operator(cwd),
+        &["rev-parse", "--git-common-dir"],
+    )
+    .ok()?;
     let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut command)
         .and_then(std::process::Child::wait_with_output)
