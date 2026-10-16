@@ -320,31 +320,9 @@ impl Shim {
             .unwrap_or(false)
     }
 
-    /// **The gate's second way in: `found`, a version the table does not list, is admitted when it
-    /// is at or past the pin and this machine's conformance record admits the exact binary
-    /// `program` resolves to on `path`** (`row_file::admission_for`: the battery's P-version,
-    /// P-launch, P-tools and P-approval passed on it, and nothing else failed). `Err` is the clause
-    /// the diagnosis carries: older than the pin, never run, not admitted and why, or a record for
-    /// another binary.
-    ///
-    /// A release older than the pin is refused outright: the pin is where the measured behaviours
-    /// begin, so nothing below it has the shape the suites assert.
+    /// [`admitted_by_record`] against this shim's state directory.
     fn by_record(&self, pin: &PinnedHarness, found: &str, path: &OsStr) -> Result<(), String> {
-        let pinned = pin.accepted[0];
-        if marion_harness::cmp_versions(found, pinned).is_lt() {
-            return Err(format!(
-                "{found} is older than {pinned}, the release these behaviours were first measured \
-                 on, so no conformance record admits it"
-            ));
-        }
-        let row = crate::row_name(pin.program);
-        let Some(binary) = row_file::binary_on_path(pin.program, path) else {
-            return Err(Admission::NeverRun.describe(row, found));
-        };
-        match row_file::admission_for(&self.stores.state, row, found, &binary) {
-            Admission::Admitted => Ok(()),
-            other => Err(other.describe(row, found)),
-        }
+        admitted_by_record(pin, found, path, &self.stores.state)
     }
 
     /// The version [`Self::gate`] admitted `program` at on its conformance record, if it did.
@@ -442,6 +420,38 @@ impl Shim {
                 None => GateFailure::Refused(diagnosis),
             }
         })
+    }
+}
+
+/// **The gate's second way in: `found`, a version the table does not list, is admitted when it
+/// is at or past the pin and the conformance record under `state` admits the exact binary
+/// `pin.program` resolves to on `path`** (`row_file::admission_for`: the battery's P-version,
+/// P-launch, P-tools and P-approval passed on it, and nothing else failed). `Err` is the clause
+/// the diagnosis carries: older than the pin, never run, not admitted and why, or a record for
+/// another binary.
+///
+/// A release older than the pin is refused outright: the pin is where the measured behaviours
+/// begin, so nothing below it has the shape the suites assert.
+pub fn admitted_by_record(
+    pin: &PinnedHarness,
+    found: &str,
+    path: &OsStr,
+    state: &Path,
+) -> Result<(), String> {
+    let pinned = pin.accepted[0];
+    if marion_harness::cmp_versions(found, pinned).is_lt() {
+        return Err(format!(
+            "{found} is older than {pinned}, the release these behaviours were first measured \
+             on, so no conformance record admits it"
+        ));
+    }
+    let row = crate::row_name(pin.program);
+    let Some(binary) = row_file::binary_on_path(pin.program, path) else {
+        return Err(Admission::NeverRun.describe(row, found));
+    };
+    match row_file::admission_for(state, row, found, &binary) {
+        Admission::Admitted => Ok(()),
+        other => Err(other.describe(row, found)),
     }
 }
 
