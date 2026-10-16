@@ -33,6 +33,10 @@ pub const MASK: &str = "***";
 /// The shortest value searched for by content, as [`crate::endpoint::redact`] decides it.
 const MIN_SECRET: usize = 8;
 
+/// Longest line [`Scrubber::one_line`] keeps, in characters: a cause read off a harness's stderr
+/// is one sentence, and a terminal line is not the place for a trace.
+pub const LINE_CAP: usize = 200;
+
 /// Environment variable names, upper-cased, whose value is a secret by the name's own say-so.
 const SECRET_ENV_SUFFIXES: &[&str] = &[
     "_API_KEY",
@@ -101,6 +105,30 @@ impl Scrubber {
             Some(home) => home_as_tilde(&out, home),
             None => out,
         }
+    }
+
+    /// **`text` as one line safe to journal and print to a terminal**: [`Self::clean`]ed (a
+    /// vendor's error can echo the key it refused), every control character written as its
+    /// escape (`\u{1b}`, `\n`) so no byte of it drives the reader's terminal, and capped at
+    /// [`LINE_CAP`] characters with `…` where it was cut.
+    pub fn one_line(&self, text: &str) -> String {
+        let mut out = String::new();
+        let mut kept = 0;
+        for c in self.clean(text).chars() {
+            let piece: String = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                c.to_string()
+            };
+            let len = piece.chars().count();
+            if kept + len > LINE_CAP {
+                out.push('…');
+                return out;
+            }
+            kept += len;
+            out.push_str(&piece);
+        }
+        out
     }
 }
 
@@ -446,6 +474,28 @@ mod tests {
         for key in ["memstore-key", "envkey", "hunter2"] {
             assert!(!debug.contains(key), "{debug}");
         }
+    }
+
+    /// **One line, safe for a terminal**: a secret by shape and a known key masked, controls
+    /// escaped rather than sent, and the length capped at [`LINE_CAP`] with a mark where it was
+    /// cut.
+    #[test]
+    fn one_line_masks_escapes_and_caps() {
+        let s = scrubber();
+        let line = s.one_line("401 for sk-ant-api03-abcdefghijklmnopqrstuv\x1b[2J\r\nnext\u{7}");
+        assert!(!line.contains("abcdefghijklmnop"), "{line}");
+        assert!(line.contains(MASK), "{line}");
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(line.contains("\\u{1b}[2J\\r\\nnext\\u{7}"), "{line}");
+        let long = s.one_line(&"x".repeat(LINE_CAP * 2));
+        assert_eq!(long.chars().count(), LINE_CAP + 1);
+        assert!(long.ends_with('…'));
+        assert_eq!(s.one_line("rate limit: 429"), "rate limit: 429");
+        assert_eq!(
+            s.one_line(&"y".repeat(LINE_CAP)),
+            "y".repeat(LINE_CAP),
+            "at the cap, whole"
+        );
     }
 
     #[test]

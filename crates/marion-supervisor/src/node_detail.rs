@@ -131,7 +131,9 @@ pub fn read(
         }),
         usage: spent.usage,
         workspace,
-        failure: failure(contract.as_ref(), &i.ended),
+        // Read off a harness's stderr in the end, and printed to a terminal by `marion ls <id>`.
+        failure: failure(contract.as_ref(), &i.ended)
+            .map(|why| crate::export::scrub::Scrubber::from_process([]).one_line(&why)),
         completion: contract.and_then(|contract| {
             let diff = landed_diff(&contract);
             contract.completion.map(|c| CompletionSummary {

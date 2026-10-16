@@ -2052,7 +2052,10 @@ fn journal_the_roots_outcome(
         if status != ExitStatus::Ok
             && let Some(cause) = roots_failure_cause(node, outcome)
         {
-            exit.description = format!("{}; {}", cause.words(), exit.description);
+            // The cause carries a line of the harness's stderr: one line, no control byte, no key.
+            let key = node.endpoint.as_ref().and_then(|e| e.key.clone());
+            let words = crate::export::scrub::Scrubber::from_process(key).one_line(&cause.words());
+            exit.description = format!("{words}; {}", exit.description);
         }
         crate::journal::record(
             &node.project,

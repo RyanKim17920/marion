@@ -1083,6 +1083,23 @@ fn a_failed_roots_exit_leads_with_the_classified_cause() {
         exit_of("root-cause-none", ran(&[], 1, Some(1), "")),
         "root exited with code 1"
     );
+    // The cause is a line of the harness's stderr: journaled as one line, its controls escaped
+    // and a key it echoed masked.
+    let echoed = exit_of(
+        "root-cause-echoed",
+        ran(
+            &[],
+            1,
+            Some(1),
+            "Not logged in: key sk-ant-api03-abcdefghijklmnopqrstuv refused\x1b]0;owned\x07",
+        ),
+    );
+    assert!(
+        echoed.starts_with("login refused: Not logged in"),
+        "{echoed}"
+    );
+    assert!(!echoed.contains("abcdefghijklmnop"), "{echoed}");
+    assert!(!echoed.chars().any(char::is_control), "{echoed:?}");
     assert!(
         !exit_of(
             "root-cause-ok",
