@@ -290,6 +290,16 @@ impl EventSink {
         }
     }
 
+    /// Every key this sink scrubs, for a record kept beside its stream (the search digest) that
+    /// must scrub the same ones.
+    pub fn scrub_keys(&self) -> Vec<marion_core::secret::Secret> {
+        self.scrub
+            .borrow()
+            .iter()
+            .map(|k| marion_core::secret::Secret::new(k.as_str()))
+            .collect()
+    }
+
     /// This run resumes a node whose earlier runs recorded spending `prior`. See
     /// [`UsageMeter::resumed_from`].
     pub fn resumed_from(&self, prior: Option<TokenUsage>) {

@@ -578,6 +578,34 @@ fn observed(sidecar: &RootChange) -> (&Vec<PathBuf>, &str, usize) {
     }
 }
 
+/// **A root that ended leaves exactly one search line**, under `<state>/private/`, naming the task
+/// it was given and the paths its change record measured. Mutation: drop the root's append and no
+/// digest exists.
+#[test]
+fn a_root_that_ended_leaves_exactly_one_search_line() {
+    let dir = scratch("root-change-search-line");
+    let run = marion_run(
+        &dir,
+        &format!("printf 'x\\n' > a.txt\n{REACHED_THE_BRIDGE}\nexit 0"),
+        "30",
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let mut digests = Vec::new();
+    find_all(&run.state, "runs.jsonl", &mut digests);
+    assert_eq!(digests.len(), 1, "{digests:?}");
+    assert!(digests[0].starts_with(run.state.join("private")));
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&digests[0])
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["status"], "Ok");
+    assert_eq!(lines[0]["agent_type"], "codex");
+    assert_eq!(lines[0]["prompt"], "Delegate the task to a child.");
+    assert_eq!(lines[0]["paths"], serde_json::json!(["a.txt"]));
+}
+
 /// **NC-1 — the paired control, and the primary guard.**
 ///
 /// Two runs of the same harness against the same fixture, differing only in whether the root wrote

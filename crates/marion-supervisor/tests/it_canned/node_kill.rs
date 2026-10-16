@@ -36,6 +36,7 @@ use marion_core::paths::ProjectDir;
 use marion_core::proto::params::{AgentSpawnParams, NodeGetParams, NodeKillParams};
 use marion_core::proto::{Call, Method, MethodResult, SpawnCaller};
 use marion_supervisor::events::EventReader;
+use marion_supervisor::search::digest::{Place, Run};
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
     Liveness, Scratch, fixture_repo, liveness, persisted_contracts, scratch, survivors, sweep,
@@ -269,6 +270,17 @@ impl Bed {
         })
     }
 
+    /// `id`'s lines in the project's search digest, parsed: one per run that ended.
+    fn search_lines_of(&self, id: &AgentId) -> Vec<Run> {
+        let place = Place::of(&self.project).expect("a project's state dir");
+        std::fs::read_to_string(place.digest())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Run>(l).ok())
+            .filter(|r| &r.agent_id == id)
+            .collect()
+    }
+
     /// The contract file persisted for `id`, parsed.
     fn contract_of(&self, id: &AgentId) -> TaskContract {
         wait_until("the child's thread to persist its contract", || {
@@ -362,6 +374,11 @@ fn a_running_root_killed_over_the_socket_ends_cancelled_and_stays_cancelled() {
         "the stream closes as the kill"
     );
     assert!(description.contains("kill"), "{description}");
+    // Its search line is written before the bookend, once, saying what the journal says.
+    let lines = bed.search_lines_of(&victim);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].status, Some(ExitStatus::Cancelled));
+    assert!(lines[0].task_id.is_none(), "a root has no contract");
     let about = bed.records_about(&victim);
     assert_eq!(
         count(&about, |k| matches!(k, RecordKind::KillIntent(_))),
@@ -437,6 +454,14 @@ fn a_running_child_killed_over_the_socket_ends_cancelled_in_its_journal_and_its_
         completion.evidence.is_empty(),
         "nothing is verified over a killed node's workspace"
     );
+    // Its search line follows the record, once, from the contract it persisted.
+    let line = wait_until("the child's search line", || {
+        bed.search_lines_of(&child).into_iter().next()
+    });
+    assert_eq!(bed.search_lines_of(&child).len(), 1);
+    assert_eq!(line.status, Some(ExitStatus::Cancelled));
+    assert_eq!(line.task_id.as_ref(), Some(&contract.task_id));
+    assert_eq!(line.parent_id.as_ref(), Some(&root));
     let about = bed.records_about(&child);
     assert_eq!(
         count(&about, |k| matches!(k, RecordKind::KillConfirmed(_))),

@@ -414,6 +414,9 @@ pub struct RootNode {
     pub surfaces: marion_harness::ExecutionSurfaces,
     pub path: RootPath,
     pub prompt: String,
+    /// The agent type the root was launched as, as the operator named it: what its search line
+    /// says it was.
+    pub agent_type: String,
     /// An endpoint root's resolution: its provider for the journal, its key so what the root
     /// writes is redacted before it is kept. `None` on a canned or live root.
     pub endpoint: Option<crate::endpoint::Endpoint>,
@@ -1048,6 +1051,7 @@ pub fn prepare_watched(
         surfaces,
         path,
         prompt: spec.prompt.clone(),
+        agent_type: spec.agent_type.clone(),
         endpoint,
         gateway,
         change_base,
@@ -1513,6 +1517,7 @@ fn launch_inner(
     let node_tmp = crate::node_tmp::NodeTmp::create(&node.agent_dir);
     let mut current = std::borrow::Cow::Borrowed(node);
     let launched_at = std::time::Instant::now();
+    let launched_wall = marion_core::encoding::SystemTime(std::time::SystemTime::now());
     let whole_bound = bound;
     let result = loop {
         let node: &RootNode = &current;
@@ -1631,7 +1636,7 @@ fn launch_inner(
         &node.agent_id,
         events.as_ref().map(|es| es.spent()).unwrap_or_default(),
     );
-    journal_the_roots_outcome(
+    let change = journal_the_roots_outcome(
         node,
         &result,
         spawned.get(),
@@ -1639,12 +1644,35 @@ fn launch_inner(
         ended_by_kill,
     );
     // The closing bookend, from the same reading the journal's `Exited` record is written from.
+    let terminal = roots_terminal_lifecycle(&result, spawned.get(), ended_by_kill);
+    // The run's search line, from that reading too: a root that never started has no run to find.
+    if let marion_core::event::Lifecycle::Exited { status, .. } = &terminal {
+        let mut keys: Vec<Secret> = node.held_keys().map(Secret::new).collect();
+        keys.extend(events.iter().flat_map(|es| es.scrub_keys()));
+        crate::search::digest::append(
+            &node.project,
+            crate::search::digest::Run::of_root(crate::search::digest::RootFacts {
+                agent_id: node.agent_id.clone(),
+                agent_type: &node.agent_type,
+                harness: node.harness.as_str(),
+                model: events.as_ref().and_then(|es| es.model()),
+                status: Some(*status),
+                started: Some(launched_wall),
+                ended: Some(marion_core::encoding::SystemTime(
+                    std::time::SystemTime::now(),
+                )),
+                tokens: events
+                    .as_ref()
+                    .and_then(|es| es.spent().usage)
+                    .map(|u| u.total()),
+                prompt: &node.prompt,
+                change: Some(&change),
+            }),
+            &crate::export::scrub::Scrubber::from_process(keys),
+        );
+    }
     if let Some(es) = &events {
-        es.lifecycle(roots_terminal_lifecycle(
-            &result,
-            spawned.get(),
-            ended_by_kill,
-        ));
+        es.lifecycle(terminal);
     }
     result
 }
@@ -1987,7 +2015,7 @@ fn journal_the_roots_outcome(
     spawned: bool,
     harness_version: &str,
     ended_by_kill: bool,
-) {
+) -> RootChange {
     // A confirmation for a process whose existence this function is only *inferring*, and only when
     // nothing observed it directly. Unreachable through either driver today — both call the hook
     // between `spawn()` and the first byte — and kept as an absence rather than an `unreachable!()`
@@ -2013,7 +2041,7 @@ fn journal_the_roots_outcome(
     // root killed on the wall-clock bound (`launch_only`), and a root refused as
     // `BridgeNeverReached` below, both of which are runs where a write already happened and marion
     // is about to say the run failed.
-    record_the_roots_change(node);
+    let change = record_the_roots_change(node);
     let outcome = match result {
         Ok(o) => o,
         // The run happened, the process exited, and marion refused the *result* — so this is an
@@ -2030,7 +2058,7 @@ fn journal_the_roots_outcome(
                     }),
                 );
             }
-            return;
+            return change;
         }
         Err(e) => {
             crate::journal::record(
@@ -2042,7 +2070,7 @@ fn journal_the_roots_outcome(
                     reason: e.to_string(),
                 }),
             );
-            return;
+            return change;
         }
     };
     confirm(node);
@@ -2087,6 +2115,7 @@ fn journal_the_roots_outcome(
         // root's transcript is what `marion run` prints.
         "denied: no one is attached to approve it, or a marion rule denies it",
     );
+    change
 }
 
 /// §9's change record, written: the sidecar first, then the journal's pointer at it.
@@ -2096,7 +2125,7 @@ fn journal_the_roots_outcome(
 /// `ContractPersisted` shape. So if the file cannot be written, the journal is told marion could
 /// not see, rather than being handed counts with nothing behind them. A record pointing at a file
 /// that does not exist is a *worse* artifact than an honest `Failed`.
-fn record_the_roots_change(node: &RootNode) {
+fn record_the_roots_change(node: &RootNode) -> RootChange {
     let change = observe_the_roots_change(node);
     let record = match serde_json::to_vec_pretty(&change)
         .map_err(|e| e.to_string())
@@ -2121,6 +2150,7 @@ fn record_the_roots_change(node: &RootNode) {
         }
     };
     crate::journal::record(&node.project, RecordKind::RootChanged(record));
+    change
 }
 
 /// Take the second snapshot and assemble what the two say.

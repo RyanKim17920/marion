@@ -162,6 +162,8 @@ pub mod rollup;
 pub mod root;
 pub mod rpc;
 pub mod run;
+/// Search across runs: the per-project digest of every run that ended, and the scan over it.
+pub mod search;
 /// The serve loop over §2's socket: NDJSON framing, dispatch, and §7.3.1's rule that a dropped
 /// socket is not a quit.
 pub mod serve;

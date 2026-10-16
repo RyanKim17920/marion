@@ -3101,6 +3101,23 @@ pub fn run_spawn_watched(
                 .and_then(|c| u32::try_from(c.changed_paths.len() + c.changed_paths_omitted).ok()),
         }),
     );
+    // The run's search line, from the contract as it was persisted, with the keys its stream was
+    // scrubbed of. After the record, so the digest never names a run the journal does not.
+    let mut keys = events
+        .as_ref()
+        .map(|es| es.scrub_keys())
+        .unwrap_or_default();
+    keys.extend(endpoint.as_ref().and_then(|e| e.key.clone()));
+    crate::search::digest::append(
+        &env.project_dir,
+        crate::search::digest::Run::of_child(
+            &returned,
+            &agent_id,
+            requester.parent_id(),
+            &req.agent_type,
+        ),
+        &crate::export::scrub::Scrubber::from_process(keys),
+    );
     // The intent is resolved: `Spawned` and `Exited` are on the record above, so the abort this
     // guard would otherwise write would contradict them.
     resolution.armed = false;
