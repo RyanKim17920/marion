@@ -230,7 +230,7 @@ pub enum Peer {
 /// Read from the socket rather than from the frame, and read **once**: a peer cannot change its uid
 /// mid-connection, and re-asking per call would be a second answer that could differ from the one a
 /// subscription was set up under.
-fn peer_of(stream: &std::os::unix::net::UnixStream) -> Peer {
+pub(crate) fn peer_of(stream: &std::os::unix::net::UnixStream) -> Peer {
     use std::os::fd::AsRawFd;
     peer_of_fd(stream.as_raw_fd())
 }

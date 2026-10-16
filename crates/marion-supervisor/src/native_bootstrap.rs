@@ -206,8 +206,13 @@ impl NativeBootstrapClient {
             }
             Err(why) => return Err(BootstrapError::OperatorRefused(why)),
         };
+        socket::check_fallback_dir(paths)
+            .map_err(|e| BootstrapError::OperatorRefused(e.to_string()))?;
         let stream = UnixStream::connect(paths.native_bootstrap())
             .map_err(BootstrapError::NativeTransportIo)?;
+        // The `Issue` this stream will carry holds the operator's key.
+        crate::client_auth::served_by_us(crate::serve::peer_of(&stream))
+            .map_err(BootstrapError::OperatorRefused)?;
         Ok(Self {
             stream,
             canonical_project: paths.canonical_project().to_path_buf(),

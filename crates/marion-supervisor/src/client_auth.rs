@@ -90,6 +90,8 @@ impl std::fmt::Display for HelloError {
 /// `Err` is the supervisor's refusal, a stream that could not carry the exchange, or silence, as a
 /// sentence.
 pub fn hello(stream: &mut UnixStream, identity: &Identity) -> Result<(), HelloError> {
+    // Before a byte of the key leaves: the hello names the operator's key or a node's token.
+    served_by_us(crate::serve::peer_of(stream)).map_err(HelloError::Failed)?;
     // The connection outlives its hello, and keeps whatever bound its owner gave its reads.
     let before = stream
         .read_timeout()
@@ -143,6 +145,25 @@ fn exchange(stream: &mut UnixStream, identity: &Identity) -> Result<(), HelloErr
     }
 }
 
+/// **Whether the process on the other end of a dialed socket is this user's**, as the kernel
+/// reports it — the check a client makes before it sends a key. The socket's directory is the
+/// operator's own, or the audited `/tmp` fallback, but a name in a directory is not proof of who
+/// bound it, and a listener of another uid would be handed the operator's capability. An unread
+/// peer is refused as a foreign one is.
+pub(crate) fn served_by_us(peer: crate::serve::Peer) -> Result<(), String> {
+    let ours = crate::socket::own_uid();
+    match peer {
+        crate::serve::Peer::Uid(uid) if uid == ours => Ok(()),
+        crate::serve::Peer::Uid(uid) => Err(format!(
+            "the socket is served by uid {uid}, not by this user (uid {ours}); marion sends its \
+             key to no one else's process"
+        )),
+        crate::serve::Peer::Unknown => {
+            Err("the kernel would not say who serves this socket, so marion sends it no key".into())
+        }
+    }
+}
+
 /// Whom a connection to `paths` speaks for: the identity this process set, where it set one (a
 /// node's bridge), else the operator of `paths`' state root.
 pub fn identity_for(paths: &SocketPaths) -> Result<Identity, String> {
@@ -152,6 +173,7 @@ pub fn identity_for(paths: &SocketPaths) -> Result<Identity, String> {
 /// **Dial `paths`' supervisor and say who the connection speaks for** — the one way a client
 /// opens a connection it will make calls on.
 pub fn dial(paths: &SocketPaths) -> Result<UnixStream, String> {
+    crate::socket::check_fallback_dir(paths).map_err(|e| e.to_string())?;
     let stream = UnixStream::connect(paths.socket()).map_err(|e| dialling(paths, &e))?;
     hello_on(stream, paths)
 }
@@ -161,6 +183,7 @@ pub fn dial(paths: &SocketPaths) -> Result<UnixStream, String> {
 /// found the lock held, for whom a supervisor that has just gone is nobody serving. Only a socket
 /// with no listener waits; a supervisor that answers and refuses the hello is refused at once.
 pub fn dial_unless_leaving(paths: &SocketPaths) -> Result<Option<UnixStream>, String> {
+    crate::socket::check_fallback_dir(paths).map_err(|e| e.to_string())?;
     let stream = match UnixStream::connect(paths.socket()) {
         Ok(stream) => stream,
         Err(e)
@@ -231,6 +254,18 @@ fn read_line(stream: &mut UnixStream) -> Result<String, HelloError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A key goes only to a socket this user's process serves**: another uid, or a peer the
+    /// kernel would not name, is refused before the hello is written.
+    #[test]
+    fn a_key_goes_only_to_a_socket_this_user_serves() {
+        use crate::serve::Peer;
+        let ours = crate::socket::own_uid();
+        assert_eq!(served_by_us(Peer::Uid(ours)), Ok(()));
+        let foreign = served_by_us(Peer::Uid(ours.wrapping_add(1))).unwrap_err();
+        assert!(foreign.contains("not by this user"), "{foreign}");
+        assert!(served_by_us(Peer::Unknown).is_err());
+    }
 
     /// **A socket nobody answers on is reported as silence, not waited on for ever** — the listener
     /// a starting supervisor has not yet replaced — and the connection keeps no bound after it.
