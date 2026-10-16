@@ -606,6 +606,14 @@ pub struct TaskContract {
     pub workspace: Workspace,
     pub instructions: Capped<String>,
     pub acceptance_criteria: Vec<Capped<String>>,
+    /// The marion verbs (and harness tools) the child was **offered**, as compiled. It can say
+    /// more than the child may do and less than it can call: a harness whose tool list is not
+    /// narrowed (an own-login pi with a write grant gets no `--tools`, so it sees every marion
+    /// verb) may call one this list leaves out. The authority is the supervisor's per-call gate,
+    /// which holds whatever the harness exposes: `spawn` is refused past the caller's
+    /// `max_depth` as the registry places it, `steer` and `cancel` outside the caller's subtree,
+    /// and `workflow` for every node. Reading the tree (`status`, `list`, `wait`) is
+    /// any node's, granted or not.
     pub allowed_tools: Vec<String>,
     /// From the agent type. Default stored as `["**"]`, never absent.
     pub scope_ceiling: Vec<Glob>,
