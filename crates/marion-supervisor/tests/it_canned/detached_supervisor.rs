@@ -1328,8 +1328,14 @@ fn a_supervisor_with_nothing_left_journals_its_exit_and_leaves_no_socket_identit
     );
     // Its own socket's unlink is not an eviction: the entitlement watcher lets the exit finish
     // rather than standing down mid-way, before the identity goes.
-    let log = std::fs::read_to_string(marion_supervisor::detach::log_path(&bed.launch()))
-        .unwrap_or_default();
+    // Read, not defaulted: a log that is not there would make "no stand-down line" vacuous.
+    let log_path = marion_supervisor::detach::log_path(&bed.launch());
+    let log = std::fs::read_to_string(&log_path).unwrap_or_else(|e| {
+        panic!(
+            "stage 2 points the supervisor's stderr at {}: {e}",
+            log_path.display()
+        )
+    });
     assert!(
         !log.contains("standing down"),
         "a clean exit is not a stand-down: {log:?}"
