@@ -596,8 +596,12 @@ fn spawn_params(
     marion_core::proto::params::AgentSpawnParams {
         wider_children: None,
         // The child's tree budget, as the caller stated it; the supervisor narrows it to what the
-        // caller's tree has left, so a node can never grant more than it was given.
-        budget_tokens: args["budget"]["tokens"].as_u64().filter(|n| *n > 0),
+        // caller's tree has left, so a node can never grant more than it was given. Declared flat,
+        // as the wire names it; the nested `budget: {tokens}` it replaced is still read.
+        budget_tokens: args["budget_tokens"]
+            .as_u64()
+            .or_else(|| args["budget"]["tokens"].as_u64())
+            .filter(|n| *n > 0),
         // A parent asking for its child's review: the same spawn, the supervisor decides the rest.
         review_of: args["review_of"]
             .as_str()
@@ -2987,6 +2991,24 @@ mod tests {
             text.ends_with(&format!(" Note: {}.", crate::review::UNGUARDED)),
             "{text}"
         );
+    }
+
+    /// **The budget is declared flat and the nested spelling it replaced is still read**; a zero
+    /// is no cap, either way.
+    #[test]
+    fn a_budget_is_read_flat_or_nested_and_zero_is_no_cap() {
+        let budget =
+            |args: serde_json::Value| spawn_params("codex", &args, None, None).budget_tokens;
+        assert_eq!(
+            budget(serde_json::json!({"budget_tokens": 5000})),
+            Some(5000)
+        );
+        assert_eq!(
+            budget(serde_json::json!({"budget": {"tokens": 7000}})),
+            Some(7000)
+        );
+        assert_eq!(budget(serde_json::json!({"budget_tokens": 0})), None);
+        assert_eq!(budget(serde_json::json!({"prompt": "go"})), None);
     }
 
     #[test]

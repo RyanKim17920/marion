@@ -392,10 +392,8 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
                     // neither is a `name` nothing reads.
                     "isolation": {"type": "string", "enum": ["worktree", "shared-cwd"]},
                     "timeout_secs": {"type": "integer"},
-                    "budget": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {"tokens": {"type": "integer"}},
+                    "budget_tokens": {
+                        "type": "integer",
                         "description": "A cap on the tokens this child and everything it spawns \
                                         may spend together. Reached, it is stopped with its work \
                                         kept; it can never exceed what your own budget has \
