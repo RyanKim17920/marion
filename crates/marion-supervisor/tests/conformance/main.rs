@@ -120,12 +120,17 @@ fn battery() {
         };
         let staging = out.join(format!(".staging-{}", selector.replace(':', "-")));
         let _ = std::fs::remove_dir_all(&staging);
+        let verified = verified_row(verified_cells.as_ref(), &selector, &t);
         let mut ctx = probes::Ctx {
             t: &t,
             out: staging.clone(),
             scratch: scratch.join(selector.replace(':', "-")),
             report_answered: None,
             stand_in: None,
+            // Under the committed fixtures, which a run into another `out` leaves where they are.
+            verified: verified
+                .and_then(|row| row["fixtures"].as_str())
+                .map(|d| default_out().join(d)),
         };
         let (version, mut outcomes) = probes::run_all(&mut ctx);
         let scrub = report::Scrub::new(&scratch);
@@ -153,7 +158,7 @@ fn battery() {
             outcomes,
         };
         match &state {
-            Some(state) => record_admission(state, &result, &t, verified_cells.as_ref()),
+            Some(state) => record_admission(state, &result, &t, verified),
             None => {
                 eprintln!("conformance: {selector}: no state directory to record its admission in")
             }
@@ -240,14 +245,14 @@ fn admitted_any() -> bool {
 /// and, for a row from a file, the digest of its text, so doctor can tell a result for an earlier
 /// edit.
 ///
-/// A row whose committed matrix row (`matrix`) was scored on one of its own verified releases is
-/// held to those cells (`row_file::admits_newer`); any other — a row from a file, an ACP agent, a
-/// matrix row already rewritten by an earlier run — to `row_file::admits`'s fixed rule.
+/// A row with a [`verified_row`] is held to its cells (`row_file::admits_newer`); any other — a
+/// row from a file, an ACP agent, a matrix row already rewritten by an earlier run — to
+/// `row_file::admits`'s fixed rule.
 fn record_admission(
     state: &Path,
     r: &report::TargetResult,
     t: &target::Target,
-    matrix: Option<&Value>,
+    verified: Option<&Value>,
 ) {
     use marion_harness::row_file;
     let cells = |row: &Value| -> Vec<(String, String)> {
@@ -263,13 +268,6 @@ fn record_admission(
         .iter()
         .map(|o| (o.probe.to_string(), o.status.word().to_string()))
         .collect();
-    let verified = matrix
-        .and_then(|m| m["harnesses"].get(&r.selector))
-        .filter(|row| {
-            row["version"]
-                .as_str()
-                .is_some_and(|v| t.spec.verified.contains(&v))
-        });
     let verdict = match verified {
         Some(row) => row_file::admits_newer(&probes, &cells(row)),
         None => row_file::admits(t.spec, &probes),
@@ -316,6 +314,21 @@ fn record_admission(
             path.display()
         ),
     }
+}
+
+/// **The committed matrix row of `selector`, where it was scored on one of the row's own verified
+/// releases** — the bar a newer release is held to. `None` once a run has rewritten it for an
+/// unlisted release, so a second run never judges a release against itself.
+fn verified_row<'m>(
+    matrix: Option<&'m Value>,
+    selector: &str,
+    t: &target::Target,
+) -> Option<&'m Value> {
+    matrix?["harnesses"].get(selector).filter(|row| {
+        row["version"]
+            .as_str()
+            .is_some_and(|v| t.spec.verified.contains(&v))
+    })
 }
 
 /// Why a row's binary cannot be run here, or `None` when it can. Read off the launch marion would

@@ -55,6 +55,9 @@ pub struct Ctx<'a> {
     pub report_answered: Option<bool>,
     /// A canned stand-in run in place of the row's program, for the battery's own tests.
     pub stand_in: Option<StandIn>,
+    /// The committed transcripts of the row's newest verified release, where the matrix has them:
+    /// the wire an unlisted release is held to ([`ask_shape_drift`]). Cleared for a listed one.
+    pub verified: Option<PathBuf>,
 }
 
 /// A program launched in place of the row's, with everything the row compiled plus `env` and
@@ -151,6 +154,11 @@ fn child_exit(p: &Proc) -> ChildExit {
 /// Run every probe against one target.
 pub fn run_all(c: &mut Ctx<'_>) -> (String, Vec<Outcome>) {
     let (version, v) = p_version(c);
+    // A listed release is the bar itself: a person listed it having read its wire, so its own run
+    // re-records that wire rather than being held to the release before it.
+    if c.t.spec.verified.contains(&version.as_str()) {
+        c.verified = None;
+    }
     eprintln!(
         "conformance: {} {} {}: {}",
         c.t.selector,
@@ -192,6 +200,70 @@ pub fn run_all(c: &mut Ctx<'_>) -> (String, Vec<Outcome>) {
         outcomes.push(o);
     }
     (version, outcomes)
+}
+
+/// A frame that asks marion for permission: an ACP `session/request_permission`, or a
+/// `can_use_tool` control request.
+fn is_ask(f: &Value) -> bool {
+    f["method"] == "session/request_permission" || f["request"]["subtype"] == "can_use_tool"
+}
+
+/// Every key path in `v` (`request.tool_name`, `params.options[].kind`), values ignored.
+fn key_paths(v: &Value, prefix: &str, out: &mut std::collections::BTreeSet<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, val) in m {
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                key_paths(val, &path, out);
+                out.insert(path);
+            }
+        }
+        Value::Array(a) => a
+            .iter()
+            .for_each(|x| key_paths(x, &format!("{prefix}[]"), out)),
+        _ => {}
+    }
+}
+
+/// The asks' key paths, over every ask.
+fn ask_shape(asks: &[Value]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    asks.iter().for_each(|a| key_paths(a, "", &mut out));
+    out
+}
+
+/// **How `asked`'s shape differs from the asks in the verified release's committed P-approval
+/// transcripts under `dir`** — `+path` for a key only the live asks carry, `-path` for one only the
+/// recorded asks did — or `None` where they agree or either side asked nothing to compare.
+fn ask_shape_drift(dir: &Path, asked: &[Value]) -> Option<String> {
+    let recorded: Vec<Value> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("p-approval"))
+        .flat_map(|e| {
+            std::fs::read_to_string(e.path())
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .map(|l| l["msg"].clone())
+                .filter(is_ask)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if recorded.is_empty() || asked.is_empty() {
+        return None;
+    }
+    let (was, now) = (ask_shape(&recorded), ask_shape(asked));
+    let moved: Vec<String> = now
+        .difference(&was)
+        .map(|p| format!("+{p}"))
+        .chain(was.difference(&now).map(|p| format!("-{p}")))
+        .collect();
+    (!moved.is_empty()).then(|| moved.join(", "))
 }
 
 // --- P-version ----------------------------------------------------------------------------------
@@ -758,16 +830,24 @@ fn p_approval(c: &mut Ctx<'_>) -> Outcome {
     };
     node.wait_ends(1, TURN);
     let r = read_turn(c, &node);
-    let asked: Vec<String> = node.proc.with(|io| {
-        io.frames
-            .iter()
-            .filter(|f| {
-                f["method"] == "session/request_permission"
-                    || f["request"]["subtype"] == "can_use_tool"
-            })
-            .map(|f| f.to_string())
-            .collect()
-    });
+    let asked: Vec<Value> = node
+        .proc
+        .with(|io| io.frames.iter().filter(|f| is_ask(f)).cloned().collect());
+    // The ask is the frame marion answers, so its shape is wire marion depends on: a key the
+    // verified release did not send, or one it sent and this one does not, is a change a person
+    // reads before this release is admitted, however marion's reader happens to cope with it.
+    if let Some(drift) = c
+        .verified
+        .as_deref()
+        .and_then(|dir| ask_shape_drift(dir, &asked))
+    {
+        return Outcome::judged(
+            P,
+            false,
+            expected,
+            format!("the permission ask's shape moved against the verified release: {drift}"),
+        );
+    }
     let session_mode = matches!(approval, Approval::SessionMode { .. });
     if session_mode && asked.is_empty() && r.report == Some(CallOutcome::Answered) {
         // The strategy's claim is that marion answers the agent's ask with the agent's own allow
@@ -1634,6 +1714,47 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// **An ask that gained or lost a key against the verified release's transcript is drift**;
+    /// the same keys with other values are not, and nothing recorded is nothing to compare.
+    #[test]
+    fn an_ask_that_moved_against_the_verified_transcript_is_named() {
+        let dir = marion_testsupport::scratch("conformance-ask-shape");
+        let ask = |extra: Value| {
+            let mut request = json!({"subtype": "can_use_tool", "tool_name": "mcp__marion__report",
+                "permission_suggestions": [{"type": "addRules"}]});
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            json!({"type": "control_request", "request_id": "r", "request": request})
+        };
+        assert_eq!(
+            ask_shape_drift(&dir, &[ask(json!({}))]),
+            None,
+            "no transcript"
+        );
+        let line = json!({"dir": "s2c", "msg": ask(json!({"mcp_server": {"name": "marion"}}))});
+        std::fs::write(dir.join("p-approval-ungranted.jsonl"), format!("{line}\n")).unwrap();
+        std::fs::write(
+            dir.join("p-launch.jsonl"),
+            format!("{}\n", json!({"msg": ask(json!({"other": 1}))})),
+        )
+        .unwrap();
+
+        let same = ask(json!({"mcp_server": {"name": "another"}}));
+        assert_eq!(ask_shape_drift(&dir, &[same]), None, "values may move");
+        let moved = ask(json!({"server_policy_ask_only": true}));
+        assert_eq!(
+            ask_shape_drift(&dir, &[moved]).as_deref(),
+            Some("+request.server_policy_ask_only, -request.mcp_server, -request.mcp_server.name")
+        );
+        assert_eq!(
+            ask_shape_drift(&dir, &[]),
+            None,
+            "nothing asked: P-approval judges that"
+        );
     }
 
     #[test]

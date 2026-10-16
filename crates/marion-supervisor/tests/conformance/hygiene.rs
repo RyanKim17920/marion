@@ -57,6 +57,7 @@ fn a_p_tui_run_leaves_the_operators_config_byte_identical() {
                     ("MARION_STAND_IN_WROTE".into(), wrote.display().to_string()),
                 ],
             }),
+            verified: None,
         };
         let o = probes::p_tui(&mut c);
         // The stand-in took P-tui's whole path, dialog answered, so the comparison below is about
