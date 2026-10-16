@@ -14,6 +14,9 @@
 - **What it cannot change.** What the node may do and hand down (its tree's agent-types table, the
   scope its caller granted, the operator's opt-ins) is kept at `<state>/<project>/authority/<id>.json`,
   outside its agent dir, so rewriting its own agent dir widens nothing.
+- **Its verification lines.** A spawn's `verification` lines run over the node's work under the
+  node's own plan, with its `TMPDIR`, so a test script the child wrote is kept to what the child
+  could write; the contract records them as `sandboxed`.
 - **marion's own git in its tree.** A node may write its worktree's admin dir (git keeps its index
   there), so marion's git on a child tree reads the common dir from the operator's checkout, never
   from that dir's `commondir`, refuses a `config.worktree` holding more than sparse-checkout keys,

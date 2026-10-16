@@ -648,11 +648,32 @@ pub fn is_withheld_from_verification(key: &str) -> bool {
         || marion_harness::env_filter::is_git_redirect(key)
 }
 
-/// The process one verification [`Command`] runs as: its program, arguments and directory, with
-/// every variable [`is_withheld_from_verification`] names removed from what it inherits.
-pub fn verification_process(command: &Command) -> SysCommand {
-    let mut sys = SysCommand::new(&command.program);
-    sys.args(&command.args).current_dir(&command.cwd);
+/// **marion's own sandbox a verification line runs under**: the plan the node itself ran under,
+/// and the node's own `TMPDIR`, which the plan leaves writable. A line the child's work can steer
+/// (a test's build script) is then kept to what the child could write.
+#[derive(Clone, Copy)]
+pub struct VerifyUnder<'a> {
+    pub plan: &'a marion_harness::os_sandbox::SandboxPlan,
+    pub tmpdir: &'a Path,
+}
+
+/// The process one verification [`Command`] runs as: its program, arguments and directory, under
+/// `under` where the node ran under marion's sandbox, with every variable
+/// [`is_withheld_from_verification`] names removed from what it inherits.
+pub fn verification_process(command: &Command, under: Option<VerifyUnder<'_>>) -> SysCommand {
+    let mut sys = match under {
+        Some(u) => {
+            let mut sys = u.plan.command(&command.program, &command.args, u.tmpdir);
+            sys.env(marion_harness::invocation::TMPDIR_ENV, u.tmpdir);
+            sys
+        }
+        None => {
+            let mut sys = SysCommand::new(&command.program);
+            sys.args(&command.args);
+            sys
+        }
+    };
+    sys.current_dir(&command.cwd);
     for (key, _) in std::env::vars_os() {
         if key.to_str().is_some_and(is_withheld_from_verification) {
             sys.env_remove(&key);
@@ -675,12 +696,15 @@ pub fn verification_process(command: &Command) -> SysCommand {
 /// command that could not be started at all is an outcome too — `exit_code: None`, the error in
 /// `stderr` — never a gap in the evidence, which would read as "one fewer command was asked
 /// for".
-pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
+pub fn run_verification(
+    commands: &[Command],
+    under: Option<VerifyUnder<'_>>,
+) -> Vec<CommandOutcome> {
     commands
         .iter()
         .map(|command| {
             let started = Instant::now();
-            let mut sys = verification_process(command);
+            let mut sys = verification_process(command, under);
             let (exit_code, stdout, stderr, timed_out) = match run_bounded_with(
                 &mut sys,
                 command.timeout.0,
@@ -726,11 +750,15 @@ pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
 /// `evidence: []` beside three verification lines. For a pty child a signal that is not marion's
 /// timeout is something else's kill; the commands still run over what the child left, and their
 /// outcomes are recorded so the contract judges the work rather than guessing at it.
-pub fn verification_evidence(outcome: &ChildOutcome, commands: &[Command]) -> Vec<CommandOutcome> {
+pub fn verification_evidence(
+    outcome: &ChildOutcome,
+    commands: &[Command],
+    under: Option<VerifyUnder<'_>>,
+) -> Vec<CommandOutcome> {
     if outcome.timed_out {
         vec![]
     } else {
-        run_verification(commands)
+        run_verification(commands, under)
     }
 }
 
@@ -2944,17 +2972,25 @@ pub fn run_spawn_watched(
     // child's work, so the measurement is taken first and the commands run over the sealed
     // result. The request itself is always recorded (`verification_commands`), so the contract
     // says what was asked even where `verification_evidence` decides nothing ran.
-    // Inside the child's own harness sandbox where its row has one, so a verification line the
-    // child's work can steer (a test's build script) is kept to the workspace as the child was;
-    // as the operator otherwise, which the contract then says (`verification_containment`).
-    let sandbox = marion_harness::containment::verify_prefix(&agent_type);
+    // Inside the sandbox the child itself ran under, so a verification line the child's work can
+    // steer (a test's build script) is kept to the workspace as the child was: marion's own where
+    // it applied to the node, else the child's harness sandbox where its row has one; as the
+    // operator otherwise, which the contract then says (`verification_containment`).
+    let under = inv.sandbox.as_ref().map(|plan| VerifyUnder {
+        plan,
+        tmpdir: node_tmp.path(),
+    });
+    let sandbox = match under {
+        Some(_) => None,
+        None => marion_harness::containment::verify_prefix(&agent_type),
+    };
     let verification = verification_commands(&req.verification, &wt, sandbox.as_ref());
     // Nothing runs over a killed node's workspace, for `verification_evidence`'s own reason about a
     // timed-out one: it is whatever the kill left.
     let evidence = if ended_by_kill {
         vec![]
     } else {
-        verification_evidence(&outcome, &verification)
+        verification_evidence(&outcome, &verification, under)
     };
     let mut contract = build_contract(
         task_id.clone(),
@@ -2991,7 +3027,7 @@ pub fn run_spawn_watched(
     if let Some(completion) = contract.completion.as_mut()
         && !completion.evidence.is_empty()
     {
-        completion.verification_containment = Some(if sandbox.is_some() {
+        completion.verification_containment = Some(if under.is_some() || sandbox.is_some() {
             marion_core::contract::VerificationContainment::Sandboxed
         } else {
             marion_core::contract::VerificationContainment::Uncontained

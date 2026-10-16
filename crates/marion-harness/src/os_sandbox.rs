@@ -229,6 +229,18 @@ impl SandboxPlan {
         Ok(SandboxPlan { dirs })
     }
 
+    /// A plan writing exactly `dirs`, each resolved: for a process marion runs over a node's work
+    /// that is not the node's own launch (a test's, above all). `Err` names a dir that could not
+    /// be resolved.
+    pub fn writing(dirs: &[std::path::PathBuf]) -> Result<SandboxPlan, String> {
+        let mut dirs = dirs
+            .iter()
+            .map(|d| canonical(d))
+            .collect::<Result<Vec<_>, _>>()?;
+        dirs.dedup();
+        Ok(SandboxPlan { dirs })
+    }
+
     /// The directories, in order.
     pub fn dirs(&self) -> &[std::path::PathBuf] {
         &self.dirs
@@ -251,8 +263,10 @@ impl SandboxPlan {
         p
     }
 
-    /// The process that runs `program args` under this plan, with `tmpdir` writable too.
-    pub(crate) fn command(
+    /// The process that runs `program args` under this plan, with `tmpdir` writable too: a node's
+    /// harness ([`crate::invocation::Invocation::command`]), or a verification line run over its
+    /// work.
+    pub fn command(
         &self,
         program: &str,
         args: &[String],

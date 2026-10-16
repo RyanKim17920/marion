@@ -603,7 +603,7 @@ fn verification_runs_for_a_signalled_exit_and_skips_only_marions_own_timeout() {
         timed_out: false,
         ..ChildOutcome::default()
     };
-    let evidence = verification_evidence(&shut_down_by_marion, &cmds);
+    let evidence = verification_evidence(&shut_down_by_marion, &cmds, None);
     assert_eq!(
         evidence.len(),
         1,
@@ -618,7 +618,7 @@ fn verification_runs_for_a_signalled_exit_and_skips_only_marions_own_timeout() {
         ..ChildOutcome::default()
     };
     assert!(
-        verification_evidence(&cut_short, &cmds).is_empty(),
+        verification_evidence(&cut_short, &cmds, None).is_empty(),
         "marion's own timeout kill is the one exit that skips"
     );
 }
@@ -2968,7 +2968,7 @@ fn a_background_job_a_verification_line_started_is_gone_when_it_ends() {
         pid_file.display()
     );
     let cmd = one_command(&line, &scratch, StdDuration::from_secs(30));
-    let out = run_verification(std::slice::from_ref(&cmd));
+    let out = run_verification(std::slice::from_ref(&cmd), None);
     assert_eq!(out[0].exit_code, Some(0), "{out:?}");
     assert!(!out[0].timed_out);
     let pid: i32 = std::fs::read_to_string(&pid_file)
@@ -3001,7 +3001,7 @@ fn a_background_job_a_verification_line_started_is_gone_when_it_ends() {
 fn a_passing_verification_command_records_exit_zero_and_its_stdout() {
     let scratch = scratch("verif-pass");
     let cmds = verification_commands(&["echo verified".into()], &scratch, None);
-    let out = run_verification(&cmds);
+    let out = run_verification(&cmds, None);
     assert_eq!(out.len(), 1);
     assert_eq!(
         out[0].command, cmds[0],
@@ -3017,7 +3017,7 @@ fn a_passing_verification_command_records_exit_zero_and_its_stdout() {
 fn a_failing_verification_command_records_its_exit_code_and_stderr() {
     let scratch = scratch("verif-fail");
     let cmds = verification_commands(&["echo broken 1>&2; exit 3".into()], &scratch, None);
-    let out = run_verification(&cmds);
+    let out = run_verification(&cmds, None);
     assert_eq!(out[0].exit_code, Some(3));
     assert_eq!(out[0].stderr.value, "broken\n");
     assert_eq!(out[0].stdout.value, "");
@@ -3034,7 +3034,7 @@ fn a_verification_command_over_its_bound_is_killed_and_marked_timed_out() {
     let marker = format!("sleep 30.{}", std::process::id());
     let cmd = one_command(&marker, &scratch, StdDuration::from_secs(1));
     let started = Instant::now();
-    let out = run_verification(std::slice::from_ref(&cmd));
+    let out = run_verification(std::slice::from_ref(&cmd), None);
     assert!(out[0].timed_out, "the bound expired");
     assert!(
         started.elapsed() < StdDuration::from_secs(10),
@@ -3080,7 +3080,7 @@ fn a_verification_process_withholds_marions_variables_and_provider_keys() {
         assert!(!is_withheld_from_verification(key), "{key}");
     }
     let cmd = verification_commands(&["true".into()], Path::new("/"), None).remove(0);
-    let sys = verification_process(&cmd);
+    let sys = verification_process(&cmd, None);
     let removed: Vec<String> = sys
         .get_envs()
         .filter(|(_, v)| v.is_none())
@@ -3125,9 +3125,57 @@ fn a_sandboxed_childs_verification_cannot_write_outside_its_workspace() {
     );
     let cmds = verification_commands(&[line], &wt, Some(&sandbox));
     assert_eq!(cmds[0].program, "codex");
-    let out = run_verification(&cmds);
+    let out = run_verification(&cmds, None);
     assert_eq!(out[0].exit_code, Some(0), "{out:?}");
     assert!(wt.join("inside.txt").exists(), "the workspace is writable");
+    assert!(
+        !outside.exists(),
+        "a write outside the workspace was refused"
+    );
+}
+
+/// **A verification line over a node marion sandboxed runs under the node's own plan**: a line
+/// the child's work can steer writes the workspace and the node's TMPDIR, and nothing outside —
+/// it used to run as the operator, uncontained, beside a node marion labelled contained.
+#[test]
+fn a_verification_line_runs_under_the_nodes_own_sandbox_plan() {
+    if !marion_harness::os_sandbox::support().available() {
+        eprintln!("skipped: marion's sandbox is unavailable on this host");
+        return;
+    }
+    let dir = marion_testsupport::scratch("run-verify-plan");
+    let wt = dir.join("wt");
+    let tmp = dir.join("tmp");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::create_dir_all(&tmp).unwrap();
+    let outside = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("verify-plan-probe-{}", std::process::id()));
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _gone = Gone(outside.clone());
+    let plan = marion_harness::os_sandbox::SandboxPlan::writing(std::slice::from_ref(&wt)).unwrap();
+    let line = format!(
+        "echo in > inside.txt; echo t > \"$TMPDIR/t\"; echo out > '{}'; true",
+        outside.display()
+    );
+    let cmds = verification_commands(&[line], &wt, None);
+    let out = run_verification(
+        &cmds,
+        Some(VerifyUnder {
+            plan: &plan,
+            tmpdir: &tmp,
+        }),
+    );
+    assert_eq!(out[0].exit_code, Some(0), "{out:?}");
+    assert!(wt.join("inside.txt").exists(), "the workspace is writable");
+    assert!(
+        tmp.join("t").exists(),
+        "the node's TMPDIR is writable and set"
+    );
     assert!(
         !outside.exists(),
         "a write outside the workspace was refused"
@@ -3153,7 +3201,7 @@ fn verification_commands_run_in_the_workspace_in_the_parents_order() {
             Duration::from_secs(VERIFICATION_TIMEOUT.as_secs())
         );
     }
-    let out = run_verification(&cmds);
+    let out = run_verification(&cmds, None);
     let codes: Vec<_> = out.iter().map(|o| o.exit_code).collect();
     assert_eq!(codes, vec![Some(0), Some(0), Some(0)]);
     assert_eq!(out[2].stdout.value, "first\nsecond\n");
@@ -3174,7 +3222,7 @@ fn a_large_verification_output_is_persisted_whole_and_capped_only_on_return() {
         &scratch,
         None,
     );
-    let evidence = run_verification(&cmds);
+    let evidence = run_verification(&cmds, None);
     let bytes = evidence[0].stdout.value.len();
     assert!(
         bytes > marion_core::cap::EVIDENCE_BUDGET,
