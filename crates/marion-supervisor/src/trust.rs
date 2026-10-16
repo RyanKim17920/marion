@@ -813,7 +813,7 @@ fn allow_row(
     let sha256 = crate::inbox::sha256_hex(text.as_bytes());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
     w(out_to!(out, "{}  sha256 {sha256}", shown(file)))?;
-    for line in row_file::describe(spec) {
+    for line in row_file::describe(spec, text) {
         w(out_to!(out, "  {line}"))?;
     }
     let mut store = Store::edit(store).map_err(|e| Some(e.to_string()))?;

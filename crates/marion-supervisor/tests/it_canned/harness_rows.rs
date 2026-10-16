@@ -85,7 +85,10 @@ fn check_names_what_a_row_runs_or_the_key_it_breaks() {
     );
     let (code, stdout, stderr) = marion(&config, &["harness", "check", good.to_str().unwrap()]);
     assert_eq!(code, Some(0), "{stdout}\n{stderr}");
-    assert!(stdout.contains("loads: program goose"), "{stdout}");
+    assert!(
+        stdout.contains("loads:\n  program: \"goose\"\n"),
+        "{stdout}"
+    );
     assert!(stdout.contains("GOOSE_MODE"), "{stdout}");
 
     let leaky = row(
@@ -167,8 +170,8 @@ fn a_repository_row_loads_only_once_its_bytes_are_trusted() {
     );
     assert_eq!(code, Some(0), "{shown}\n{err}");
     for want in [
-        "program: goose",
-        "env: HOME",
+        "program: \"goose\"",
+        "env[0].key = \"HOME\"",
         "GOOSE_MODE",
         "updates: Never",
         "allowed.",

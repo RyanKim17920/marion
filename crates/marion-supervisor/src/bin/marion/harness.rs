@@ -81,19 +81,20 @@ fn check(path: &Path, out: &mut dyn std::io::Write) -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
-    match row_file::build(path, harness) {
+    // The bytes shown are the bytes built: one read, so the review is of what would load.
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            err!("marion: {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    match row_file::build_from(path, &text, harness) {
         Ok(spec) => {
-            let _ = out_to!(
-                out,
-                "{}  {}  loads: program {}",
-                stem,
-                path.display(),
-                spec.program.unwrap_or("?")
-            );
-            let env: Vec<&str> = spec.env.iter().map(|e| e.key).collect();
-            let _ = out_to!(out, "  env: {}", env.join(" "));
-            let _ = out_to!(out, "  approval: {:?}", spec.approval);
-            let _ = out_to!(out, "  updates: {:?}", spec.updates);
+            let _ = out_to!(out, "{}  {}  loads:", stem, path.display());
+            for line in row_file::describe(spec, &text) {
+                let _ = out_to!(out, "  {line}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
