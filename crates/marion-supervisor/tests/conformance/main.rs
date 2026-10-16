@@ -25,8 +25,10 @@
 //! `MARION_CONFORMANCE_BASELINE` naming a committed `matrix.json`, a cell that was PASS there and is
 //! not now fails the test (admission's diff); every other change is printed.
 //!
-//! **Admission records.** Every row's verdict (`row_file::admits`) is also written to
-//! `<state>/conformance/<row>-<version>.json` with the digest of the binary that answered. That
+//! **Admission records.** Every row's verdict is also written to
+//! `<state>/conformance/<row>-<version>.json` with the digest of the binary that answered: held to
+//! the cells its newest verified release scored in the committed matrix (`row_file::admits_newer`)
+//! where there are some, else to `row_file::admits`. That
 //! record is the basic test a release newer than the row's `verified` list is accepted on: the test
 //! gate (`marion_testsupport::on_path`) admits that exact binary on it, and doctor reports it.
 //!
@@ -74,6 +76,13 @@ fn battery() {
         .unwrap_or_else(|_| default_out());
     let scratch = marion_testsupport::scratch("conformance");
     let state = marion_core::paths::state_dir_from_env(None);
+    // Read before any row runs: a run into the default `out` rewrites this very file.
+    let verified_cells = std::env::var(BASELINE)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_out().join("matrix.json"));
+    let verified_cells: Option<Value> = std::fs::read_to_string(verified_cells)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
     load_row_files();
 
     let mut results = Vec::new();
@@ -144,7 +153,7 @@ fn battery() {
             outcomes,
         };
         match &state {
-            Some(state) => record_admission(state, &result, &t),
+            Some(state) => record_admission(state, &result, &t, verified_cells.as_ref()),
             None => {
                 eprintln!("conformance: {selector}: no state directory to record its admission in")
             }
@@ -230,14 +239,41 @@ fn admitted_any() -> bool {
 /// newer than the row's `verified` list on, for that binary alone (`row_file::admission_for`) —
 /// and, for a row from a file, the digest of its text, so doctor can tell a result for an earlier
 /// edit.
-fn record_admission(state: &Path, r: &report::TargetResult, t: &target::Target) {
+///
+/// A row whose committed matrix row (`matrix`) was scored on one of its own verified releases is
+/// held to those cells (`row_file::admits_newer`); any other — a row from a file, an ACP agent, a
+/// matrix row already rewritten by an earlier run — to `row_file::admits`'s fixed rule.
+fn record_admission(
+    state: &Path,
+    r: &report::TargetResult,
+    t: &target::Target,
+    matrix: Option<&Value>,
+) {
     use marion_harness::row_file;
+    let cells = |row: &Value| -> Vec<(String, String)> {
+        row["probes"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(p, c)| (p.clone(), c["status"].as_str().unwrap_or("-").to_string()))
+            .collect()
+    };
     let probes: Vec<(String, String)> = r
         .outcomes
         .iter()
         .map(|o| (o.probe.to_string(), o.status.word().to_string()))
         .collect();
-    let verdict = row_file::admits(t.spec, &probes);
+    let verified = matrix
+        .and_then(|m| m["harnesses"].get(&r.selector))
+        .filter(|row| {
+            row["version"]
+                .as_str()
+                .is_some_and(|v| t.spec.verified.contains(&v))
+        });
+    let verdict = match verified {
+        Some(row) => row_file::admits_newer(&probes, &cells(row)),
+        None => row_file::admits(t.spec, &probes),
+    };
     let h = t.agent_type.harness;
     let binary = t
         .program()
@@ -249,6 +285,7 @@ fn record_admission(state: &Path, r: &report::TargetResult, t: &target::Target) 
         "why": verdict.as_ref().err().cloned().unwrap_or_default(),
         "probes": probes.iter().map(|(p, w)| (p.clone(), Value::from(w.clone()))).collect::<serde_json::Map<_, _>>(),
         "sha256": row_file::source(h).map(|s| s.sha256),
+        "judged_against": verified.map(|row| row["version"].clone()),
         "binary": binary.as_ref().map(|b| b.display().to_string()),
         "binary_sha256": binary.as_deref().and_then(|b| marion_harness::file_sha256(b).ok()),
         "transcripts": r.dir,

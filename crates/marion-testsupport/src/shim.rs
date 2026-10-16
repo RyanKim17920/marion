@@ -425,8 +425,8 @@ impl Shim {
 
 /// **The gate's second way in: `found`, a version the table does not list, is admitted when it
 /// is at or past the pin and the conformance record under `state` admits the exact binary
-/// `pin.program` resolves to on `path`** (`row_file::admission_for`: the battery's P-version,
-/// P-launch, P-tools and P-approval passed on it, and nothing else failed). `Err` is the clause
+/// `pin.program` resolves to on `path`** (`row_file::admission_for`: every probe the row's newest
+/// verified release passed, the battery passed again on it). `Err` is the clause
 /// the diagnosis carries: older than the pin, never run, not admitted and why, or a record for
 /// another binary.
 ///

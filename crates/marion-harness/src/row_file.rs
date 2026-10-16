@@ -394,15 +394,39 @@ pub fn admits(spec: &HarnessSpec, probes: &[(String, String)]) -> Result<(), Vec
     if why.is_empty() { Ok(()) } else { Err(why) }
 }
 
+/// **Whether `probes` admit a newer release of a row marion verified**, judged against
+/// `verified`, the cells the newest verified release scored: every probe that passed there must
+/// pass now. The verified release is the bar because it is what the suites ran green on — a probe
+/// it did not pass either (opencode's P-errors, claude's P-tui in the committed matrix) is not
+/// held against the newer one, and [`admits`]'s fixed four would refuse such a row forever. The
+/// regressions, each as `<probe> PASS -> <now>`, else.
+pub fn admits_newer(
+    probes: &[(String, String)],
+    verified: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let why: Vec<String> = verified
+        .iter()
+        .filter(|(_, was)| was == "PASS")
+        .filter_map(|(p, _)| {
+            let now = probes
+                .iter()
+                .find(|(n, _)| n == p)
+                .map_or("NOT RUN", |(_, w)| w.as_str());
+            (now != "PASS").then(|| format!("{p} PASS -> {now}"))
+        })
+        .collect();
+    if why.is_empty() { Ok(()) } else { Err(why) }
+}
+
 /// **What this machine's conformance record says about one installed binary** at one version —
-/// the verdict [`admits`] reached when the battery last ran against it, or why there is none to go
+/// the verdict [`admits`] or [`admits_newer`] reached when the battery last ran against it, or why there is none to go
 /// by. Read by the test gate (a version newer than the row's `verified` list is admitted on it),
 /// doctor and the canary's drift report, so all three say the same thing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
     /// The battery ran against this exact binary and admitted it.
     Admitted,
-    /// The battery ran against this exact binary and did not admit it: [`admits`]'s reasons.
+    /// The battery ran against this exact binary and did not admit it: the verdict's reasons.
     Refused(Vec<String>),
     /// No readable record for this row at this version.
     NeverRun,
@@ -2079,6 +2103,47 @@ mod tests {
             Some(bin.canonicalize().unwrap())
         );
         assert_eq!(binary_on_path("absent", &path), None);
+    }
+
+    /// **A newer release is held to its verified release's cells**: what passed there must pass
+    /// now, and what did not is no bar.
+    #[test]
+    fn a_newer_release_must_pass_what_its_verified_release_passed() {
+        let run = |cells: &[(&str, &str)]| -> Vec<(String, String)> {
+            cells
+                .iter()
+                .map(|(p, w)| (p.to_string(), w.to_string()))
+                .collect()
+        };
+        let verified = run(&[
+            ("P-version", "PASS"),
+            ("P-tools", "PASS"),
+            ("P-errors", "FAIL"),
+        ]);
+        assert_eq!(
+            admits_newer(
+                &run(&[
+                    ("P-version", "PASS"),
+                    ("P-tools", "PASS"),
+                    ("P-errors", "FAIL")
+                ]),
+                &verified
+            ),
+            Ok(()),
+            "a probe the verified release failed too is not a regression"
+        );
+        assert_eq!(
+            admits_newer(
+                &run(&[("P-version", "PASS"), ("P-tools", "UNSUPPORTED")]),
+                &verified
+            ),
+            Err(vec!["P-tools PASS -> UNSUPPORTED".into()])
+        );
+        assert_eq!(
+            admits_newer(&run(&[("P-tools", "PASS")]), &verified),
+            Err(vec!["P-version PASS -> NOT RUN".into()]),
+            "a probe left out is not a pass"
+        );
     }
 
     #[test]

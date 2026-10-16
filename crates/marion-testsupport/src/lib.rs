@@ -1127,8 +1127,9 @@ fn parse_version(output: &str) -> Option<&str> {
 /// Every harness updates itself, so an exact list alone kept the suite red for a release nobody had
 /// got round to admitting. A version the table does not list is therefore also admitted when it is
 /// at or past the pin **and** this machine's conformance battery admitted that exact binary at that
-/// version (`marion_harness::row_file::admission_for`: P-version, P-launch, P-tools and P-approval
-/// passed, nothing else failed, and the recorded digest is this binary's). That is the basic test;
+/// version (`marion_harness::row_file::admission_for`: every probe the row's newest verified
+/// release passed in the committed matrix passed again, and the recorded digest is this binary's).
+/// That is the basic test;
 /// `scripts/conformance.sh --harness <row>` writes the record, and the nightly canary runs it on
 /// every drifted release and lists the ones it admits in the row's `verified` versions. A release
 /// that breaks the basics still fails here, naming the program, the version and the probes that
