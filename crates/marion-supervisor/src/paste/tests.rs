@@ -91,6 +91,7 @@ fn state(bracketed: bool, typed: Option<Instant>, empty: bool) -> crate::pty::In
         titled: true,
         last_output: Some(Instant::now() - Duration::from_secs(60)),
         boot_dialog: None,
+        ask: None,
     }
 }
 
@@ -517,6 +518,36 @@ impl Bed {
         dialogs: &'static [BootDialog],
         marions_workspace: bool,
     ) -> Bed {
+        let params = PasteParams {
+            settle: BED_SETTLE,
+            dialogs,
+            ..PasteParams::of(row).expect("a paste row")
+        };
+        Bed::with_params(tag, policy, params, marions_workspace)
+    }
+
+    /// A bed for `h`'s own row: its boot dialogs and its asks, on its paste — or, for a row whose
+    /// pane is reached another way (claude's channel), on [`PASTE`], the paste any row may take.
+    fn for_harness(tag: &str, policy: PastePolicy, h: marion_core::harness::Harness) -> Bed {
+        let row = marion_harness::adapter::harness_spec(h);
+        let paste = PasteParams::for_row(row).unwrap_or(PasteParams {
+            dialogs: row.boot_dialogs.dialogs,
+            asks: row.boot_dialogs.asks,
+            ..PasteParams::of(PASTE).expect("a paste row")
+        });
+        let params = PasteParams {
+            settle: BED_SETTLE,
+            ..paste
+        };
+        Bed::with_params(tag, policy, params, false)
+    }
+
+    fn with_params(
+        tag: &str,
+        policy: PastePolicy,
+        params: PasteParams,
+        marions_workspace: bool,
+    ) -> Bed {
         let dir = marion_testsupport::scratch(tag);
         let cast = dir.join("pty.cast");
         let size = WinSize::new(80, 24);
@@ -542,19 +573,8 @@ impl Bed {
         })));
         inboxes.open(&agent());
         let (tx, decisions) = channel();
-        let injector = PasteInjector::start_observed(
-            agent(),
-            &host,
-            &inboxes,
-            PasteParams {
-                settle: BED_SETTLE,
-                dialogs,
-                ..PasteParams::of(row).expect("a paste row")
-            },
-            policy,
-            tx,
-        )
-        .expect("the injector starts");
+        let injector = PasteInjector::start_observed(agent(), &host, &inboxes, params, policy, tx)
+            .expect("the injector starts");
         Bed {
             _dir: dir,
             cast,
@@ -1180,4 +1200,106 @@ fn a_nodes_policy_bounds_only_the_dialog_hold_by_the_node() {
         },
         PastePolicy::PRODUCTION
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Asks: approval prompts mid-session
+// ---------------------------------------------------------------------------------------------
+
+/// **An ask on the screen holds a paste, whenever it comes, and is never refused for it**: no
+/// grace runs out on it, because the node is on its operator's attention queue meanwhile.
+#[test]
+fn an_ask_holds_every_paste_and_never_refuses_it() {
+    const ASK: BootDialog = BootDialog {
+        needle: "Would you like to run the following command?",
+        action: "answer the approval",
+        answer: DialogAnswer::Hold,
+        note: "test",
+    };
+    let asking = crate::pty::InputState {
+        ask: Some(&ASK),
+        ..state(true, None, true)
+    };
+    let p = policy();
+    let now = Instant::now();
+    for boot in [None, BOOT] {
+        let mut clock = None;
+        for later in [Duration::ZERO, p.paste_mode_grace, p.dialog_bound * 2] {
+            assert_eq!(
+                gate(&asking, now + later, &p, boot, &mut clock),
+                Gate::Wait(Hold::Ask, now + later + p.recheck),
+                "boot {boot:?}, {later:?} in"
+            );
+        }
+        assert_eq!(clock, None, "an ask does not start the grace");
+    }
+}
+
+/// Nothing at all reaches the node's side of the pty within `bound`.
+fn nothing_reaches(slave: &mut std::fs::File, bound: Duration) -> bool {
+    let timeout = rustix::event::Timespec {
+        tv_sec: 0,
+        tv_nsec: i64::from(bound.subsec_nanos()),
+    };
+    let mut fds = [rustix::event::PollFd::new(
+        &*slave,
+        rustix::event::PollFlags::IN,
+    )];
+    matches!(rustix::event::poll(&mut fds, Some(&timeout)), Ok(0))
+}
+
+/// A TUI up with bracketed paste, a window title and a composer: booted on either boot mark.
+const BOOTED_TITLED: &[u8] = b"\x1b[?2004h\x1b]0;repo\x07\x1b[2J\x1b[H> ready";
+
+/// **A steer never answers an approval prompt** — the live pane steer that approved codex's
+/// `sleep 20` (2026-10-16). Each row's own measured ask screen (`tests/fixtures/pane-asks/`),
+/// drawn after boot, holds the next message; nothing reaches the node, not the text and not the
+/// Enter that would approve; the hold is on the operator's queue rather than the grace's. Once
+/// the operator's key dismisses it and the composer is back, the message is pasted.
+#[test]
+fn a_steer_waits_out_an_approval_prompt_and_never_answers_it() {
+    use marion_core::harness::Harness;
+    for (h, screen) in [
+        (
+            Harness::Codex,
+            &include_bytes!("../../../../tests/fixtures/pane-asks/codex-0.160.1-approval.raw")[..],
+        ),
+        (
+            Harness::ClaudeCode,
+            &include_bytes!(
+                "../../../../tests/fixtures/pane-asks/claude-code-2.1.301-permission.raw"
+            )[..],
+        ),
+    ] {
+        let mut bed = Bed::for_harness(&format!("paste-ask-{h}"), fast(), h);
+        bed.node_writes(BOOTED_TITLED);
+        bed.steer("the first turn");
+        let first = expected_paste("the first turn");
+        assert_eq!(bed.read_slave(first.len()), first, "{h}: boot is over");
+
+        bed.node_writes(screen);
+        let id = bed.steer("a steer mid-ask");
+        bed.await_decision(|d| matches!(d, Gate::Wait(Hold::Ask, _)));
+        assert!(
+            nothing_reaches(&mut bed.slave, Duration::from_millis(500)),
+            "{h}: a paste was typed into its approval prompt"
+        );
+        assert!(
+            bed.host.input_state().ask.is_some(),
+            "{h}: the prompt is still recognised"
+        );
+
+        // The operator answers it (Enter, its default); marion's own keys never do.
+        let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+        bed.host.write_opaque_input(&lease, b"\r").unwrap();
+        assert_eq!(bed.read_slave(1), b"\r", "{h}: the operator's key alone");
+        assert_eq!(bed.host.input_state().ask, None, "{h}: a key dismisses it");
+        bed.node_writes(b"\x1b[2J\x1b[H> ");
+        let want = expected_paste("a steer mid-ask");
+        assert_eq!(bed.read_slave(want.len()), want, "{h}");
+        assert!(matches!(
+            bed.resolution(&id),
+            RecordKind::MessageDelivered(_)
+        ));
+    }
 }

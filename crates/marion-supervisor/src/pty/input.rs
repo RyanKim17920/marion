@@ -71,16 +71,26 @@ pub(crate) struct ModeScan {
     last_output: Option<Instant>,
     /// The row's boot dialogs this scan recognises ([`Self::showing`]).
     dialogs: &'static [BootDialog],
+    /// The row's mid-session asks this scan recognises, before boot and after it
+    /// ([`Self::asking`]).
+    asks: &'static [BootDialog],
     /// The visible text written since anyone last typed, words joined by one space — what a
     /// dialog's needle is matched against. Kept from the first byte, because a TUI can draw its
-    /// dialog before a paste driver is attached, and dropped for good at [`Self::boot_over`].
+    /// dialog before a paste driver is attached, and dropped for good at [`Self::boot_over`]
+    /// unless the row has asks to look for.
     screen: Vec<u8>,
+    /// How much of [`Self::screen`] every watched needle has been looked for in: a look reads only
+    /// what came after it (and a needle's length before), so a TUI that keeps drawing costs each
+    /// byte one look, not one per read.
+    scanned: usize,
     /// A space, a line break or a cursor move came after the last visible byte.
     gap: bool,
     /// Bit `i`: `dialogs[i]` was drawn since anyone last typed. Latched rather than re-read from
     /// [`Self::screen`], because a TUI that animates behind its dialog (codex's welcome art)
     /// writes past the cap while the dialog, drawn once, stays on screen.
     seen: u64,
+    /// Bit `i`: `asks[i]` was drawn since anyone last typed — latched as [`Self::seen`] is.
+    asked: u64,
     /// Visible text arrived since the last look for needles.
     fresh: bool,
     boot_over: bool,
@@ -110,11 +120,16 @@ impl ModeScan {
         self.last_output
     }
 
-    /// Recognise `dialogs` on the screen from now on — over what was drawn already, too.
-    pub(crate) fn watch(&mut self, dialogs: &'static [BootDialog]) {
+    /// Recognise `dialogs` before the first paste and `asks` at any time, on the screen from now
+    /// on — over what was drawn already, too.
+    pub(crate) fn watch(&mut self, dialogs: &'static [BootDialog], asks: &'static [BootDialog]) {
         // One bit per dialog; a row lists two or three.
-        self.dialogs = &dialogs[..dialogs.len().min(64)];
-        self.seen = 0;
+        if !self.boot_over {
+            self.dialogs = &dialogs[..dialogs.len().min(64)];
+        }
+        self.asks = &asks[..asks.len().min(64)];
+        self.forget_latches();
+        self.scanned = 0;
         self.look();
     }
 
@@ -128,25 +143,57 @@ impl ModeScan {
             .map(|(_, d)| d)
     }
 
-    /// Latch every watched needle the kept text now holds.
+    /// **The first of the watched asks on the screen**, in the row's order: its needle was drawn
+    /// since anyone last typed. Before boot and after it.
+    pub(crate) fn asking(&self) -> Option<&'static BootDialog> {
+        self.asks
+            .iter()
+            .enumerate()
+            .find(|(i, _)| self.asked & (1 << i) != 0)
+            .map(|(_, d)| d)
+    }
+
+    /// Latch every watched needle the text kept since the last look now holds.
     fn look(&mut self) {
         self.fresh = false;
-        for (i, d) in self.dialogs.iter().enumerate() {
-            let needle = d.needle.as_bytes();
-            if self.seen & (1 << i) == 0
-                && !needle.is_empty()
-                && self.screen.windows(needle.len()).any(|w| w == needle)
-            {
-                self.seen |= 1 << i;
+        let longest = self
+            .dialogs
+            .iter()
+            .chain(self.asks)
+            .map(|d| d.needle.len())
+            .max()
+            .unwrap_or(0);
+        // A needle that ends in the new text may start up to its length before it.
+        let from = self.scanned.saturating_sub(longest.saturating_sub(1));
+        let hay = &self.screen[from.min(self.screen.len())..];
+        let latch = |watched: &[BootDialog], bits: &mut u64| {
+            for (i, d) in watched.iter().enumerate() {
+                let needle = d.needle.as_bytes();
+                if *bits & (1 << i) == 0
+                    && !needle.is_empty()
+                    && hay.windows(needle.len()).any(|w| w == needle)
+                {
+                    *bits |= 1 << i;
+                }
             }
-        }
+        };
+        latch(self.dialogs, &mut self.seen);
+        latch(self.asks, &mut self.asked);
+        self.scanned = self.screen.len();
+    }
+
+    /// Nothing is on the screen any more as far as the latches know.
+    fn forget_latches(&mut self) {
+        self.seen = 0;
+        self.asked = 0;
     }
 
     /// The operator typed: a key is what dismisses a dialog, and one that survives it redraws.
     pub(crate) fn operator_typed(&mut self) {
         self.screen.clear();
+        self.scanned = 0;
         self.gap = false;
-        self.seen = 0;
+        self.forget_latches();
     }
 
     /// Marion typed: as [`Self::operator_typed`], and the drawn screen is forgotten too, so a
@@ -156,12 +203,16 @@ impl ModeScan {
         self.drawn = false;
     }
 
-    /// The first paste landed: no dialog is looked for again, and no screen text is kept.
+    /// The first paste landed: no boot dialog is looked for again, and no screen text is kept
+    /// unless the row has asks to look for.
     pub(crate) fn boot_over(&mut self) {
         self.boot_over = true;
         self.dialogs = &[];
         self.seen = 0;
-        self.screen = Vec::new();
+        if self.asks.is_empty() {
+            self.screen = Vec::new();
+            self.scanned = 0;
+        }
     }
 
     #[cfg(test)]
@@ -170,7 +221,7 @@ impl ModeScan {
     }
 
     fn visible(&mut self, b: u8) {
-        if self.boot_over {
+        if self.boot_over && self.asks.is_empty() {
             return;
         }
         if self.screen.len() >= SCREEN_TEXT_CAP {
@@ -178,6 +229,7 @@ impl ModeScan {
             // the drain whole, and one already drawn is latched before it goes.
             self.look();
             self.screen.drain(..SCREEN_TEXT_CAP / 2);
+            self.scanned = self.scanned.saturating_sub(SCREEN_TEXT_CAP / 2);
         }
         self.fresh = true;
         if self.gap && !self.screen.is_empty() {
@@ -203,7 +255,7 @@ impl ModeScan {
         for &b in chunk {
             self.step(b);
         }
-        if self.fresh && !self.dialogs.is_empty() {
+        if self.fresh && !(self.dialogs.is_empty() && self.asks.is_empty()) {
             self.look();
         }
     }
@@ -342,6 +394,8 @@ pub struct InputState {
     /// The row's boot dialog drawn since anyone last typed, before the first paste
     /// ([`ModeScan::showing`]).
     pub boot_dialog: Option<&'static BootDialog>,
+    /// The row's mid-session ask drawn since anyone last typed ([`ModeScan::asking`]).
+    pub ask: Option<&'static BootDialog>,
 }
 
 /// The operator's typing, as far as the host saw it. See [`InputState`].
@@ -608,7 +662,7 @@ mod tests {
 
     fn watching(chunks: &[&[u8]]) -> ModeScan {
         let mut scan = ModeScan::default();
-        scan.watch(std::slice::from_ref(&HELD));
+        scan.watch(std::slice::from_ref(&HELD), &[]);
         for c in chunks {
             scan.feed(c, Instant::now());
         }
@@ -692,7 +746,7 @@ mod tests {
         assert!(!screens.is_empty());
         let shows = |dialogs: &'static [BootDialog], bytes: &[u8]| {
             let mut scan = ModeScan::default();
-            scan.watch(dialogs);
+            scan.watch(dialogs, &[]);
             scan.feed(bytes, Instant::now());
             scan.showing()
         };
@@ -725,6 +779,83 @@ mod tests {
         }
         for ((name, _), m) in screens.iter().zip(matched) {
             assert!(m, "{name} shows no row's dialog");
+        }
+    }
+
+    const ASK: BootDialog = BootDialog {
+        needle: "Would you like to run the following command?",
+        action: "answer the approval",
+        answer: DialogAnswer::Hold,
+        note: "test",
+    };
+
+    /// **An ask is seen after boot too**, at every read boundary, until a key clears it — and
+    /// the screen text the asks are read from stays bounded.
+    #[test]
+    fn an_ask_is_seen_after_boot_at_every_read_boundary_until_a_key() {
+        let screen: &[u8] = b"\x1b[2;3HWould\x1b[2;9Hyou like to run the following command?";
+        for at in 0..=screen.len() {
+            let mut scan = ModeScan::default();
+            scan.watch(std::slice::from_ref(&HELD), std::slice::from_ref(&ASK));
+            scan.boot_over();
+            scan.feed(b"\x1b[?2004h> composer", Instant::now());
+            assert_eq!(scan.asking(), None);
+            scan.feed(&screen[..at], Instant::now());
+            scan.feed(&screen[at..], Instant::now());
+            assert_eq!(scan.asking(), Some(&ASK), "split at {at}");
+            assert_eq!(scan.showing(), None, "boot dialogs end with boot");
+            scan.operator_typed();
+            assert_eq!(scan.asking(), None, "a key dismisses it");
+        }
+        let mut scan = ModeScan::default();
+        scan.watch(&[], std::slice::from_ref(&ASK));
+        scan.boot_over();
+        let filler = vec![b'x'; 3 * SCREEN_TEXT_CAP];
+        scan.feed(&filler, Instant::now());
+        assert!(scan.screen_len() <= SCREEN_TEXT_CAP);
+        scan.feed(
+            b" Would you like to run the following command?",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), Some(&ASK), "past the cap, too");
+    }
+
+    /// **Every row's ask is on a screen it was measured on** (`tests/fixtures/pane-asks/`), and
+    /// every recorded ask screen shows one of some row's asks.
+    #[test]
+    fn every_rows_ask_is_found_on_its_measured_screen() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/pane-asks");
+        let screens: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+            .expect("the fixture dir")
+            .map(|e| e.unwrap().path())
+            .map(|p| (p.display().to_string(), std::fs::read(&p).unwrap()))
+            .collect();
+        assert!(!screens.is_empty());
+        let asks_on = |asks: &'static [BootDialog], bytes: &[u8]| {
+            let mut scan = ModeScan::default();
+            scan.watch(&[], asks);
+            // In reads of a pty's size, as the host sees them.
+            for chunk in bytes.chunks(1024) {
+                scan.feed(chunk, Instant::now());
+            }
+            scan.asking()
+        };
+        let mut matched = vec![false; screens.len()];
+        for h in marion_core::harness::Harness::ALL {
+            for d in marion_harness::adapter::harness_spec(h).boot_dialogs.asks {
+                let mut any = false;
+                for (i, (_, bytes)) in screens.iter().enumerate() {
+                    if asks_on(std::slice::from_ref(d), bytes).is_some() {
+                        matched[i] = true;
+                        any = true;
+                    }
+                }
+                assert!(any, "{h}: ask {:?} is on no measured screen", d.needle);
+            }
+        }
+        for ((name, _), m) in screens.iter().zip(matched) {
+            assert!(m, "{name} shows no row's ask");
         }
     }
 

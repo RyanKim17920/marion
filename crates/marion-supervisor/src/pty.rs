@@ -2050,6 +2050,11 @@ struct ResizeQueue {
 }
 
 impl Shared {
+    /// `f` over the terminal's modes.
+    fn with_modes<R>(&self, f: impl FnOnce(&mut input::ModeScan) -> R) -> R {
+        f(&mut self.modes.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     fn set_size(&self, master: &PtyMaster, size: WinSize) -> io::Result<()> {
         #[cfg(test)]
         if let Some(error) = self
@@ -3467,7 +3472,7 @@ impl PtyHost {
     fn write_operator_keys(&self, bytes: &[u8]) -> io::Result<()> {
         let mut typing = self.typing.lock().unwrap_or_else(|e| e.into_inner());
         typing.operator_wrote(bytes, Instant::now());
-        self.modes().operator_typed();
+        self.shared.with_modes(input::ModeScan::operator_typed);
         #[cfg(test)]
         if let Some(error) = self.take_master_input_failure() {
             return Err(io::Error::other(error));
@@ -3491,6 +3496,7 @@ impl PtyHost {
             titled: modes.titled(),
             last_output: modes.last_output(),
             boot_dialog: modes.showing(),
+            ask: modes.asking(),
         }
     }
 
@@ -3498,15 +3504,21 @@ impl PtyHost {
         self.shared.modes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Recognise the row's boot dialogs on this terminal ([`input::InputState::boot_dialog`]),
-    /// over what it has drawn already.
-    pub fn watch_boot_dialogs(&self, dialogs: &'static [marion_harness::spec::BootDialog]) {
-        self.modes().watch(dialogs);
+    /// Recognise the row's boot dialogs ([`input::InputState::boot_dialog`]) and its
+    /// mid-session asks ([`input::InputState::ask`]) on this terminal, over what it has drawn
+    /// already.
+    pub fn watch_dialogs(
+        &self,
+        dialogs: &'static [marion_harness::spec::BootDialog],
+        asks: &'static [marion_harness::spec::BootDialog],
+    ) {
+        self.shared.with_modes(|m| m.watch(dialogs, asks));
     }
 
-    /// The first paste landed: stop reading the screen for dialogs, and drop what was kept.
+    /// The first paste landed: stop reading the screen for boot dialogs, and keep screen text
+    /// only where the row has asks to read it for.
     pub fn boot_over(&self) {
-        self.modes().boot_over();
+        self.shared.with_modes(input::ModeScan::boot_over);
     }
 
     /// **The child runs in a workspace marion created**, so its answerable boot dialogs are marion's
@@ -3574,7 +3586,7 @@ impl PtyHost {
         if !admit(&self.input_state_locked(&typing)) {
             return Ok(Injected::Declined);
         }
-        self.modes().marion_typed();
+        self.shared.with_modes(input::ModeScan::marion_typed);
         self.inject_part(Some(injection.label), injection.body)?;
         if !injection.submit.is_empty() {
             std::thread::sleep(injection.submit_delay);
@@ -4221,11 +4233,7 @@ fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, 
         eprintln!("marion: {error}");
     }
     shared.retain_output(chunk);
-    shared
-        .modes
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .feed(chunk, Instant::now());
+    shared.with_modes(|m| m.feed(chunk, Instant::now()));
     // Published last: tests and diagnostics use this counter as the completion witness for the
     // whole recording step, not merely for the kernel read returning.
     shared.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);

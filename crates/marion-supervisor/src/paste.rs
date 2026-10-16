@@ -35,6 +35,17 @@
 //! and settle before pasting. Anywhere else, and for a dialog the row holds, it waits
 //! ([`Hold::BootDialog`]) for someone to dismiss it, and past the grace drops the message by name.
 //!
+//! # Asks (2026-10-16, `tests/fixtures/pane-asks/`)
+//!
+//! And before **every** paste, booted or not: **no ask the row names is on the screen**
+//! ([`marion_harness::spec::BootDialogs::asks`]) — an approval or permission prompt the TUI raises
+//! mid-session. A live steer into a codex 0.160.1 pane sitting on `Would you like to run the
+//! following command? › 1. Yes, proceed` lost its text and its Enter approved the command. An ask
+//! is never answered by marion and never refused for: the message waits ([`Hold::Ask`]) for as
+//! long as the prompt is up, which is until someone's key dismisses it, and the node's launcher
+//! puts it on the operator's attention queue meanwhile. Where the screen cannot be told apart from
+//! an ask — a needle drawn since the last key — it holds.
+//!
 //! # Why the row's [`IdleSignal`] is waited on once, not before every paste
 //!
 //! The row carries `OutputQuiet{1500}` — the measured "the TUI is idle" signal. Past boot this
@@ -82,6 +93,7 @@
 //! [`Hold::Booting`]: crate::paste::Hold::Booting
 //! [`Gate::Answer`]: crate::paste::Gate::Answer
 //! [`Hold::BootDialog`]: crate::paste::Hold::BootDialog
+//! [`Hold::Ask`]: crate::paste::Hold::Ask
 //! [`PasteParams::of`]: crate::paste::PasteParams::of
 //! [`BootSignal::WindowTitle`]: marion_harness::spec::BootSignal::WindowTitle
 //! [`BootSignal::operator_can_switch_off`]: marion_harness::spec::BootSignal::operator_can_switch_off
@@ -129,6 +141,9 @@ pub struct PasteParams {
     /// The dialogs the row's TUI can show before its composer ([`HarnessSpec::boot_dialogs`]):
     /// the first paste is never typed into one.
     pub dialogs: &'static [BootDialog],
+    /// The asks it can raise mid-session ([`marion_harness::spec::BootDialogs::asks`]): no paste
+    /// is ever typed into one.
+    pub asks: &'static [BootDialog],
 }
 
 impl PasteParams {
@@ -157,6 +172,7 @@ impl PasteParams {
             settle,
             boot_mark: boot,
             dialogs: &[],
+            asks: &[],
         })
     }
 
@@ -169,6 +185,7 @@ impl PasteParams {
         ))?;
         Some(PasteParams {
             dialogs: row.boot_dialogs.dialogs,
+            asks: row.boot_dialogs.asks,
             ..params
         })
     }
@@ -235,6 +252,10 @@ pub enum Hold {
     /// Before the first paste: one of the row's boot dialogs is on the screen, and a paste would
     /// answer it.
     BootDialog,
+    /// One of the row's asks (an approval prompt) is on the screen, and a paste's submit would
+    /// answer it. Held for as long as it is up, never refused for it: the node is on its
+    /// operator's attention queue meanwhile, and the message is theirs to have waited for.
+    Ask,
 }
 
 /// One look at the terminal.
@@ -265,6 +286,12 @@ pub fn gate(
 ) -> Gate {
     if !state.composer_empty {
         return Gate::Wait(Hold::ComposerNotEmpty, now + policy.recheck);
+    }
+    // **Before anything else about the terminal**, booted or not: typed into an approval prompt,
+    // a paste's text is lost and its submit approves (codex 0.160.1's `› 1. Yes, proceed`). The
+    // grace's clock is left alone — an ask is not the terminal failing to be pasteable.
+    if state.ask.is_some() {
+        return Gate::Wait(Hold::Ask, now + policy.recheck);
     }
     if let Some(typed) = state.last_operator_input {
         let quiet_at = typed + policy.operator_quiet;
@@ -477,7 +504,7 @@ impl Worker {
         // A boot dialog is answered once: one that is back after marion's keys is held.
         let mut answered = false;
         if let Some(host) = self.host.upgrade() {
-            host.watch_boot_dialogs(self.params.dialogs);
+            host.watch_dialogs(self.params.dialogs, self.params.asks);
         }
         let mut next_look: Option<Instant> = None;
         while self.await_work(next_look.take()) {
