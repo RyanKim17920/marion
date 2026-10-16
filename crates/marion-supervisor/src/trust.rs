@@ -773,17 +773,20 @@ pub fn offer_repo_trust_in(
     }
     let list = present.join(", ");
     if asking == Asking::Note {
-        let _ = writeln!(
+        let _ = crate::out_to!(
             out,
             "marion: this repository has its own harness config ({list}), which nodes on your \
              login do not load until you trust it: marion trust allow --repo"
         );
         return;
     }
-    let _ = write!(
+    // No newline: the answer is typed after it. `show` spells any control the list could carry.
+    let _ = crate::printable::show(
         out,
-        "marion: this repository has its own harness config ({list}). Nodes on your own login \
-         load it only once you trust the repository. Trust it? [y/N] "
+        &format!(
+            "marion: this repository has its own harness config ({list}). Nodes on your own \
+             login load it only once you trust the repository. Trust it? [y/N] "
+        ),
     );
     let _ = out.flush();
     let mut answer = String::new();
@@ -798,9 +801,11 @@ pub fn offer_repo_trust_in(
         s.save()
     });
     let _ = match (recorded, yes) {
-        (Err(e), _) => writeln!(out, "marion: your answer was not recorded: {e}"),
-        (Ok(()), true) => writeln!(out, "marion: trusted. Undo with: marion trust deny --repo"),
-        (Ok(()), false) => writeln!(
+        (Err(e), _) => crate::out_to!(out, "marion: your answer was not recorded: {e}"),
+        (Ok(()), true) => {
+            crate::out_to!(out, "marion: trusted. Undo with: marion trust deny --repo")
+        }
+        (Ok(()), false) => crate::out_to!(
             out,
             "marion: not trusted, and marion will not ask again. To trust it later: marion \
              trust allow --repo"
@@ -890,13 +895,13 @@ pub fn run(
             let mut store = Store::edit(store).map_err(err)?;
             let added = store.allow_repo(root.clone());
             store.save().map_err(err)?;
-            w(writeln!(
+            w(out_to!(
                 out,
                 "{} {}: nodes on your own login there now load its harness config ({}) and \
                  marion answers its harnesses' folder-trust dialogs. Undo with: marion trust \
                  deny --repo",
                 if added { "trusted" } else { "already trusted" },
-                root.display(),
+                shown(&root),
                 repo_config_paths().join(", ")
             ))
         }
@@ -906,12 +911,12 @@ pub fn run(
             let was = store.deny_repo(&root);
             store.save().map_err(err)?;
             if was {
-                w(writeln!(out, "denied {}", root.display()))
+                w(out_to!(out, "denied {}", shown(&root)))
             } else {
-                w(writeln!(
+                w(out_to!(
                     out,
                     "{} was not trusted, and stays so; marion will not ask about it",
-                    root.display()
+                    shown(&root)
                 ))
             }
         }
@@ -963,7 +968,7 @@ pub fn run(
             let store = Store::open(store).map_err(err)?;
             for r in &store.repos {
                 let state = if r.declined { "declined" } else { "repo    " };
-                w(writeln!(out, "{state} {}", r.path.display()))?;
+                w(out_to!(out, "{state} {}", shown(&r.path)))?;
             }
             if store.files.is_empty() {
                 return w(out_to!(out, "no trusted files"));
