@@ -348,14 +348,16 @@ pub enum SpawnError {
     /// Not a verdict on the node: it keeps its own wall clock, keeps its slot, and its contract
     /// will be written where it always would have been. What expired is how long the bridge will
     /// block one caller — and, because the bridge dispatches frames on one thread, every caller
-    /// behind it. A `spawn { background: true }` plus `wait` is the way to ask again.
+    /// behind it. The blocking spawn's child is in the bridge's table
+    /// (`Background::delivered_inline`), so `status` or `wait` on its agent id asks again; a second
+    /// `spawn` would start a duplicate, so the sentence never suggests one.
     #[error(
-        "the child is still running after {0} s, the longest a blocking `spawn` waits (its \
-         timeout plus a grace). It keeps running and its contract will still be written; nothing \
-         was cancelled. `list` shows it. For a long task, spawn with `background: true` next \
-         time."
+        "the child {agent_id} is still running after {secs} s, the longest a blocking `spawn` \
+         waits (its timeout plus a grace). Nothing was cancelled: it keeps running and its \
+         contract will still be written. Call `status` with id {agent_id} to check on it, or \
+         `wait` with id {agent_id} to collect the contract."
     )]
-    OutlivedTheWait(u64),
+    OutlivedTheWait { secs: u64, agent_id: String },
     /// The proposed child's first durable fact could not be confirmed, so no side effect was taken
     /// and nothing needs aborting. The append may have failed before writing or while syncing
     /// bytes already written; treating either as a known intent would invent certainty.
@@ -402,7 +404,7 @@ impl SpawnError {
     /// of this file exists to delete.
     pub fn verb(&self) -> &'static str {
         match self {
-            Self::NoContract { .. } | Self::NodeAborted(_) | Self::OutlivedTheWait(_) => {
+            Self::NoContract { .. } | Self::NodeAborted(_) | Self::OutlivedTheWait { .. } => {
                 "ran, and marion cannot hand you its contract"
             }
             // A third fact, for the same reason the second one exists: this child's process really
@@ -2925,5 +2927,29 @@ mod tests {
         );
         assert!(none.verification.is_empty());
         assert_eq!(none.completion.unwrap().status, ExitStatus::Ok);
+    }
+
+    /// **An outlived blocking spawn points at the running child, never at a second spawn.** The
+    /// child is still in the bridge's table, so `status` and `wait` on its id reach it; telling the
+    /// caller to spawn again would start a duplicate beside it.
+    #[test]
+    fn an_outlived_wait_names_the_child_and_never_suggests_a_respawn() {
+        let msg = SpawnError::OutlivedTheWait {
+            secs: 960,
+            agent_id: "codex-impl-7f21".into(),
+        }
+        .to_string();
+        assert!(msg.contains("960 s"), "{msg}");
+        assert!(msg.contains("Nothing was cancelled"), "{msg}");
+        for needle in [
+            "`status` with id codex-impl-7f21",
+            "`wait` with id codex-impl-7f21",
+        ] {
+            assert!(msg.contains(needle), "missing {needle:?}: {msg}");
+        }
+        assert!(
+            !msg.contains("background: true") && !msg.contains("spawn with"),
+            "a second spawn would start a duplicate child: {msg}"
+        );
     }
 }

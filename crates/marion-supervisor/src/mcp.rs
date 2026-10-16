@@ -421,7 +421,10 @@ fn tool_spawn(
             bridge::spawn_result(
                 id,
                 &agent_type,
-                Err(SpawnError::OutlivedTheWait(bound.as_secs())),
+                Err(SpawnError::OutlivedTheWait {
+                    secs: bound.as_secs(),
+                    agent_id: spawned.agent_id.0.clone(),
+                }),
             )
         }),
     )
