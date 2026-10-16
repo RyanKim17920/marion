@@ -854,6 +854,45 @@ fn canonical(file: &Path) -> Result<PathBuf, TrustError> {
     }
 }
 
+/// **Why `args` may not run here, where they change the store from inside a node**: a node
+/// never decides what the operator trusts, so `allow` and `deny` are refused from a process that
+/// carries a node's own identity (its bridge's variables, which a harness's shell may inherit), or
+/// whose operator hello the cwd's supervisor refuses (`operator_hello`), as it refuses any from
+/// inside a live node's process tree. `list` decides nothing and always runs.
+fn node_refusal(
+    args: &[String],
+    var: impl Fn(&str) -> Option<String>,
+    operator_hello: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if !matches!(args.first().map(String::as_str), Some("allow" | "deny")) {
+        return None;
+    }
+    use marion_harness::mcp_bridge::{AGENT_ID_ENV, NODE_TOKEN_ENV, NODE_TOKEN_FILE_ENV};
+    for name in [AGENT_ID_ENV, NODE_TOKEN_ENV, NODE_TOKEN_FILE_ENV] {
+        if var(name).is_some_and(|v| !v.is_empty()) {
+            return Some(format!(
+                "this process carries {name}, so it runs inside a node, and a node never decides \
+                 what the operator trusts; run marion trust from your own terminal"
+            ));
+        }
+    }
+    operator_hello()
+}
+
+/// **The cwd's supervisor's refusal of the operator's hello**, where one is listening: it refuses
+/// the operator's key from any process inside a live node's process tree
+/// (`handler/session.rs`'s `refuse_from_below_a_node`). Nothing listening refuses nothing, since
+/// then no node of this project is live; a node of another project's supervisor is not seen here.
+fn operator_hello_refusal(cwd: &Path) -> Option<String> {
+    let paths = crate::socket::resolve(cwd).ok()?;
+    let mut stream = std::os::unix::net::UnixStream::connect(paths.socket()).ok()?;
+    let identity = crate::client_auth::operator(paths.state()).ok()?;
+    match crate::client_auth::hello(&mut stream, &identity) {
+        Err(crate::client_auth::HelloError::Failed(why)) => Some(why),
+        Ok(()) | Err(crate::client_auth::HelloError::Unanswered(_)) => None,
+    }
+}
+
 /// `marion trust allow [<file>] | deny [<file>] | list`.
 pub fn cli_main(args: &[String]) -> ExitCode {
     let cwd = match std::env::current_dir() {
@@ -863,6 +902,14 @@ pub fn cli_main(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(why) = node_refusal(
+        args,
+        |name| std::env::var(name).ok(),
+        || operator_hello_refusal(&cwd),
+    ) {
+        err!("marion trust: refused: {}", visible(&why));
+        return ExitCode::FAILURE;
+    }
     let Some(store) = store_path() else {
         err!("marion trust: {}", TrustError::NoStore);
         return ExitCode::FAILURE;
@@ -1141,6 +1188,45 @@ fn nearest_agents_file(cwd: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// **A node never changes what the operator trusts**: `allow` and `deny` from a process that
+    /// carries a node's identity, or whose operator hello the supervisor refuses as coming from
+    /// inside a node's process tree, are refused with the reason; `list` and the operator's own
+    /// terminal go on. Nothing listening refuses nothing: then no node of the project is live.
+    #[test]
+    fn trust_changes_from_inside_a_node_are_refused() {
+        let none = |_: &str| None::<String>;
+        let deciding = |verb: &str| [verb.to_string(), "--repo".to_string()];
+        assert_eq!(node_refusal(&deciding("allow"), none, || None), None);
+        assert_eq!(
+            node_refusal(
+                &["list".into()],
+                |_| Some("n-1".into()),
+                || Some("x".into())
+            ),
+            None,
+            "list decides nothing"
+        );
+        for var in [
+            marion_harness::mcp_bridge::AGENT_ID_ENV,
+            marion_harness::mcp_bridge::NODE_TOKEN_ENV,
+            marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV,
+        ] {
+            let carried = |name: &str| (name == var).then(|| "n-1".to_string());
+            let why = node_refusal(&deciding("deny"), carried, || None).expect("refused");
+            assert!(
+                why.contains(var) && why.contains("your own terminal"),
+                "{why}"
+            );
+            let empty = |name: &str| (name == var).then(String::new);
+            assert_eq!(node_refusal(&deciding("deny"), empty, || None), None);
+        }
+        let below = || Some("the supervisor refused this connection: inside node `n-1`".into());
+        let why = node_refusal(&deciding("allow"), none, below).expect("refused");
+        assert!(why.contains("inside node `n-1`"), "{why}");
+        let dir = marion_testsupport::scratch("trust-no-supervisor");
+        assert_eq!(operator_hello_refusal(&dir), None);
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
