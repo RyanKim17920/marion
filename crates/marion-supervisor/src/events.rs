@@ -824,10 +824,10 @@ fn fold_chunks(
         buf.resize(had + REPLAY_CHUNK_BYTES, 0);
         let n = file.read(&mut buf[had..])?;
         buf.truncate(had + n);
-        if head.len() < HEAD_BYTES {
-            let more = (HEAD_BYTES - head.len()).min(buf.len());
-            head.extend_from_slice(&buf[..more]);
-        }
+        // From the bytes just read: `buf[..had]` is a line carried from the last read, already
+        // in `head` if it is within the file's first bytes.
+        let more = (HEAD_BYTES - head.len()).min(n);
+        head.extend_from_slice(&buf[had..had + more]);
         let used = log.extend(&buf, &mut events);
         if !events.is_empty() && !sink(std::mem::take(&mut events)) {
             return Ok((consumed + used as u64, false));
@@ -1472,6 +1472,81 @@ mod tests {
             r.log().truncation,
             Some(Truncation::Unparsable { line, .. }) if line == lines
         ));
+    }
+
+    /// **The head a replay records is the file's first bytes**, not the unfinished line a chunk
+    /// carried into the next read. A short file with a torn tail is read twice (the bytes, then
+    /// the end of the file), and the second pass used to append the carried tail to the head; the
+    /// next poll then saw a file that did not begin with its head and re-read it as a rotation.
+    ///
+    /// Mutation: extend the head from `buf[..]` rather than the bytes just read, and both
+    /// assertions on `head` fail.
+    #[test]
+    fn a_replay_records_the_files_first_bytes_as_its_head_past_a_carried_torn_tail() {
+        let dir = scratch("events-head");
+        let path = dir.join("events.jsonl");
+        let line = marion_core::event::encode(&marion_core::event::Event {
+            agent_id: node(),
+            agent_seq: 0,
+            src_seq: None,
+            caused_by: None,
+            ts: marion_core::encoding::SystemTime(std::time::SystemTime::now()),
+            mono_ns: 0,
+            provenance: Provenance::marion(),
+            payload: Payload::Raw("torn".into()),
+        })
+        .unwrap();
+        let (torn, rest) = line.split_at(40);
+        std::fs::write(&path, torn).unwrap();
+        let (mut reader, seen) = EventReader::open_path(&path).unwrap();
+        assert!(seen.is_empty());
+        assert_eq!(reader.head, torn, "the file's prefix, once");
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(rest)
+            .unwrap();
+        let mut out = Vec::new();
+        assert_eq!(reader.poll(&mut out), 1, "the finished line, once");
+        assert_eq!(seqs(&out), vec![0]);
+        assert!(reader.gaps().is_empty(), "{:?}", reader.gaps());
+        assert!(reader.same_head(), "the head still matches the file");
+
+        // A file whose reads come back short: the head is still its first bytes, past whole
+        // lines and a line carried from one read to the next.
+        struct Dribble<'a>(&'a [u8]);
+        impl std::io::Read for Dribble<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = buf.len().min(self.0.len()).min(50);
+                buf[..n].copy_from_slice(&self.0[..n]);
+                self.0 = &self.0[n..];
+                Ok(n)
+            }
+        }
+        let mut w = writer(&dir.join("two.jsonl"));
+        w.append(frame("one")).unwrap();
+        w.append(frame("two")).unwrap();
+        drop(w);
+        let bytes = std::fs::read(dir.join("two.jsonl")).unwrap();
+        let (mut log, mut head, mut got) = (EventLog::default(), Vec::new(), 0);
+        fold_chunks(
+            Dribble(&bytes),
+            &mut log,
+            &mut |c| {
+                got += c.len();
+                true
+            },
+            &mut head,
+        )
+        .unwrap();
+        assert_eq!(got, 2);
+        assert_eq!(
+            head,
+            bytes[..HEAD_BYTES],
+            "the first {HEAD_BYTES} bytes of the file"
+        );
     }
 
     /// **NC — the one-writer invariant is checked, not assumed.**
