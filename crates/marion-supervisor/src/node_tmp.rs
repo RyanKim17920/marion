@@ -7,9 +7,9 @@
 //! leaks once per process — 1,594 files, 7 GB, in one day of test runs. copilot leaves a
 //! `node-compile-cache` there and pi a `jiti` cache, smaller and just as permanent.
 //!
-//! So each node runs with `TMPDIR` at [`AgentDir::tmp_dir`], and the guard below deletes it. The
-//! guard is held by whatever holds the node's process — the synchronous launch on the child and
-//! root paths, the lifecycle worker on the native lane — across every generation of that launch
+//! So each launched node runs with `TMPDIR` at [`AgentDir::tmp_dir`], and the guard below deletes
+//! it. The guard is held by whatever holds the node's process — the synchronous launch on the
+//! child and root paths — across every generation of that launch
 //! (a resumed turn, a profile or credential failover), so a harness that finds its own temp files
 //! again on its next process still finds them while the node lives.
 //!

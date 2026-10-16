@@ -10,8 +10,6 @@ use marion_harness::{ExecutionSurfaces, NativeInvocation};
 pub(crate) struct NativeCommandSpec {
     pub(crate) agent_id: AgentId,
     pub(crate) invocation: NativeInvocation,
-    /// The node's own `TMPDIR`, held by the lifecycle worker until the pane's process is swept.
-    pub(crate) tmp: crate::node_tmp::NodeTmp,
     pub(crate) cast_path: PathBuf,
     pub(crate) terminal_profile: OsString,
 }
@@ -96,9 +94,6 @@ struct LifecycleGate {
 }
 
 struct PendingNativeCommand {
-    /// Shared with the lifecycle worker, so the dir goes when the last of the two lets go: at the
-    /// worker's end once the pane was swept, or at a rollback's.
-    tmp: Arc<crate::node_tmp::NodeTmp>,
     agent_id: AgentId,
     owner: Arc<dyn crate::root::PaneOwner>,
     recorder: Arc<dyn NativeNodeRecorder>,
@@ -128,7 +123,6 @@ impl NativeCommandLauncher {
         let NativeCommandSpec {
             agent_id,
             invocation,
-            tmp,
             cast_path,
             terminal_profile,
         } = spec;
@@ -168,10 +162,9 @@ impl NativeCommandLauncher {
         command
             .args(&invocation.args)
             .env_clear()
+            // The operator's own, `TMPDIR` included: the session is theirs, and only a launched
+            // node runs in a dir marion makes and deletes (`crate::node_tmp`).
             .envs(invocation.env.iter().cloned())
-            // Last, over the operator's own: a native opencode unpacks `libopentui` there on every
-            // launch, and this dir is the one the supervisor deletes (`crate::node_tmp`).
-            .env(marion_harness::TMPDIR_ENV, tmp.path())
             .current_dir(&invocation.cwd);
         // The pid is announced by `spawn_pty` itself, between `spawn()` and the first byte — the
         // only instant a durable record can name this process while marion still holds it.
@@ -190,7 +183,6 @@ impl NativeCommandLauncher {
 
         let mut launched = LaunchedNativeCommand {
             pending: Some(PendingNativeCommand {
-                tmp: Arc::new(tmp),
                 agent_id: agent_id.clone(),
                 owner: Arc::clone(&owner),
                 recorder: Arc::clone(&recorder),
@@ -237,7 +229,6 @@ impl LaunchedNativeCommand {
         let lifecycle_recorder = Arc::clone(&pending.recorder);
         let lifecycle_host = Arc::clone(&pending.host);
         let lifecycle_agent = pending.agent_id.clone();
-        let lifecycle_tmp = Arc::clone(&pending.tmp);
         let gate = Arc::new(LifecycleGate::new());
         let worker_gate = Arc::clone(&gate);
         match spawner.spawn(
@@ -260,7 +251,6 @@ impl LaunchedNativeCommand {
                 // The process is gone on both arms — a failed teardown still swept it — so the
                 // node's terminal record is written on both, with the status where one was read.
                 lifecycle_recorder.exited(finished.as_ref().ok().copied().flatten());
-                drop(lifecycle_tmp);
                 finished
             }),
         ) {
@@ -521,7 +511,6 @@ mod tests {
         NativeCommandSpec {
             agent_id: AgentId("019f81eb-36a4-7000-8000-000000000001".into()),
             invocation,
-            tmp: crate::node_tmp::NodeTmp::at(work.join("tmp")).unwrap(),
             cast_path: work.join("pty.cast"),
             terminal_profile: OsString::from("xterm-256color"),
         }
@@ -551,7 +540,6 @@ mod tests {
             NativeCommandSpec {
                 agent_id: agent_id.clone(),
                 invocation,
-                tmp: crate::node_tmp::NodeTmp::at(work.join("tmp")).unwrap(),
                 cast_path: work.join("pty.cast"),
                 terminal_profile: OsString::from("xterm-256color"),
             },
@@ -577,11 +565,14 @@ mod tests {
         );
     }
 
-    /// The operator's `TMPDIR` is replaced by the node's own, and what the process left there is
-    /// gone once the lifecycle worker has swept it.
+    /// **The operator's session keeps the operator's `TMPDIR`**: the process sees theirs, and
+    /// marion makes no temp dir of its own for it and deletes none — what the process left in
+    /// theirs is still there after reap.
     #[test]
-    fn a_native_node_runs_in_its_own_temp_dir_and_leaves_nothing_there() {
+    fn a_native_session_runs_in_the_operators_temp_dir_and_marion_touches_none() {
         let work = scratch("native-exec-tmpdir");
+        let operator = work.join("operator");
+        std::fs::create_dir(&operator).unwrap();
         let observed = work.join("observed");
         let script = work.join("native-fixture");
         std::fs::write(
@@ -595,7 +586,7 @@ mod tests {
             Vec::new(),
             vec![
                 ("OBSERVED".into(), observed.clone().into_os_string()),
-                ("TMPDIR".into(), work.join("operator").into_os_string()),
+                ("TMPDIR".into(), operator.clone().into_os_string()),
             ],
             &work,
         );
@@ -614,12 +605,16 @@ mod tests {
         assert!(status.success());
         assert_eq!(
             std::fs::read(observed).unwrap().as_slice(),
-            work.join("tmp").as_os_str().as_bytes(),
-            "the node's dir, not the operator's"
+            operator.as_os_str().as_bytes(),
+            "the operator's dir, not one of marion's"
+        );
+        assert!(
+            operator.join(".unpacked.dylib").exists(),
+            "what the process left in the operator's dir stays"
         );
         assert!(
             !work.join("tmp").exists(),
-            "the dir and what the process unpacked into it go at reap"
+            "no temp dir of marion's was made"
         );
     }
 
