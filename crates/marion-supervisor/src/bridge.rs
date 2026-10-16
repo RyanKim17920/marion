@@ -321,15 +321,11 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
         {
             "name": "spawn",
             "description": "Delegate a task to a child agent. By default this blocks until the \
-                            child reaches a terminal state and returns its completed task \
-                            contract. With `background: true` it returns immediately with a \
-                            handle and the child runs while you keep working; call `wait` with \
-                            that handle's task_id to collect the contract. A backgrounded \
-                            child's end is also announced to you where your client supports it \
-                            (Claude Code: start it with the dev-channels flag — `marion claude` \
-                            does this for you), and `wait` returns the same document either way. \
-                            Some clients background a long blocking call on their own and hand \
-                            you its result later; that needs nothing from you.",
+                            child ends and returns its task contract. With `background: true` it \
+                            returns a handle at once and the child runs while you work; call \
+                            `wait` with the handle's task_id to collect the contract. Some \
+                            clients also announce a background child's end; `wait` returns the \
+                            same contract either way.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -432,9 +428,8 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             "description": "Collect a backgrounded child's task contract, blocking until that \
                             child reaches a terminal state. Returns immediately if the child has \
                             already finished. If the child is still running well past its own \
-                            timeout, this returns saying so instead of blocking forever — the \
-                            child keeps running and the handle stays valid, so you can wait on it \
-                            again.",
+                            timeout, it returns and says so. The child keeps running and the \
+                            handle stays valid, so you can wait again.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"id": {"type": "string", "description": ID_DESCRIPTION}},
@@ -465,13 +460,10 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             // answered from the row this bridge stored at spawn would report `Spawning` forever —
             // an answer that is wrong precisely when it is asked for.
             "name": "status",
-            "description": "Check what a backgrounded child is doing right now, without blocking. \
-                            Answers with the child's current state as marion's supervisor holds it — and, while \
-                            it has not finished, its last few tool calls and the last line it \
-                            wrote, where marion reads its harness's stream. Works after \
-                            the child has finished, and after `wait` has already collected it. \
-                            This is a poll, not a wait — if what you actually want is the child's \
-                            result, call `wait`, which blocks and returns the contract.",
+            "description": "Check what a child is doing now, without blocking: its state and, \
+                            while it runs, its last few tool calls and its last line of output. \
+                            Works after the child has ended and after `wait` collected it. To get \
+                            the result, call `wait`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"id": {"type": "string", "description": ID_DESCRIPTION}},
@@ -497,7 +489,7 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             "name": "list",
             "description": "List the child agents you have spawned and what each is doing now. \
                             Takes no arguments. Answers from marion's supervisor, so it reflects \
-                            the current state of every child of yours that is still known — \
+                            the current state of every child of yours marion still knows, \
                             running or finished. Use it when you have lost track of what you \
                             delegated; use `wait` to collect a specific child's result.",
             "inputSchema": {
@@ -516,9 +508,9 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             // The description states *when* generically, because the answer is per row
             // (`TurnDelivery`) and a model cannot read the row: never "now", never "read".
             "name": "steer",
-            "description": "Queue a message for a running child agent of yours — or any agent \
-                            below you — that it will see at its next turn boundary. A \
-                            grandchild is reached by the agent id `list` shows. Where the \
+            "description": "Queue a message for a running agent below you (a child, or a \
+                            grandchild by the id `list` shows), which it will see at its next \
+                            turn boundary. Where the \
                             child's harness folds a message into work in progress, that boundary \
                             is its next tool round, mid-task; otherwise it is the child's next \
                             turn or resume. The reply says the message was queued, not that the \
@@ -540,11 +532,11 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             // its harness allows and keeps the work it committed, so the child's contract (from
             // `wait`) is still the answer, marked cancelled.
             "name": "cancel",
-            "description": "Stop a running child agent of yours — or any agent below you — and \
-                            everything it spawned. Each is asked to end its turn the way its \
+            "description": "Stop a running agent below you (a child, or a grandchild by the id \
+                            `list` shows) and everything it spawned. Each is asked to end its turn the way its \
                             harness allows, and killed only if it does not within its grace; \
-                            the work each committed is kept on its branch. The reply says how many agents ended and how many had \
-                            to be killed; `wait` on the task_id still returns the child's \
+                            the work each committed is kept on its branch. The reply says how \
+                            many agents ended and how many had to be killed; `wait` on the task_id still returns the child's \
                             contract, marked cancelled.",
             "inputSchema": {
                 "type": "object",
@@ -2972,10 +2964,11 @@ mod tests {
         );
     }
 
-    /// The `spawn` description tells the model the push exists and how a client gets it, because
-    /// a handle whose holder does not know an announcement is coming will poll for it.
+    /// The `spawn` description tells the model a push may come, because a handle whose holder does
+    /// not know an announcement is coming will poll for it. Every harness's model reads it, so it
+    /// names no client.
     #[test]
-    fn the_spawn_description_announces_the_push_and_the_flag_that_enables_it() {
+    fn the_spawn_description_announces_the_push_and_names_no_client() {
         let spawn = tools(&AgentTypes::builtins_only())
             .as_array()
             .unwrap()
@@ -2984,10 +2977,16 @@ mod tests {
             .cloned()
             .unwrap();
         let d = spawn["description"].as_str().unwrap();
-        for needle in ["announced", "dev-channels", "marion claude", "`wait`"] {
+        for needle in ["announce", "`wait`", "background: true"] {
             assert!(
                 d.contains(needle),
                 "the spawn description lost {needle:?}: {d}"
+            );
+        }
+        for client in ["Claude", "dev-channels", "marion claude"] {
+            assert!(
+                !d.contains(client),
+                "a client-specific aside is noise to every other harness: {d}"
             );
         }
     }

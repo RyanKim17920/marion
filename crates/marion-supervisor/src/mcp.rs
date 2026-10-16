@@ -50,10 +50,9 @@ use crate::{background, bridge, courier, run, socket, spawn};
 /// instead would need every step's launch, budget split and cancel re-derived against that
 /// caller's authority; until that exists, the verb is the operator's alone, withheld from a node's
 /// list and refused here by name.
-const NODE_WORKFLOW: &str = "marion: `workflow` is the operator's — its steps run as the \
-     operator's own top-level agents, which no node may start above itself. Nothing ran. To \
-     delegate the same work, `spawn` the agents yourself: a race with `candidates`, a review with \
-     `review_of`.";
+const NODE_WORKFLOW: &str = "marion: only the operator can run `workflow`, because its steps \
+     start top-level agents. Nothing ran. To do the same work, `spawn` the agents yourself: a race \
+     with `candidates`, a review with `review_of`.";
 
 const TOP_LEVEL_REPORT: &str = "marion: `report` is a node's return path and this is not a \
      node — it is an MCP client marion did not start and holds no contract for, so there is nothing \
@@ -343,8 +342,7 @@ fn tool_spawn(
     let Some(agent_type) = args["agent_type"].as_str().map(str::to_string) else {
         return Err(bridge::tool_result(
             id,
-            "spawn: `agent_type` is required — name the agent type to run (the `agent_type` \
-             parameter's description lists this tree's types)",
+            "spawn: `agent_type` is required; the parameter's description lists this tree's types",
             true,
         ));
     };
@@ -730,11 +728,9 @@ fn address(
                 None => Address::Agent(AgentId(id.to_string())),
             },
         )),
-        _ => Err(
-            "marion: this takes one of `id`, `task_id` or `agent_id`, not several — acting \
-                  on the one you did not mean would reach the wrong child. Nothing was done."
-                .into(),
-        ),
+        _ => {
+            Err("marion: pass only one of `id`, `task_id` or `agent_id`. Nothing was done.".into())
+        }
     }
 }
 
@@ -1014,8 +1010,7 @@ fn tool_steer(
     let refuse = |text: &str| bridge::tool_result(id, text, true);
     let Some(message) = args["message"].as_str().filter(|m| !m.trim().is_empty()) else {
         return Err(refuse(
-            "marion: `steer` needs a non-empty `message` — the words the child should read at its \
-             next turn boundary. Nothing was queued.",
+            "marion: `steer` needs a non-empty `message`. Nothing was queued.",
         ));
     };
     let agent_id = node_address(bg, "steer", "Nothing was queued", args).map_err(|e| refuse(&e))?;
@@ -1583,11 +1578,8 @@ fn tree_agent_types() -> Result<marion_core::agent_type::AgentTypes, String> {
 
 fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
     let repo = std::env::var(REPO_ENV).map_err(|_| {
-        "marion: MARION_REPO is not set, so this bridge cannot work out which project's supervisor \
-         to ask for a child (a supervisor is keyed on the tree's git common directory). Refusing \
-         rather than guessing: a spawn sent to another project's supervisor would run, and would be \
-         journaled somewhere nobody watching this node will look. This is a broken launch, not a \
-         rule — the key belongs in the node's marion server declaration."
+        "marion: MARION_REPO is not set, so this bridge cannot find its project's supervisor. The \
+         node's marion server declaration is missing the key; this is a launch bug."
             .to_string()
     })?;
     let repo = std::path::PathBuf::from(repo).canonicalize().map_err(|e| {
