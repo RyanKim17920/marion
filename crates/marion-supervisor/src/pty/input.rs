@@ -13,7 +13,7 @@
 //! that drops Enter while it boots, and only its real one sets the title.
 //!
 //! And the screen as it stands ([`Grid`]), for the row's mid-session asks: an approval prompt
-//! is up while its header or its footer is on it, and gone when neither is.
+//! is up while its footer is on it, or its header with one of its option lines.
 //!
 //! The other is read off the operator's own writes ([`Typing`]): when a person last typed into
 //! this terminal, and whether what they typed has been submitted. A paste landing in the middle of
@@ -35,7 +35,7 @@ const BRACKETED_PASTE: &[u8] = b"2004";
 const MAX_OSC_DIGITS: usize = 4;
 
 /// **The node's screen as it stands now**, cell for cell, for the row's [`Ask`]s: what a prompt's
-/// header and footer are looked for on. A terminal emulator's grid rather than the text written,
+/// lines are looked for on. A terminal emulator's grid rather than the text written,
 /// because a reply can quote a prompt's line and scroll it away, and a TUI that redraws only the
 /// cells that changed (claude) leaves a prompt's header standing while it moves the selection.
 struct Grid {
@@ -72,10 +72,11 @@ impl Grid {
         }
     }
 
-    /// **The first of `asks` with its header or its footer on the screen**, whole or cut off at
-    /// the right edge. Either one is enough: a prompt taller than the pane pushes its header off
-    /// the top, and a narrow pane cuts its lines. A reply that quotes one holds a paste only while
-    /// the quote is on the screen.
+    /// **The first of `asks` on the screen**: its footer, or its header together with its option
+    /// line, each whole or cut off at the right edge. The footer alone is enough, because a
+    /// prompt taller than the pane pushes its header off the top; the header alone is not,
+    /// because an agent's idle reply can end on the same sentence, and that reply left standing
+    /// would hold the steer that answers it for good. A narrow pane cuts any of the lines.
     fn showing(&mut self, asks: &'static [Ask]) -> Option<&'static Ask> {
         self.looks += 1;
         let screen = self.parser.screen();
@@ -106,7 +107,8 @@ impl Grid {
         let on = |needle: &str| {
             self.words.contains(needle) || self.edges.iter().any(|row| cut_at_edge(row, needle))
         };
-        asks.iter().find(|a| on(a.header) || on(a.footer))
+        asks.iter()
+            .find(|a| on(a.footer) || (on(a.header) && on(a.option)))
     }
 }
 
@@ -184,7 +186,7 @@ pub(crate) struct ModeScan {
     asks: &'static [Ask],
     /// The ask on the grid as of the last read.
     ask: Option<&'static Ask>,
-    /// The words of [`Self::asks`]' headers and footers, four letters or longer: a prompt cannot
+    /// The words of [`Self::asks`]' lines, four letters or longer: a prompt cannot
     /// come onto the screen without one of them written in the stream, so the grid is read whole
     /// only after one is (or while an ask is up, to see it leave).
     ask_words: Vec<&'static str>,
@@ -276,7 +278,8 @@ impl ModeScan {
         self.asks = asks;
         self.ask_words = asks
             .iter()
-            .flat_map(|a| a.header.split(' ').chain(a.footer.split(' ')))
+            .flat_map(|a| [a.header, a.footer, a.option])
+            .flat_map(|line| line.split(' '))
             .filter(|w| w.chars().count() >= 4)
             .collect();
         self.ask_words.sort_unstable();
@@ -301,8 +304,8 @@ impl ModeScan {
             .map(|(_, d)| d)
     }
 
-    /// **The first of the watched asks on the screen now**, in the row's order: its header or its
-    /// footer stands on the grid. Before boot and after it, and no key clears it — only the
+    /// **The first of the watched asks on the screen now**, in the row's order: its footer stands
+    /// on the grid, or its header with its option line ([`Grid::showing`]). Before boot and after it, and no key clears it — only the
     /// prompt leaving the screen does.
     pub(crate) fn asking(&self) -> Option<&'static Ask> {
         self.ask
@@ -1026,6 +1029,7 @@ mod tests {
     const ASK: Ask = Ask {
         header: "Would you like to run the following command?",
         footer: "Press enter to confirm or esc to cancel",
+        option: "1. Yes, proceed (y)",
         action: "answer the approval",
         note: "test",
     };
@@ -1068,17 +1072,29 @@ mod tests {
         }
     }
 
-    /// **Either line of a prompt holds, alone**: the header with its footer pushed below the
-    /// pane, the footer of a prompt taller than the pane (its header scrolled off the top), and a
-    /// reply that quotes one — for as long as the quote is on the screen, and no longer.
+    /// **The footer holds alone, the header only with an option line**: the footer of a prompt
+    /// taller than the pane (its header scrolled off the top) holds, and so does the header over
+    /// an option with the footer below the pane. An idle reply that ends on the header, or quotes
+    /// it, holds nothing — a hold on it would keep the steer that answers it waiting for good —
+    /// and neither does an option line alone.
     #[test]
-    fn the_header_or_the_footer_alone_is_an_ask_while_it_is_on_the_screen() {
+    fn the_footer_or_the_header_with_an_option_is_an_ask_and_the_header_alone_is_not() {
         let mut scan = asked();
         scan.feed(
             b"\x1b[24;1H  Would you like to run the following command?",
             Instant::now(),
         );
-        assert_eq!(scan.asking(), Some(&ASK), "the header alone");
+        assert_eq!(scan.asking(), None, "the header alone");
+        scan.feed(
+            b"\x1b[22;1H  Would you like to run the following command?\
+              \x1b[23;1H  \xe2\x80\xba 1. Yes, proceed (y)",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), Some(&ASK), "the header over an option");
+
+        let mut scan = asked();
+        scan.feed(b"\x1b[5;3H\xe2\x80\xba 1. Yes, proceed (y)", Instant::now());
+        assert_eq!(scan.asking(), None, "an option alone");
 
         let mut scan = asked();
         scan.feed(
@@ -1095,17 +1111,27 @@ mod tests {
 
         let mut scan = asked();
         scan.feed(
-            b"\r\n  I will ask: Would you like to run the following command?\r\n",
+            b"\r\n  I will ask: Would you like to run the following command?\r\n> ",
             Instant::now(),
         );
-        assert_eq!(scan.asking(), Some(&ASK), "a quote holds while it shows");
+        assert_eq!(scan.asking(), None, "an idle reply that quotes the header");
+        scan.feed(
+            b"\r\n  It says: Press enter to confirm or esc to cancel\r\n",
+            Instant::now(),
+        );
+        assert_eq!(
+            scan.asking(),
+            Some(&ASK),
+            "a quoted footer holds while it shows"
+        );
         scan.feed(&b"\r\n more of the reply".repeat(30), Instant::now());
         assert_eq!(scan.asking(), None, "and lets go once it scrolls away");
     }
 
     /// **A pane narrower than a prompt's lines cuts them at its edge, and the cut line still
-    /// holds**: the header's first words up to the right edge, the footer's likewise, with or
-    /// without the TUI's `…`. The same words short of the edge are not a cut line.
+    /// reads as the line**: the header's first words up to the right edge (over an option), the
+    /// footer's likewise, with or without the TUI's `…`. The same words short of the edge are not
+    /// a cut line.
     #[test]
     fn a_line_cut_at_a_narrow_panes_edge_is_an_ask() {
         let narrow = || {
@@ -1117,7 +1143,9 @@ mod tests {
         let mut scan = narrow();
         // 30 columns: `  Would you like to run the fo` exactly.
         scan.feed(b"\x1b[3;1H  Would you like to run the fo", Instant::now());
-        assert_eq!(scan.asking(), Some(&ASK), "the header cut at the edge");
+        assert_eq!(scan.asking(), None, "the header cut at the edge, alone");
+        scan.feed(b"\x1b[5;3H1. Yes, proceed (y)", Instant::now());
+        assert_eq!(scan.asking(), Some(&ASK), "the cut header over an option");
         let mut scan = narrow();
         scan.feed(
             b"\x1b[9;1H  Press enter to confirm or e\xe2\x80\xa6",
@@ -1159,6 +1187,8 @@ mod tests {
         // An ask word cut by a read boundary is still seen, once.
         scan.feed(b"\x1b[5;3HWould you like to run the follo", Instant::now());
         scan.feed(b"wing command?", Instant::now());
+        assert_eq!(scan.asking(), None, "the header alone is no ask");
+        scan.feed(b"\x1b[6;3H1. Yes, proceed (y)", Instant::now());
         assert_eq!(scan.asking(), Some(&ASK));
         let up = looks(&scan);
         scan.feed(b"\x1b[7;3Hstill drawing", Instant::now());
@@ -1176,7 +1206,8 @@ mod tests {
 
     /// **A prompt redrawn by its changed cells alone stays up**: the selection moves under an
     /// arrow key and only the option rows are written; a second prompt drawn over the first
-    /// keeps the header cells it shares. Overwriting both lines takes it down.
+    /// keeps the header cells it shares. Overwriting the footer and the header, or the footer and
+    /// the options, takes it down.
     #[test]
     fn a_prompt_redrawn_without_its_header_stays_up() {
         let mut scan = asked();
@@ -1202,7 +1233,18 @@ mod tests {
             "the header overwritten, the footer stands"
         );
         scan.feed(b"\x1b[7;1H\x1b[2K", Instant::now());
-        assert_eq!(scan.asking(), None, "both gone");
+        assert_eq!(scan.asking(), None, "header and footer gone");
+
+        let mut scan = asked();
+        scan.feed(PROMPT, Instant::now());
+        scan.feed(b"\x1b[7;1H\x1b[2K", Instant::now());
+        assert_eq!(
+            scan.asking(),
+            Some(&ASK),
+            "the footer overwritten, header and option stand"
+        );
+        scan.feed(b"\x1b[4;1H\x1b[2K\x1b[5;1H\x1b[2K", Instant::now());
+        assert_eq!(scan.asking(), None, "the options gone too");
     }
 
     /// **A resize keeps the grid in step**: a prompt drawn at the new size is read at it.
@@ -1224,7 +1266,8 @@ mod tests {
     }
 
     /// **Every row's ask is on a screen it was measured on** (`tests/fixtures/pane-asks/`, at
-    /// conformance's 120 by 40), and every recorded ask screen shows one of some row's asks.
+    /// conformance's 120 by 40), by its footer and by its header with its option, and every
+    /// recorded ask screen shows one of some row's asks.
     #[test]
     fn every_rows_ask_is_found_on_its_measured_screen() {
         let dir =
@@ -1255,6 +1298,20 @@ mod tests {
                     }
                 }
                 assert!(any, "{h}: ask {:?} is on no measured screen", a.header);
+                // Its header and option, too, are on its screen, as drawn: the option is the
+                // prompt's own spelling, not a guess at it.
+                let headed: &'static [Ask] = Box::leak(Box::new([Ask {
+                    footer: "a footer no screen shows",
+                    ..*a
+                }]));
+                assert!(
+                    screens
+                        .iter()
+                        .any(|(_, bytes)| asks_on(headed, bytes).is_some()),
+                    "{h}: ask {:?} with option {:?} is on no measured screen",
+                    a.header,
+                    a.option
+                );
             }
         }
         for ((name, _), m) in screens.iter().zip(matched) {

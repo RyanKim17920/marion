@@ -1427,6 +1427,7 @@ impl BootDialogDto {
 pub struct AskDto {
     pub header: String,
     pub footer: String,
+    pub option: String,
     pub action: String,
     pub note: String,
 }
@@ -1436,6 +1437,7 @@ impl AskDto {
         Ask {
             header: leak(self.header),
             footer: leak(self.footer),
+            option: leak(self.option),
             action: leak(self.action),
             note: leak(self.note),
         }

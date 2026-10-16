@@ -43,10 +43,10 @@
 //! mid-session. A live steer into a codex 0.160.1 pane sitting on `Would you like to run the
 //! following command? › 1. Yes, proceed` lost its text and its Enter approved the command. An ask
 //! is never answered by marion and never refused for: the message waits ([`Hold::Ask`]) for as
-//! long as the prompt is up — its header or its footer on the screen as it stands now — and
-//! the node's launcher puts it on the operator's attention queue meanwhile. A key does not end
-//! the hold (an arrow moves the selection and leaves the prompt up); the prompt leaving the
-//! screen does.
+//! long as the prompt is up — its footer, or its header with an option line, on the screen as it
+//! stands now (the header alone is a sentence an idle reply can end on) — and the node's
+//! launcher puts it on the operator's attention queue meanwhile. A key does not end the hold (an
+//! arrow moves the selection and leaves the prompt up); the prompt leaving the screen does.
 //!
 //! # Why the row's [`IdleSignal`] is waited on once, not before every paste
 //!

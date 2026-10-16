@@ -335,6 +335,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         asks: &[Ask {
             header: "Would you like to run the following command?",
             footer: "Press enter to confirm or esc to cancel",
+            option: "1. Yes, proceed (y)",
             action: "answer codex's approval prompt in its pane",
             note: "0.160.1 command approval, default `› 1. Yes, proceed (y)`",
         }],

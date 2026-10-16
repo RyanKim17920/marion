@@ -1225,6 +1225,7 @@ fn an_ask_holds_every_paste_and_never_refuses_it() {
     const ASK: marion_harness::spec::Ask = marion_harness::spec::Ask {
         header: "Would you like to run the following command?",
         footer: "Press enter to confirm or esc to cancel",
+        option: "1. Yes, proceed (y)",
         action: "answer the approval",
         note: "test",
     };
@@ -1335,11 +1336,11 @@ fn a_steer_waits_out_an_approval_prompt_and_never_answers_it() {
     }
 }
 
-/// **One line of a prompt is enough to hold a steer**, and its Enter never reaches the node: the
-/// footer of a prompt taller than the pane, its header with the footer below the pane, and a
-/// header cut at a narrow pane's right edge.
+/// **Part of a prompt is enough to hold a steer**, and its Enter never reaches the node: the
+/// footer of a prompt taller than the pane, its header and an option with the footer below the
+/// pane, and a header cut at a narrow pane's right edge over an option.
 #[test]
-fn a_steer_waits_on_a_prompt_showing_only_one_of_its_lines() {
+fn a_steer_waits_on_a_prompt_showing_only_part_of_it() {
     use marion_core::harness::Harness;
     for (what, screen) in [
         (
@@ -1347,12 +1348,13 @@ fn a_steer_waits_on_a_prompt_showing_only_one_of_its_lines() {
             &b"\x1b[2J\x1b[40;1H  Press enter to confirm or esc to cancel"[..],
         ),
         (
-            "header only",
-            b"\x1b[2J\x1b[3;3HWould you like to run the following command?",
+            "header and an option",
+            b"\x1b[2J\x1b[38;3HWould you like to run the following command?\
+              \x1b[40;3H\xe2\x80\xba 1. Yes, proceed (y)",
         ),
         (
-            "header cut at the edge",
-            b"\x1b[2J\x1b[3;90HWould you like to run the follo",
+            "header cut at the edge, and an option",
+            b"\x1b[2J\x1b[3;90HWould you like to run the follo\x1b[5;3H1. Yes, proceed (y)",
         ),
     ] {
         let mut bed = Bed::for_harness(
@@ -1373,6 +1375,31 @@ fn a_steer_waits_on_a_prompt_showing_only_one_of_its_lines() {
         );
         assert!(bed.host.input_state().ask.is_some(), "{what}");
     }
+}
+
+/// **An idle reply that ends on a prompt's header holds nothing**: claude can close a turn with
+/// `Do you want to proceed?` itself, and a hold on that would keep the steer that answers it
+/// waiting for good. With no option line and no footer on the screen, the steer is pasted.
+#[test]
+fn a_steer_answers_a_reply_that_only_quotes_a_prompts_header() {
+    use marion_core::harness::Harness;
+    let mut bed = Bed::for_harness("paste-ask-quoted-header", fast(), Harness::ClaudeCode);
+    bed.node_writes(BOOTED_TITLED);
+    bed.steer("the first turn");
+    let first = expected_paste("the first turn");
+    assert_eq!(bed.read_slave(first.len()), first, "boot is over");
+    bed.node_writes(
+        b"\x1b[2J\x1b[3;1H\xe2\x8f\xba I can delete the build cache next. Do you want to proceed?\
+          \x1b[6;1H> ",
+    );
+    bed.steer("yes, go ahead");
+    let want = expected_paste("yes, go ahead");
+    assert_eq!(
+        bed.read_slave(want.len()),
+        want,
+        "the steer reached the reply"
+    );
+    assert_eq!(bed.host.input_state().ask, None);
 }
 
 /// **A setup dialog is answered wherever marion owns the harness config** — canned or endpoint,

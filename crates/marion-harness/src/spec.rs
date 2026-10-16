@@ -723,16 +723,20 @@ impl BootDialog {
     }
 }
 
-/// **One prompt a TUI raises mid-session**, up while its `header` or its `footer` is on the screen
-/// as it stands now — not as it was drawn: a TUI that redraws only the cells that changed leaves a
-/// prompt's text where it was, a prompt taller than the pane pushes its header off, and a narrow
-/// pane cuts both at its edge. Either one is enough; a reply that quotes one holds a paste only
-/// while the quote is on the screen. Each is written as a [`BootDialog`]'s needle is. Never
-/// answered by marion.
+/// **One prompt a TUI raises mid-session**, up while its `footer` is on the screen as it stands now,
+/// or its `header` together with its `option` — not as it was drawn: a TUI that redraws only the
+/// cells that changed leaves a prompt's text where it was, a prompt taller than the pane pushes
+/// its footer off the bottom (or its header off the top), and a narrow pane cuts its lines at the
+/// edge. The header alone is not enough: it is a sentence an agent's own reply can end on
+/// (claude's `Do you want to proceed?`), and a reply left on the screen would hold the steer that
+/// answers it for good. Each is written as a [`BootDialog`]'s needle is. Never answered by marion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ask {
     pub header: &'static str,
     pub footer: &'static str,
+    /// One of the prompt's option lines, without the selection marker (which moves under an
+    /// arrow key): what makes a header on the screen the prompt's rather than a reply's.
+    pub option: &'static str,
     /// What the operator does about it, with `{repo}` as in [`BootDialog::action`].
     pub action: &'static str,
     pub note: &'static str,

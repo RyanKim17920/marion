@@ -224,6 +224,7 @@ fn an_ask_raised_before_the_submit_withholds_it() {
     const ASK: marion_harness::spec::Ask = marion_harness::spec::Ask {
         header: "Would you like to run the following command?",
         footer: "Press enter to confirm or esc to cancel",
+        option: "1. Yes, proceed (y)",
         action: "answer it",
         note: "test",
     };

@@ -125,7 +125,12 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
         );
     }
     let needles = dialogs.dialogs.iter().map(|d| d.needle);
-    let needles = needles.chain(dialogs.asks.iter().flat_map(|a| [a.header, a.footer]));
+    let needles = needles.chain(
+        dialogs
+            .asks
+            .iter()
+            .flat_map(|a| [a.header, a.footer, a.option]),
+    );
     for needle in needles {
         let normal = needle.split_whitespace().collect::<Vec<_>>().join(" ");
         if needle.is_empty() || needle != normal {

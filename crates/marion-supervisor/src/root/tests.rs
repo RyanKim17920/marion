@@ -2505,6 +2505,7 @@ fn a_panes_screen_reads_as_blocked_on_its_dialog_or_ask_else_running() {
     const ASK: marion_harness::spec::Ask = marion_harness::spec::Ask {
         header: "Do you want to proceed?",
         footer: "Esc to cancel · Tab to amend",
+        option: "2. Yes, and",
         action: "answer it in its pane",
         note: "test",
     };

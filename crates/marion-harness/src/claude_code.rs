@@ -421,10 +421,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // (`tests/fixtures/pane-asks/claude-code-2.1.301-permission.raw`): the permission
         // dialog `Do you want to proceed?` over `❯ 1. Yes` / `2. Yes, and always allow …` /
         // `4. No`, then `Esc to cancel · Tab to amend`. Enter takes the selection, `1. Yes`, so a
-        // paste's submit would run the command. Either line holds it (`spec::Ask`).
+        // paste's submit would run the command. Its footer holds it, or its header with an option
+        // line: a reply of claude's own can end on the header (`spec::Ask`).
         asks: &[Ask {
             header: "Do you want to proceed?",
             footer: "Esc to cancel · Tab to amend",
+            option: "2. Yes, and",
             action: "answer claude's permission prompt in its pane",
             note: "2.1.301 permission dialog for a Bash call, default `❯ 1. Yes`",
         }],
