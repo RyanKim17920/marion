@@ -65,6 +65,11 @@ pub struct NodeDetail {
     /// How its latest contract ended, once it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion: Option<CompletionSummary>,
+    /// **Why it did not end well**, where anything recorded says: the harness's own classified
+    /// words, else marion's account of the exit, else why its spawn was aborted. `None` for a node
+    /// that ended well or has not ended. A root has no contract, so its journal's exit is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
     /// The tokens each turn (or step) spent, oldest first, where the harness reports usage per
     /// turn: the sparkline a watcher draws. Empty when it reports only a run total, or nothing —
     /// a client then draws no sparkline rather than an empty one.
@@ -554,6 +559,7 @@ mod tests {
                     exit: "exit 0".into(),
                     diff: None,
                 }),
+                failure: None,
                 turns: Vec::new(),
             },
         };

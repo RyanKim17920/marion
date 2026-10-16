@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use marion_core::contract::{AgentId, ExitStatus, FailureCause, TaskContract};
+use marion_core::contract::{AgentId, TaskContract};
 use marion_core::encoding::SystemTime;
 use marion_core::harness::RecordedHarness;
 use marion_core::node::ReapState;
@@ -275,7 +275,10 @@ impl Walk<'_> {
             turns: node.turns.len(),
             started,
             ended,
-            failure: failure(node, contract.as_ref()),
+            failure: crate::node_detail::failure(
+                contract.as_ref(),
+                &crate::node_detail::Ended::of(node),
+            ),
         };
         let own = Own {
             tokens: usage.map(|u| u.total()),
@@ -298,38 +301,6 @@ fn tree_row(n: &NodeReport) -> String {
         row.push_str(&format!(" · {} tokens", super::words::tokens(u.total())));
     }
     row
-}
-
-/// Why a node did not end well, where anything recorded says: the harness's own classified words
-/// first, then marion's account of the exit, then an aborted spawn's reason.
-fn failure(node: &ReplayedNode, contract: Option<&TaskContract>) -> Option<String> {
-    if let Some(c) = contract.and_then(|c| c.completion.as_ref()) {
-        if let Some(cause) = &c.failure_cause {
-            return Some(match cause {
-                FailureCause::UsageLimit { line, .. } => format!("usage limit: {line}"),
-                FailureCause::RateLimit { line } => format!("rate limit: {line}"),
-                FailureCause::Auth { line } => format!("login refused: {line}"),
-                FailureCause::Outage { line } => format!("vendor outage: {line}"),
-                FailureCause::Budget {
-                    scope,
-                    spent,
-                    limit,
-                    ..
-                } => format!("{} budget spent: {spent} of {limit}", scope.word()),
-            });
-        }
-        if c.status != ExitStatus::Ok {
-            return Some(c.exit.description.clone());
-        }
-        return None;
-    }
-    if let Some(reason) = &node.spawn_aborted {
-        return Some(format!("never started: {reason}"));
-    }
-    match (node.exit_status(), &node.exit) {
-        (Some(s), Some(exit)) if s != ExitStatus::Ok => Some(exit.description.clone()),
-        _ => None,
-    }
 }
 
 fn check_line(o: &marion_core::contract::CommandOutcome) -> CheckLine {

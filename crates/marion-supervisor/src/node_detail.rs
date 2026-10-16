@@ -13,7 +13,7 @@
 
 use crate::spending::Spent;
 use marion_core::contract::Oid;
-use marion_core::contract::{AgentId, TaskContract, TaskId, Workspace};
+use marion_core::contract::{AgentId, ExitStatus, TaskContract, TaskId, Workspace};
 use marion_core::harness::RecordedHarness;
 use marion_core::journal::{self, MessageSource, RecordKind};
 use marion_core::paths::ProjectDir;
@@ -35,6 +35,49 @@ pub struct Inputs {
     pub launch_workspace: Option<Workspace>,
     /// What its ended runs spent, as the journal recorded them (`ReplayedNode::usage`, `turns`).
     pub recorded: Spent,
+    /// How the journal says it ended, for a node no contract speaks for (a root).
+    pub ended: Ended,
+}
+
+/// **How the journal says a node ended**: an aborted spawn's reason, and the last exit's status and
+/// description.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ended {
+    pub spawn_aborted: Option<String>,
+    pub exit: Option<(ExitStatus, String)>,
+}
+
+impl Ended {
+    pub fn of(node: &ReplayedNode) -> Self {
+        Self {
+            spawn_aborted: node.spawn_aborted.clone(),
+            exit: node
+                .exit_status()
+                .zip(node.exit.as_ref().map(|e| e.description.clone())),
+        }
+    }
+}
+
+/// **Why a node did not end well**, where anything recorded says: its contract's classified cause
+/// first, then marion's account of the exit, then (for a node no contract speaks for) the
+/// journal's exit, then an aborted spawn's reason. One reading for `marion ls <id>` and the export.
+pub fn failure(contract: Option<&TaskContract>, ended: &Ended) -> Option<String> {
+    if let Some(c) = contract.and_then(|c| c.completion.as_ref()) {
+        if let Some(cause) = &c.failure_cause {
+            return Some(cause.words());
+        }
+        if c.status != ExitStatus::Ok {
+            return Some(c.exit.description.clone());
+        }
+        return None;
+    }
+    if let Some(reason) = &ended.spawn_aborted {
+        return Some(format!("never started: {reason}"));
+    }
+    match &ended.exit {
+        Some((s, description)) if *s != ExitStatus::Ok => Some(description.clone()),
+        _ => None,
+    }
 }
 
 /// [`Inputs`] from a replayed node, or `None` for one whose spawn intent was never read — there is
@@ -51,6 +94,7 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
             .or_else(|| node.task_id().cloned()),
         launch_workspace: node.launch_workspace.clone(),
         recorded: Spent::recorded(node),
+        ended: Ended::of(node),
     })
 }
 
@@ -87,6 +131,7 @@ pub fn read(
         }),
         usage: spent.usage,
         workspace,
+        failure: failure(contract.as_ref(), &i.ended),
         completion: contract.and_then(|contract| {
             let diff = landed_diff(&contract);
             contract.completion.map(|c| CompletionSummary {
@@ -336,7 +381,7 @@ mod tests {
     use super::*;
     use crate::events::{EventSink, EventWriter};
     use crate::spawn::ChildOutcome;
-    use marion_core::contract::{Glob, Oid, RepoIdentity};
+    use marion_core::contract::{FailureCause, Glob, Oid, RepoIdentity};
     use marion_core::encoding::SystemTime;
     use marion_core::harness::Harness;
     use marion_core::journal::{JournalRecord, MessageDelivered, MessageDropped, MessageQueued};
@@ -426,7 +471,83 @@ mod tests {
                 path: "/checkout".into(),
             }),
             recorded: Spent::default(),
+            ended: Ended::default(),
         }
+    }
+
+    fn contract_ending(status: ExitStatus, cause: Option<FailureCause>) -> TaskContract {
+        let (p, id) = project("detail-failure");
+        let task = TaskId("t-1".into());
+        write_contract(&p, &id, &task, true);
+        let mut c: TaskContract =
+            serde_json::from_slice(&std::fs::read(p.agent(&id).contract(&task)).unwrap()).unwrap();
+        let done = c
+            .completion
+            .as_mut()
+            .expect("an exited child has a completion");
+        done.status = status;
+        done.exit.description = "child exited with code 1".into();
+        done.failure_cause = cause;
+        c
+    }
+
+    /// **Why a node did not end well is said wherever anything recorded says it**: a child's
+    /// classified cause before marion's account of its exit; a root (no contract) by its journal's
+    /// exit; a spawn that never started by its abort. A node that ended well, or has not ended,
+    /// says nothing.
+    #[test]
+    fn a_failed_nodes_reason_is_read_from_its_contract_else_its_journal() {
+        let refused = FailureCause::Auth {
+            line: "API Error: 403 forbidden".into(),
+        };
+        assert_eq!(
+            failure(
+                Some(&contract_ending(ExitStatus::Failed, Some(refused))),
+                &Ended::default()
+            )
+            .as_deref(),
+            Some("login refused: API Error: 403 forbidden")
+        );
+        assert_eq!(
+            failure(
+                Some(&contract_ending(ExitStatus::Failed, None)),
+                &Ended::default()
+            )
+            .as_deref(),
+            Some("child exited with code 1")
+        );
+        assert_eq!(
+            failure(
+                Some(&contract_ending(ExitStatus::Ok, None)),
+                &Ended::default()
+            ),
+            None
+        );
+        let root = Ended {
+            spawn_aborted: None,
+            exit: Some((
+                ExitStatus::Failed,
+                "root exited with code 1; login refused: 403".into(),
+            )),
+        };
+        assert_eq!(
+            failure(None, &root).as_deref(),
+            Some("root exited with code 1; login refused: 403")
+        );
+        let ok_root = Ended {
+            spawn_aborted: None,
+            exit: Some((ExitStatus::Ok, "root exited with code 0".into())),
+        };
+        assert_eq!(failure(None, &ok_root), None);
+        let aborted = Ended {
+            spawn_aborted: Some("no such harness".into()),
+            exit: None,
+        };
+        assert_eq!(
+            failure(None, &aborted).as_deref(),
+            Some("never started: no such harness")
+        );
+        assert_eq!(failure(None, &Ended::default()), None, "still running");
     }
 
     /// **Usage is the journal's record, with the run in progress on top only while the node runs**

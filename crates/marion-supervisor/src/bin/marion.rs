@@ -621,6 +621,9 @@ fn detail_text(
             kv("merge", &marion_core::contract::merge_command(b));
         }
     }
+    if let Some(why) = &d.failure {
+        kv("why", why);
+    }
     if let Some(page) = &d.stream {
         if let Some(why) = &page.unread {
             kv("activity", why);
@@ -5718,5 +5721,15 @@ mod tests {
             ..Default::default()
         };
         assert!(!detail_text(&head, &without, None).contains("diff"));
+        assert!(!detail_text(&head, &without, None).contains("why"));
+        let failed = NodeDetail {
+            failure: Some("login refused: API Error: 403 forbidden".into()),
+            ..Default::default()
+        };
+        assert!(
+            detail_text(&head, &failed, None)
+                .contains("  why        login refused: API Error: 403 forbidden\n"),
+            "a failed node says why"
+        );
     }
 }
