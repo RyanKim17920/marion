@@ -3148,3 +3148,56 @@ fn a_large_verification_output_is_persisted_whole_and_capped_only_on_return() {
     assert!(ev.stdout.value.len() < bytes);
     assert_eq!(ev.stdout.original_bytes, bytes);
 }
+
+/// **What a node's leader leaves behind in its session ends with the node.** copilot's npm
+/// launcher exits on SIGTERM and leaves its platform binary running (conformance P-lifecycle,
+/// 1.0.89); any harness whose child outlives it is the same leak. Here the leader forks a child into
+/// a group of its own — the session stays the node's — that holds no pipe, then exits at once: the
+/// run is over, and the child must be too.
+#[test]
+fn a_child_its_leader_left_behind_in_the_session_ends_with_the_node() {
+    let dir = scratch("supervisor-session-orphan");
+    let pids = dir.join("pids");
+    let script = format!(
+        r#"my $pid = fork();
+           if ($pid == 0) {{
+               setpgrp(0, 0);
+               close(STDOUT); close(STDERR); close(STDIN);
+               open(my $f, ">>", "{p}"); print $f "$$\n"; close $f;
+               sleep 900;
+               exit 0;
+           }}
+           for (1..200) {{ last if -s "{p}"; select(undef, undef, undef, 0.01); }}
+           exit 0;"#,
+        p = pids.display()
+    );
+    let out = run_bounded(
+        SysCommand::new("perl").args(["-e", &script]),
+        StdDuration::from_secs(30),
+    )
+    .expect("the run completes");
+    let orphans: Vec<i32> = std::fs::read_to_string(&pids)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
+    let alive: Vec<i32> = orphans
+        .iter()
+        .copied()
+        .filter(|p| {
+            !matches!(
+                crate::procid::run_state(*p),
+                crate::procid::RunState::Gone | crate::procid::RunState::Zombie
+            )
+        })
+        .collect();
+    for p in &orphans {
+        let _ = unsafe { kill(*p, SIGKILL) };
+    }
+    assert_eq!(out.code, Some(0));
+    assert_eq!(orphans.len(), 1, "the child recorded itself");
+    assert!(
+        alive.is_empty(),
+        "left running after the node ended: {alive:?}"
+    );
+}

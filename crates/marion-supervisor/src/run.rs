@@ -831,6 +831,11 @@ fn run_bounded_with(
             .map(|wake| wake.as_ref().map(|w| w.fd()));
         exited = crate::wake::step_child(&mut child, &exit, lines.as_slice(), Some(deadline))?;
     };
+    // **The node is over, so is everything in its session.** The leader led a session of its own
+    // (above), and a child it left behind keeps that session: copilot's npm launcher exits on
+    // SIGTERM and leaves its platform binary running. The session id is the leader's pid, which
+    // `end_session` reads afresh each round rather than by ancestry the reap already broke.
+    crate::kill::end_session(child.id() as i32, DRAIN_GRACE);
     // The child is reaped; anything still holding a write end is an escapee. One deadline for both
     // drains, so the total wait is `DRAIN_GRACE`, not twice it.
     let drain_deadline = Instant::now() + DRAIN_GRACE;
