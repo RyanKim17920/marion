@@ -3064,7 +3064,6 @@ fn repository_of(cwd: &std::path::Path) -> String {
     main.display().to_string()
 }
 
-/// The held node's attention item: the harness, the repository and the one action.
 /// **What a pane's screen says of whether it needs its operator**: blocked on the boot dialog its
 /// paste driver holds a message on, or on one the screen shows; else on an ask (an approval
 /// prompt) the screen shows; else running. The reason is the one action that unblocks it.
@@ -3096,6 +3095,7 @@ fn needs_operator(
     }
 }
 
+/// The held node's attention item: the harness, the repository and the one action.
 fn dialog_held(program: &str, d: &marion_harness::spec::BootDialog, repo: &str) -> String {
     format!(
         "{program} is waiting on its boot dialog (`{}`), which marion does not answer: {}",
