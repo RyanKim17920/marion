@@ -5,6 +5,7 @@
 //! child's `report` call. `spawn` blocks for the whole run and returns the completed contract.
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::*;
@@ -446,6 +447,11 @@ fn plain_patch_args<'a>(revs: &[&'a str]) -> Vec<&'a str> {
 
 /// `git args` on `tree`, through [`crate::gitcmd::command`]'s hardening.
 fn git(tree: Tree<'_>, args: &[&str]) -> Result<String, SpawnError> {
+    Ok(String::from_utf8_lossy(&git_bytes(tree, args)?).to_string())
+}
+
+/// [`git`]'s stdout as the bytes git wrote, for a blob compared byte for byte.
+fn git_bytes(tree: Tree<'_>, args: &[&str]) -> Result<Vec<u8>, SpawnError> {
     let mut command = crate::gitcmd::command(&tree, args)?;
     let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut command)?
@@ -456,7 +462,7 @@ fn git(tree: Tree<'_>, args: &[&str]) -> Result<String, SpawnError> {
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(out.stdout)
 }
 
 pub use crate::gitcmd::Tree;
@@ -967,7 +973,8 @@ pub fn commit_child_work(
 /// tracked, untracked or ignored), or one it carried in on a parent's commit, is the child's and
 /// not the repository's the operator trusted. The reference is where `base` meets the operator's
 /// own `HEAD` (the common dir's, which no child writes), so a carried or resumed tree is held to
-/// the operator's commit, not to one a parent made. Any git failure answers `false`.
+/// the operator's commit, not to one a parent made. Each path is read as the harness reads it
+/// ([`config_as_committed`]). Any git failure answers `false`.
 pub fn repo_config_unchanged(wt: Tree<'_>, base: &Oid, common: &Path, paths: &[&str]) -> bool {
     if paths.is_empty() {
         return true;
@@ -976,18 +983,83 @@ pub fn repo_config_unchanged(wt: Tree<'_>, base: &Oid, common: &Path, paths: &[&
         return false;
     };
     let reference = reference.trim();
-    let mut diff = vec![
-        "diff",
-        "--quiet",
-        "--no-ext-diff",
-        "--no-textconv",
-        reference,
-        "--",
-    ];
-    diff.extend(paths);
-    let mut others = vec!["ls-files", "--others", "-z", "--"];
-    others.extend(paths);
-    git(wt, &diff).is_ok() && git(wt, &others).is_ok_and(|o| o.is_empty())
+    paths.iter().all(|p| config_as_committed(wt, reference, p))
+}
+
+/// **Whether `rel` in `wt` is, byte for byte, what `reference` holds there**: the same plain
+/// files under the same names, or absent where the reference has nothing. The file system is
+/// asked, not git's index, because it is what the harness opens: a link at any component
+/// (`.claude -> elsewhere/`, which git's pathspecs never look through) answers `false`, as does
+/// anything but a plain file or directory, and on a case-insensitive file system `.CLAUDE/` is
+/// found at `.claude/` exactly as the harness finds it. A committed link or submodule there is
+/// not compared, so it answers `false` too.
+fn config_as_committed(wt: Tree<'_>, reference: &str, rel: &str) -> bool {
+    let Ok(listed) = git_bytes(
+        wt,
+        &["ls-tree", "-r", "-z", "--full-tree", reference, "--", rel],
+    ) else {
+        return false;
+    };
+    let mut committed = std::collections::BTreeMap::new();
+    for entry in listed.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
+            return false;
+        };
+        let meta = String::from_utf8_lossy(&entry[..tab]);
+        let fields: Vec<&str> = meta.split(' ').collect();
+        let [mode, "blob", oid] = fields[..] else {
+            return false;
+        };
+        if mode != "100644" && mode != "100755" {
+            return false;
+        }
+        let path = PathBuf::from(OsStr::from_bytes(&entry[tab + 1..]));
+        committed.insert(path, oid.to_string());
+    }
+    let mut at = wt.dir().to_path_buf();
+    for part in Path::new(rel).components() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => return false,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return committed.is_empty(),
+            Err(_) => return false,
+        }
+    }
+    let mut found = std::collections::BTreeMap::new();
+    if !plain_files(&at, Path::new(rel), &mut found) || !found.keys().eq(committed.keys()) {
+        return false;
+    }
+    found.iter().all(|(path, on_disk)| {
+        let blob = git_bytes(wt, &["cat-file", "blob", &committed[path]]);
+        matches!((blob, std::fs::read(on_disk)), (Ok(b), Ok(d)) if b == d)
+    })
+}
+
+/// Every plain file at or under `at` into `found`, keyed by its path relative to the tree (`rel`
+/// for `at`), following no link: `false` at a link or anything but a file or directory.
+fn plain_files(
+    at: &Path,
+    rel: &Path,
+    found: &mut std::collections::BTreeMap<PathBuf, PathBuf>,
+) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(at) else {
+        return false;
+    };
+    let kind = meta.file_type();
+    if kind.is_file() {
+        found.insert(rel.to_path_buf(), at.to_path_buf());
+        return true;
+    }
+    if !kind.is_dir() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(at) else {
+        return false;
+    };
+    entries
+        .into_iter()
+        .all(|e| e.is_ok_and(|e| plain_files(&e.path(), &rel.join(e.file_name()), found)))
 }
 
 /// The commit `refs/heads/<branch>` names now.
@@ -2678,6 +2750,55 @@ mod tests {
         assert!(
             !same(grandchild, &carried),
             "a parent's carried edit is not the operator's"
+        );
+    }
+
+    /// **A config reached through a link, or under another spelling, is never the operator's**:
+    /// git's pathspecs stop at an untracked `.claude -> elsewhere/` and at `.CLAUDE/`, but a
+    /// harness opening `.claude/settings.json` reads through the one, and on a case-insensitive
+    /// file system finds the other.
+    #[test]
+    fn a_config_behind_a_link_or_another_case_is_never_the_operators() {
+        let (dir, repo, _) = committed_repo("spawn-config-link");
+        std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "config"]);
+        let base = Oid(tgit(&repo, &["rev-parse", "HEAD"]));
+        let common = crate::socket::project_root(&repo);
+        let paths = [".mcp.json", ".claude/settings.json"];
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        let same = || repo_config_unchanged(child, &base, &common, &paths);
+        assert!(same(), "a fresh tree holds the operator's config");
+
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("settings.json"), "{\"hooks\":{}}\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, wt.join(".claude")).unwrap();
+        assert!(!same(), "a linked parent directory");
+        std::fs::remove_file(wt.join(".claude")).unwrap();
+        assert!(same());
+
+        let committed = std::fs::read(wt.join(".mcp.json")).unwrap();
+        std::fs::write(elsewhere.join("mcp.json"), &committed).unwrap();
+        std::fs::remove_file(wt.join(".mcp.json")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("mcp.json"), wt.join(".mcp.json")).unwrap();
+        assert!(!same(), "a link to the same bytes is still a link");
+        std::fs::remove_file(wt.join(".mcp.json")).unwrap();
+        std::fs::write(wt.join(".mcp.json"), &committed).unwrap();
+        assert!(same());
+
+        std::fs::create_dir_all(wt.join(".CLAUDE")).unwrap();
+        std::fs::write(wt.join(".CLAUDE/settings.json"), "{\"hooks\":{}}\n").unwrap();
+        let read_as_claude = wt.join(".claude/settings.json").exists();
+        assert!(
+            !(same() && read_as_claude),
+            "another case the file system resolves to the config's path"
         );
     }
 
