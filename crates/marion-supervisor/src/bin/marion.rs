@@ -346,7 +346,7 @@ fn endpoint(backend: &Backend) -> Result<Option<String>, ExitCode> {
     resolve_reachable_base_url(
         backend.canned,
         backend.base_url.clone(),
-        std::env::var("MARION_BASE_URL").ok(),
+        backend.env_endpoint(),
     )
     .map_err(|e| {
         err!("marion: {e}");
@@ -1255,12 +1255,48 @@ fn resolve_base_url(
              endpoint."
         )),
         (false, None) => Ok(None),
-        (true, explicit) => Ok(Some(
-            explicit
-                .or(from_env)
-                .unwrap_or_else(|| CANNED_BASE_URL.into()),
-        )),
+        (true, Some(u)) => Ok(Some(u)),
+        (true, None) => match from_env {
+            Some(u) if !is_loopback_literal_url(&u) => Err(format!(
+                "the canned endpoint the environment names ({u}, from $MARION_CANNED or \
+                 $MARION_BASE_URL) is not on this machine's loopback, and marion takes only a \
+                 loopback one from the environment: whatever serves it is sent every node's \
+                 prompt and the files it reads, and a repository's own environment can set \
+                 either. Pass --base-url {u} to mean it, or unset the variable."
+            )),
+            Some(u) => Ok(Some(u)),
+            None => Ok(Some(CANNED_BASE_URL.into())),
+        },
     }
+}
+
+/// **Whether `url`'s host is a loopback address, strictly** — for an endpoint marion takes from
+/// the environment, where [`is_loopback_url`]'s lean toward yes would be the wrong way to err. The
+/// scheme is `http` or `https`; the authority carries no `user@` and no backslash (which a URL
+/// parser may read as a path separator, moving the host); the host is `localhost`, or an IPv4 or
+/// IPv6 literal the standard library calls loopback.
+fn is_loopback_literal_url(url: &str) -> bool {
+    let Some(rest) = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if authority.contains(['@', '\\']) {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((h, port)) if port.is_empty() || port.starts_with(':') => h,
+            _ => return false,
+        },
+        None => authority.split(':').next().unwrap_or(authority),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// How long `--canned` waits for its provider to accept a connection before refusing the run.
@@ -1412,7 +1448,7 @@ fn run_mcp(args: McpArgs) -> ExitCode {
     let base_url = match resolve_base_url(
         args.backend.canned,
         args.backend.base_url.clone(),
-        std::env::var("MARION_BASE_URL").ok(),
+        args.backend.env_endpoint(),
     ) {
         Ok(u) => u,
         Err(e) => {
@@ -5453,8 +5489,8 @@ mod tests {
             Ok(Some("http://x/v1".into()))
         );
         assert_eq!(
-            resolve_base_url(true, None, Some("http://y/v1".into())),
-            Ok(Some("http://y/v1".into()))
+            resolve_base_url(true, None, Some("http://127.0.0.1:9/v1".into())),
+            Ok(Some("http://127.0.0.1:9/v1".into()))
         );
         assert_eq!(
             resolve_base_url(true, None, None),
@@ -5613,7 +5649,47 @@ mod tests {
         assert!(one.canned && one.base_url.is_none());
         let at = Backend::from_value(Some("http://127.0.0.1:9/v1"));
         assert!(at.canned);
-        assert_eq!(at.base_url.as_deref(), Some("http://127.0.0.1:9/v1"));
+        assert_eq!(at.env_url.as_deref(), Some("http://127.0.0.1:9/v1"));
+        assert!(at.base_url.is_none(), "the environment is not the flag");
+    }
+
+    /// **The environment names only a loopback canned endpoint**: a repository's own environment
+    /// can set `$MARION_CANNED` or `$MARION_BASE_URL`, and whatever serves the endpoint reads
+    /// every node's prompt. The flag, typed by the operator, may still name another host.
+    #[test]
+    fn a_canned_endpoint_from_the_environment_must_be_loopback() {
+        for remote in [
+            "http://203.0.113.9:8099/v1",
+            "https://canned.example.com/v1",
+            "http://127.0.0.1@evil.example/v1",
+            "http://evil.example\\@127.0.0.1/v1",
+            "http://127.0.0.1.evil.example/v1",
+            "http://localhost.evil.example/v1",
+            "127.0.0.1:8099",
+        ] {
+            let e = resolve_base_url(true, None, Some(remote.into())).unwrap_err();
+            assert!(
+                e.contains("loopback") && e.contains("--base-url"),
+                "{remote}: {e}"
+            );
+            assert_eq!(
+                resolve_base_url(true, Some(remote.into()), None),
+                Ok(Some(remote.into())),
+                "the flag is the operator's own word"
+            );
+        }
+        for local in [
+            "http://127.0.0.1:8099/v1",
+            "http://127.4.5.6/v1",
+            "http://LOCALHOST:1/v1",
+            "http://[::1]:8099/v1",
+        ] {
+            assert_eq!(
+                resolve_base_url(true, None, Some(local.into())),
+                Ok(Some(local.into())),
+                "{local}"
+            );
+        }
     }
 
     /// **The gate's escape hatch parses, and it is valueless.**

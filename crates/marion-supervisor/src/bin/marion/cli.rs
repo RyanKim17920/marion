@@ -344,7 +344,12 @@ impl Place {
 pub struct Backend {
     /// Opt **in** to marion's canned provider; real auth is what a person at a terminal means.
     pub canned: bool,
+    /// `--base-url`, as typed.
     pub base_url: Option<String>,
+    /// The URL `$MARION_CANNED` named, where it named one. Kept apart from the flag because the
+    /// environment is not the operator's word on the command line — a repository's `.envrc` can
+    /// set it — so only a loopback endpoint is taken from it (`resolve_base_url`).
+    pub env_url: Option<String>,
 }
 
 impl Backend {
@@ -361,13 +366,22 @@ impl Backend {
             None | Some("" | "0") => Self::default(),
             Some("1") => Self {
                 canned: true,
-                base_url: None,
+                ..Self::default()
             },
             Some(url) => Self {
                 canned: true,
-                base_url: Some(url.to_string()),
+                env_url: Some(url.to_string()),
+                ..Self::default()
             },
         }
+    }
+
+    /// The canned endpoint the environment names: `$MARION_CANNED`'s URL, else
+    /// `$MARION_BASE_URL`.
+    pub fn env_endpoint(&self) -> Option<String> {
+        self.env_url
+            .clone()
+            .or_else(|| std::env::var("MARION_BASE_URL").ok())
     }
 
     /// `true` when `flag` was one of this group and has been taken.
