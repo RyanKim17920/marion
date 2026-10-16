@@ -675,6 +675,46 @@ fn marion_search_finds_an_ended_run_by_its_task_and_its_paths() {
     assert_eq!((code, out.lines().count()), (Some(0), 1));
 }
 
+/// **`--all` reads every project under one state dir**, with the project column and a moved
+/// repository marked gone; `project:` narrows to one by name.
+#[test]
+fn marion_search_all_reads_every_project() {
+    let dir = scratch("search-all");
+    let a = marion_run(
+        &dir.join("acme"),
+        &format!("{REACHED_THE_BRIDGE}\nexit 0"),
+        "30",
+    );
+    assert_eq!(a.code, Some(0), "{}", a.stderr);
+    let state = dir.join("acme").join("state");
+    let other = dir.join("billing");
+    let repo = fixture_repo(&other);
+    let bin = stub_codex(&other, &format!("{REACHED_THE_BRIDGE}\nexit 0"));
+    let b = run_marion(&other, &repo, &state, &bin, "30");
+    assert_eq!(b.code, Some(0), "{}", b.stderr);
+    // Seen once, so its digest's header learns its root; then the repository moves away.
+    assert_eq!(marion_search(&b, &["delegate"]).0, Some(0));
+    std::fs::rename(&other, dir.join("billing-moved")).unwrap();
+
+    let (code, out, err) = marion_search(&a, &["--all", "delegate"]);
+    assert_eq!(code, Some(0), "{err}");
+    let rows: Vec<&str> = out.lines().collect();
+    assert_eq!(rows.len(), 2, "{out}");
+    assert!(
+        rows.iter().all(|r| r.starts_with("repo·")),
+        "both are called repo: {out}"
+    );
+    assert!(rows.iter().any(|r| r.contains("(gone)")), "{out}");
+    let (code, out, _) = marion_search(&a, &["delegate"]);
+    assert_eq!(
+        (code, out.lines().count()),
+        (Some(0), 1),
+        "this project only: {out}"
+    );
+    let (code, out, _) = marion_search(&a, &["project:nothing-named-so"]);
+    assert_eq!(code, Some(1), "{out}");
+}
+
 /// **The tripwire**: `marion search` run from inside a live node's process tree is refused by the
 /// supervisor's operator hello before it reads anything, and says why. Mutation: skip the dial
 /// and the search inside the node succeeds.

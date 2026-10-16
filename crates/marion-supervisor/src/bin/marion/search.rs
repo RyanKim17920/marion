@@ -31,6 +31,8 @@ pub struct SearchArgs {
     pub json: bool,
     pub limit: Option<usize>,
     pub reindex: bool,
+    /// Every project under the state dir, not only this one.
+    pub all: bool,
     pub place: Place,
 }
 
@@ -41,6 +43,7 @@ pub fn parse(argv: &[String]) -> Result<SearchArgs, Exit> {
         match word {
             Word::Flag("--json", v) => args.json = cli::switch("--json", v)?,
             Word::Flag("--reindex", v) => args.reindex = cli::switch("--reindex", v)?,
+            Word::Flag("--all", v) => args.all = cli::switch("--all", v)?,
             Word::Flag("--limit", v) => {
                 let n = words.value("--limit", v)?;
                 args.limit = Some(
@@ -82,7 +85,22 @@ fn run(args: &SearchArgs, query: &Query, repo: &Path, state: &Path, now: u64) ->
             return ExitCode::FAILURE;
         }
     };
-    let mut projects = vec![Project::current(state, &key)];
+    let current = Project::current(state, &key);
+    // `project:` names projects, so it searches every one.
+    let all = args.all || !query.project.is_empty();
+    let mut projects = if all {
+        let mut every = search::every(state);
+        for p in every.iter_mut().filter(|p| p.hash() == current.hash()) {
+            p.root = current.root.clone();
+        }
+        every
+    } else {
+        vec![current.clone()]
+    };
+    if all && let Err(why) = hello_every_live(state, &projects, &current) {
+        err!("marion search: {why}");
+        return ExitCode::FAILURE;
+    }
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
     let opts = Options {
         limit,
@@ -93,23 +111,37 @@ fn run(args: &SearchArgs, query: &Query, repo: &Path, state: &Path, now: u64) ->
         err!("marion search: {}: {why}", projects[*i].name());
     }
     let matcher = Matcher::new(query);
-    let mut rows: Vec<Row> = live_rows(&projects[0], &live, &matcher, &outcome.found);
+    let here = projects
+        .iter()
+        .position(|p| p.hash() == current.hash())
+        .filter(|i| projects[*i].wanted_by(query));
+    let mut rows: Vec<Row> = match here {
+        Some(i) => live_rows(&projects[i], i, &live, &matcher, &outcome.found),
+        None => Vec::new(),
+    };
     rows.extend(outcome.found.drain(..).map(|f| {
+        // Live state is this project's supervisor's to say; other projects' runs read as their
+        // digests recorded them.
         let live = live
             .iter()
+            .filter(|_| Some(f.project) == here)
             .find(|n| n.agent_id == f.hit.run.agent_id)
             .and_then(|n| live_state(n.state));
         Row { found: f, live }
     }));
     rows.truncate(limit);
-    print_rows(&rows, &projects, args.json, now);
+    print_rows(&rows, &projects, all, args.json, now);
     let ms = started.elapsed().as_millis();
     let runs = if rows.len() == 1 { "run" } else { "runs" };
     if rows.is_empty() {
+        let scope = if all {
+            "every project".to_string()
+        } else {
+            current.name()
+        };
         err!(
-            "no runs match {} in {} · searched {} in {ms} ms",
+            "no runs match {} in {scope} · searched {} in {ms} ms",
             shown_query(&args.words),
-            projects[0].name(),
             outcome.searched
         );
     } else {
@@ -144,6 +176,23 @@ fn live_nodes(repo: &Path, state: &Path, key: &Path) -> Result<Vec<NodeSummary>,
     tree::snapshot(repo, state).map_err(|why| format!("search stopped: {why}"))
 }
 
+/// **The tripwire for `--all`**: every other project whose root is known and whose supervisor is
+/// serving is dialled with an operator hello, which refuses a process inside one of its nodes. A
+/// project nobody serves is never dialled, and none is started. Not a boundary: the file mode on
+/// `<state>/private/` is.
+fn hello_every_live(state: &Path, projects: &[Project], current: &Project) -> Result<(), String> {
+    for p in projects.iter().filter(|p| p.hash() != current.hash()) {
+        let Some(root) = &p.root else { continue };
+        let paths = socket::socket_paths(state, root, socket::own_uid());
+        if socket::nobody_is_serving(&paths) {
+            continue;
+        }
+        marion_supervisor::client_auth::dial(&paths)
+            .map_err(|why| format!("search stopped: {}: {why}", p.name()))?;
+    }
+    Ok(())
+}
+
 /// A live node's state as `state:` spells it; `None` once it has ended.
 fn live_state(state: NodeState) -> Option<State> {
     match state {
@@ -156,7 +205,13 @@ fn live_state(state: NodeState) -> Option<State> {
 /// **Runs still live that match**, which no digest line records yet: matched on their metadata
 /// and, for a root, its kept prompt, read through the hardened opener. A child's task is in its
 /// contract, which is written when it ends.
-fn live_rows(project: &Project, live: &[NodeSummary], m: &Matcher, found: &[Found]) -> Vec<Row> {
+fn live_rows(
+    project: &Project,
+    index: usize,
+    live: &[NodeSummary],
+    m: &Matcher,
+    found: &[Found],
+) -> Vec<Row> {
     let scrub = marion_supervisor::export::scrub::Scrubber::from_process([]);
     live.iter()
         .rev()
@@ -185,20 +240,25 @@ fn live_rows(project: &Project, live: &[NodeSummary], m: &Matcher, found: &[Foun
             }
             let hit = m.confirm_live(&run, state)?;
             Some(Row {
-                found: Found { project: 0, hit },
+                found: Found {
+                    project: index,
+                    hit,
+                },
                 live: Some(state),
             })
         })
         .collect()
 }
 
-fn print_rows(rows: &[Row], projects: &[Project], json: bool, now: u64) {
+fn print_rows(rows: &[Row], projects: &[Project], all: bool, json: bool, now: u64) {
+    let names = search::shown_names(projects);
     for row in rows {
-        let project = &projects[row.found.project];
+        let (project, name) = (&projects[row.found.project], &names[row.found.project]);
         if json {
-            out!("{}", json_ascii(&json_row(row, project).to_string()));
+            out!("{}", json_ascii(&json_row(row, project, name).to_string()));
         } else {
-            out!("{}", text_row(row, project, projects.len() > 1, now));
+            let column = all.then_some(name.as_str());
+            out!("{}", text_row(row, project, column, now));
         }
     }
 }
@@ -224,16 +284,17 @@ fn glyph(word: &str) -> char {
 }
 
 /// `acme  3c33  ✓ ok        2d  add token-bucket limiter      …the limiter now refuses…`.
-fn text_row(row: &Row, project: &Project, with_project: bool, now: u64) -> String {
+/// `name` is the project column, shown only when every project is searched.
+fn text_row(row: &Row, project: &Project, name: Option<&str>, now: u64) -> String {
     let hit: &Hit = &row.found.hit;
     let run = &hit.run;
     let word = state_word(row);
     let when = run.ended.or(run.started).unwrap_or(run.at);
     let age = ago(now.saturating_sub(unix_ms(when)) / 1000);
     let mut line = String::new();
-    if with_project {
+    if let Some(name) = name {
         let gone = if project.gone() { " (gone)" } else { "" };
-        line.push_str(&format!("{:<14}  ", format!("{}{gone}", project.name())));
+        line.push_str(&format!("{:<14}  ", format!("{name}{gone}")));
     }
     line.push_str(&format!(
         "{:<4}  {} {:<9} {:>4}  {:<30}",
@@ -256,11 +317,11 @@ fn text_row(row: &Row, project: &Project, with_project: bool, now: u64) -> Strin
 
 /// marion's own facts at the top level; everything an agent or a person wrote under `untrusted`,
 /// the field's name being the warning to whatever reads it.
-fn json_row(row: &Row, project: &Project) -> serde_json::Value {
+fn json_row(row: &Row, project: &Project, name: &str) -> serde_json::Value {
     let hit = &row.found.hit;
     let run = &hit.run;
     serde_json::json!({
-        "project": project.name(),
+        "project": name,
         "root": project.root,
         "gone": project.gone(),
         "agent_id": run.agent_id,
@@ -389,9 +450,17 @@ mod tests {
 
     #[test]
     fn its_words_parse() {
-        let a = parse(&words(&["limiter", "--json", "--limit", "5", "--reindex"])).unwrap();
+        let a = parse(&words(&[
+            "limiter",
+            "--json",
+            "--limit",
+            "5",
+            "--reindex",
+            "--all",
+        ]))
+        .unwrap();
         assert_eq!(a.words, ["limiter"]);
-        assert!(a.json && a.reindex);
+        assert!(a.json && a.reindex && a.all);
         assert_eq!(a.limit, Some(5));
         assert_eq!(parse(&words(&["--", "--json"])).unwrap().words, ["--json"]);
         for bad in [
@@ -414,14 +483,19 @@ mod tests {
                 "…refuses bursts",
             ),
             &project(),
-            false,
+            None,
             NOW,
         );
         assert_eq!(
             line,
             "3c33  ✓ ok          2d  add a token-bucket limiter      …refuses bursts"
         );
-        let paths = text_row(&row("x", "paths", "src/a.rs"), &project(), true, NOW);
+        let paths = text_row(
+            &row("x", "paths", "src/a.rs"),
+            &project(),
+            Some("acme"),
+            NOW,
+        );
         assert!(paths.starts_with("acme (gone)     3c33"), "{paths}");
         assert!(paths.ends_with("paths: src/a.rs"), "{paths}");
     }
@@ -437,7 +511,7 @@ mod tests {
                 "x\ny",
             ),
             &project(),
-            false,
+            None,
             NOW,
         );
         let shown = marion_supervisor::printable::line(&line);
@@ -450,7 +524,7 @@ mod tests {
     #[test]
     fn json_keeps_recorded_text_under_untrusted() {
         let r = row("do \u{202e}this\nnow", "report", "said \"hi\"");
-        let printed = json_ascii(&json_row(&r, &project()).to_string());
+        let printed = json_ascii(&json_row(&r, &project(), "acme").to_string());
         assert!(printed.is_ascii(), "{printed}");
         let v: serde_json::Value = serde_json::from_str(&printed).unwrap();
         assert_eq!(v["untrusted"]["title"], "do \u{202e}this");
