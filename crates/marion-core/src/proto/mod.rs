@@ -19,7 +19,7 @@
 //! |---|---|---|
 //! | who calls | the **client** (the TUI, §5.6) over the §2 unix socket | an **agent**, over the per-child MCP bridge |
 //! | transport | NDJSON JSON-RPC 2.0 | MCP tool calls |
-//! | verbs | the fifteen below | `status`, `list`, `wait`, `send`, `cancel`, `report`, `spawn` |
+//! | verbs | the fifteen below | `status` (with no id, the list), `wait`, `send`, `cancel`, `report`, `spawn` |
 //! | authorization | none per-verb: the client is the operator | per verb, per target, per target state, against a per-node capability token bound to an `AgentId` |
 //!
 //! §5.4's per-verb table is **not** this module's authorization model and must not be copied into

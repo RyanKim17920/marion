@@ -1216,7 +1216,7 @@ fn mcp_main(argv: &[String]) -> Result<ExitCode, Exit> {
 /// §10's `marion` is the user-facing command and §5.4's control MCP is how an agent addresses
 /// marion; until now the second was only ever reachable *from inside* a node marion had spawned.
 /// This is the same surface pointed the other way: an external MCP client — Claude Code's
-/// `.mcp.json`, another agent, an editor — gets `spawn`, `wait`, `status` and `list`, and its
+/// `.mcp.json`, another agent, an editor — gets `spawn`, `wait` and `status` (with no id, the list), and its
 /// `spawn` creates a **root**.
 ///
 /// **It is a socket client and it is not privileged**, which is the whole of why it may exist at
@@ -5244,9 +5244,7 @@ mod tests {
         let declared = mcp_tool_names();
         assert_eq!(
             declared,
-            [
-                "spawn", "wait", "status", "list", "steer", "cancel", "workflow"
-            ]
+            ["spawn", "wait", "status", "steer", "cancel", "workflow"]
         );
         let mcp = (cli::verb("mcp").unwrap().help)();
         assert!(mcp.contains(&declared.join(", ")), "{mcp}");
