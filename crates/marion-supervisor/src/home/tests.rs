@@ -1921,7 +1921,7 @@ fn setup_repository_row_trusts_after_a_y_and_stops_trusting_at_once() {
     h.setup.notify = Some(true);
     h.setup.repo = Some(crate::home::RepoTrust {
         answer: None,
-        files: vec![".mcp.json".into()],
+        files: vec![".mcp.json".into(), ".codex/config.toml".into()],
     });
     assert_eq!(h.setup_items().last(), Some(&SetupItem::Repo));
     for _ in 0..20 {
@@ -1936,7 +1936,7 @@ fn setup_repository_row_trusts_after_a_y_and_stops_trusting_at_once() {
     assert!(
         matches!(
             &v.lines[v.cursor.unwrap()],
-            SetupLine::Repo { answer: None, files } if files == ".mcp.json"
+            SetupLine::Repo { answer: None, files } if files == ".mcp.json, .codex/config.toml"
         ),
         "{:?}",
         v.lines
@@ -1947,9 +1947,13 @@ fn setup_repository_row_trusts_after_a_y_and_stops_trusting_at_once() {
     let e = h.key(Key::Enter);
     assert!(!e.destructive(), "Enter alone trusts nothing: {e:?}");
     assert_eq!(h.mode, Mode::Confirm(Effect::RepoTrust(true)));
-    let Footer::Confirm { command, .. } = frame(&h).footer else {
+    let Footer::Confirm { question, command } = frame(&h).footer else {
         panic!("a confirm asks before trusting");
     };
+    assert!(
+        question.contains(".mcp.json, .codex/config.toml"),
+        "the question names what would load: {question}"
+    );
     assert_eq!(command, "marion trust allow --repo");
     assert_eq!(h.key(Key::Char('n')), Effect::None);
     assert_eq!(h.notice.as_deref(), Some("not trusted"));

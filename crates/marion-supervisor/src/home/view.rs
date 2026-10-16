@@ -1003,10 +1003,16 @@ fn confirm(home: &Home, effect: &Effect) -> Footer {
         Effect::ProfileRemove { harness, name } => {
             (format!("remove the login {harness} {name}?"), line(effect))
         }
-        Effect::RepoTrust(_) => (
-            "trust this repository, so nodes on your own login load its harness config?".into(),
-            line(effect),
-        ),
+        Effect::RepoTrust(_) => {
+            let what = match home.setup.repo.as_ref().map(|r| r.files.join(", ")) {
+                Some(files) if !files.is_empty() => files,
+                _ => "harness config".to_string(),
+            };
+            (
+                format!("trust this repository, so nodes on your own login load its {what}?"),
+                line(effect),
+            )
+        }
         Effect::Kill(id) => (
             format!("cancel pending; kill {} now?", who_short(home, id)),
             line(effect),
