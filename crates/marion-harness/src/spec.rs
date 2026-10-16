@@ -1473,8 +1473,11 @@ pub struct Fields {
     /// The tree's repository config is the operator's own: what [`Arg::Disowned`] reads.
     pub repo_config_own: bool,
     /// The server names the tree's `.mcp.json` declares (its `mcpServers` keys), sorted; empty
-    /// where it has none or it does not parse. Read on a live launch only.
+    /// where it has none or does not read as servers. Read on a live launch only.
     pub repo_mcp_servers: Vec<String>,
+    /// The tree's `.mcp.json` is there and does not read as an object of servers, so
+    /// [`Self::repo_mcp_servers`] cannot be all it names ([`Refusal::UnreadableRepoMcp`]).
+    pub repo_mcp_unreadable: bool,
 }
 
 /// **The strings a declaration or a credential can travel in print their shape, never their
@@ -1514,6 +1517,7 @@ impl std::fmt::Debug for Fields {
             repo_trusted,
             repo_config_own,
             repo_mcp_servers,
+            repo_mcp_unreadable,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -1529,6 +1533,7 @@ impl std::fmt::Debug for Fields {
             .field("repo_trusted", repo_trusted)
             .field("repo_config_own", repo_config_own)
             .field("repo_mcp_servers", repo_mcp_servers)
+            .field("repo_mcp_unreadable", repo_mcp_unreadable)
             .field("cwd", cwd)
             .field("config_dir", config_dir)
             .field("auth", auth)
@@ -1690,6 +1695,9 @@ pub enum Refusal {
     /// A live launch in an untrusted repository whose tree holds configuration this row has no
     /// switch to keep out ([`Arg::RefuseUntrusted`]).
     UntrustedRepoConfig,
+    /// A live launch in an untrusted repository that rejects the tree's `.mcp.json` servers by
+    /// name ([`Field::UntrustedSettings`]), where that file does not read as an object of servers.
+    UnreadableRepoMcp,
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -1897,6 +1905,14 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
             .any(|p| std::fs::symlink_metadata(f.cwd.join(p)).is_ok())
     {
         return Err(Refusal::UntrustedRepoConfig);
+    }
+    if argv
+        .iter()
+        .any(|a| matches!(a, Arg::Flag(_, Field::UntrustedSettings)))
+        && repo_config_rule(f) == Some(false)
+        && f.repo_mcp_unreadable
+    {
+        return Err(Refusal::UnreadableRepoMcp);
     }
     // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
     // (claude 2.1.268), and appended it would swallow the positional prompt the pane seeds.

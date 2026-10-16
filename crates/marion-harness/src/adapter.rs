@@ -1070,6 +1070,11 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         Auth::Canned | Auth::Endpoint => (spec.base_url.clone(), spec.api_key.clone()),
         Auth::Inherited => (None, None),
     };
+    let repo_mcp = if spec.auth.overlays() {
+        Some(Vec::new())
+    } else {
+        repo_mcp_servers(&spec.cwd)
+    };
     spec::Fields {
         cwd: spec.cwd.clone(),
         config_dir: spec.config_dir.clone(),
@@ -1094,11 +1099,8 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         env_passthrough: spec.extra.env_passthrough.clone(),
         repo_trusted: spec.extra.repo_trusted,
         repo_config_own: spec.extra.repo_config_own,
-        repo_mcp_servers: if spec.auth.overlays() {
-            Vec::new()
-        } else {
-            repo_mcp_servers(&spec.cwd)
-        },
+        repo_mcp_servers: repo_mcp.clone().unwrap_or_default(),
+        repo_mcp_unreadable: repo_mcp.is_none(),
         ..spec::Fields::default()
     }
 }
@@ -1268,6 +1270,14 @@ fn render_row(
                  endpoint provider",
                 row.repo_config.join(", ")
             ),
+        },
+        spec::Refusal::UnreadableRepoMcp => HarnessError::Unspellable {
+            harness: row.harness,
+            what: "this repository's .mcp.json does not read as an object of servers, so marion \
+                   cannot reject each server it might name on a node on your login; fix the file, \
+                   trust the repository first (marion trust allow --repo) or run it on a canned \
+                   or endpoint provider"
+                .into(),
         },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
@@ -1502,21 +1512,22 @@ pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdap
 
 /// **The server names `<cwd>/.mcp.json` declares**, sorted: its `mcpServers` keys. Only the
 /// names are read, from the repository's own file — never the operator's configuration. Empty
-/// where there is no such file, or it does not parse as an object of servers.
-fn repo_mcp_servers(cwd: &std::path::Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(cwd.join(".mcp.json")) else {
-        return Vec::new();
+/// where there is no such file or it names no `mcpServers`; `None` where it is there and does not
+/// read as an object of servers (unreadable, not JSON, `mcpServers` not an object), which an
+/// untrusted launch refuses rather than rejecting no name ([`spec::Refusal::UnreadableRepoMcp`]).
+fn repo_mcp_servers(cwd: &std::path::Path) -> Option<Vec<String>> {
+    let file = cwd.join(".mcp.json");
+    if std::fs::symlink_metadata(&file).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return Some(Vec::new());
+    }
+    let text = std::fs::read_to_string(&file).ok()?;
+    let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    let mut names: Vec<String> = match doc.as_object()?.get("mcpServers") {
+        None => Vec::new(),
+        Some(servers) => servers.as_object()?.keys().cloned().collect(),
     };
-    let mut names: Vec<String> = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| {
-            v.get("mcpServers")?
-                .as_object()
-                .map(|o| o.keys().cloned().collect())
-        })
-        .unwrap_or_default();
     names.sort();
-    names
+    Some(names)
 }
 
 #[cfg(test)]
@@ -3966,6 +3977,43 @@ mod tests {
             )
         );
         assert_eq!(settings(true), None);
+    }
+
+    /// **An untrusted repository's `.mcp.json` that marion cannot read as servers refuses the
+    /// launch** rather than rejecting none of them by name: claude may still read servers from a
+    /// file marion could not, and an approval by name would then let them load. A file that reads
+    /// as an object of servers, or none at all, or a trusted repository, launches.
+    #[test]
+    fn an_untrusted_mcp_json_marion_cannot_read_as_servers_refuses_the_launch() {
+        let dir = marion_testsupport::scratch("claude-repo-mcp-unread");
+        let launch = |trusted: bool| {
+            let mut spec = live_claude(trusted);
+            spec.cwd = dir.to_path_buf();
+            ClaudeCodeAdapter.compile(&spec, &ctx())
+        };
+        assert!(launch(false).is_ok(), "no .mcp.json");
+        for body in [
+            "not json",
+            r#"{"mcpServers":["x"]}"#,
+            r#"["mcpServers"]"#,
+            "\u{feff}{}",
+        ] {
+            std::fs::write(dir.join(".mcp.json"), body).unwrap();
+            let err = launch(false).expect_err(body).to_string();
+            assert!(err.contains(".mcp.json"), "{body}: {err}");
+            assert!(launch(true).is_ok(), "{body}: trusted");
+        }
+        std::fs::remove_file(dir.join(".mcp.json")).unwrap();
+        std::fs::create_dir(dir.join(".mcp.json")).unwrap();
+        assert!(
+            launch(false).is_err(),
+            "a directory where the file would be"
+        );
+        std::fs::remove_dir(dir.join(".mcp.json")).unwrap();
+        for body in ["{}", r#"{"mcpServers":{}}"#] {
+            std::fs::write(dir.join(".mcp.json"), body).unwrap();
+            assert!(launch(false).is_ok(), "{body}");
+        }
     }
 
     /// **A live qwen node in an untrusted repository with its own `.qwen/` is refused**, naming
