@@ -196,7 +196,7 @@ pub struct RootFacts<'a> {
 
 impl Run {
     /// A line with marion's facts and nothing anyone wrote.
-    fn bare(agent_id: AgentId, agent_type: &str, harness: &str) -> Run {
+    pub fn bare(agent_id: AgentId, agent_type: &str, harness: &str) -> Run {
         Run {
             v: VERSION,
             at: now(),

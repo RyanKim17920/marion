@@ -62,6 +62,10 @@ path = "tests/l45_tree.rs"
 required-features = ["client"]
 
 [dependencies]
+# Search across runs scans its digest for every word at once, ASCII case folded, and finds a line's
+# id and end by an exact key. Both were already in the build, through `globset` and `regex`.
+aho-corasick = "1"
+memchr = "2"
 blake3 = "1"
 getrandom = "0.4"
 marion-core = { path = "../marion-core" }
