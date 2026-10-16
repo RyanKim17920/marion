@@ -100,7 +100,7 @@ impl Grid {
             if row.chars().count() + 1 >= cols || row.trim_end().ends_with('…') {
                 let edge: Vec<&str> = row.split_whitespace().collect();
                 self.edges
-                    .push(edge.join(" ").trim_end_matches('…').to_string());
+                    .push(edge.join(" ").trim_end_matches('…').trim_end().to_string());
             }
             joined = u16::try_from(i).is_ok_and(|i| screen.row_wrapped(i));
         }
@@ -112,15 +112,11 @@ impl Grid {
     }
 }
 
-/// `row` ends with at least [`MIN_CUT`] characters of the start of `needle`: the needle, cut off
-/// by the pane's edge.
+/// `row` is the start of `needle`, at least [`MIN_CUT`] characters of it: the needle, cut off by
+/// the pane's edge. The row is all of it — prose that only ends on a needle's first words, as a
+/// soft-wrapped reply can at the edge, is not the prompt's line.
 fn cut_at_edge(row: &str, needle: &str) -> bool {
-    needle
-        .char_indices()
-        .map(|(at, _)| at)
-        .chain([needle.len()])
-        .filter(|&at| needle[..at].chars().count() >= MIN_CUT)
-        .any(|at| row.ends_with(&needle[..at]))
+    row.chars().count() >= MIN_CUT && needle.starts_with(row)
 }
 
 /// **When a node's boot is over without a paste**: the row's boot mark under bracketed paste, no
@@ -1131,7 +1127,7 @@ mod tests {
     /// **A pane narrower than a prompt's lines cuts them at its edge, and the cut line still
     /// reads as the line**: the header's first words up to the right edge (over an option), the
     /// footer's likewise, with or without the TUI's `…`. The same words short of the edge are not
-    /// a cut line.
+    /// a cut line, and neither is a row of prose that only ends on a line's first words.
     #[test]
     fn a_line_cut_at_a_narrow_panes_edge_is_an_ask() {
         let narrow = || {
@@ -1155,6 +1151,17 @@ mod tests {
             scan.asking(),
             Some(&ASK),
             "the footer cut, with an ellipsis"
+        );
+        let mut scan = narrow();
+        // 30 columns of prose ending on the footer's first 19 characters, then the option.
+        scan.feed(
+            b"\x1b[3;1Hso it read Press enter to conf\x1b[5;3H1. Yes, proceed (y)",
+            Instant::now(),
+        );
+        assert_eq!(
+            scan.asking(),
+            None,
+            "a row that only ends on a line's start is prose"
         );
         let mut scan = narrow();
         scan.feed(b"\x1b[3;1H  Would you like to run", Instant::now());
