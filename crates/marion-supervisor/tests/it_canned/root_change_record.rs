@@ -606,6 +606,99 @@ fn a_root_that_ended_leaves_exactly_one_search_line() {
     assert_eq!(lines[0]["paths"], serde_json::json!(["a.txt"]));
 }
 
+/// `marion search <args>` against `run`'s project: its exit code, stdout and stderr.
+fn marion_search(run: &Run, args: &[&str]) -> (Option<i32>, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
+    cmd.arg("search").args(args).args([
+        "--repo",
+        &run.repo.to_string_lossy(),
+        "--state-dir",
+        &run.state.to_string_lossy(),
+    ]);
+    let out = run_bounded(&mut cmd, RUN_BOUND).expect("marion search starts");
+    assert!(!out.timed_out, "marion search hung");
+    (
+        out.code,
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// **`marion search` finds a run by its task and by the paths it changed**, prints one row per
+/// run, says so and exits 1 when nothing matches, keeps recorded text under `untrusted` in
+/// `--json`, and finds the run again from the journal alone after its digest is gone.
+#[test]
+fn marion_search_finds_an_ended_run_by_its_task_and_its_paths() {
+    let dir = scratch("search-cli");
+    let run = marion_run(
+        &dir,
+        &format!("printf 'x\\n' > limiter.rs\n{REACHED_THE_BRIDGE}\nexit 0"),
+        "30",
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+
+    let (code, out, err) = marion_search(&run, &["delegate", "harness:codex", "state:ok"]);
+    assert_eq!(code, Some(0), "{err}");
+    let rows: Vec<&str> = out.lines().collect();
+    assert_eq!(rows.len(), 1, "{out}");
+    assert!(rows[0].contains("✓ ok"), "{out}");
+    assert!(rows[0].contains("Delegate the task to a child."), "{out}");
+    assert!(err.contains("1 run · searched 1"), "{err}");
+
+    let (code, out, _) = marion_search(&run, &["limiter.rs"]);
+    assert_eq!(code, Some(0));
+    assert!(out.contains("paths: limiter.rs"), "{out}");
+
+    let (code, out, _) = marion_search(&run, &["--json", "child"]);
+    assert_eq!(code, Some(0));
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
+    assert_eq!(v["agent_type"], "codex");
+    assert_eq!(v["state"], "ok");
+    assert_eq!(v["untrusted"]["title"], "Delegate the task to a child.");
+
+    let (code, out, err) = marion_search(&run, &["nothing-like-this"]);
+    assert_eq!(code, Some(1), "grep's convention");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("no runs match \"nothing-like-this\""), "{err}");
+
+    let (code, _, err) = marion_search(&run, &["hraness:codex"]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("not a filter"), "{err}");
+
+    let mut digests = Vec::new();
+    find_all(&run.state, "runs.jsonl", &mut digests);
+    std::fs::remove_file(&digests[0]).unwrap();
+    let (code, out, err) = marion_search(&run, &["delegate"]);
+    assert_eq!(code, Some(0), "rebuilt from the journal: {err}");
+    assert_eq!(out.lines().count(), 1, "{out}");
+    let (code, out, _) = marion_search(&run, &["--reindex", "delegate"]);
+    assert_eq!((code, out.lines().count()), (Some(0), 1));
+}
+
+/// **The tripwire**: `marion search` run from inside a live node's process tree is refused by the
+/// supervisor's operator hello before it reads anything, and says why. Mutation: skip the dial
+/// and the search inside the node succeeds.
+#[test]
+fn a_search_from_inside_a_live_node_is_stopped_by_the_operator_hello() {
+    let dir = scratch("search-tripwire");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let body = format!(
+        "'{bin}' search delegate --repo '{repo}' --state-dir '{state}' > search.out 2>&1\n\
+         echo \"exit=$?\" >> search.out\n{REACHED_THE_BRIDGE}\nexit 0",
+        bin = env!("CARGO_BIN_EXE_marion"),
+        repo = repo.display(),
+        state = state.display(),
+    );
+    let bin = stub_codex(&dir, &body);
+    let run = run_marion(&dir, &repo, &state, &bin, "30");
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let said = std::fs::read_to_string(repo.join("search.out")).unwrap();
+    assert!(said.contains("search stopped"), "{said}");
+    assert!(said.contains("exit=1"), "{said}");
+}
+
 /// **NC-1 — the paired control, and the primary guard.**
 ///
 /// Two runs of the same harness against the same fixture, differing only in whether the root wrote
