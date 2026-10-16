@@ -1579,6 +1579,8 @@ pub enum Refusal {
     NoWireRecipe,
     /// The endpoint's provider reads its key from a header this wire's recipe cannot present.
     NoKeyRecipe(KeyHeader),
+    /// The launch's model begins with `-`, so the harness would read it as a flag of its own.
+    FlagLikeModel,
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -1721,6 +1723,9 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     let resumes_on_channel = shape == Shape::Headless && spec.surfaces.rpc().is_some();
     if f.resume.is_some() && !resumes_on_argv && !resumes_on_channel {
         return Err(Refusal::NoResume);
+    }
+    if f.model.as_deref().is_some_and(|m| m.starts_with('-')) {
+        return Err(Refusal::FlagLikeModel);
     }
     // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
     // (claude 2.1.268), and appended it would swallow the positional prompt the pane seeds.
@@ -2433,6 +2438,25 @@ mod tests {
             claude.quiet_stderr("Reading additional input from stdin..."),
             "Reading additional input from stdin..."
         );
+    }
+
+    /// **A model that would read as a flag is refused, not rendered**: `--model -x` hands the
+    /// harness a second switch of the launch's choosing on every row that spells a model.
+    #[test]
+    fn a_model_beginning_with_a_dash_is_refused() {
+        let claude = crate::adapter::harness_spec(Harness::ClaudeCode);
+        let with = |m: &str| Fields {
+            model: Some(m.into()),
+            ..Fields::default()
+        };
+        for m in ["--dangerously-skip-permissions", "-p"] {
+            assert_eq!(
+                render(claude, Shape::Headless, &with(m)).map(|_| ()),
+                Err(Refusal::FlagLikeModel),
+                "{m}"
+            );
+        }
+        assert!(render(claude, Shape::Headless, &with("claude-opus-5-5")).is_ok());
     }
 
     /// A row reads the key through [`Field::ApiKey`] to place it where its harness looks; a

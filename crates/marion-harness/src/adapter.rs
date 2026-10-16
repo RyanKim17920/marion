@@ -1215,6 +1215,12 @@ fn render_row(
                 }
             ),
         },
+        spec::Refusal::FlagLikeModel => HarnessError::Unspellable {
+            harness: row.harness,
+            what: "a model name begins with `-`, which the harness would read as a flag of its \
+                   own rather than as the model"
+                .into(),
+        },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
             what: "this harness has no measured way to name a session to resume on this shape's \
