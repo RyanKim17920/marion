@@ -715,6 +715,11 @@ pub fn run_duplex(
         guard.end_now(&mut child);
     }
     let status = child.wait()?;
+    // A node leading its own session ends with everything in it, as a launch-only node does
+    // (`run_bounded_with`): a child the harness left behind is not the harness's to keep.
+    if spec.wall_clock.is_some() {
+        crate::kill::end_session(pid, DRAIN_GRACE);
+    }
     let (stderr, timed_out) = guard.stop(false, &mut child);
     // What the node said after marion's last boundary — a turn it queued itself from a mid-turn
     // write and ran with stdin already closed (see [`FOLD_SETTLE`]). Recorded, never answered: the
@@ -2805,6 +2810,67 @@ exit 0"#,
         assert!(
             matches!(std::fs::read(&aborted), Err(e) if e.kind() == std::io::ErrorKind::NotFound),
             "an unmeasured abort was written"
+        );
+    }
+
+    /// **What a duplex node's leader leaves in its session ends with the node**, as on a launch-only
+    /// node (`run::tests::a_child_its_leader_left_behind_in_the_session_ends_with_the_node`). The
+    /// node answers its turn, forks a child into a group of its own holding no pipe, and exits.
+    #[test]
+    fn a_child_a_duplex_leader_left_in_its_session_ends_with_the_node() {
+        let dir = scratch("duplex-session-orphan");
+        let marker = dir.join("mcp-ready");
+        let pids = dir.join("pids");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let script = format!(
+            r#"read init
+printf '{{"type":"control_response","response":{{"subtype":"success","request_id":"marion-init-test","response":{{}}}}}}\n'
+read user
+perl -e 'if (fork() == 0) {{ setpgrp(0, 0); close(STDIN); close(STDOUT); close(STDERR); open(my $f, ">>", "{p}"); print $f "$$\n"; close $f; sleep 900; exit 0; }} for (1..200) {{ last if -s "{p}"; select(undef, undef, undef, 0.01); }}'
+printf '{{"type":"result","subtype":"success"}}\n'"#,
+            p = pids.display()
+        );
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &DuplexSpec {
+                ready_file: &marker,
+                prompt: "do the task",
+                init_id: "marion-init-test".into(),
+                mcp_ready_timeout: StdDuration::from_secs(5),
+                depth: crate::depth::ROOT_DEPTH,
+                wall_clock: Some(ROOT_WALL_CLOCK),
+                sink: None,
+                on_started: None,
+                turns: None,
+                stop_on: None,
+                dialect: Dialect::StreamJson,
+                abort: AbortVerb::None { note: "test" },
+            },
+        )
+        .expect("the run returns");
+        let orphans: Vec<i32> = std::fs::read_to_string(&pids)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        let alive: Vec<i32> = orphans
+            .iter()
+            .copied()
+            .filter(|p| {
+                !matches!(
+                    crate::procid::run_state(*p),
+                    crate::procid::RunState::Gone | crate::procid::RunState::Zombie
+                )
+            })
+            .collect();
+        for p in &orphans {
+            kill_process_tree(*p);
+        }
+        assert!(!out.timed_out);
+        assert_eq!(orphans.len(), 1, "the child recorded itself");
+        assert!(
+            alive.is_empty(),
+            "left running after the node ended: {alive:?}"
         );
     }
 }
