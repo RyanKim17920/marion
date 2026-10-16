@@ -630,8 +630,7 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
 /// What `wait`, `status` and `steer` are addressed by: one `id`, whichever of the two a caller
 /// holds. The older `task_id` and `agent_id` keys are still read (`mcp::address`) and no longer
 /// declared, so a model sees one way to name a child.
-const ID_DESCRIPTION: &str = "The child: the task_id from the handle `spawn` returned, or its \
-     agent id as `list` shows it (a unique start of it is enough).";
+const ID_DESCRIPTION: &str = "A task_id from `spawn`, or an agent id (a unique prefix will do).";
 
 /// marion's own name for the child's return path, in the vocabulary [`tools`] declares it under.
 ///
