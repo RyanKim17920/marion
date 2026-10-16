@@ -1,6 +1,7 @@
 //! **`marion harness`**: the harness rows the operator defines in files — `list` them with whether
 //! each loaded, `check` one before relying on it.
 
+use marion_supervisor::{err, out_to};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -35,7 +36,7 @@ fn list(out: &mut dyn std::io::Write) -> ExitCode {
         && repo.loaded.is_empty()
         && repo.refused.is_empty()
     {
-        let _ = writeln!(
+        let _ = out_to!(
             out,
             "no harness rows; add one as {}/<name>.toml",
             dir.map_or_else(
@@ -46,14 +47,14 @@ fn list(out: &mut dyn std::io::Write) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     for (h, path) in &installed.loaded {
-        let _ = writeln!(out, "{:<16} loaded   {}", h.as_str(), path.display());
+        let _ = out_to!(out, "{:<16} loaded   {}", h.as_str(), path.display());
     }
     for e in &installed.refused {
         let name = e.path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
-        let _ = writeln!(out, "{name:<16} refused  {e}");
+        let _ = out_to!(out, "{name:<16} refused  {e}");
     }
     for (h, path) in &repo.loaded {
-        let _ = writeln!(
+        let _ = out_to!(
             out,
             "{:<16} loaded   {} (trusted)",
             h.as_str(),
@@ -61,7 +62,7 @@ fn list(out: &mut dyn std::io::Write) -> ExitCode {
         );
     }
     for e in &repo.refused {
-        let _ = writeln!(out, "{:<16} refused  {e}", "(repository)");
+        let _ = out_to!(out, "{:<16} refused  {e}", "(repository)");
     }
     ExitCode::SUCCESS
 }
@@ -73,7 +74,7 @@ fn check(path: &Path, out: &mut dyn std::io::Write) -> ExitCode {
         .and_then(|s| s.to_str())
         .unwrap_or_default();
     let Some(harness) = Harness::named(stem).filter(|h| !h.is_builtin()) else {
-        eprintln!(
+        err!(
             "marion: {}: `{stem}` is not a name a row file may have: lowercase letters, digits and \
              single dashes, from a letter, and none of a harness marion ships",
             path.display()
@@ -82,7 +83,7 @@ fn check(path: &Path, out: &mut dyn std::io::Write) -> ExitCode {
     };
     match row_file::build(path, harness) {
         Ok(spec) => {
-            let _ = writeln!(
+            let _ = out_to!(
                 out,
                 "{}  {}  loads: program {}",
                 stem,
@@ -90,14 +91,14 @@ fn check(path: &Path, out: &mut dyn std::io::Write) -> ExitCode {
                 spec.program.unwrap_or("?")
             );
             let env: Vec<&str> = spec.env.iter().map(|e| e.key).collect();
-            let _ = writeln!(out, "  env: {}", env.join(" "));
-            let _ = writeln!(out, "  approval: {:?}", spec.approval);
-            let _ = writeln!(out, "  updates: {:?}", spec.updates);
+            let _ = out_to!(out, "  env: {}", env.join(" "));
+            let _ = out_to!(out, "  approval: {:?}", spec.approval);
+            let _ = out_to!(out, "  updates: {:?}", spec.updates);
             ExitCode::SUCCESS
         }
         Err(e) => {
             for f in &e.faults {
-                eprintln!("marion: {}: {f}", e.path.display());
+                err!("marion: {}: {f}", e.path.display());
             }
             ExitCode::FAILURE
         }

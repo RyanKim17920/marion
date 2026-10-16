@@ -30,6 +30,7 @@
 //! [`require_model_named`]: crate::trust::require_model_named
 //! [`ACP_ALLOW_FILE`]: crate::trust::ACP_ALLOW_FILE
 
+use crate::{err, out_to};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -579,22 +580,22 @@ pub fn cli_main(args: &[String]) -> ExitCode {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("marion trust: current directory: {e}");
+            err!("marion trust: current directory: {e}");
             return ExitCode::FAILURE;
         }
     };
     let Some(store) = store_path() else {
-        eprintln!("marion trust: {}", TrustError::NoStore);
+        err!("marion trust: {}", TrustError::NoStore);
         return ExitCode::FAILURE;
     };
     match run(args, &cwd, store, &mut std::io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(None) => {
-            eprintln!("{USAGE}");
+            err!("{USAGE}");
             ExitCode::from(2)
         }
         Err(Some(e)) => {
-            eprintln!("marion trust: {e}");
+            err!("marion trust: {e}");
             ExitCode::FAILURE
         }
     }
@@ -638,7 +639,7 @@ pub fn run(
                 .map_err(|e| Some(e.to_string()))?;
             let found = commands(&types);
             if found.is_empty() {
-                return w(writeln!(
+                return w(out_to!(
                     out,
                     "{} names no repository command and widens no type; its types need no \
                      trust",
@@ -650,7 +651,7 @@ pub fn run(
             let mut store = Store::edit(store).map_err(err)?;
             store.allow(canonical.clone(), sha256);
             store.save().map_err(err)?;
-            w(writeln!(
+            w(out_to!(
                 out,
                 "allowed. Any edit to {} revokes this until you allow it again.",
                 shown(&canonical)
@@ -661,15 +662,15 @@ pub fn run(
             let mut store = Store::edit(store).map_err(err)?;
             if store.deny(&file) {
                 store.save().map_err(err)?;
-                w(writeln!(out, "denied {}", shown(&file)))
+                w(out_to!(out, "denied {}", shown(&file)))
             } else {
-                w(writeln!(out, "{} was not trusted", shown(&file)))
+                w(out_to!(out, "{} was not trusted", shown(&file)))
             }
         }
         [verb] if verb == "list" => {
             let store = Store::open(store).map_err(err)?;
             if store.files.is_empty() {
-                return w(writeln!(out, "no trusted files"));
+                return w(out_to!(out, "no trusted files"));
             }
             for e in &store.files {
                 let state = match std::fs::read(&e.path) {
@@ -677,7 +678,7 @@ pub fn run(
                     Ok(_) => "edited ",
                     Err(_) => "missing",
                 };
-                w(writeln!(
+                w(out_to!(
                     out,
                     "{state}  {}  {}",
                     &e.sha256[..12.min(e.sha256.len())],
@@ -713,14 +714,14 @@ fn allow_workflow(
     }
     let sha256 = crate::inbox::sha256_hex(text.as_bytes());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
-    w(writeln!(out, "{}  sha256 {sha256}", shown(file)))?;
+    w(out_to!(out, "{}  sha256 {sha256}", shown(file)))?;
     for line in crate::workflow_file::describe(&workflow) {
-        w(writeln!(out, "  {line}"))?;
+        w(out_to!(out, "  {line}"))?;
     }
     let mut store = Store::edit(store).map_err(|e| Some(e.to_string()))?;
     store.allow(file.to_path_buf(), sha256);
     store.save().map_err(|e| Some(e.to_string()))?;
-    w(writeln!(
+    w(out_to!(
         out,
         "allowed. Any edit to {} revokes this until you allow it again.",
         shown(file)
@@ -746,14 +747,14 @@ fn allow_row(
     let spec = row_file::build_from(file, text, harness).map_err(|e| Some(e.to_string()))?;
     let sha256 = crate::inbox::sha256_hex(text.as_bytes());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
-    w(writeln!(out, "{}  sha256 {sha256}", shown(file)))?;
+    w(out_to!(out, "{}  sha256 {sha256}", shown(file)))?;
     for line in row_file::describe(spec) {
-        w(writeln!(out, "  {line}"))?;
+        w(out_to!(out, "  {line}"))?;
     }
     let mut store = Store::edit(store).map_err(|e| Some(e.to_string()))?;
     store.allow(file.to_path_buf(), sha256);
     store.save().map_err(|e| Some(e.to_string()))?;
-    w(writeln!(
+    w(out_to!(
         out,
         "allowed. Any edit to {} revokes this until you allow it again.",
         shown(file)
@@ -767,24 +768,24 @@ fn describe(
     sha256: &str,
     found: &[RepoCommand],
 ) -> std::io::Result<()> {
-    writeln!(out, "{}  sha256 {sha256}", shown(file))?;
+    out_to!(out, "{}  sha256 {sha256}", shown(file))?;
     let repo = file.parent().and_then(Path::parent);
     for c in found {
-        writeln!(out, "  agent type {}", visible(&c.agent_type))?;
+        out_to!(out, "  agent type {}", visible(&c.agent_type))?;
         for (key, value) in &c.widens {
-            writeln!(out, "    sets:    {key} = {}", visible(value))?;
+            out_to!(out, "    sets:    {key} = {}", visible(value))?;
         }
         let Some(argv) = &c.argv else { continue };
-        writeln!(out, "    program: {}", visible(&argv[0]))?;
-        writeln!(out, "    argv:    {}", visible(&argv.join(" ")))?;
-        writeln!(out, "    env:     (none set by the file)")?;
+        out_to!(out, "    program: {}", visible(&argv[0]))?;
+        out_to!(out, "    argv:    {}", visible(&argv.join(" ")))?;
+        out_to!(out, "    env:     (none set by the file)")?;
         // Trust pins this file's bytes, not the files its command then reads.
         for a in argv {
             if let Some(repo) = repo
                 && let Ok(p) = std::fs::canonicalize(repo.join(a))
                 && p.starts_with(repo)
             {
-                writeln!(
+                out_to!(
                     out,
                     "    note:    {} is inside the repository; trust does not pin its contents",
                     visible(a)

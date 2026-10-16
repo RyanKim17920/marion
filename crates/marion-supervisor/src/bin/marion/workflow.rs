@@ -1,6 +1,7 @@
 //! **`marion workflow`**: the workflows a project and its operator define — `list` them, `show` one,
 //! `check` a file before trusting it or running it, `run` one, `cancel` a run.
 
+use marion_supervisor::{err, out, out_to};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -101,7 +102,7 @@ pub fn run(
     out: &mut dyn std::io::Write,
 ) -> ExitCode {
     let mut say = |line: String| {
-        let _ = writeln!(out, "{line}");
+        let _ = out_to!(out, "{line}");
     };
     match args.verb.as_str() {
         "list" => {
@@ -141,7 +142,7 @@ pub fn run(
         "show" => {
             let name = &args.rest[0];
             let Some(found) = workflow_file::find(repo, user, name) else {
-                eprintln!(
+                err!(
                     "marion: {}",
                     LoadError::NotFound {
                         name: name.clone(),
@@ -177,7 +178,7 @@ fn run_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> Result<ExitCo
     };
     // Held for as long as this command waits, so the supervisor has a client until the run ends.
     let _held = detach::ensure_supervisor(&sock, &launch).map_err(|e| {
-        eprintln!(
+        err!(
             "{}",
             super::supervisor_unreachable(sock.socket(), &e.to_string())
         );
@@ -192,22 +193,24 @@ fn run_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> Result<ExitCo
         },
     )
     .map_err(|e| {
-        eprintln!("marion: {e}");
+        err!("marion: {e}");
         ExitCode::FAILURE
     })?;
-    eprintln!(
+    err!(
         "marion: workflow {} is running as {} ({} steps)",
-        opened.name, opened.wf_id.0, opened.steps
+        opened.name,
+        opened.wf_id.0,
+        opened.steps
     );
     if args.detach {
-        eprintln!("marion: `marion ls` watches its steps");
+        err!("marion: `marion ls` watches its steps");
         return Ok(ExitCode::SUCCESS);
     }
     let bound =
         marion_supervisor::mcp::wait_bound(None).saturating_mul(u32::from(opened.steps.max(1)));
     match courier::await_workflow(&sock, &project, &opened.wf_id, bound) {
         Ok(courier::WorkflowDelivered::Closed(result)) => {
-            println!("{}", result.scoreboard());
+            out!("{}", result.scoreboard());
             Ok(
                 if result.outcome == marion_core::workflow::Outcome::Succeeded {
                     ExitCode::SUCCESS
@@ -217,7 +220,7 @@ fn run_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> Result<ExitCo
             )
         }
         Ok(courier::WorkflowDelivered::StillRunning) => {
-            eprintln!(
+            err!(
                 "marion: workflow {} is still running after {} s; `marion ls` watches it",
                 opened.wf_id.0,
                 bound.as_secs()
@@ -225,7 +228,7 @@ fn run_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> Result<ExitCo
             Ok(ExitCode::FAILURE)
         }
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             Ok(ExitCode::FAILURE)
         }
     }
@@ -247,16 +250,16 @@ fn cancel_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> ExitCode {
         Ok(r) => {
             for n in &r.nodes {
                 let how = if n.forced { "killed" } else { "cancelled" };
-                println!("{how} {}", n.agent_id.0);
+                out!("{how} {}", n.agent_id.0);
             }
-            eprintln!(
+            err!(
                 "marion: workflow {} is cancelled; it launches nothing more",
                 wf_id.0
             );
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             ExitCode::FAILURE
         }
     }
@@ -287,7 +290,7 @@ fn describe_file(repo: &Path, path: &Path, say: &mut dyn FnMut(String)) -> ExitC
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             ExitCode::FAILURE
         }
     }

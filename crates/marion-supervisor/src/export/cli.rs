@@ -4,6 +4,7 @@
 //! Reads the project's files and writes the report; it starts no supervisor, dials none, and
 //! works the same with one serving or with none.
 
+use crate::err;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -96,7 +97,7 @@ pub fn main(
     let args = match parse(argv) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("marion export: {e}\nusage: {USAGE}");
+            err!("marion export: {e}\nusage: {USAGE}");
             return ExitCode::from(2);
         }
     };
@@ -106,7 +107,7 @@ pub fn main(
     match export(&args, &repo, &state) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("marion export: {e}");
+            err!("marion export: {e}");
             ExitCode::FAILURE
         }
     }
@@ -131,7 +132,7 @@ fn export(args: &Args, repo: &std::path::Path, state: &std::path::Path) -> Resul
         Some(path) => {
             super::write_private(path, &text)
                 .map_err(|e| format!("writing {}: {e}", path.display()))?;
-            eprintln!("marion: wrote {} ({nodes} nodes)", path.display());
+            err!("marion: wrote {} ({nodes} nodes)", path.display());
         }
         None => {
             use std::io::Write;

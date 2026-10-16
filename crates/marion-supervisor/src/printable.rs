@@ -8,14 +8,71 @@
 
 use std::borrow::Cow;
 
+pub use marion_core::text::visible_lines;
+use marion_core::text::{is_deceptive, visible};
+
+/// **What the operator's CLI prints, and the one way it prints it**: `text` written to `w` as
+/// [`visible_lines`] spells it, so the line breaks and tabs the CLI's own format writes stay and a
+/// control, a bidi override or a zero-width character a value carries reads as its escape. Every
+/// CLI print goes through here by [`out!`](crate::out), [`err!`](crate::err) or
+/// [`out_to!`](crate::out_to); the three-axis `raw-print` rule keeps a raw one from coming back.
+pub fn show(w: &mut dyn std::io::Write, text: &str) -> std::io::Result<()> {
+    w.write_all(visible_lines(text).as_bytes())
+}
+
+/// `println!` through [`show`] to stdout. A closed stdout is not an error the caller can act on.
+#[macro_export]
+macro_rules! out {
+    () => { $crate::out!("") };
+    ($($arg:tt)*) => {{
+        let _ = $crate::printable::show(
+            &mut ::std::io::stdout(),
+            &::std::format!("{}\n", ::std::format_args!($($arg)*)),
+        );
+    }};
+}
+
+/// `eprintln!` through [`show`] to stderr.
+#[macro_export]
+macro_rules! err {
+    () => { $crate::err!("") };
+    ($($arg:tt)*) => {{
+        let _ = $crate::printable::show(
+            &mut ::std::io::stderr(),
+            &::std::format!("{}\n", ::std::format_args!($($arg)*)),
+        );
+    }};
+}
+
+/// `writeln!(w, …)` as [`show`] writes: the same `io::Result<()>`, and `w` taken as `writeln!`
+/// takes it (a `&mut dyn Write`, a `&mut Vec<u8>` or a writer by value).
+#[macro_export]
+macro_rules! out_to {
+    ($w:expr) => { $crate::out_to!($w, "") };
+    ($w:expr, $($arg:tt)*) => {{
+        // Unused where `w` is a `dyn Write`, whose methods need no import.
+        #[allow(unused_imports)]
+        use ::std::io::Write as _;
+        $w.write_all(
+            $crate::printable::visible_lines(
+                &::std::format!("{}\n", ::std::format_args!($($arg)*)),
+            )
+            .as_bytes(),
+        )
+    }};
+}
+
 /// `text` with every control character removed except newline and tab, and a CR (alone or before
 /// an LF) as the newline it means. C1 controls (U+0080–U+009F, which include an 8-bit CSI) are
 /// control characters too. What remains of an escape sequence is its printable tail, shown as
-/// plain text, never acted on. Borrowed where there was nothing to remove.
+/// plain text, never acted on. A bidi override or a zero-width character
+/// ([`marion_core::text::is_deceptive`] and not a control) is spelled out instead, as
+/// [`marion_core::text::visible`] spells it: dropped, the text would read as if it never had one.
+/// Borrowed where there was nothing to change.
 pub fn printable(text: &str) -> Cow<'_, str> {
     if !text
         .chars()
-        .any(|c| c.is_control() && c != '\n' && c != '\t')
+        .any(|c| is_deceptive(c) && c != '\n' && c != '\t')
     {
         return Cow::Borrowed(text);
     }
@@ -31,6 +88,7 @@ pub fn printable(text: &str) -> Cow<'_, str> {
             }
             '\n' | '\t' => out.push(c),
             c if c.is_control() => {}
+            c if is_deceptive(c) => out.push_str(&visible(c.encode_utf8(&mut [0; 4]))),
             c => out.push(c),
         }
     }
@@ -64,5 +122,29 @@ mod tests {
             );
         }
         assert!(matches!(printable("plain\ttext\n"), Cow::Borrowed(_)));
+    }
+
+    /// **A bidi override or a zero-width character is spelled, not kept or dropped**: kept, it
+    /// reorders or hides what the operator reads; dropped, the text looks as if it never had one.
+    #[test]
+    fn a_bidi_or_zero_width_character_is_spelled_out() {
+        assert_eq!(
+            printable("abc\u{202e}fed\u{200b}x\x1b"),
+            "abc\\u{202e}fed\\u{200b}x"
+        );
+    }
+
+    /// **What the CLI prints shows a control as its escape**: the line breaks and tabs its own
+    /// format writes stay, an ESC, a CR or a bidi override a value carries reads as its escape.
+    #[test]
+    fn the_cli_print_path_spells_every_control_but_its_layout() {
+        let mut buf = Vec::new();
+        let value = "a\x1b[2Kb\rc\u{202e}d";
+        crate::out_to!(&mut buf, "{value}\t|\n{}", "e").unwrap();
+        crate::out_to!(&mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "a\\x1b[2Kb\\rc\\u{202e}d\t|\ne\n\n"
+        );
     }
 }

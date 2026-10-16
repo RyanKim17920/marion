@@ -21,6 +21,7 @@
 //! a file for the tests (`MARION_NOTIFY_BACKEND=record:<path>`). A process backend runs on one
 //! delivery thread blocked on its channel, started at the first notice.
 
+use crate::{err, out};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -457,7 +458,7 @@ impl Notifier {
             match spawned {
                 Ok(_) => *tx = Some(s),
                 Err(e) => {
-                    eprintln!("marion: no thread to deliver notifications: {e}");
+                    err!("marion: no thread to deliver notifications: {e}");
                     return true;
                 }
             }
@@ -478,7 +479,7 @@ pub fn show(backend: &Backend, shown: &Shown) {
         let written = crate::private_fs::open_append(path)
             .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
         if let Err(e) = written {
-            eprintln!("marion: a notification was not recorded: {e}");
+            err!("marion: a notification was not recorded: {e}");
         }
         return;
     }
@@ -489,7 +490,7 @@ pub fn show(backend: &Backend, shown: &Shown) {
         Ok(mut child) => {
             let _ = child.wait();
         }
-        Err(e) => eprintln!("marion: {} did not start: {e}", backend.name()),
+        Err(e) => err!("marion: {} did not start: {e}", backend.name()),
     }
 }
 
@@ -525,7 +526,7 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
     let dir = match crate::credentials::config_dir() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -533,7 +534,7 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
     let config = match NotifyConfig::load(Some(&dir), None) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -541,18 +542,18 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
     match args.first().map(String::as_str) {
         Some(verb @ ("on" | "off")) => match set_enabled(verb == "on") {
             Ok(path) => {
-                println!("marion: notifications {verb}, in {}.", path.display());
+                out!("marion: notifications {verb}, in {}.", path.display());
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("marion: {e}");
+                err!("marion: {e}");
                 ExitCode::FAILURE
             }
         },
         Some("status") | None => {
             let effective = NotifyConfig::load(Some(&dir), env.as_deref())
                 .map_or(config.enabled, |c| c.enabled);
-            println!(
+            out!(
                 "notifications: {}{}",
                 if effective { "on" } else { "off" },
                 match env.as_deref() {
@@ -560,10 +561,10 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
                     None => String::new(),
                 }
             );
-            println!("finished: {}", config.finished.word());
-            println!("terminal: {}", config.terminal.word());
-            println!("shown by: {}", backend.name());
-            println!("config: {}", dir.join(CONFIG_FILE).display());
+            out!("finished: {}", config.finished.word());
+            out!("terminal: {}", config.terminal.word());
+            out!("shown by: {}", backend.name());
+            out!("config: {}", dir.join(CONFIG_FILE).display());
             ExitCode::SUCCESS
         }
         Some("test") => {
@@ -581,19 +582,19 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
                     let _ = std::io::Write::flush(&mut out);
                 }
                 Backend::Off => {
-                    eprintln!("marion: {BACKEND_ENV}=off, so nothing was shown");
+                    err!("marion: {BACKEND_ENV}=off, so nothing was shown");
                     return ExitCode::FAILURE;
                 }
                 other => show(other, &shown),
             }
-            println!(
+            out!(
                 "marion: sent a test notification through {}",
                 backend.name()
             );
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("marion: `notify {other}` is not a verb; try on, off, status or test");
+            err!("marion: `notify {other}` is not a verb; try on, off, status or test");
             ExitCode::from(2)
         }
     }

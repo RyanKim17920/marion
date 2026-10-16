@@ -4,6 +4,7 @@
 //! `courier::spawn` with `candidates`, then `courier::await_race` — with no caller, so the seats sit
 //! at the top of the tree.
 
+use marion_supervisor::{err, out};
 use std::process::ExitCode;
 
 use marion_core::race::{Losers, RawRacePolicy};
@@ -154,50 +155,52 @@ fn run(args: &RaceArgs) -> Result<ExitCode, ExitCode> {
     };
     // Held for as long as this command waits, so the supervisor has a client until the race ends.
     let _held = detach::ensure_supervisor(&sock, &launch).map_err(|e| {
-        eprintln!(
+        err!(
             "{}",
             super::supervisor_unreachable(sock.socket(), &e.to_string())
         );
         ExitCode::FAILURE
     })?;
     let spawned = courier::spawn(&sock, params(args, &repo)).map_err(|e| {
-        eprintln!("marion: the race {e}");
+        err!("marion: the race {e}");
         ExitCode::FAILURE
     })?;
     let Some(started) = spawned.race else {
-        eprintln!("marion: this project's supervisor answered a race with a single agent");
+        err!("marion: this project's supervisor answered a race with a single agent");
         return Err(ExitCode::FAILURE);
     };
     for seat in &started.seats {
         match (&seat.agent_id, &seat.refused) {
-            (Some(id), _) => eprintln!(
+            (Some(id), _) => err!(
                 "marion: seat {} {} started as {}",
                 seat.seat,
                 seat.candidate,
                 marion_supervisor::tree::short_id(&id.0)
             ),
-            (None, Some(why)) => eprintln!(
+            (None, Some(why)) => err!(
                 "marion: seat {} {} did not start: {why}",
-                seat.seat, seat.candidate
+                seat.seat,
+                seat.candidate
             ),
             (None, None) => {}
         }
     }
     if args.detach {
-        eprintln!(
+        err!(
             "marion: race {} is running in the background; `marion ls` watches it, and its \
              scoreboard is written to races/{}.json when it is decided",
-            started.race_id.0, started.race_id.0
+            started.race_id.0,
+            started.race_id.0
         );
         return Ok(ExitCode::SUCCESS);
     }
     let bound = marion_supervisor::mcp::wait_bound(args.timeout_secs);
     match courier::await_race(&sock, &project, &started.race_id, bound) {
         Ok(courier::RaceDelivered::Decided(result)) => {
-            println!("race {}:\n{}", result.race_id.0, result.scoreboard());
+            out!("race {}:\n{}", result.race_id.0, result.scoreboard());
             match result.winner_row() {
                 Some(w) => {
-                    eprintln!(
+                    err!(
                         "marion: seat {} won; its work is on {}",
                         w.seat,
                         w.branch.as_deref().unwrap_or("no branch")
@@ -205,13 +208,13 @@ fn run(args: &RaceArgs) -> Result<ExitCode, ExitCode> {
                     Ok(ExitCode::SUCCESS)
                 }
                 None => {
-                    eprintln!("marion: no seat won; every seat's branch is kept");
+                    err!("marion: no seat won; every seat's branch is kept");
                     Ok(ExitCode::FAILURE)
                 }
             }
         }
         Ok(courier::RaceDelivered::StillRunning) => {
-            eprintln!(
+            err!(
                 "marion: race {} is still running after {} s; `marion ls` watches it",
                 started.race_id.0,
                 bound.as_secs()
@@ -219,7 +222,7 @@ fn run(args: &RaceArgs) -> Result<ExitCode, ExitCode> {
             Ok(ExitCode::FAILURE)
         }
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             Ok(ExitCode::FAILURE)
         }
     }

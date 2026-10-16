@@ -434,3 +434,53 @@ fn a_rendering_crate_view_type_is_judged_by_its_fields_and_a_secret_field_still_
     assert!(rules("#[derive(Debug)] struct KeyRow { key: String }").contains(&"secret-debug"));
     assert!(rules("#[derive(Debug)] struct Config { api_key: String }").contains(&"secret-debug"));
 }
+
+/// **The operator's CLI prints through the one sanitizing path**: in a CLI file a `println!`,
+/// `eprintln!`, `print!`, `eprint!`, `writeln!` or `write!` that formats anything but a plain
+/// literal is flagged, so a value carrying an escape cannot reach the terminal raw; a plain
+/// literal, a bare newline and `out!` pass, and the same prints elsewhere are not this rule's.
+#[test]
+fn a_raw_print_of_a_value_in_the_cli_is_flagged() {
+    let cli = |src: &str| {
+        scan_at(
+            "crates/marion-supervisor/src/bin/marion.rs",
+            src,
+            false,
+            false,
+        )
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect::<Vec<_>>()
+    };
+    for raw in [
+        r#"fn f(x: &str) { println!("{x}"); }"#,
+        r#"fn f(x: &str) { eprintln!("marion: {}", x); }"#,
+        r#"fn f(x: &str) { print!("{x}"); }"#,
+        r#"fn f(x: &str) { eprint!("{}", x); }"#,
+        r#"fn f(o: &mut W, x: &str) { let _ = writeln!(o, "{x}"); }"#,
+        r#"fn f(o: &mut W, x: &str) { let _ = write!(o, "{}", x); }"#,
+        r#"fn f() { println!("{USAGE}"); }"#,
+    ] {
+        assert!(cli(raw).contains(&"raw-print"), "{raw}");
+    }
+    for clean in [
+        r#"fn f() { println!("plain words"); }"#,
+        r#"fn f() { println!(); }"#,
+        r#"fn f(o: &mut W) { let _ = writeln!(o); }"#,
+        r#"fn f(o: &mut W) { let _ = writeln!(o, "{{literal braces}}"); }"#,
+        r#"fn f(x: &str) { out!("{x}"); err!("{}", x); }"#,
+    ] {
+        assert!(!cli(clean).contains(&"raw-print"), "{clean}");
+    }
+    assert!(!rules(r#"fn f(x: &str) { println!("{x}"); }"#).contains(&"raw-print"));
+    assert!(
+        scan_at(
+            "crates/marion-supervisor/src/bin/marion.rs",
+            r#"fn t(x: &str) { println!("{x}"); }"#,
+            true,
+            false
+        )
+        .is_empty(),
+        "a test may print what it likes"
+    );
+}

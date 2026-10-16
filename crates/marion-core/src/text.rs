@@ -63,11 +63,12 @@ pub fn visible(text: &str) -> Cow<'_, str> {
     spell(text, |_| false)
 }
 
-/// [`visible`], keeping `\n` as the line break it is: for output whose own code writes several
-/// lines. A value that may carry a newline of its own is passed through [`visible`] first, so it
-/// cannot add a row the code did not write.
+/// [`visible`], keeping `\n` and `\t` as the layout they are: for output whose own code writes
+/// several lines and aligns columns (a tab only moves the cursor on, it cannot overwrite). A value
+/// that may carry a newline of its own is passed through [`visible`] first, so it cannot add a
+/// row the code did not write.
 pub fn visible_lines(text: &str) -> Cow<'_, str> {
-    spell(text, |c| c == '\n')
+    spell(text, |c| c == '\n' || c == '\t')
 }
 
 fn spell(text: &str, keep: impl Fn(char) -> bool) -> Cow<'_, str> {
@@ -175,6 +176,7 @@ mod tests {
         );
         assert_eq!(visible("one\ntwo"), "one\\ntwo");
         assert_eq!(visible_lines("one\ntwo\r"), "one\ntwo\\r");
+        assert_eq!(visible_lines("a\tb\x1b"), "a\tb\\x1b");
         assert!(matches!(visible("cargo test"), Cow::Borrowed(_)));
         assert!(!is_deceptive('é') && !is_deceptive(' '));
     }

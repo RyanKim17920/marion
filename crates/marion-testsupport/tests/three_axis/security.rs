@@ -33,7 +33,8 @@ hand-written redacting `Debug` (and no `Display`), format only a redacted form o
 pass secrets to children through the environment (never argv), and create files that carry keys \
 or tokens with `OpenOptions` + `std::os::unix::fs::OpenOptionsExt::mode(0o600)`. Tests never run a \
 login or device flow — a harness without auth is BLOCKED and reported with the command the user \
-should run. If a finding is a verified false positive, add `path:item  <why it is safe>` to \
+should run. The operator's CLI prints with `out!`, `err!` and `out_to!` (marion_supervisor::printable), \
+never a raw `println!`/`writeln!` of a value, so a control a value carries reads as its escape. If a finding is a verified false positive, add `path:item  <why it is safe>` to \
 checks/security.allow.";
 
 /// CamelCase words that make a type name a secret's.
@@ -93,7 +94,26 @@ const FORMAT_MACROS: &[&str] = &[
     "bail",
     "anyhow",
     "ensure",
+    "out",
+    "err",
+    "out_to",
 ];
+
+/// The files whose prints reach the operator's terminal as the CLI's own output: these print
+/// through `marion_supervisor::printable::show` alone (rule `raw-print`).
+const CLI_FILES: &[&str] = &[
+    "crates/marion-supervisor/src/bin/marion.rs",
+    "crates/marion-supervisor/src/bin/marion/",
+    "crates/marion-supervisor/src/main.rs",
+    "crates/marion-supervisor/src/trust.rs",
+    "crates/marion-supervisor/src/profile_cli.rs",
+    "crates/marion-supervisor/src/notify.rs",
+    "crates/marion-supervisor/src/export/cli.rs",
+];
+
+/// The std prints, by whether their first argument is the writer.
+const RAW_PRINTS: &[&str] = &["print", "println", "eprint", "eprintln"];
+const RAW_WRITES: &[&str] = &["write", "writeln"];
 
 /// String literals naming a document that carries credentials. A file that spells one, or that
 /// asks an adapter for its `config_files` (which embed the node's bridge token and, in endpoint
@@ -412,7 +432,46 @@ fn exposed_reads(s: &mut Scanner, tokens: &TokenStream) -> Vec<String> {
     out
 }
 
+/// Does a print's argument list format anything but a plain literal? `tokens` after the writer,
+/// if any: one string literal with no `{…}` of its own, or nothing, is plain.
+fn formats_a_value(tokens: &[TokenTree]) -> bool {
+    match tokens {
+        [] => false,
+        [TokenTree::Literal(l)] => {
+            let lit = l.to_string();
+            !lit.starts_with('"') || lit.replace("{{", "").contains('{')
+        }
+        _ => true,
+    }
+}
+
+fn check_raw_print(s: &mut Scanner, name: &str, m: &syn::Macro) {
+    if !CLI_FILES.iter().any(|f| s.file.starts_with(f)) {
+        return;
+    }
+    let flat: Vec<TokenTree> = m.tokens.clone().into_iter().collect();
+    let args = if RAW_PRINTS.contains(&name) {
+        &flat[..]
+    } else if RAW_WRITES.contains(&name) {
+        let comma = flat
+            .iter()
+            .position(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ','));
+        comma.map_or(&[][..], |i| &flat[i + 1..])
+    } else {
+        return;
+    };
+    if formats_a_value(args) {
+        s.emit(
+            Axis::Security,
+            "raw-print",
+            m.span(),
+            format!("`{name}!` prints a value raw; print it with `out!`, `err!` or `out_to!`"),
+        );
+    }
+}
+
 pub fn check_macro(s: &mut Scanner, name: &str, m: &syn::Macro) {
+    check_raw_print(s, name, m);
     if !FORMAT_MACROS.contains(&name) || s.in_redaction_helper() {
         return;
     }

@@ -10,6 +10,7 @@
 //! the socket at M2; splitting the binary out belongs with that move, not before it, when the
 //! split would only buy a second copy of the spawn path with nothing to keep the copies honest.
 
+use marion_supervisor::{err, out, out_to};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -60,7 +61,7 @@ fn mcp_tool_names() -> Vec<String> {
 /// Bare `marion` with no terminal, or a first word that is an option marion does not have:
 /// `marion --help`'s text on stderr, and exit 2.
 fn usage() -> ! {
-    eprintln!("{}", cli::top_help());
+    err!("{}", cli::top_help());
     std::process::exit(2)
 }
 
@@ -136,7 +137,7 @@ fn attach_main(argv: &[String]) -> Result<ExitCode, Exit> {
         Ok(nodes) => match marion_supervisor::tree::resolve_target(&args.agent_id, &nodes) {
             Ok(id) => id.0,
             Err(e) => {
-                eprintln!("marion: {e}");
+                err!("marion: {e}");
                 return Ok(ExitCode::FAILURE);
             }
         },
@@ -147,14 +148,14 @@ fn attach_main(argv: &[String]) -> Result<ExitCode, Exit> {
             Ok(marion_supervisor::attach::Leave::Ended) => ExitCode::SUCCESS,
             // After the `Screen` guard has restored the terminal, as the refusal below is.
             Ok(marion_supervisor::attach::Leave::Detached) => {
-                eprintln!("{}", marion_supervisor::attach::reattach_hint(&agent_id));
+                err!("{}", marion_supervisor::attach::reattach_hint(&agent_id));
                 ExitCode::SUCCESS
             }
             Err(e) => {
                 // After the `Screen` guard has restored the terminal — `Session::drop` runs before
                 // this returns — so the sentence lands on the operator's real screen rather than on
                 // an alternate one that is about to disappear.
-                eprintln!("marion: {e}");
+                err!("marion: {e}");
                 ExitCode::FAILURE
             }
         },
@@ -230,7 +231,7 @@ fn resume(args: &ResumeArgs) -> Result<ExitCode, ExitCode> {
     let project_key = socket::project_root(&repo);
     let project = marion_core::paths::ProjectDir::new(&state, &project_key);
     let agent_id = journal_node(&args.agent_id, &project.journal()).map_err(|e| {
-        eprintln!("marion: {e}");
+        err!("marion: {e}");
         ExitCode::FAILURE
     })?;
     let sock = socket::socket_paths(&state, &project_key, socket::own_uid());
@@ -259,9 +260,10 @@ fn resume(args: &ResumeArgs) -> Result<ExitCode, ExitCode> {
     };
     let root_id = resumed.agent_id.clone();
     let _ = poller_id.send(root_id.clone());
-    eprintln!(
+    err!(
         "marion: resumed {} (generation {})",
-        root_id.0, resumed.spawn_generation
+        root_id.0,
+        resumed.spawn_generation
     );
     // **From here the resume is a run whose root already exists**, and it follows [`root_follow`]'s
     // one rule rather than a second one of its own. This used to hand every resumed node to
@@ -275,7 +277,7 @@ fn resume(args: &ResumeArgs) -> Result<ExitCode, ExitCode> {
         RootFollow::Started => {
             stop.store(true, Ordering::Relaxed);
             let _ = poller.join();
-            eprintln!("{}", pane_started_line(&root_id, &shape.agent_type));
+            err!("{}", pane_started_line(&root_id, &shape.agent_type));
             Ok(ExitCode::SUCCESS)
         }
         RootFollow::Watch => {
@@ -345,7 +347,7 @@ fn endpoint(backend: &Backend) -> Result<Option<String>, ExitCode> {
         std::env::var("MARION_BASE_URL").ok(),
     )
     .map_err(|e| {
-        eprintln!("marion: {e}");
+        err!("marion: {e}");
         ExitCode::FAILURE
     })
 }
@@ -381,7 +383,7 @@ fn resume_node(
 /// Print a refused resume's sentence and, when this command is what started the supervisor, end
 /// it. Always the failure code.
 fn resume_refused(session: &mut SupervisorSession, started: bool, reason: &str) -> ExitCode {
-    eprintln!("{reason}");
+    err!("{reason}");
     // **If this command is what started the supervisor, it is what ends it.** A resume that
     // could not happen must not leave a supervisor an operator did not have before — the
     // node it was for is still gone, and an empty supervisor lingering out its idle grace
@@ -467,7 +469,7 @@ fn home_on(tab: marion_tui::home::Tab, repo: PathBuf, state: PathBuf) -> ExitCod
     match marion_supervisor::home::session::run(&opts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             ExitCode::FAILURE
         }
     }
@@ -483,7 +485,7 @@ fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
     let offline = tree::JournalView::open(repo, state);
     let found = offline.and_then(|view| match view {
         Some(view) => {
-            eprintln!("{FROM_JOURNAL}");
+            err!("{FROM_JOURNAL}");
             let nodes = view.nodes();
             match view.retired(target) {
                 Some((line, d)) => Ok((line, None, d, nodes)),
@@ -503,14 +505,14 @@ fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
                 .filter(|id| rollup.has_children(id))
                 .and_then(|id| rollup.get(id));
             // A task, a narrative and a stream line are node-authored text.
-            print!(
-                "{}",
-                marion_supervisor::printable::printable(&detail_text(&head, &detail, subtree))
+            let _ = marion_supervisor::printable::show(
+                &mut std::io::stdout(),
+                &marion_supervisor::printable::printable(&detail_text(&head, &detail, subtree)),
             );
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             ExitCode::FAILURE
         }
     }
@@ -562,12 +564,9 @@ fn detail_text(
 ) -> String {
     use marion_core::contract::Workspace;
     let mut out = format!("{head}\n");
-    let mut kv = |k: &str, v: &str| {
-        out.push_str(&format!(
-            "  {k:<10} {v}
-"
-        ))
-    };
+    // One row per value: a line break or control a value carries is spelled, not acted on.
+    let mut kv =
+        |k: &str, v: &str| out.push_str(&format!("  {k:<10} {}\n", marion_core::text::visible(v)));
     if let Some(t) = subtree {
         kv("subtree", &marion_supervisor::tree::subtree_words(t));
     }
@@ -643,7 +642,7 @@ fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
     // The live snapshot while a supervisor serves; the journal's record once nobody does.
     let nodes = tree::JournalView::open(repo, state).and_then(|view| match view {
         Some(view) => {
-            eprintln!("{FROM_JOURNAL}");
+            err!("{FROM_JOURNAL}");
             Ok(view.nodes())
         }
         None => tree::snapshot(repo, state),
@@ -651,7 +650,7 @@ fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
     let nodes = match nodes {
         Ok(nodes) => nodes,
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -668,7 +667,7 @@ fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
         {
             line.push_str(&format!(" · {}", tree::subtree_words(t)));
         }
-        if writeln!(out, "{}", marion_supervisor::printable::printable(&line)).is_err() {
+        if out_to!(out, "{}", marion_supervisor::printable::printable(&line)).is_err() {
             // A closed stdout — `marion list | head -1` — is the reader's decision, not a failure.
             return ExitCode::SUCCESS;
         }
@@ -756,14 +755,14 @@ fn steer_main(argv: &[String]) -> Result<ExitCode, Exit> {
         SteerText::Stdin => {
             let mut buf = String::new();
             if let Err(e) = io::Read::read_to_string(&mut io::stdin(), &mut buf) {
-                eprintln!("marion: reading the message from stdin: {e}");
+                err!("marion: reading the message from stdin: {e}");
                 return Ok(ExitCode::FAILURE);
             }
             piped_message(buf)
         }
     };
     if text.trim().is_empty() {
-        eprintln!("marion: the message is empty, so there is nothing to steer with");
+        err!("marion: the message is empty, so there is nothing to steer with");
         return Ok(ExitCode::FAILURE);
     }
     let Some((repo, state)) = resolve_project(&args.place) else {
@@ -775,11 +774,11 @@ fn steer_main(argv: &[String]) -> Result<ExitCode, Exit> {
     });
     Ok(match steered {
         Ok(s) => {
-            println!("marion: {}", s.sentence());
+            out!("marion: {}", s.sentence());
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             ExitCode::FAILURE
         }
     })
@@ -833,11 +832,11 @@ fn cancel_main(argv: &[String]) -> Result<ExitCode, Exit> {
                     "; {forced} ignored the abort or had none and were killed"
                 ));
             }
-            println!("{line}");
+            out!("{line}");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             ExitCode::FAILURE
         }
     })
@@ -855,7 +854,7 @@ fn resolve_project(place: &Place) -> Option<(PathBuf, PathBuf)> {
     let repo = match repo.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
+            err!("marion: cannot resolve repo {}: {e}", repo.display());
             return None;
         }
     };
@@ -869,7 +868,7 @@ fn resolve_project(place: &Place) -> Option<(PathBuf, PathBuf)> {
 fn state_dir_or_report(explicit: Option<&str>) -> Option<std::path::PathBuf> {
     let state = state_dir_from_env(explicit);
     if state.is_none() {
-        eprintln!(
+        err!(
             "marion: cannot resolve a state directory (set --state-dir, $MARION_STATE_DIR or $HOME)"
         );
     }
@@ -1255,7 +1254,7 @@ fn run_mcp(args: McpArgs) -> ExitCode {
     ) {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -1339,15 +1338,15 @@ fn say(out: &mut dyn Write, tag: &str, body: &str) -> io::Result<()> {
     let body = marion_supervisor::printable::printable(body);
     let mut lines = body.lines().filter(|l| !l.trim().is_empty()).peekable();
     if lines.peek().is_none() {
-        return writeln!(out, "{tag:<TAG_WIDTH$}  ");
+        return out_to!(out, "{tag:<TAG_WIDTH$}  ");
     }
     let mut first = true;
     for line in lines {
         if first {
-            writeln!(out, "{tag:<TAG_WIDTH$}  {line}")?;
+            out_to!(out, "{tag:<TAG_WIDTH$}  {line}")?;
             first = false;
         } else {
-            writeln!(out, "{:<TAG_WIDTH$}  {line}", "")?;
+            out_to!(out, "{:<TAG_WIDTH$}  {line}", "")?;
         }
     }
     Ok(())
@@ -2329,7 +2328,6 @@ const QUIT_REPLY_FRAMES: usize = 4096;
 fn detach_report(
     outcome: &marion_core::proto::QuitOutcome,
 ) -> Option<(marion_core::proto::SupervisorDisposition, String)> {
-    use std::fmt::Write as _;
     // The wire's `guidance` names the protocol calls a client makes; a person is told marion's
     // own commands instead, so it is not read here.
     let (supervisor, detached, gate_exposed, reaped) = match outcome {
@@ -2360,7 +2358,7 @@ fn detach_report(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let mut out = String::new();
+    let mut lines = Vec::new();
     match supervisor {
         marion_core::proto::SupervisorDisposition::Resident(reason) => {
             let why = match reason {
@@ -2376,48 +2374,45 @@ fn detach_report(
                     "it could not read the rest of its journal, so it keeps what it knows"
                 }
             };
-            let _ = writeln!(
-                out,
+            lines.push(format!(
                 "marion: this project's supervisor keeps running ({why}); the next marion will \
                  find it rather than start one"
-            );
+            ));
         }
         marion_core::proto::SupervisorDisposition::Exiting => {
-            let _ = writeln!(
-                out,
+            lines.push(
                 "marion: nothing holds this project's supervisor any more, so it is leaving and \
                  journaling that it did"
+                    .to_string(),
             );
         }
     }
     if !reaped.is_empty() {
-        let _ = writeln!(
-            out,
+        lines.push(format!(
             "marion: reaped and resumable: {} (transcript intact; `marion resume <id>` continues it)",
             reaped.join(", ")
-        );
+        ));
     }
     if detached.is_empty() {
-        let _ = writeln!(out, "marion: no node was left running.");
+        lines.push("marion: no node was left running.".to_string());
     } else {
         // One line for the fleet — what is running, and how to watch, open and stop it with
         // marion's own commands — and a second only for the cost §7.3.2 says must be stated: nodes
         // that will be refused any permission they ask for, since nobody can approve it.
-        let _ = writeln!(
-            out,
+        lines.push(format!(
             "marion: still running in the background: {}; `marion ls` to watch, `marion attach \
              {}` to open a pane agent, `marion cancel <id>` to stop one",
             names(detached),
             detached[0].0,
-        );
+        ));
         if !gate_exposed.is_empty() {
-            let _ = writeln!(
-                out,
+            lines.push(format!(
                 "marion: nobody can approve a permission for {}, so any they ask for is refused",
                 names(gate_exposed)
-            );
+            ));
         }
     }
+    let out = lines.iter().map(|l| format!("{l}\n")).collect();
     Some((*supervisor, out))
 }
 
@@ -2444,7 +2439,7 @@ impl Drop for SupervisorSession {
         let Some((supervisor, report)) = detach_report(&result.outcome) else {
             return;
         };
-        let _ = write!(err, "{report}");
+        let _ = marion_supervisor::printable::show(&mut err, &report);
         if supervisor == marion_core::proto::SupervisorDisposition::Exiting {
             self.wait_for_supervisor_exit(&mut err);
         }
@@ -2525,7 +2520,7 @@ impl SupervisorSession {
             }
         }
         if self.socket.exists() {
-            let _ = writeln!(
+            let _ = out_to!(
                 err,
                 "marion: this project's supervisor said it was exiting and {} is still there \
                  after {} s; it may still be shutting down",
@@ -2585,15 +2580,15 @@ fn legacy_main() -> ExitCode {
     };
     match first {
         "--help" | "-h" | "help" => match argv.get(1).map(|w| (w, cli::verb(w))) {
-            None => println!("{}", cli::top_help()),
-            Some((_, Some(verb))) => println!("{}", (verb.help)()),
+            None => out!("{}", cli::top_help()),
+            Some((_, Some(verb))) => out!("{}", (verb.help)()),
             Some((word, None)) => return unknown_command(word),
         },
-        "--version" | "-V" => println!("marion {}", env!("CARGO_PKG_VERSION")),
+        "--version" | "-V" => out!("marion {}", env!("CARGO_PKG_VERSION")),
         word => match cli::verb(word) {
             Some(verb) => return cli::dispatch(verb, &argv),
             // `marion <anything> --help` still answers with the help, as it always has.
-            None if cli::asks_for_help(&argv[1..]) => println!("{}", cli::top_help()),
+            None if cli::asks_for_help(&argv[1..]) => out!("{}", cli::top_help()),
             None => return unknown_command(word),
         },
     }
@@ -2603,7 +2598,7 @@ fn legacy_main() -> ExitCode {
 /// A first word that is no command: one line naming it, not a screen of help that would bury what
 /// went wrong.
 fn unknown_command(word: &str) -> ExitCode {
-    eprintln!(
+    err!(
         "marion: unknown command `{word}`; `marion run <agent-type> --prompt <text>` runs an \
          agent, and `marion --help` lists every command"
     );
@@ -2686,11 +2681,11 @@ fn tell_running_supervisor(place: &Place, enabled: bool) {
         return;
     }
     match marion_supervisor::courier::notify_configure(&sock, enabled) {
-        Ok(now) => println!(
+        Ok(now) => out!(
             "marion: this project's running supervisor has them {} now",
             if now { "on" } else { "off" }
         ),
-        Err(e) => eprintln!("marion: this project's running supervisor was not told: {e}"),
+        Err(e) => err!("marion: this project's running supervisor was not told: {e}"),
     }
 }
 
@@ -2709,7 +2704,7 @@ fn doctor_main(argv: &[String]) -> Result<ExitCode, Exit> {
         doctor.env(marion_supervisor::preflight::CLIENT_EXE_ENV, me);
     }
     let e = doctor.exec();
-    eprintln!(
+    err!(
         "marion: cannot run {} doctor: {e}. marion-supervisor is installed with marion and must \
          sit in the same directory",
         supervisor.display()
@@ -2748,12 +2743,12 @@ fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
     let types = match marion_supervisor::run::agent_types(&repo) {
         Ok(types) => types,
         Err(e) => {
-            eprintln!("marion: {e}");
+            err!("marion: {e}");
             return Err(ExitCode::FAILURE);
         }
     };
     let Some(agent_type) = types.resolve(&args.agent_type) else {
-        eprintln!(
+        err!(
             "marion: unknown agent type {:?}; known: {}",
             args.agent_type,
             types.names().join(", ")
@@ -2914,7 +2909,7 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     let spawned = match spawn_root(&mut supervisor, args, &repo) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("{e}");
+            err!("{e}");
             stop.store(true, Ordering::Relaxed);
             drop(poller_id);
             let _ = poller.join();
@@ -2942,7 +2937,7 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     if root_follow(args.pane) == RootFollow::Started {
         stop.store(true, Ordering::Relaxed);
         let _ = poller.join();
-        eprintln!("{}", pane_started_line(&root_id, &args.agent_type));
+        err!("{}", pane_started_line(&root_id, &args.agent_type));
         return Ok(ExitCode::SUCCESS);
     }
     // `--detach`: the same return for a headless root. The supervisor owns the node either way;
@@ -2950,10 +2945,10 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     if args.detach {
         stop.store(true, Ordering::Relaxed);
         let _ = poller.join();
-        println!("{}", detached_started_line(&root_id, &args.agent_type));
+        out!("{}", detached_started_line(&root_id, &args.agent_type));
         return Ok(ExitCode::SUCCESS);
     }
-    eprintln!(
+    err!(
         "marion: root {} ({}) in {}",
         root_id.0,
         args.agent_type,
@@ -2989,17 +2984,17 @@ fn contract_verdict(
         .ok()
         .and_then(|b| serde_json::from_slice::<marion_core::contract::TaskContract>(&b).ok())
     else {
-        eprintln!(
+        err!(
             "marion: the node ended and its contract could not be read at {}",
             path.display()
         );
         return ExitCode::FAILURE;
     };
     if let marion_core::contract::Workspace::Worktree { branch, .. } = &contract.workspace {
-        eprintln!("marion: its work is on {branch}");
+        err!("marion: its work is on {branch}");
     }
     let Some(completion) = &contract.completion else {
-        eprintln!("marion: its contract records no end");
+        err!("marion: its contract records no end");
         return ExitCode::FAILURE;
     };
     let passed = completion
@@ -3008,12 +3003,12 @@ fn contract_verdict(
         .filter(|e| e.exit_code == Some(0))
         .count();
     if !contract.verification.is_empty() {
-        eprintln!(
+        err!(
             "marion: {passed} of {} checks passed",
             contract.verification.len()
         );
     }
-    eprintln!("marion: it ended {}", completion.status.word());
+    err!("marion: it ended {}", completion.status.word());
     if completion.status == ExitStatus::Ok {
         ExitCode::SUCCESS
     } else {
@@ -3076,7 +3071,7 @@ fn report_watched(
     let watched = match watched {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("{e}");
+            err!("{e}");
             return Err(ExitCode::FAILURE);
         }
     };
@@ -3095,7 +3090,7 @@ fn report_watched(
         // on arrival by §5.4 and no bound is spent, and this line has only the tool name to go on.
         // The reason the *node* was given is in the transcript printed above, which is where a
         // reader who needs the specific rule should look.
-        eprintln!(
+        err!(
             "marion: denied {tool}: marion has nobody to ask for permission, and does not grant \
              what it cannot ask about"
         );
@@ -3114,7 +3109,7 @@ fn write_transcript(frames: &[Value], out: &mut dyn Write, is_terminal: bool) ->
         return Ok(());
     }
     for frame in frames {
-        writeln!(out, "{frame}")?;
+        out_to!(out, "{frame}")?;
     }
     Ok(())
 }
@@ -3140,7 +3135,7 @@ fn connect_supervisor(
             let lines = match ensured.stream.try_clone() {
                 Ok(half) => io::BufReader::new(half),
                 Err(e) => {
-                    eprintln!(
+                    err!(
                         "{}",
                         supervisor_unreachable(
                             sock.socket(),
@@ -3162,7 +3157,7 @@ fn connect_supervisor(
         // [`supervisor_unreachable`]: the root is not driven in this process any more, so there is
         // nothing left for a missing supervisor to cost *except* the work.
         Err(e) => {
-            eprintln!("{}", supervisor_unreachable(sock.socket(), &e.to_string()));
+            err!("{}", supervisor_unreachable(sock.socket(), &e.to_string()));
             Err(ExitCode::FAILURE)
         }
     }
@@ -3294,12 +3289,12 @@ fn spawn_root(
 fn run_verdict(terminal: Terminal_, blocked_bound: StdDuration) -> ExitCode {
     match terminal {
         Terminal_::Aborted(reason) => {
-            eprintln!("marion: {reason}");
+            err!("marion: {reason}");
             ExitCode::FAILURE
         }
         Terminal_::Exited { status, exit } => {
             if status == ExitStatus::TimedOut {
-                eprintln!(
+                err!(
                     "marion: the root exceeded its {} s wall-clock bound and its process group \
                      was killed",
                     blocked_bound.as_secs()
@@ -3316,13 +3311,13 @@ fn run_verdict(terminal: Terminal_, blocked_bound: StdDuration) -> ExitCode {
                 // marion's own sentence for this ending, carried on the node's closing bookend
                 // and printed because it is the only place a client can now read it — see
                 // `root::bridge_never_reached_exit`.
-                eprintln!("marion: {}", exit.description);
+                err!("marion: {}", exit.description);
                 return ExitCode::FAILURE;
             }
             // A root that answered without delegating is a success, and says so rather than
             // ending in silence (`root::ANSWERED_WITHOUT_DELEGATING`).
             if exit.description.contains(root::ANSWERED_WITHOUT_DELEGATING) {
-                eprintln!("marion: note: {}", root::ANSWERED_WITHOUT_DELEGATING);
+                err!("marion: note: {}", root::ANSWERED_WITHOUT_DELEGATING);
             }
             match exit.code {
                 Some(0) => ExitCode::SUCCESS,

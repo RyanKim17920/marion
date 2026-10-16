@@ -592,7 +592,7 @@ pub fn is_repo_row(path: &Path) -> bool {
 pub fn describe(spec: &HarnessSpec) -> Vec<String> {
     let argv: Vec<String> = spec.argv.iter().map(|a| format!("{a:?}")).collect();
     let env: Vec<&str> = spec.env.iter().map(|e| e.key).collect();
-    vec![
+    [
         format!("program: {}", spec.program.unwrap_or("?")),
         format!("argv: {}", argv.join(" ")),
         format!("env: {}", env.join(" ")),

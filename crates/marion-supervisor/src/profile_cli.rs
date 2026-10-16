@@ -17,6 +17,7 @@
 //! Every function takes its paths and writes to a caller's `Write`, so the verbs are tested without
 //! a terminal or a real home.
 
+use crate::{err, out_to};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -39,7 +40,7 @@ pub const USAGE: &str = "usage: marion profile add <harness> <name> [--dir <path
 /// `marion profile …`, from this process's environment. `argv` is everything after `profile`.
 pub fn main(argv: &[String]) -> ExitCode {
     let Some(paths) = ProfilePaths::from_env() else {
-        eprintln!(
+        err!(
             "marion profile: none of $XDG_CONFIG_HOME, $XDG_DATA_HOME or $HOME is set, so there is \
              nowhere to keep profiles"
         );
@@ -50,11 +51,11 @@ pub fn main(argv: &[String]) -> ExitCode {
     match run(argv, &paths, home.as_deref(), &mut out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(Refusal::Usage) => {
-            eprintln!("{USAGE}");
+            err!("{USAGE}");
             ExitCode::from(2)
         }
         Err(Refusal::Profile(e)) => {
-            eprintln!("marion profile: {e}");
+            err!("marion profile: {e}");
             ExitCode::FAILURE
         }
     }
@@ -159,21 +160,21 @@ fn add(
         dir: dir.clone(),
     });
     file.save(&paths.config)?;
-    writeln!(out, "profile `{name}` ({}) is {dir}", display_name(harness))?;
+    out_to!(out, "profile `{name}` ({}) is {dir}", display_name(harness))?;
     if !shared.is_empty() {
-        writeln!(
+        out_to!(
             out,
             "shared from ~/{}: {}",
             carrier.home_default,
             shared.join(", ")
         )?;
     }
-    writeln!(
+    out_to!(
         out,
         "log in to it once, yourself (marion never runs this):\n  {}",
         login_command(harness, carrier.env, &dir, carrier.login_hint)
     )?;
-    writeln!(
+    out_to!(
         out,
         "then name it on an agent type (`profile = \"{name}\"`), with `marion run --profile \
          {name}`, or make it {}'s default with `marion profile use {} {name}`",
@@ -198,7 +199,7 @@ pub fn login_command(harness: Harness, env: &str, dir: &str, hint: &str) -> Stri
 fn list(paths: &ProfilePaths, out: &mut dyn Write) -> Result<(), Refusal> {
     let rows = listed(paths)?;
     if rows.is_empty() {
-        writeln!(
+        out_to!(
             out,
             "no profiles in {}; add one with `marion profile add <harness> <name>`",
             paths.config.display()
@@ -221,21 +222,21 @@ fn list(paths: &ProfilePaths, out: &mut dyn Write) -> Result<(), Refusal> {
             .last_used_ms
             .map(|t| format!("used {}", age(now, t)))
             .unwrap_or_else(|| "never used".into());
-        writeln!(
+        out_to!(
             out,
             "{}{} ({}) — {login}, {used}",
             profile.name,
             if default { " [default]" } else { "" },
             display_name(profile.harness)
         )?;
-        writeln!(out, "  {}", profile.dir)?;
+        out_to!(out, "  {}", profile.dir)?;
         if let Some(limit) = usage.limit {
             let window = limit.window.as_deref().unwrap_or("usage");
             let resets =
                 marion_harness::resets_phrase(limit.line.as_deref().unwrap_or(""), limit.resets_at)
                     .map(|r| format!(", {r}"))
                     .unwrap_or_default();
-            writeln!(
+            out_to!(
                 out,
                 "  last limit reading: {} ({window}){resets} — seen {}",
                 limit.status,
@@ -282,7 +283,7 @@ fn use_default(
     file.default
         .insert(harness.as_str().to_string(), name.to_string());
     file.save(&paths.config)?;
-    writeln!(
+    out_to!(
         out,
         "{} nodes now run on profile `{name}` unless an agent type or a run names another",
         display_name(harness)
@@ -321,27 +322,27 @@ fn remove(
     let entry = file.profile.remove(at);
     file.default.retain(|_, n| n != name);
     file.save(&paths.config)?;
-    writeln!(
+    out_to!(
         out,
         "removed profile `{name}` from {}",
         paths.config.display()
     )?;
     let dir = Path::new(&entry.dir);
     if !purge {
-        writeln!(out, "its directory is kept: {}", entry.dir)?;
+        out_to!(out, "its directory is kept: {}", entry.dir)?;
     } else if dir.starts_with(&paths.data) {
         std::fs::remove_dir_all(dir).or_else(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Ok(()),
             _ => Err(e),
         })?;
-        writeln!(
+        out_to!(
             out,
             "deleted {} (a login the harness keeps outside it, such as a keychain entry, is the \
              harness's to remove)",
             entry.dir
         )?;
     } else {
-        writeln!(
+        out_to!(
             out,
             "not deleted: {} is a directory you adopted with --dir, not one marion made",
             entry.dir

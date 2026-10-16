@@ -11,6 +11,7 @@
 //! (`--canned`, `--base-url`). **An unknown flag is always refused**, never ignored: a mistyped
 //! `--state-dir` that fell through would quietly talk to a different supervisor.
 
+use marion_supervisor::{err, out};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -182,13 +183,14 @@ pub fn dispatch(verb: &Verb, argv: &[String]) -> ExitCode {
     match (verb.main)(argv) {
         Ok(code) => code,
         Err(Exit::Help) => {
-            println!("{}", (verb.help)());
+            out!("{}", (verb.help)());
             ExitCode::SUCCESS
         }
         Err(Exit::Usage(why)) => {
-            eprintln!(
+            err!(
                 "marion {}: {why}\n`marion {} --help` shows how to use it",
-                verb.name, verb.name
+                verb.name,
+                verb.name
             );
             ExitCode::from(2)
         }

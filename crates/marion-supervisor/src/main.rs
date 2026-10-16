@@ -11,9 +11,10 @@
 //! this change deliberately leaves standing. `detach.rs` owns all three of its stages.
 
 use marion_supervisor::{detach, doctor, mcp, preflight};
+use marion_supervisor::{err, out};
 
 fn usage() -> ! {
-    eprintln!(
+    err!(
         "usage: marion-supervisor doctor [--adapter] [--harness <name>] …\n\
          \x20      marion-supervisor --version\n\
          \n\
@@ -30,7 +31,7 @@ fn main() {
     marion_supervisor::install_harness_rows();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
-        Some("--version" | "-V") => println!("marion-supervisor {}", env!("CARGO_PKG_VERSION")),
+        Some("--version" | "-V") => out!("marion-supervisor {}", env!("CARGO_PKG_VERSION")),
         Some("mcp") => mcp::serve_stdio(mcp::Principal::Node),
         Some(detach::SERVE) => {
             // The project this supervisor serves is its own argument, not its cwd: its repository's
@@ -47,7 +48,7 @@ fn main() {
                     key
                 };
                 for e in marion_supervisor::install_repo_rows(repo).refused {
-                    eprintln!("marion-supervisor: harness row not loaded: {e}");
+                    err!("marion-supervisor: harness row not loaded: {e}");
                 }
             }
             let program = std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into());
@@ -55,7 +56,7 @@ fn main() {
                 // The one place a supervisor stage can speak. Stages 1 and 2 inherit the launcher's
                 // stderr, so this reaches the operator who asked for a supervisor; stage 3's stderr
                 // is a file beside the socket, so it reaches whoever goes looking afterwards.
-                eprintln!("marion-supervisor: {e}");
+                err!("marion-supervisor: {e}");
                 std::process::exit(1);
             }
         }
@@ -65,9 +66,11 @@ fn main() {
             match parsed
                 .and_then(|model| marion_supervisor::provider_check::report(model.as_deref()))
             {
-                Ok(text) => print!("{text}"),
+                Ok(text) => {
+                    let _ = marion_supervisor::printable::show(&mut std::io::stdout(), &text);
+                }
                 Err(e) => {
-                    eprintln!("marion doctor --providers: {e}");
+                    err!("marion doctor --providers: {e}");
                     std::process::exit(2);
                 }
             }
@@ -76,14 +79,22 @@ fn main() {
             Ok(opts) => {
                 let rows = doctor::run(&opts);
                 let environment = preflight::checks(&preflight::gather());
-                print!("{}", doctor::render(&rows, &environment));
+                let _ = marion_supervisor::printable::show(
+                    &mut std::io::stdout(),
+                    &doctor::render(&rows, &environment),
+                );
                 // Bare `marion doctor` also checks the provider keys `marion login` stored — the
                 // `--providers` report, one `GET …/models` per credential, which spends nothing. A
                 // store it cannot read is said, never a failure of the machine's own checks.
                 if argv.len() == 1 {
                     match marion_supervisor::provider_check::report(None) {
-                        Ok(text) => print!("\n{text}"),
-                        Err(e) => println!("\nproviders: not checked — {e}"),
+                        Ok(text) => {
+                            let _ = marion_supervisor::printable::show(
+                                &mut std::io::stdout(),
+                                &format!("\n{text}"),
+                            );
+                        }
+                        Err(e) => out!("\nproviders: not checked — {e}"),
                     }
                 }
                 // A failed machine check (a mismatched binary pair, an unwritable state dir) fails
@@ -102,8 +113,8 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("marion doctor: {e}");
-                eprintln!("{}", doctor::USAGE);
+                err!("marion doctor: {e}");
+                err!("{}", doctor::USAGE);
                 std::process::exit(2);
             }
         },
