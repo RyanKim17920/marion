@@ -416,10 +416,15 @@ Which paths count is each harness row's `repo_config`.
 | `opencode` | `OPENCODE_DISABLE_PROJECT_CONFIG=1` | the project config loads |
 | `pi` | no switch, so pi's own `trust.json` (or `defaultProjectTrust`) decides; `--no-approve` in a child tree whose `.pi/` was edited (your own extensions still load) | `--approve` |
 | `qwen` | a live launch is refused while the tree holds `.qwen/` (qwen 0.23.0 has no measured switch that drops only the project layer) | `.qwen/` loads |
+| `copilot` | a live launch is refused while the checkout holds its MCP, hooks, settings, extensions, agents or LSP config (`.mcp.json`, `.github/mcp.json`, `.github/hooks/`, `.github/copilot/`, …); its own trust gate is pinned shut (`COPILOT_ALLOW_ALL=false` and the three `GITHUB_COPILOT_PROMPT_MODE_*` switches) | copilot's own folder trust decides |
+| `agy` | a live launch is refused while `.agents/`, `.agent/`, `_agents/` or `_agent/` up to the checkout root holds MCP servers, hooks or plugins | they load |
+| `goose` | **any** launch, canned included, is refused while the tree holds `.agents/plugins/` (its hooks run under `--no-profile`, and goose records the plugin as enabled in its config) | they load |
+| `cline` | **any** launch, canned included, is refused while the tree holds `.clinerules/hooks/`, `.cline/hooks/` or `.cline/plugins/` | they load |
 
 marion answers a harness's own folder-trust dialog only in a repository you trusted. Canned and
-endpoint nodes load no repository config either way; a canned codex states the same trust in its
-own `config.toml`.
+endpoint nodes load no repository config either way, except goose's and cline's, which no
+relocated home keeps out and which are refused instead; a canned codex states the same trust in
+its own `config.toml`.
 
 A model's own `spawn`, from a node or from a `marion mcp` client, may name a free-form
 `acp:<command>` only when you have listed that exact command line in your user-level

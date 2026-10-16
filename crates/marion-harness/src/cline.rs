@@ -91,6 +91,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     vendor: None,
     verified: &["3.0.61", "3.0.66"],
     argv: &[
+        Arg::RefuseUntrustedAnyAuth,
         Arg::Lit("--json"),
         Arg::Flag("-c", Field::Cwd),
         // Canned only: see `Arg::Isolation`. Without them the CLI forks a hub daemon that outlives
@@ -158,7 +159,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Any provider cline is configured for, by its key.
     files: &[],
     overlay_documents: &[],
-    repo_config: &[],
+    // 3.0.66 (shipped `@cline/shared` and `@cline/core` 0.0.88, not run here): executable hooks
+    // under `.clinerules/hooks/` and `.cline/hooks/`, in-process JS/TS plugins under
+    // `.cline/plugins/`, loaded from the workspace whatever `--config`/`--data-dir` say; the CLI
+    // has no flag that turns those extensions off and no trust gate, so any launch in an
+    // untrusted repository holding them is refused ([`Arg::RefuseUntrustedAnyAuth`]). Its rules,
+    // workflows and skills are prompt text; its MCP settings are global only.
+    repo_config: &[".clinerules/hooks", ".cline/hooks", ".cline/plugins"],
     login_env: LoginEnv {
         login: &[],
         any_provider: true,

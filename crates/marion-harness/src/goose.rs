@@ -70,6 +70,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     vendor: None,
     verified: &["1.49.0", "1.50.0", "1.51.0", "1.52.0"],
     argv: &[
+        Arg::RefuseUntrustedAnyAuth,
         Arg::Lit("run"),
         Arg::Flag("-t", Field::Prompt),
         Arg::Lit("--output-format"),
@@ -182,7 +183,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Any provider goose is configured for, by its key.
     files: &[],
     overlay_documents: &[],
-    repo_config: &[],
+    // 1.54.0: every directory under `.agents/plugins/` is a plugin, enabled on discovery and
+    // recorded `enabled: true` in the user's `config.yaml`, and its `hooks/hooks.json` command
+    // hooks run from the cwd even under `--no-profile` (measured: a planted SessionStart and
+    // UserPromptSubmit hook both fired with `GOOSE_PATH_ROOT` in scratch). A relocated home keeps
+    // none of it out and goose has no trust gate, so any launch in an untrusted repository
+    // holding it is refused ([`Arg::RefuseUntrustedAnyAuth`]).
+    repo_config: &[".agents/plugins"],
     login_env: LoginEnv {
         login: &[],
         any_provider: true,

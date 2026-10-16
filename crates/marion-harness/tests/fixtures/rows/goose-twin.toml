@@ -11,6 +11,7 @@ note = """S26 on goose 1.49.0: the run -t surface, env-only provider selection, 
            goose cell runs this row end to end"""
 writes-without-grant = false
 surfaces = "launch-only"
+repo-config = [".agents/plugins"]
 stream = "builtin:goose"
 spelling = "server-double-underscore-tool"
 tools = [
@@ -19,6 +20,7 @@ tools = [
   ["bash", "shell"],
 ]
 argv = [
+  "refuse-untrusted-any-auth",
   { lit = "run" },
   { flag = ["-t", "prompt"] },
   { lit = "--output-format" },

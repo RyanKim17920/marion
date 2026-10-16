@@ -76,6 +76,10 @@ args:
   --additional-mcp-config
   @/state/x/config/mcp.json
 env:
+  COPILOT_ALLOW_ALL=false
+  GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=false
+  GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP=false
+  GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS=false
   COPILOT_AUTO_UPDATE=false
 file /state/x/config/mcp.json:
 {
@@ -451,6 +455,10 @@ args:
   --additional-mcp-config
   @/state/x/config/mcp.json
 env:
+  COPILOT_ALLOW_ALL=false
+  GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=false
+  GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP=false
+  GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS=false
   COPILOT_AUTO_UPDATE=false
 file /state/x/config/mcp.json:
 {

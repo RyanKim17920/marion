@@ -69,6 +69,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     vendor: None,
     verified: &["1.2.8"],
     argv: &[
+        Arg::RefuseUntrusted,
         // `--conversation <id>`, first: a flag like every other, and an unknown id is read back
         // off the stream's `init` frame rather than trusted.
         Arg::Resume,
@@ -131,7 +132,35 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Its Google login.
     files: &[],
     overlay_documents: &[],
-    repo_config: &[],
+    // 1.2.8 (its embedded docs; S32, `tests/fixtures/s32/README.md`): each of `.agents/`,
+    // `.agent/`, `_agents/` and `_agent/`, from the cwd up to the repository root, may hold MCP
+    // servers (`mcp_config.json`), command hooks (`hooks.json`) and plugins (`plugins/`,
+    // `plugins.json`, `skills.json`); S32 measured a headless `-p` loading an added directory's
+    // `.agents/mcp_config.json` and running its `hooks.json` PreToolUse hook. Its workspace trust
+    // is the TUI's, nothing shows it gating `-p`, and no switch drops the layer without marion's
+    // own declaration, so a live launch in an untrusted repository holding any is refused.
+    repo_config: &[
+        ".agents/mcp_config.json",
+        ".agents/hooks.json",
+        ".agents/plugins",
+        ".agents/plugins.json",
+        ".agents/skills.json",
+        ".agent/mcp_config.json",
+        ".agent/hooks.json",
+        ".agent/plugins",
+        ".agent/plugins.json",
+        ".agent/skills.json",
+        "_agents/mcp_config.json",
+        "_agents/hooks.json",
+        "_agents/plugins",
+        "_agents/plugins.json",
+        "_agents/skills.json",
+        "_agent/mcp_config.json",
+        "_agent/hooks.json",
+        "_agent/plugins",
+        "_agent/plugins.json",
+        "_agent/skills.json",
+    ],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("GEMINI_API_KEY"),

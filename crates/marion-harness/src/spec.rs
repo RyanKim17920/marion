@@ -1343,6 +1343,10 @@ pub enum Arg {
     /// project configuration out, where loading it would run the repository's commands as the
     /// operator. A tree with none of it launches as before.
     RefuseUntrusted,
+    /// [`Self::RefuseUntrusted`] **under every auth**, canned and endpoint included: for a harness
+    /// whose repository config runs whatever home marion relocates (goose's `.agents/plugins`
+    /// hooks under `--no-profile`, cline's workspace hooks), so an overlay keeps none of it out.
+    RefuseUntrustedAnyAuth,
     /// A literal token on a **live** launch in a repository the operator **has** trusted: the
     /// switch that loads that configuration where the harness would otherwise stop to ask (pi's
     /// `--approve` in a mode with no one to answer).
@@ -1692,9 +1696,10 @@ pub enum Refusal {
     /// The launch's prompt rides argv and begins with a character the row's parser reads as
     /// something other than text ([`HarnessSpec::prompt_specials`]).
     SpecialPrompt(char),
-    /// A live launch in an untrusted repository whose tree holds configuration this row has no
-    /// switch to keep out ([`Arg::RefuseUntrusted`]).
-    UntrustedRepoConfig,
+    /// A launch in an untrusted repository whose tree holds configuration this row has no
+    /// switch to keep out ([`Arg::RefuseUntrusted`]); `any_auth` where an overlaying launch is
+    /// refused too ([`Arg::RefuseUntrustedAnyAuth`]).
+    UntrustedRepoConfig { any_auth: bool },
     /// A live launch in an untrusted repository that rejects the tree's `.mcp.json` servers by
     /// name ([`Field::UntrustedSettings`]), where that file does not read as an object of servers.
     UnreadableRepoMcp,
@@ -1813,7 +1818,7 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
             Some(true) => vec![s.to_string()],
             _ => Vec::new(),
         },
-        Arg::RefuseUntrusted => Vec::new(),
+        Arg::RefuseUntrusted | Arg::RefuseUntrustedAnyAuth => Vec::new(),
         Arg::Disowned(s) => match repo_config_rule(f) {
             Some(false) if !f.repo_config_own => vec![s.to_string()],
             _ => Vec::new(),
@@ -1829,6 +1834,29 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
 /// states what it does about a repository as data, and none decides it in code.
 pub fn repo_config_rule(f: &Fields) -> Option<bool> {
     (!f.auth.overlays()).then_some(f.repo_trusted)
+}
+
+/// **Whether any of `paths` is in `cwd` or a directory above it up to its checkout's root** (the
+/// nearest holding `.git`), as a file, a directory or a link: copilot and agy read repository
+/// config from every level up to that root, and a harness that reads only its cwd is covered by
+/// the first. Outside a checkout only `cwd` itself is looked at, so an operator's own config
+/// under their home never counts as a repository's.
+fn repo_config_in_checkout(paths: &[&str], cwd: &Path) -> bool {
+    let holds = |dir: &Path| {
+        paths
+            .iter()
+            .any(|p| std::fs::symlink_metadata(dir.join(p)).is_ok())
+    };
+    let root = cwd
+        .ancestors()
+        .find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok());
+    match root {
+        Some(root) => cwd
+            .ancestors()
+            .take_while(|d| d.starts_with(root))
+            .any(holds),
+        None => holds(cwd),
+    }
 }
 
 /// The row's recipe for `wire`, where it has one.
@@ -1897,14 +1925,11 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     if let Some(why) = prompt_refusal(spec, argv, &f.prompt) {
         return Err(why);
     }
-    if argv.contains(&Arg::RefuseUntrusted)
-        && repo_config_rule(f) == Some(false)
-        && spec
-            .repo_config
-            .iter()
-            .any(|p| std::fs::symlink_metadata(f.cwd.join(p)).is_ok())
-    {
-        return Err(Refusal::UntrustedRepoConfig);
+    let any_auth = argv.contains(&Arg::RefuseUntrustedAnyAuth);
+    let refuses = (any_auth && !f.repo_trusted)
+        || (argv.contains(&Arg::RefuseUntrusted) && repo_config_rule(f) == Some(false));
+    if refuses && repo_config_in_checkout(spec.repo_config, &f.cwd) {
+        return Err(Refusal::UntrustedRepoConfig { any_auth });
     }
     if argv
         .iter()

@@ -1261,14 +1261,23 @@ fn render_row(
                  something other than text (pi: a file to attach)"
             ),
         },
-        spec::Refusal::UntrustedRepoConfig => HarnessError::Unspellable {
+        spec::Refusal::UntrustedRepoConfig { any_auth } => HarnessError::Unspellable {
             harness: row.harness,
             what: format!(
                 "this repository holds its own config for the harness ({}), which it has no \
-                 switch to keep out of a node on your login and which can run commands; trust \
-                 the repository first (marion trust allow --repo) or run it on a canned or \
-                 endpoint provider",
-                row.repo_config.join(", ")
+                 switch to keep out of {} and which can run commands; trust the repository \
+                 first (marion trust allow --repo){}",
+                row.repo_config.join(", "),
+                if any_auth {
+                    "any node"
+                } else {
+                    "a node on your login"
+                },
+                if any_auth {
+                    ""
+                } else {
+                    " or run it on a canned or endpoint provider"
+                }
             ),
         },
         spec::Refusal::UnreadableRepoMcp => HarnessError::Unspellable {
@@ -4047,6 +4056,135 @@ mod tests {
         );
         assert!(launch(Auth::Inherited, true).is_ok());
         assert!(launch(Auth::Canned, false).is_ok());
+    }
+
+    /// **A row with no switch that keeps its repository config out refuses an untrusted
+    /// repository holding it**: copilot and agy on a live launch only (an overlay relocates the
+    /// homes their config would be trusted in), goose and cline on every auth (their workspace
+    /// hooks run whatever home marion relocates). The config counts from the cwd up to the
+    /// checkout's root, since copilot and agy walk up to it; a trusted repository, or a tree
+    /// without it, launches.
+    #[test]
+    fn rows_without_a_switch_refuse_an_untrusted_repositorys_own_config() {
+        // The last column: whether a canned launch in the untrusted repository is refused too,
+        // `None` for agy, which has no canned route at all.
+        type Case = (Harness, fn() -> LaunchSpec, &'static str, Option<bool>);
+        let cases: [Case; 4] = [
+            (
+                Harness::Copilot,
+                copilot_spec,
+                ".github/hooks/h.json",
+                Some(false),
+            ),
+            (Harness::Antigravity, agy_spec, ".agents/hooks.json", None),
+            (
+                Harness::Goose,
+                goose_spec,
+                ".agents/plugins/p/hooks/hooks.json",
+                Some(true),
+            ),
+            (
+                Harness::Cline,
+                cline_spec,
+                ".cline/hooks/PreToolUse",
+                Some(true),
+            ),
+        ];
+        for (h, spec_of, planted, any_auth) in cases {
+            let dir = marion_testsupport::scratch(&format!("{h}-repo-config"));
+            std::fs::create_dir_all(dir.join(".git")).unwrap();
+            let sub = dir.join("src");
+            std::fs::create_dir_all(&sub).unwrap();
+            let launch = |auth: Auth, trusted: bool| {
+                let mut spec = LaunchSpec {
+                    auth,
+                    cwd: sub.clone(),
+                    ..spec_of()
+                };
+                if auth == Auth::Inherited {
+                    spec.base_url = None;
+                    spec.api_key = None;
+                }
+                spec.extra.repo_trusted = trusted;
+                launch_adapter(h).unwrap().compile(&spec, &ctx())
+            };
+            assert!(launch(Auth::Inherited, false).is_ok(), "{h}: none yet");
+            let file = dir.join(planted);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "{}").unwrap();
+            let refused = launch(Auth::Inherited, false).expect_err("refused");
+            assert!(
+                refused.to_string().contains("marion trust allow --repo"),
+                "{h}: {refused}"
+            );
+            assert!(launch(Auth::Inherited, true).is_ok(), "{h}: trusted");
+            if let Some(any_auth) = any_auth {
+                assert_eq!(
+                    launch(Auth::Canned, false).is_err(),
+                    any_auth,
+                    "{h}: canned in an untrusted repository"
+                );
+                assert!(launch(Auth::Canned, true).is_ok(), "{h}: canned, trusted");
+            }
+        }
+    }
+
+    /// **Outside a checkout only the cwd counts**: an operator's own `~/.agents/plugins` above a
+    /// directory that is in no repository is theirs, not a repository's.
+    #[test]
+    fn outside_a_checkout_config_above_the_cwd_is_not_a_repositorys() {
+        let dir = marion_testsupport::scratch("goose-no-checkout");
+        std::fs::create_dir_all(dir.join(".agents/plugins/p")).unwrap();
+        let sub = dir.join("work");
+        std::fs::create_dir_all(&sub).unwrap();
+        let spec = LaunchSpec {
+            cwd: sub,
+            ..goose_spec()
+        };
+        assert!(
+            launch_adapter(Harness::Goose)
+                .unwrap()
+                .compile(&spec, &ctx())
+                .is_ok()
+        );
+    }
+
+    /// **copilot's own trust gate stays shut in an untrusted repository**: a live launch there
+    /// pins the four variables its app.js opens the gate on to `false`, so an operator's exported
+    /// `COPILOT_ALLOW_ALL=true` does not load a repository's hooks or servers; a trusted one
+    /// pins none. And marion answers its folder-trust dialog only in a trusted repository.
+    #[test]
+    fn copilots_own_trust_gate_stays_shut_in_an_untrusted_repository() {
+        let dir = marion_testsupport::scratch("copilot-trust-gate");
+        let pins = |trusted: bool| {
+            let mut spec = LaunchSpec {
+                auth: Auth::Inherited,
+                base_url: None,
+                api_key: None,
+                cwd: dir.to_path_buf(),
+                ..copilot_spec()
+            };
+            spec.extra.repo_trusted = trusted;
+            let Invocation { env: vars, .. } = CopilotAdapter.compile(&spec, &ctx()).unwrap();
+            vars.into_iter()
+                .filter(|(k, _)| {
+                    k == "COPILOT_ALLOW_ALL" || k.starts_with("GITHUB_COPILOT_PROMPT_MODE_")
+                })
+                .collect::<Vec<_>>()
+        };
+        let pinned = pins(false);
+        assert_eq!(pinned.len(), 4, "{pinned:?}");
+        assert!(pinned.iter().all(|(_, v)| v == "false"), "{pinned:?}");
+        assert!(pins(true).is_empty());
+        let row = harness_spec(Harness::Copilot);
+        let trust = &row.boot_dialogs.dialogs[0];
+        assert!(
+            matches!(trust.answer, spec::DialogAnswer::Keys(_)),
+            "{trust:?}"
+        );
+        let may = |auth, trusted| row.boot_dialogs.remembers.marion_may_answer(auth, trusted);
+        assert!(!may(Auth::Inherited, false) && !may(Auth::Canned, false));
+        assert!(may(Auth::Inherited, true));
     }
 
     /// The other half: nothing *else* changes. A live node still gets the fileless MCP declaration;

@@ -79,6 +79,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     vendor: None,
     verified: &["1.0.83", "1.0.89"],
     argv: &[
+        Arg::RefuseUntrusted,
         // The prompt is the **argument to `-p`**: `-p` is what selects non-interactive mode at
         // all, and a bare positional would open the TUI.
         Arg::Flag("-p", Field::Prompt),
@@ -111,6 +112,30 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     ],
     pane: None,
     env: &[
+        // Its own trust gate, held shut in an untrusted repository: 1.0.89's shipped app.js loads
+        // repository hooks, workspace MCP and project extensions only for a folder in its
+        // `trustedFolders`, or where one of these reads `"true"` — an operator's exported
+        // `COPILOT_ALLOW_ALL` opened it (`copilot mcp list` listed a planted `.mcp.json` server).
+        Env {
+            key: "COPILOT_ALLOW_ALL",
+            val: Val::Lit("false"),
+            when: When::Untrusted,
+        },
+        Env {
+            key: "GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS",
+            val: Val::Lit("false"),
+            when: When::Untrusted,
+        },
+        Env {
+            key: "GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP",
+            val: Val::Lit("false"),
+            when: When::Untrusted,
+        },
+        Env {
+            key: "GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS",
+            val: Val::Lit("false"),
+            when: When::Untrusted,
+        },
         Env {
             key: HOME_ENV,
             val: Val::Under(HOME_DIR),
@@ -187,7 +212,25 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Its GitHub login, in the three variables copilot reads, and a BYOK provider's.
     files: &[],
     overlay_documents: &[],
-    repo_config: &[],
+    // 1.0.89 (shipped app.js and changelog): workspace MCP from `.mcp.json`, `.github/mcp.json`
+    // and `.devcontainer/devcontainer.json`, walked from the cwd to the git root; hooks from
+    // `.github/hooks/` and the `hooks`, `enabledPlugins` and marketplaces of
+    // `.github/copilot/settings*.json`; SDK extensions under `.github/extensions/`. Inferred from
+    // its strings: `mcp-servers` in `.github/agents/*.agent.md`, LSP servers in `.github/lsp.json`
+    // and `.lsp.json`. No switch drops the layer (`--disable-mcp-server` is one name), and its
+    // folder trust is inherited by a worktree of a folder it trusts, so a live launch in an
+    // untrusted repository holding any of them is refused ([`Arg::RefuseUntrusted`]).
+    repo_config: &[
+        ".mcp.json",
+        ".github/mcp.json",
+        ".devcontainer/devcontainer.json",
+        ".github/hooks",
+        ".github/copilot",
+        ".github/extensions",
+        ".github/agents",
+        ".github/lsp.json",
+        ".lsp.json",
+    ],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("COPILOT_GITHUB_TOKEN"),

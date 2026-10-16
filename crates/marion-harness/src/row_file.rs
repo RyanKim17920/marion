@@ -856,6 +856,7 @@ pub enum ArgDto {
     Untrusted(String),
     Disowned(String),
     RefuseUntrusted,
+    RefuseUntrustedAnyAuth,
     Trusted(String),
 }
 
@@ -879,6 +880,7 @@ impl ArgDto {
             ArgDto::Untrusted(l) => Arg::Untrusted(leak(l)),
             ArgDto::Disowned(l) => Arg::Disowned(leak(l)),
             ArgDto::RefuseUntrusted => Arg::RefuseUntrusted,
+            ArgDto::RefuseUntrustedAnyAuth => Arg::RefuseUntrustedAnyAuth,
             ArgDto::Trusted(l) => Arg::Trusted(leak(l)),
         }
     }
