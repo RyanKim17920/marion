@@ -231,6 +231,25 @@ pub enum FailureCause {
     },
 }
 
+impl FailureCause {
+    /// The cause as a person reads it — `login refused: <the harness's line>` — the one spelling
+    /// `marion ls <id>`, a root's exit description and an export all print.
+    pub fn words(&self) -> String {
+        match self {
+            FailureCause::UsageLimit { line, .. } => format!("usage limit: {line}"),
+            FailureCause::RateLimit { line } => format!("rate limit: {line}"),
+            FailureCause::Auth { line } => format!("login refused: {line}"),
+            FailureCause::Outage { line } => format!("vendor outage: {line}"),
+            FailureCause::Budget {
+                scope,
+                spent,
+                limit,
+                ..
+            } => format!("{} budget spent: {spent} of {limit}", scope.word()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskTimestamps {
     pub spawned: SystemTime,

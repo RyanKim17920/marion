@@ -60,7 +60,7 @@ use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
 
 use marion_core::contract::{
-    AgentId, Capped, ExitStatus, Oid, ProcessExit, TokenUsage, new_agent_id,
+    AgentId, Capped, ExitStatus, FailureCause, Oid, ProcessExit, TokenUsage, new_agent_id,
 };
 use marion_core::harness::Harness;
 use marion_core::ids::uuid_v7;
@@ -1667,21 +1667,16 @@ fn root_failure_before_a_turn(
     if killed || remaining.is_zero() || spent.is_some_and(|u| u.total() > 0) {
         return None;
     }
-    let (failed, called, said, stdout) = match result {
+    let (failed, called, (said, stdout)) = match result {
         Ok(o) if !o.timed_out => (
             o.exit_code != Some(0) || o.failure.is_some(),
             !o.marion_calls.is_empty(),
-            format!("{}\n{}", o.stderr, o.failure.as_deref().unwrap_or_default()),
-            o.transcript
-                .iter()
-                .map(Value::to_string)
-                .collect::<Vec<_>>()
-                .join("\n"),
+            what_the_root_said(o),
         ),
         // A `LaunchOnly` root's post-hoc refusal for never reaching marion's bridge: not one marion
         // call, and the harness's own words — its stream's failure and its stderr — in the error.
         Err(e @ RootError::BridgeNeverReached { .. }) => {
-            (true, false, e.to_string(), String::new())
+            (true, false, (e.to_string(), String::new()))
         }
         _ => return None,
     };
@@ -1694,6 +1689,28 @@ fn root_failure_before_a_turn(
     {
         return None;
     }
+    let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref()).ok()?;
+    adapter.failure_cause(&said, &stdout, crate::run::billing(node.endpoint.as_ref()))
+}
+
+/// What a root said about how it ended, as the one classifier reads it: its stderr with its
+/// stream's own failure claim, and its stream's frames.
+fn what_the_root_said(o: &RootOutcome) -> (String, String) {
+    (
+        format!("{}\n{}", o.stderr, o.failure.as_deref().unwrap_or_default()),
+        o.transcript
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// **Why a root that did not end well failed**, by the one classifier — what a child's contract
+/// keeps as its `failure_cause` (`run::attempt_cause`). A root has no contract, so its journal's
+/// exit description leads with it, where `marion ls <id>` and a watcher read it.
+fn roots_failure_cause(node: &RootNode, o: &RootOutcome) -> Option<FailureCause> {
+    let (said, stdout) = what_the_root_said(o);
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref()).ok()?;
     adapter.failure_cause(&said, &stdout, crate::run::billing(node.endpoint.as_ref()))
 }
@@ -2031,7 +2048,12 @@ fn journal_the_roots_outcome(
     // a child that stayed silent. A timeout outranks everything for the same reason it does in
     // `build_contract`: it is marion's own attributed kill.
     if !ended_by_kill {
-        let (status, exit) = roots_exit(outcome);
+        let (status, mut exit) = roots_exit(outcome);
+        if status != ExitStatus::Ok
+            && let Some(cause) = roots_failure_cause(node, outcome)
+        {
+            exit.description = format!("{}; {}", cause.words(), exit.description);
+        }
         crate::journal::record(
             &node.project,
             RecordKind::Exited(Exited {

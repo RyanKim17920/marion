@@ -1059,6 +1059,40 @@ fn a_refused_root_that_ran_is_journalled_exited_and_one_that_never_ran_aborted()
     assert!(tree.get(&never.agent_id).unwrap().spawn_aborted.is_some());
 }
 
+/// **A root that failed says why in its journal's exit**, by the one classifier a child's
+/// contract keeps as `failure_cause`: a root has no contract, so the description leads with the
+/// cause, where `marion ls <id>` reads it. A root that ended well, or failed on nothing the
+/// classifier reads, keeps marion's account alone.
+#[test]
+fn a_failed_roots_exit_leads_with_the_classified_cause() {
+    let exit_of = |name: &str, outcome: RootOutcome| {
+        let dir = temp(name);
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
+        journal_the_roots_outcome(&node, &Ok(outcome), true, "1.0.0", false);
+        let tree = marion_core::registry::replay(&std::fs::read(node.project.journal()).unwrap());
+        tree.get(&node.agent_id)
+            .and_then(|n| n.exit.clone())
+            .expect("an exit")
+            .description
+    };
+    assert_eq!(
+        exit_of("root-cause-auth", ran(&[], 1, Some(1), "Not logged in")),
+        "login refused: Not logged in; root exited with code 1"
+    );
+    assert_eq!(
+        exit_of("root-cause-none", ran(&[], 1, Some(1), "")),
+        "root exited with code 1"
+    );
+    assert!(
+        !exit_of(
+            "root-cause-ok",
+            ran(&["spawn"], 1, Some(0), "Not logged in")
+        )
+        .contains("login refused"),
+        "a root that ended well is not given a cause"
+    );
+}
+
 /// **A root whose `SpawnIntent` cannot be made durable is refused.** The intent is the one
 /// record that names the node before a process exists; a root launched without it is the
 /// untracked live process §9's M2 criteria forbid. The fault is real, not injected: the journal
