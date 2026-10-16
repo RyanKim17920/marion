@@ -392,6 +392,22 @@ fn inline_captures(fmt: &str) -> Vec<String> {
 pub fn check_local(s: &mut Scanner, l: &syn::Local) {
     let Some(init) = &l.init else { return };
     let expr = &init.expr;
+    let streams = s
+        .current_fn()
+        .map(|f| f.std_streams.clone())
+        .unwrap_or_default();
+    if is_std_stream(&streams, expr) {
+        let pat = &l.pat;
+        let names = flatten(&quote::quote!(#pat))
+            .into_iter()
+            .filter_map(|t| match t {
+                TokenTree::Ident(id) if id != "mut" && id != "ref" => Some(id.to_string()),
+                _ => None,
+            });
+        if let Some(f) = s.current_fn() {
+            f.std_streams.extend(names);
+        }
+    }
     let exposes = flatten(&quote::quote!(#expr)).windows(2).any(|w| {
         matches!((&w[0], &w[1]), (TokenTree::Punct(p), TokenTree::Ident(m))
             if p.as_char() == '.' && EXPOSING_METHODS.contains(&m.to_string().as_str()))
@@ -496,20 +512,25 @@ fn check_raw_print(s: &mut Scanner, name: &str, m: &syn::Macro) {
 }
 
 /// Does `e` name the process's own stdout or stderr: a call to a path ending `stdout`/`stderr`,
-/// anywhere along a method chain (`std::io::stdout().lock()`)?
-fn is_std_stream(e: &syn::Expr) -> bool {
+/// anywhere along a method chain (`std::io::stdout().lock()`), a writer built over one
+/// (`BufWriter::new(stdout())`), or a local in `streams` bound to one?
+fn is_std_stream(streams: &[String], e: &syn::Expr) -> bool {
     match e {
-        syn::Expr::Call(c) => match &*c.func {
-            syn::Expr::Path(p) => p
+        syn::Expr::Call(c) => {
+            let named = matches!(&*c.func, syn::Expr::Path(p) if p
                 .path
                 .segments
                 .last()
-                .is_some_and(|s| s.ident == "stdout" || s.ident == "stderr"),
-            _ => false,
-        },
-        syn::Expr::MethodCall(m) => is_std_stream(&m.receiver),
-        syn::Expr::Paren(p) => is_std_stream(&p.expr),
-        syn::Expr::Reference(r) => is_std_stream(&r.expr),
+                .is_some_and(|s| s.ident == "stdout" || s.ident == "stderr"));
+            named || c.args.iter().any(|a| is_std_stream(streams, a))
+        }
+        syn::Expr::Path(p) => p
+            .path
+            .get_ident()
+            .is_some_and(|id| streams.contains(&id.to_string())),
+        syn::Expr::MethodCall(m) => is_std_stream(streams, &m.receiver),
+        syn::Expr::Paren(p) => is_std_stream(streams, &p.expr),
+        syn::Expr::Reference(r) => is_std_stream(streams, &r.expr),
         _ => false,
     }
 }
@@ -521,7 +542,13 @@ fn check_raw_write(s: &mut Scanner, m: &syn::ExprMethodCall) {
         return;
     }
     let method = m.method.to_string();
-    if matches!(method.as_str(), "write_all" | "write_fmt") && is_std_stream(&m.receiver) {
+    let streams = s
+        .current_fn()
+        .map(|f| f.std_streams.clone())
+        .unwrap_or_default();
+    if matches!(method.as_str(), "write" | "write_all" | "write_fmt")
+        && is_std_stream(&streams, &m.receiver)
+    {
         s.emit(
             Axis::Security,
             "raw-print",

@@ -462,6 +462,9 @@ fn a_raw_print_of_a_value_in_the_cli_is_flagged() {
         r#"fn f() { println!("{USAGE}"); }"#,
         r#"fn f(x: &[u8]) { let _ = std::io::stdout().write_all(x); }"#,
         r#"fn f(a: std::fmt::Arguments) { let _ = io::stderr().lock().write_fmt(a); }"#,
+        r#"fn f(x: &[u8]) { let mut o = std::io::stdout().lock(); let _ = o.write_all(x); }"#,
+        r#"fn f(x: &[u8]) { let e = io::stderr(); let mut l = e.lock(); let _ = l.write(x); }"#,
+        r#"fn f(x: &[u8]) { let mut w = BufWriter::new(stdout()); let _ = (&mut w).write_all(x); }"#,
         r#"fn f(x: &str) { out!("{x}\ndone"); }"#,
         r#"fn f(o: &mut W, x: &str) { let _ = out_to!(o, "a\n{x}"); }"#,
     ] {

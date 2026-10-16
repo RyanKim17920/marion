@@ -90,6 +90,9 @@ pub struct FnFrame {
     /// Locals bound to a secret's plaintext (`let k = key.expose();`), read as secret-named for
     /// the rest of the function.
     pub exposed: Vec<String>,
+    /// Locals bound to the process's stdout or stderr (`let mut o = io::stdout().lock();`), a
+    /// raw write through which is a raw print all the same.
+    pub std_streams: Vec<String>,
     /// The body spawns marion's own binary (`CARGO_BIN_EXE_marion`) and no program named by a
     /// string literal — so every `.arg`/`.args` in it is marion's argv.
     pub runs_marion: bool,
