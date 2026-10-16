@@ -509,8 +509,9 @@ pub struct PtyChild {
     /// and one that killed through `shutdown` read the same answer.
     reaped: Option<std::process::ExitStatus>,
     /// **The session is the operator's**: the native `marion <harness>` session, which they run as
-    /// they would the harness itself. What they left running in it (a `nohup` job, a disowned one)
-    /// outlives the session as it would outside marion; only nodes marion launches are swept.
+    /// they would the harness itself. What they left running in it (a `nohup` job, a disowned one,
+    /// in the leader's group or a group of its own) outlives the session as it would outside
+    /// marion; only nodes marion launches are swept.
     operators_session: bool,
 }
 
@@ -581,6 +582,15 @@ impl PtyChild {
     /// kernel's to reissue the instant the first `wait` returns.
     pub fn kill_and_reap(&mut self) -> io::Result<std::process::ExitStatus> {
         if let Some(status) = self.reaped {
+            return Ok(status);
+        }
+        // **The operator's session that ended on its own is only reaped**: what they started in it
+        // — a `nohup cmd &` from a harness's shell, in the leader's own group where there is no job
+        // control — is theirs to outlive it, as it would outside marion. Ended by marion while it
+        // still runs, it is ended as a node is, group first.
+        if self.operators_session && self.poll_exited_unreaped()? {
+            let status = self.child.wait()?;
+            self.reaped = Some(status);
             return Ok(status);
         }
         // The group, not the pid: `setsid` made this child a group leader and a harness starts

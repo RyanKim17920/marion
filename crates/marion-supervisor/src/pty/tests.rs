@@ -715,6 +715,56 @@ fn a_child_the_operators_native_session_left_outlives_it() {
     );
 }
 
+/// **…and a `nohup` job in the leader's own group survives too**: a harness's shell runs without
+/// job control, so `nohup cmd &` stays in the leader's process group, which the group kill a node
+/// gets would end. The operator's session that exited on its own is only reaped.
+#[test]
+fn a_nohup_job_in_the_operators_native_leaders_own_group_outlives_it() {
+    let dir = marion_testsupport::scratch("pty-session-operators-group");
+    let recorded = dir.join("left.pid");
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let mut child = spawn_pty(
+        witness(),
+        &mut sh(&format!(
+            // The pause lets `nohup` ignore HUP before the leader's exit hangs up its group.
+            "nohup sleep 67 </dev/null >/dev/null 2>&1 & echo $! > {}; sleep 0.3",
+            recorded.display()
+        )),
+        &master,
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap()
+    .operators_session();
+    let left = || -> Option<i32> { std::fs::read_to_string(&recorded).ok()?.trim().parse().ok() };
+    assert!(until(|| left().is_some()), "the job recorded itself");
+    let left = left().unwrap();
+    assert!(until(|| child.poll_exited_unreaped().unwrap()));
+    // In the leader's own group: the case the group kill would end.
+    let pgid = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", &left.to_string()])
+        .output()
+        .expect("ps runs");
+    assert_eq!(
+        String::from_utf8_lossy(&pgid.stdout).trim(),
+        child.pid().to_string()
+    );
+    child.kill_and_reap().expect("reaped");
+    // A signal lands a moment after it is sent: the job has to stay alive past that.
+    let died = marion_testsupport::until_within(
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_millis(10),
+        || {
+            matches!(
+                crate::procid::run_state(left),
+                crate::procid::RunState::Gone | crate::procid::RunState::Zombie
+            )
+        },
+    );
+    marion_testsupport::kill_hard(left);
+    assert!(!died, "{left} died with the operator's session");
+}
+
 /// A naturally exited pane leader must remain waitable until shutdown has signalled its process
 /// group. The background holder ignores HUP and inherits the slave, so reaping the leader during
 /// the poll strands both the holder and the reader; a non-consuming poll lets shutdown kill the
