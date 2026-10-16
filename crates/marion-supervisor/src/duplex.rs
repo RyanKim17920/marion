@@ -676,7 +676,7 @@ pub fn run_duplex(
         Some((_, grace)) => spec.wall_clock.map(|bound| bound + *grace),
         None => spec.wall_clock,
     };
-    let guard = RunGuard::start(pid, backstop, stderr, stdout);
+    let mut guard = RunGuard::start(pid, backstop, stderr, stdout);
 
     let mut outcome = DuplexOutcome::default();
 
@@ -714,9 +714,11 @@ pub fn run_duplex(
     if outcome.stopped.is_some() {
         guard.end_now(&mut child);
     }
-    // The leader's exit, observed unreaped.
+    // The leader's exit, observed unreaped; then the watchdog is disarmed, so its expiry kill can
+    // never land in the sweep below or after the reap, when the pid is no longer the node's.
     let exit = crate::wake::ProcExit::new(pid);
     while !crate::wake::step_child(&child, &exit, &[], None)? {}
+    guard.disarm();
     // A node ends with everything in its session, as a launch-only node does (`run_bounded_with`):
     // a child the harness left behind is not the harness's to keep. A node with no wall clock led
     // no session of its own, and nothing is in one.
@@ -782,6 +784,15 @@ impl RunGuard {
         }
     }
 
+    /// End the wall clock now: the node's exit has been observed, so an expiry from here on would
+    /// kill a node that already ended. Idempotent; [`Self::stop`] calls it too.
+    fn disarm(&mut self) {
+        self.finished.store(true, Ordering::SeqCst);
+        if let Some(h) = self.watchdog.take() {
+            let _ = h.join();
+        }
+    }
+
     /// Kill the node's tree now, leaving the settling to [`Self::stop`].
     fn end_now(&self, child: &mut std::process::Child) {
         if self.own_group {
@@ -794,17 +805,15 @@ impl RunGuard {
     ///
     /// `kill` is set on the paths that abandon a live node: killing the direct child alone would
     /// leave its bridge holding the stderr pipe, which is the deadlock [`Drain`] exists to avoid.
-    fn stop(self, kill: bool, child: &mut std::process::Child) -> (String, bool) {
+    fn stop(mut self, kill: bool, child: &mut std::process::Child) -> (String, bool) {
+        // Disarmed first: the watchdog's kill must not race marion's own, nor follow the reap.
+        self.disarm();
         if kill {
             if self.own_group {
                 kill_process_tree(self.pid);
             }
             let _ = child.kill();
             let _ = crate::kill::end_node(child);
-        }
-        self.finished.store(true, Ordering::SeqCst);
-        if let Some(h) = self.watchdog {
-            let _ = h.join();
         }
         let drained = Instant::now() + DRAIN_GRACE;
         // Its lines have already gone to the driver's channel; the bytes are a copy.
@@ -2873,5 +2882,38 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
             alive.is_empty(),
             "left running after the node ended: {alive:?}"
         );
+    }
+
+    /// **A disarmed watchdog never fires**: once the leader's exit is observed the wall clock is
+    /// over, so its expiry can neither land in the session sweep nor follow the reap onto a pid that
+    /// is no longer the node's. The bound passes after the disarm; the process it names lives, and
+    /// the run is not called timed out.
+    #[test]
+    fn a_watchdog_disarmed_at_the_leaders_exit_never_fires() {
+        let mut sleep = SysCommand::new("sleep");
+        sleep.arg("30");
+        // Its own session, as a node with a wall clock leads: what the watchdog's kill addresses.
+        let mut child = crate::kill::lead_own_session(&mut sleep)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        let stdout = Drain::start(child.stdout.take().unwrap());
+        let stderr = Drain::start(child.stderr.take().unwrap());
+        let bound = StdDuration::from_millis(200);
+        let mut guard = RunGuard::start(pid, Some(bound), stderr, stdout);
+        guard.disarm();
+        std::thread::sleep(bound * 2);
+        let state = crate::procid::run_state(pid);
+        let _ = child.kill();
+        let (_, timed_out) = guard.stop(false, &mut child);
+        let _ = child.wait();
+        assert_eq!(
+            state,
+            crate::procid::RunState::Running,
+            "the watchdog fired"
+        );
+        assert!(!timed_out);
     }
 }
