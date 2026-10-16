@@ -474,7 +474,7 @@ impl RegistryHandle {
     /// with no path out. That is §11 item 28's absent pid, not a residency rule to loosen; loosening
     /// it here would trade a supervisor that cannot exit for a fleet that cannot be stopped.
     fn resident_reason(nodes: &[marion_core::registry::ReplayedNode]) -> Option<ResidentReason> {
-        let holding: Vec<_> = nodes.iter().filter(|n| !Self::abandoned(n)).collect();
+        let holding = || nodes.iter().filter(|n| !Self::abandoned(n));
         // **The intent holds only while the death is unobserved.** §7.2's crash window is *"the
         // supervisor died before the kill landed"*, and what makes it a window is that a process
         // may still be running. A terminal record for the node shuts it: §7.2 resolves an
@@ -487,23 +487,19 @@ impl RegistryHandle {
         // the intent, signals, and returns rather than confirming when it cannot observe the death;
         // a later confirmed `session/quit` KillTree then writes the `KillConfirmed` that does
         // observe it.
-        if holding
-            .iter()
-            .any(|n| n.reap_intent.is_some() && !n.state.is_exited())
+        if holding().any(|n| n.reap_intent.is_some() && !n.state.is_exited())
         {
             Some(ResidentReason::UnconfirmedReapIntent)
-        } else if holding
-            .iter()
-            .any(|n| matches!(n.state, NodeState::Blocked(_)))
+        } else if holding().any(|n| matches!(n.state, NodeState::Blocked(_)))
         {
             Some(ResidentReason::BlockedNode)
-        } else if holding.iter().any(|n| n.state == NodeState::Spawning) {
+        } else if holding().any(|n| n.state == NodeState::Spawning) {
             // An intent whose confirmation has not landed. A managed node's `Spawned` is followed
             // by `StateChanged(Running)` (`journal::confirm_spawned`), so a node marion holds a
             // process for reads as `NonTerminalNode` below, not here; both keep the supervisor
             // resident, and the word names which of the two the operator is looking at.
             Some(ResidentReason::SpawnOutstanding)
-        } else if holding.iter().any(|n| !n.state.is_exited()) {
+        } else if holding().any(|n| !n.state.is_exited()) {
             Some(ResidentReason::NonTerminalNode)
         } else {
             None
@@ -536,7 +532,10 @@ impl RegistryHandle {
             }
             return Some(ResidentReason::RegistryStopped);
         }
-        Self::resident_reason(&self.nodes())
+        // Read under the registry's lock rather than off a copy: this runs on every accept-loop
+        // pass, and copying the whole tree to answer a yes/no was the one idle cost that grew
+        // with the journal.
+        self.live.read(|r| Self::resident_reason(r.tree().nodes()))
     }
 
     /// The reason the registry gave up following, if it has.
