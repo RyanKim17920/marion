@@ -182,6 +182,7 @@ fn security_faults(spec: &HarnessSpec) -> Vec<String> {
             | Arg::Each(_, f)
             | Arg::EachEq(_, f)
             | Arg::Joined(_, f)
+            | Arg::Allowlist(_, f)
             | Arg::Pos(f)
             | Arg::PosIfNonEmpty(f)
             | Arg::Items(f) => Some(*f),
@@ -196,7 +197,7 @@ fn security_faults(spec: &HarnessSpec) -> Vec<String> {
             Arg::Lit(l) | Arg::CannedLit(l) => vec![l],
             Arg::Flag(l, _) | Arg::FlagEq(l, _) | Arg::Each(l, _) | Arg::EachEq(l, _) => vec![l],
             Arg::Pair(a, b, _) | Arg::Isolation(a, b) => vec![a, b],
-            Arg::Joined(l, _) => vec![l],
+            Arg::Joined(l, _) | Arg::Allowlist(l, _) => vec![l],
             _ => vec![],
         };
         for lit in lits {
@@ -743,6 +744,7 @@ pub enum ArgDto {
     Each(String, FieldDto),
     EachEq(String, FieldDto),
     Joined(String, FieldDto),
+    Allowlist(String, FieldDto),
     Pos(FieldDto),
     PosIfNonEmpty(FieldDto),
     Items(FieldDto),
@@ -761,6 +763,7 @@ impl ArgDto {
             ArgDto::Each(f, x) => Arg::Each(leak(f), x.field()),
             ArgDto::EachEq(f, x) => Arg::EachEq(leak(f), x.field()),
             ArgDto::Joined(f, x) => Arg::Joined(leak(f), x.field()),
+            ArgDto::Allowlist(f, x) => Arg::Allowlist(leak(f), x.field()),
             ArgDto::Pos(x) => Arg::Pos(x.field()),
             ArgDto::PosIfNonEmpty(x) => Arg::PosIfNonEmpty(x.field()),
             ArgDto::Items(x) => Arg::Items(x.field()),

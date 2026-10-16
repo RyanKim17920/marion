@@ -13,7 +13,9 @@
 //!
 //! - **`--tools` is one list on both axes** (item 3). It is an allowlist over built-in and extension
 //!   tools alike, so marion's verbs and the declared built-ins are what the model is offered. An
-//!   empty list offers nothing, which makes `--tools ""` an honest orchestrator and not a hole.
+//!   empty list offers nothing, which makes `--tools ""` an honest orchestrator and not a hole. A
+//!   write-granted node on the operator's own login carries none ([`Arg::Allowlist`]), and runs on
+//!   pi's normal tool set with their extensions' tools.
 //! - **No approval surface** (item 4). pi never asks to run a tool, so the argv has no grant flag.
 //! - **Failures exit 0** (item 6). A provider fault is an assistant `stopReason: "error"` inside
 //!   the final `agent_end`, the one whose `willRetry` is false. Retried attempts carry the same
@@ -73,7 +75,8 @@ pub const BOOT: Boot = Boot::Measured {
 /// a canned local OpenAI Chat Completions endpoint at $0.00.
 ///
 /// **Live mode is a removal.** The agent-dir relocation, `--no-extensions` and `--provider marion`
-/// go together. What survives is the extension, `--tools`, and a `--model` where the launch names one.
+/// go together. What survives is the extension, `--tools` (dropped on a write-granted node), and a
+/// `--model` where the launch names one.
 ///
 /// **Headless is `--mode rpc`, a JSONL command channel ([`RPC`], item 12).** The prompt is the
 /// channel's first command rather than argv, a message for a running node is folded as pi's steer,
@@ -98,8 +101,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::CannedLit("--provider"),
         Arg::CannedLit(PROVIDER),
         Arg::Flag("--model", Field::Model),
-        // Emitted even when empty: `--tools ""` offers nothing (`pi-empty-tools.*`).
-        Arg::Joined("--tools", Field::Tools),
+        // Emitted even when empty: `--tools ""` offers nothing (`pi-empty-tools.*`). Not on a
+        // write-granted node on the operator's own login, which runs on pi's normal tool set,
+        // their extensions' tools included (the owner's call, 2026-10-16); a read-only or planning
+        // node, and every canned one, keeps the allowlist.
+        Arg::Allowlist("--tools", Field::Tools),
         Arg::Flag("-e", Field::McpConfig),
     ],
     pane: None,
@@ -373,7 +379,7 @@ pub const LAUNCH_ONLY: HarnessSpec = HarnessSpec {
         Arg::CannedLit("--provider"),
         Arg::CannedLit(PROVIDER),
         Arg::Flag("--model", Field::Model),
-        Arg::Joined("--tools", Field::Tools),
+        Arg::Allowlist("--tools", Field::Tools),
         Arg::Flag("-e", Field::McpConfig),
         // Positional and last, as every capture ran it.
         Arg::Pos(Field::Prompt),
@@ -857,6 +863,51 @@ mod tests {
                 .windows(2)
                 .any(|w| w == ["-e", "/tmp/cfg/marion-pi.js"])
         );
+    }
+
+    /// **A write-granted node on the operator's own login runs on pi's normal tool set**, their
+    /// extensions' tools included, so it carries no `--tools`; a node on the same login not granted
+    /// writes (read-only, planning), and a canned node granted writes, keep the allowlist. Both
+    /// shapes of the row.
+    #[test]
+    fn only_a_write_granted_own_login_node_drops_the_tool_allowlist() {
+        let live = Fields {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..spec()
+        };
+        for row in [&SPEC, &LAUNCH_ONLY] {
+            let tools = |f: Fields| {
+                let args = render(row, Shape::Headless, &f).unwrap().args;
+                let at = args.iter().position(|a| a == "--tools")?;
+                Some(args[at + 1].clone())
+            };
+            let allowlist = Some("mcp__marion__report".to_string());
+            assert_eq!(
+                tools(Fields {
+                    writes: true,
+                    ..live.clone()
+                }),
+                None
+            );
+            assert_eq!(
+                tools(Fields {
+                    writes: false,
+                    ..live.clone()
+                }),
+                allowlist,
+                "not granted writes"
+            );
+            assert_eq!(
+                tools(Fields {
+                    writes: true,
+                    ..spec()
+                }),
+                allowlist,
+                "canned"
+            );
+        }
     }
 
     #[test]

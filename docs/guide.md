@@ -396,7 +396,7 @@ keeps them out. What a node on your login still changes, and why each is needed:
 | `codex` | `sandbox_mode="workspace-write"`, `features.plugins=false`, `features.shell_snapshot=false` (each a `-c` pair, never a write to your `config.toml`) | the write scope the contract records (an untrusted worktree would resolve read-only); the plugins feature leaves a `git fetch` running after the node exits; a shell snapshot writes the node's whole environment, keys included, to disk every session |
 | `goose` | `--no-profile` | goose has no per-tool grant: your profile's extensions (its `developer` among them) would hand a read-only agent `write` and `shell`. Built-ins come only as the agent type declares them |
 | `opencode` | a session store of the node's own (`OPENCODE_DB`), and the models fetch, LSP download, auto-update and sharing switched off | resume finds the node's session in its own store; work a spawned node has no use for |
-| `pi` | `--tools` | the agent type's grant; pi's list also decides which of your extensions' tools are offered |
+| `pi` | `--tools`, on a node not granted writes (a reviewer, a planner) | the agent type's grant; pi's list also decides which of your extensions' tools are offered, so a node granted writes runs on pi's normal tool set, your extensions' tools included |
 | every row | the credential filter above | a key a node's login does not read stays out of every command its model runs |
 
 `marion key` is only for API keys and endpoints you give it:

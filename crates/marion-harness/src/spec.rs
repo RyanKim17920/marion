@@ -1260,6 +1260,12 @@ pub enum Arg {
     /// daemon), and which a live node must not carry: pointing them at marion's directory is what
     /// hides the operator's own configuration.
     Isolation(&'static str, &'static str),
+    /// `<flag> <a,b,…>` as [`Arg::Joined`], **except on a node on the operator's own login that is
+    /// granted writes** ([`Fields::writes`]), which carries nothing and so runs on the harness's
+    /// normal tool set — the operator's extension tools included — as they run it themselves. For
+    /// a harness whose one list governs built-in and extension tools alike (pi's `--tools`): a
+    /// read-only or planning node, and every canned or endpoint node, keeps the allowlist.
+    Allowlist(&'static str, Field),
     /// A literal token **under [`When::Overlay`] only** — a switch that keeps the operator's own
     /// configuration out of the node. A live node must not carry one: its premise is the
     /// operator's harness as they configured it, and that configuration is where a credential can
@@ -1379,6 +1385,9 @@ pub struct Fields {
     pub extra_env: Vec<(String, String)>,
     /// A read-only launch: the row's [`HarnessSpec::read_only`] switch is rendered.
     pub read_only: bool,
+    /// The launch is granted writes: its availability axis names marion's `write`, and it is not
+    /// read-only. What [`Arg::Allowlist`] reads.
+    pub writes: bool,
 }
 
 /// **The strings a declaration or a credential can travel in print their shape, never their
@@ -1413,6 +1422,7 @@ impl std::fmt::Debug for Fields {
             profile_dir,
             extra_env,
             read_only,
+            writes,
             env_passthrough,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
@@ -1449,6 +1459,7 @@ impl std::fmt::Debug for Fields {
             .field("profile_dir", profile_dir)
             .field("extra_env", &Names(extra_env))
             .field("read_only", read_only)
+            .field("writes", writes)
             .finish()
     }
 }
@@ -1659,6 +1670,10 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
         Arg::Each(flag, field) => arg_each(flag, field, spec, f),
         Arg::EachEq(flag, field) => arg_each_eq(flag, field, spec, f),
         Arg::Joined(flag, field) => vec![flag.to_string(), items(spec, f, field).join(",")],
+        Arg::Allowlist(flag, field) => match f.auth == Auth::Inherited && f.writes {
+            true => Vec::new(),
+            false => vec![flag.to_string(), items(spec, f, field).join(",")],
+        },
         Arg::Pos(field) => f.value(field).into_iter().collect(),
         Arg::PosIfNonEmpty(field) => f
             .value(field)

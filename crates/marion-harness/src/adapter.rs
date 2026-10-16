@@ -1068,6 +1068,11 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         resume: spec.resume.clone(),
         profile_dir: spec.extra.profile_dir.clone(),
         read_only: spec.extra.read_only,
+        writes: !spec.extra.read_only
+            && spec
+                .tools
+                .iter()
+                .any(|t| t == marion_core::agent_type::TOOL_WRITE),
         env_passthrough: spec.extra.env_passthrough.clone(),
         ..spec::Fields::default()
     }
@@ -3102,6 +3107,25 @@ mod tests {
     /// The spec each harness needs to emit its configuration, so a test can sweep `Harness::ALL`
     /// without pretending the four take the same inputs (two refuse without a model, and the two
     /// spellings are incompatible).
+    /// **A launch is granted writes where its availability axis names marion's `write` and it is
+    /// not read-only** — what [`spec::Arg::Allowlist`] reads. The supervisor drops `write` from a
+    /// read-only launch's tools as well; this does not rest on that.
+    #[test]
+    fn a_launch_is_granted_writes_only_with_write_and_not_read_only() {
+        let writes = |tools: &[&str], read_only: bool| {
+            let mut spec = pi_spec();
+            spec.tools = tools.iter().map(|t| t.to_string()).collect();
+            spec.extra.read_only = read_only;
+            neutral_fields(&spec, spec::Axes::default()).writes
+        };
+        let w = marion_core::agent_type::TOOL_WRITE;
+        let r = marion_core::agent_type::TOOL_READ;
+        assert!(writes(&[r, w], false));
+        assert!(!writes(&[r, w], true), "read-only");
+        assert!(!writes(&[r], false), "no write");
+        assert!(!writes(&[], false), "a planner");
+    }
+
     fn spec_for(h: Harness) -> LaunchSpec {
         match h {
             Harness::Named(_) => unreachable!("a sweep over the built-ins"),

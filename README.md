@@ -221,7 +221,8 @@ marion works end to end and is not finished. What is open:
   [CONTRIBUTING.md](CONTRIBUTING.md#windows).
 - The native lane stays off for qwen, goose and cline until their interactive terminals are
   measured, and for agy, whose tools appear only after its first turn starts.
-- A pi child cannot delegate further, because pi's `--tools` also governs extension tools.
+- A pi child that keeps its `--tools` allowlist (canned, endpoint, read-only or planning) cannot
+  delegate further, because the list also governs extension tools.
 
 ## More
 
