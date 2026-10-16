@@ -1245,21 +1245,46 @@ pub fn background_result(
         "marion will return the terminal status it observed — a root has no task contract, so \
          there is no result document to wait for and its event stream is the record"
     };
-    tool_result(
+    handle_result(
         id,
         &format!(
-            "marion: the {agent_type} {node} is running in the background — this is a handle, not \
-             a result, and it carries no answer yet. Keep working; when you need what the {node} \
-             produced, call `wait` with task_id {task_id:?} and {returns}, blocking only if the \
-             {node} has not finished yet. You do not need to poll and there is nothing to check in \
-             the meantime.{note}",
-            agent_type = started.agent_type,
+            "the {agent_type} {node} is running in the background",
+            agent_type = started.agent_type
+        ),
+        &format!(
+            "It carries no answer yet. Keep working; when you need what the {node} produced, call \
+             `wait` with task_id {task_id:?} and {returns}, blocking only if the {node} has not \
+             finished yet. You do not need to poll and there is nothing to check in the \
+             meantime.{note}",
             task_id = started.task_id.0,
             // What marion must tell the caller about the node it started (a reviewer that
             // cannot be made read-only), after the handle.
             note = note.map(|n| format!(" Note: {n}.")).unwrap_or_default(),
         ),
+    )
+}
+
+/// **Every backgrounded verb's handle, said one way**: what is running, that the answer is a
+/// handle and not a result, then how to collect it. One helper so a `spawn`, `race` and `workflow`
+/// handle cannot drift into three readings of the same fact.
+fn handle_result(id: &Value, running: &str, then: &str) -> Value {
+    tool_result(
+        id,
+        &format!("marion: {running} — this is a handle, not a result. {then}"),
         false,
+    )
+}
+
+/// **A `wait` on a run that outlived its bound**, for a race or a workflow run: it keeps running,
+/// the id stays valid, and waiting again is the next step.
+fn still_running(id: &Value, run: &str, secs: u64, again: &str) -> Value {
+    tool_result(
+        id,
+        &format!(
+            "marion: {run} after {secs} s of waiting; it keeps running and the handle stays \
+             valid — call `wait` with {again} again."
+        ),
+        true,
     )
 }
 
@@ -1321,27 +1346,24 @@ pub fn workflow_background_result(
     id: &Value,
     started: &marion_core::proto::result::WorkflowRunResult,
 ) -> Value {
-    tool_result(
+    handle_result(
         id,
         &format!(
-            "marion: workflow {} is running in the background as {:?} ({} steps) — this is a \
-             handle, not a result. Call `wait` with that id for its final contract and \
-             scoreboard, `status` to see its steps, `cancel` to stop it.",
+            "workflow {} is running in the background as {:?} ({} steps)",
             started.name, started.wf_id.0, started.steps
         ),
-        false,
+        "Call `wait` with that id for its final contract and scoreboard, `status` to see its \
+         steps, `cancel` to stop it.",
     )
 }
 
 /// A `wait` whose bound ran out before the run closed.
 pub fn workflow_still_running(id: &Value, wf_id: &str, secs: u64) -> Value {
-    tool_result(
+    still_running(
         id,
-        &format!(
-            "marion: workflow run {wf_id} has not closed after {secs} s of waiting; it keeps \
-             running and the id stays valid — call `wait` with id {wf_id:?} again."
-        ),
-        true,
+        &format!("workflow run {wf_id} has not closed"),
+        secs,
+        &format!("id {wf_id:?}"),
     )
 }
 
@@ -1355,29 +1377,28 @@ pub fn race_background_result(
         .iter()
         .filter(|s| s.agent_id.is_some())
         .count();
-    tool_result(
+    handle_result(
         id,
         &format!(
-            "marion: the race is running in the background with {running} of {} seats started — \
-             this is a handle, not a result. When you need the winner, call `wait` with task_id \
-             {:?}; marion returns the winner's contract and the scoreboard, blocking only if the \
-             race is not decided yet. `status` with the same task_id shows each seat.",
-            started.seats.len(),
-            started.race_id.0,
+            "the race is running in the background with {running} of {} seats started",
+            started.seats.len()
         ),
-        false,
+        &format!(
+            "When you need the winner, call `wait` with task_id {:?}; marion returns the winner's \
+             contract and the scoreboard, blocking only if the race is not decided yet. `status` \
+             with the same task_id shows each seat.",
+            started.race_id.0
+        ),
     )
 }
 
 /// A `wait` on a race that outlived its bound: the seats keep running and the handle stays valid.
 pub fn race_still_running(id: &Value, race_id: &str, secs: u64) -> Value {
-    tool_result(
+    still_running(
         id,
-        &format!(
-            "marion: race {race_id} is not decided after {secs} s of waiting; its seats keep \
-             running and the handle stays valid — call `wait` with task_id {race_id:?} again."
-        ),
-        true,
+        &format!("race {race_id} is not decided"),
+        secs,
+        &format!("task_id {race_id:?}"),
     )
 }
 
@@ -1400,18 +1421,29 @@ pub fn race_still_running(id: &Value, race_id: &str, secs: u64) -> Value {
 /// was shown. Telling a caller its handle is invalid when marion dropped it is the accept-and-blame
 /// shape, so the sentence now names both possibilities and does not claim the search was complete.
 pub fn wait_unknown(id: &Value, task_id: &str) -> Value {
+    unknown_handle(
+        id,
+        task_id,
+        "waiting on",
+        "If the handle came from your own `spawn { background: true }` in this session, it \
+         should have been found; treat the child as no longer observable rather than as finished.",
+    )
+}
+
+/// **The lookup an unknown handle failed, said once for `wait` and `status`**: which table was
+/// searched, why that is narrower than what marion permits, and that the fault may be marion's.
+/// `verb` is what the caller would legitimately have done with the handle; `tail` is the verb's
+/// own next step, the one place the two answers differ.
+fn unknown_handle(id: &Value, task_id: &str, verb: &str, tail: &str) -> Value {
     tool_result(
         id,
         &bounded(&format!(
             "marion: this supervisor has no record of task_id {task_id:?}. It looked only at the \
              children it started itself, in this process — that is the whole of the lookup, and it \
-             is narrower than what marion permits: a handle for a *grandchild* or for another node's \
-             child is not resolvable here even though waiting on it would be legitimate, and a \
-             handle marion issued before this supervisor was restarted is gone with the table. So \
-             this may be your mistake or it may be marion's, and marion cannot tell which. If the \
-             handle came from your own `spawn {{ background: true }}` in this session, it should \
-             have \
-             been found; treat the child as no longer observable rather than as finished."
+             is narrower than what marion permits: a grandchild's handle, or one issued before this \
+             supervisor was restarted, is not resolvable here even though {verb} it would be \
+             legitimate. So this may be your mistake or it may be marion's, and marion cannot tell \
+             which. {tail}"
         )),
         true,
     )
@@ -1563,24 +1595,16 @@ pub fn status_result(
 
 /// **`status` against a handle this bridge process has no row for.**
 ///
-/// Kept separate from [`wait_unknown`] rather than shared with it, because the two verbs fail
-/// differently in one respect that matters: a `wait` that cannot resolve a handle has *not
-/// delivered an outcome*, while a `status` that cannot has merely failed to read one, and the
-/// advice at the end therefore differs. Everything before that is the same limit, stated the same
-/// way, for the reason [`wait_unknown`] gives at length.
+/// The same lookup as [`wait_unknown`] ([`unknown_handle`]), with its own last sentence: a `wait`
+/// that cannot resolve a handle has *not delivered an outcome*, while a `status` that cannot has
+/// merely failed to read one, so the advice at the end differs and nothing before it does.
 pub fn status_unknown(id: &Value, task_id: &str) -> Value {
-    tool_result(
+    unknown_handle(
         id,
-        &bounded(&format!(
-            "marion: this supervisor has no record of task_id {task_id:?}. It looked only at the \
-             children it started itself, in this process — that is the whole of the lookup, and it \
-             is narrower than what marion permits: a grandchild's handle, or one issued before this \
-             supervisor was restarted, is not resolvable here even though reading its state would \
-             be legitimate. So this may be your mistake or it may be marion's, and marion cannot \
-             tell which. Nothing was read and nothing was changed; `list` shows every child of \
-             yours this supervisor can still see."
-        )),
-        true,
+        task_id,
+        "reading the state of",
+        "Nothing was read and nothing was changed; `list` shows every child of yours this \
+         supervisor can still see.",
     )
 }
 
@@ -2882,6 +2906,74 @@ mod tests {
             None,
             "a block kind marion does not emit is refused rather than dropped"
         );
+    }
+
+    /// **The handle, still-running and unknown-handle answers read as one voice**: each says the
+    /// fact its family shares in the family's words, and none doubles a word across a string
+    /// continuation.
+    #[test]
+    fn the_shared_reply_helpers_keep_each_familys_words_and_read_cleanly() {
+        let id = json!(1);
+        let text = |v: Value| {
+            v["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let started = crate::background::Started {
+            task_id: marion_core::contract::TaskId("t-1".into()),
+            agent_type: "codex-impl".into(),
+            has_contract: true,
+        };
+        let race = marion_core::proto::result::RaceStarted {
+            race_id: marion_core::race::RaceId("r-1".into()),
+            seats: vec![],
+        };
+        let workflow = marion_core::proto::result::WorkflowRunResult {
+            wf_id: marion_core::workflow::WorkflowId("wf-1".into()),
+            name: "review".into(),
+            steps: 2,
+        };
+        let handles = [
+            text(background_result(&id, &started, None)),
+            text(race_background_result(&id, &race)),
+            text(workflow_background_result(&id, &workflow)),
+        ];
+        let running = [
+            text(race_still_running(&id, "r-1", 30)),
+            text(workflow_still_running(&id, "wf-1", 30)),
+        ];
+        let unknown = [
+            text(wait_unknown(&id, "t-1")),
+            text(status_unknown(&id, "t-1")),
+        ];
+        for h in &handles {
+            assert!(h.contains("this is a handle, not a result"), "{h}");
+        }
+        for r in &running {
+            assert!(
+                r.contains("the handle stays valid") && r.contains("30 s"),
+                "{r}"
+            );
+        }
+        for u in &unknown {
+            assert!(u.contains("has no record of task_id \"t-1\""), "{u}");
+        }
+        assert!(
+            unknown[0].contains("waiting on it") && unknown[0].contains("should have been found")
+        );
+        assert!(unknown[1].contains("reading the state of it") && unknown[1].contains("`list`"));
+        for t in handles.iter().chain(&running).chain(&unknown) {
+            let words: Vec<&str> = t.split_whitespace().collect();
+            for pair in words.windows(2) {
+                assert!(
+                    !pair[0].eq_ignore_ascii_case(pair[1])
+                        || !pair[0].chars().all(char::is_alphabetic),
+                    "doubled word {:?} in {t}",
+                    pair[0]
+                );
+            }
+        }
     }
 
     /// The existing dispatch already satisfies the seam's contract — measured against the real
