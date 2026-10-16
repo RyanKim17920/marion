@@ -655,6 +655,12 @@ pub enum Truncation {
 pub struct Replay {
     nodes: Vec<ReplayedNode>,
     index: HashMap<String, usize>,
+    /// Node indices by the parent they are filed under, each list in first-mention order, so
+    /// [`Replay::children`] reads one list instead of scanning every node once per call.
+    children: HashMap<String, Vec<usize>>,
+    /// The parent each node is filed under in `children`, by node index. Kept beside the
+    /// derived [`ReplayedNode::parent_id`] so a fold can tell whether the edge moved.
+    filed: Vec<Option<AgentId>>,
     /// Records accepted. Not lines in the file — the two differ exactly by [`Replay::truncation`].
     pub records: usize,
     /// Where **this** `extend` stopped, or `None` if it consumed everything offered. Recomputed per
@@ -890,12 +896,12 @@ impl Replay {
             .collect()
     }
 
-    /// The children of a node, in first-mention order.
+    /// The children of a node, in first-mention order. Read off the parent index, so a walk over
+    /// a subtree costs the subtree rather than the tree once per node in it.
     pub fn children(&self, id: &AgentId) -> Vec<&ReplayedNode> {
-        self.nodes
-            .iter()
-            .filter(|n| n.parent_id() == Some(id))
-            .collect()
+        self.children
+            .get(&id.0)
+            .map_or_else(Vec::new, |c| c.iter().map(|i| &self.nodes[*i]).collect())
     }
 
     /// Nodes §7.2's restart marking would consider — recorded live, fate unrecorded. Replay
@@ -938,12 +944,35 @@ impl Replay {
         }
     }
 
-    fn node_mut(&mut self, id: &AgentId) -> &mut ReplayedNode {
-        let i = *self.index.entry(id.0.clone()).or_insert_with(|| {
+    fn node_index(&mut self, id: &AgentId) -> usize {
+        *self.index.entry(id.0.clone()).or_insert_with(|| {
             self.nodes.push(ReplayedNode::new(id.clone()));
+            self.filed.push(None);
             self.nodes.len() - 1
-        });
-        &mut self.nodes[i]
+        })
+    }
+
+    /// **File node `i` under the parent its records now name.** The edge is §7.5-immutable once
+    /// an intent sets it, but a retired node's placement can name one before the intent arrives and
+    /// the intent then wins, so the edge is compared rather than assumed set once. Kept in
+    /// first-mention order because that is the order [`Self::children`] has always answered in.
+    fn file_child(&mut self, i: usize) {
+        let parent = self.nodes[i].parent_id();
+        if self.filed[i].as_ref() == parent {
+            return;
+        }
+        let parent = parent.cloned();
+        if let Some(old) = self.filed[i].take()
+            && let Some(siblings) = self.children.get_mut(&old.0)
+        {
+            siblings.retain(|c| *c != i);
+        }
+        if let Some(p) = &parent {
+            let siblings = self.children.entry(p.0.clone()).or_default();
+            let at = siblings.partition_point(|c| *c < i);
+            siblings.insert(at, i);
+        }
+        self.filed[i] = parent;
     }
 
     fn apply(&mut self, r: JournalRecord) {
@@ -984,7 +1013,8 @@ impl Replay {
             }),
             _ => None,
         };
-        let node = self.node_mut(&agent_id);
+        let i = self.node_index(&agent_id);
+        let node = &mut self.nodes[i];
         if head.is_some() {
             node.workflow_head = head;
         }
@@ -1025,6 +1055,7 @@ impl Replay {
         if (node.state, node.reap_state) != before {
             node.state_ts = Some(ts);
         }
+        self.file_child(i);
     }
 
     fn check_seq(&mut self, r: &JournalRecord) {
@@ -3010,5 +3041,65 @@ mod tests {
             r.workflow(&wf).unwrap().cancel_requested,
             "a cancel request folds"
         );
+    }
+
+    /// **The parent index answers exactly what a scan over every node would**, in first-mention
+    /// order: a node mentioned before its intent sorts by that first mention, not by when its
+    /// edge was filed, and a reading built in chunks files the same edges as one built whole.
+    #[test]
+    fn children_read_off_the_index_match_a_scan_in_first_mention_order() {
+        let spawn = |agent: &str, parent: Option<&str>| {
+            RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
+                review_of: None,
+                agent_id: id(agent),
+                parent_id: parent.map(id),
+                agent_type: "codex".into(),
+                harness: Harness::Codex,
+                depth: u32::from(parent.is_some()),
+                task_id: None,
+                timeout_secs: None,
+                verification: vec![],
+                race: None,
+                workflow: None,
+            })
+        };
+        let early = RecordKind::StateChanged(StateChanged {
+            agent_id: id("late-intent"),
+            state: NodeState::Running,
+            reason: None,
+        });
+        let records: Vec<_> = [
+            early,
+            spawn("root", None),
+            spawn("a", Some("root")),
+            spawn("late-intent", Some("root")),
+            spawn("a-1", Some("a")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(seq, k)| record(seq as u64, k))
+        .collect();
+        let whole = bytes(&records);
+        let mut chunked = Replay::default();
+        let mut at = 0;
+        for r in &records {
+            at += chunked.extend(&whole[at..at + encode(r).unwrap().len()]);
+        }
+        let r = replay(&whole);
+        assert_eq!(r, chunked, "one reading, however it arrived");
+        let names = |v: Vec<&ReplayedNode>| -> Vec<String> {
+            v.into_iter().map(|n| n.agent_id.0.clone()).collect()
+        };
+        assert_eq!(names(r.children(&id("root"))), ["late-intent", "a"]);
+        for n in r.nodes() {
+            let scan: Vec<&ReplayedNode> = r
+                .nodes()
+                .iter()
+                .filter(|c| c.parent_id() == Some(&n.agent_id))
+                .collect();
+            assert_eq!(names(r.children(&n.agent_id)), names(scan), "{}", n.agent_id.0);
+        }
+        assert!(r.children(&id("nobody")).is_empty());
     }
 }
