@@ -1169,8 +1169,9 @@ fn merge_refusal(repo: &Path) -> Option<String> {
 /// What [`git_in`] sets over the repository's configuration, which is shared with every worktree a
 /// child wrote in, so any program it names may be one a child planted, run here as the operator
 /// outside any sandbox: no pager, no hooks, no editor (a merge takes git's own message), no
-/// global attributes file, and attributes read from `HEAD` (the operator's commit, not the branch
-/// being merged, so a branch's `.gitattributes` selects no driver). The operator's own hooks do
+/// global attributes file, attributes read from `HEAD` (the operator's commit, not the branch
+/// being merged, so a branch's `.gitattributes` selects no driver), and no automatic gc or
+/// maintenance after it ([`crate::gitcmd::NO_MAINTENANCE`]). The operator's own hooks do
 /// not run on a merge made here; their own signing does, and [`merge_refusal`] refuses a signing
 /// program the repository's configuration names.
 const TUI_GIT_HARDENING: &[&str] = &[
@@ -1190,6 +1191,7 @@ const TUI_GIT_HARDENING: &[&str] = &[
 fn git_in(repo: &Path, effect: &Effect) -> std::process::Command {
     let argv = effect.argv().unwrap_or_default();
     let mut args = TUI_GIT_HARDENING.to_vec();
+    args.extend(crate::gitcmd::NO_MAINTENANCE);
     args.extend(argv.iter().skip(1).map(String::as_str));
     let mut c = crate::gitcmd::command(&crate::gitcmd::Tree::Operator(repo), &args)
         .expect("an operator checkout is never refused");
@@ -1239,6 +1241,10 @@ mod tests {
                 "core.editor=true",
                 "-c",
                 "core.attributesFile=/dev/null",
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "maintenance.auto=false",
                 "merge",
                 "--no-ff",
                 "--",

@@ -123,7 +123,9 @@ fn built(tree: &Tree<'_>, args: &[&str], makes_child_tree: bool) -> Result<Comma
 /// No automatic `gc` or `maintenance` after a call that touches a child's tree: those would
 /// repack, prune and run tasks over the shared repository, child-written objects included, as
 /// the operator and outside the call marion meant to make. The operator's own git still runs them.
-const NO_MAINTENANCE: [&str; 4] = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
+/// The home screen's merge sets it too (`home/session.rs`): a merge's auto-gc would pack the
+/// branch's child-written objects in the operator's repository the same way.
+pub(crate) const NO_MAINTENANCE: [&str; 4] = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
 
 /// The empty tree's id in each object format git has: the attribute source that names no
 /// attributes. git knows it without its being in the object store.
