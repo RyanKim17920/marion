@@ -688,7 +688,8 @@ impl Worker {
         };
         match host.inject(&injection, &admit) {
             Ok(Injected::Written) => true,
-            Ok(Injected::Declined) => false,
+            // An answer has no submit to withhold.
+            Ok(Injected::Declined | Injected::Unsubmitted) => false,
             Err(error) => {
                 if let Some(m) = held.take().or_else(|| inboxes.take_next(&self.agent)) {
                     inboxes.dropped(
@@ -747,6 +748,15 @@ impl Worker {
                 None
             }
             Ok(Injected::Declined) => Some(m),
+            Ok(Injected::Unsubmitted) => {
+                inboxes.dropped(
+                    &self.agent,
+                    &m.id,
+                    "an approval prompt came up between the paste and its submit; the submit was \
+                     withheld so it would not answer the prompt, and the pasted text may be lost",
+                );
+                None
+            }
             Err(error) => {
                 inboxes.dropped(
                     &self.agent,

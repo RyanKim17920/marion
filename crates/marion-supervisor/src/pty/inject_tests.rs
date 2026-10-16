@@ -217,6 +217,39 @@ fn an_injection_is_recorded_as_marion_and_submitted_after_its_delay() {
     );
 }
 
+/// **An ask drawn between the paste and its submit withholds the submit**: the body is written,
+/// the Enter that would answer the prompt is not, and the outcome says so.
+#[test]
+fn an_ask_raised_before_the_submit_withholds_it() {
+    const ASK: marion_harness::spec::Ask = marion_harness::spec::Ask {
+        header: "Would you like to run the following command?",
+        footer: "Press enter to confirm or esc to cancel",
+        action: "answer it",
+        note: "test",
+    };
+    let mut lb = RawLoopback::new("pty-inject-ask");
+    lb.host.watch_dialogs(&[], std::slice::from_ref(&ASK), None);
+    let body = b"\x1b[200~hi\x1b[201~";
+    let slave = &lb.slave;
+    let host = &lb.host;
+    let outcome = host
+        .inject(&paste("marion: paste m-3", body), &|state| {
+            assert_eq!(state.ask, None, "no prompt when the guard looks");
+            let before = host.bytes_read();
+            let prompt: &[u8] = b"\x1b[2;1HWould you like to run the following command?\
+                \x1b[4;1HPress enter to confirm or esc to cancel";
+            (&*slave).write_all(prompt).unwrap();
+            assert!(until(|| host.bytes_read() >= before + prompt.len() as u64));
+            true
+        })
+        .unwrap();
+    assert_eq!(outcome, Injected::Unsubmitted);
+    assert_eq!(lb.drain_slave(body.len()), body, "the body alone");
+    let lease = lb.host.lease_writer(ConnId(4)).expect("the write half");
+    lb.host.write_opaque_input(&lease, b"z").unwrap();
+    assert_eq!(lb.drain_slave(1), b"z", "no submit followed it");
+}
+
 /// **The guard is asked under the write lock, with the state the operator's writes left**, and a
 /// declined injection writes and records nothing: the next byte the slave reads is the operator's.
 #[test]

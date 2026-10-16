@@ -2622,6 +2622,9 @@ pub enum Injected {
     Written,
     /// The guard said not now; nothing was written or recorded.
     Declined,
+    /// The body was written, then one of the row's asks came up before the submit, so the submit
+    /// was withheld: typed into the prompt it would have answered it. The body may be lost.
+    Unsubmitted,
 }
 
 struct PtyHostStart {
@@ -3654,6 +3657,12 @@ impl PtyHost {
         self.inject_part(Some(injection.label), injection.body)?;
         if !injection.submit.is_empty() {
             std::thread::sleep(injection.submit_delay);
+            // Read again at the last moment: a prompt raised since the guard looked takes the
+            // submit as its answer. Residual: one drawn after this read and before the node reads
+            // the submit still does.
+            if self.modes().asking().is_some() {
+                return Ok(Injected::Unsubmitted);
+            }
             self.inject_part(None, injection.submit)?;
         }
         drop(typing);
