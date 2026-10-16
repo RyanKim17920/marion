@@ -156,6 +156,26 @@ struct Pinned {
 /// gitfile, but not the operator's `worktrees/` directory, so it can point the gitfile neither at
 /// a repository of its own nor at a sibling's registration.
 fn verified(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
+    let pinned = registered(wt, repo)?;
+    check_worktree_config(wt, &pinned.gitdir)?;
+    Ok(pinned)
+}
+
+/// **The admin dir of the linked worktree `wt`, proven registered under `repo`** — the one a
+/// node's OS sandbox may write ([`marion_harness::adapter::Extras::git_admin_dir`]). The same
+/// proof as [`verified`]'s gitfile check, so a node that rewrote its `.git` to name the
+/// operator's repository (or anything else) is granted nothing. `None` for a main checkout,
+/// whose `.git` is a directory inside `wt` already, and for any tree that fails the proof.
+pub fn admin_dir(wt: &Path, repo: &Path) -> Option<PathBuf> {
+    let meta = std::fs::symlink_metadata(wt.join(".git")).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    registered(wt, repo).ok().map(|p| p.gitdir)
+}
+
+/// [`verified`] without the `config.worktree` check: the gitfile and its registration alone.
+fn registered(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
     let dot_git = wt.join(".git");
     let meta = std::fs::symlink_metadata(&dot_git).map_err(|e| tampered(wt, e))?;
     if !meta.file_type().is_file() {
@@ -196,7 +216,6 @@ fn verified(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
     if back != ours {
         return Err(tampered(wt, "its registration names another tree"));
     }
-    check_worktree_config(wt, &gitdir)?;
     Ok(Pinned {
         gitdir,
         common,

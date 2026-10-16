@@ -169,6 +169,13 @@ pub struct Extras {
     /// node then loads the repository's own harness configuration, which it otherwise keeps out
     /// ([`spec::repo_config_rule`]). `false` on a probe and wherever the supervisor did not ask.
     pub repo_trusted: bool,
+    /// **The admin dir of the git worktree the node works in** (`<common>/worktrees/<name>`,
+    /// where its index and HEAD live), as the supervisor proved it against the operator's
+    /// worktree registration — never read from the tree's own `.git`, which the node can rewrite.
+    /// The OS sandbox lets the node write it; the shared object store and refs stay unwritable,
+    /// since marion makes a child's commit itself. `None` for a main checkout (its `.git` is
+    /// inside the cwd) and wherever no registration was proven.
+    pub git_admin_dir: Option<PathBuf>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.

@@ -187,7 +187,8 @@ pub struct SandboxPlan {
 impl SandboxPlan {
     /// The plan for a launch of `spec` rendered as `inv` on a row with `rule`: the node's agent
     /// dir (its config, contracts and `TMPDIR` live there), its working directory, the admin dir
-    /// of the git worktree it works in, and the row's own paths under the node's home — each made
+    /// of the git worktree it works in as the supervisor verified it
+    /// ([`crate::adapter::Extras::git_admin_dir`]), and the row's own paths under the node's home — each made
     /// to exist and resolved. `Err` names what could not be, and refuses the launch: a node marion
     /// labels contained never runs looser than its label.
     pub fn for_launch(
@@ -216,8 +217,8 @@ impl SandboxPlan {
             .ok_or("the node has no HOME to place its row's paths under")?;
         let siblings = agent_dir.parent().map(canonical).transpose()?;
         let mut dirs = vec![canonical(agent_dir)?, cwd.clone()];
-        if let Some(admin) = worktree_admin_dir(&cwd) {
-            dirs.push(canonical(&admin)?);
+        if let Some(admin) = &spec.extra.git_admin_dir {
+            dirs.push(canonical(admin)?);
         }
         for w in writes {
             let path = match w {
@@ -374,16 +375,6 @@ fn own_uid() -> u32 {
 /// `path` resolved, or why not.
 fn canonical(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     std::fs::canonicalize(path).map_err(|e| format!("could not resolve {}: {e}", path.display()))
-}
-
-/// The admin dir of the git worktree at `cwd` (`<common>/worktrees/<name>`, where its index and
-/// HEAD live), read from the `.git` file a linked worktree has. `None` for a main checkout, whose
-/// `.git` directory is inside `cwd` already. The shared object store and refs stay unwritable:
-/// marion makes a child's commit itself, from outside the sandbox.
-fn worktree_admin_dir(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    let text = std::fs::read_to_string(cwd.join(".git")).ok()?;
-    let dir = text.strip_prefix("gitdir:")?.trim();
-    Some(cwd.join(dir))
 }
 
 /// `cwd` as a harness keys a project directory on it: every byte not ASCII alphanumeric as `-`.
@@ -650,6 +641,37 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// **The worktree admin dir a plan writes is the one marion verified, never what the tree's
+    /// `.git` names.** The node can rewrite its own gitfile; pointed at the operator's whole
+    /// repository, it would otherwise be granted that repository's config on its next launch.
+    /// The plan grants exactly [`Extras::git_admin_dir`], and nothing where it is `None`.
+    #[test]
+    fn the_admin_dir_written_is_the_verified_one_not_the_gitfiles() {
+        let dir = marion_testsupport::scratch("osb-admin");
+        let (mut spec, inv) = node_in(&dir, Auth::Canned);
+        let planted = dir.join("operator-repo/.git");
+        std::fs::create_dir_all(&planted).unwrap();
+        std::fs::write(
+            dir.join("wt/.git"),
+            format!("gitdir: {}\n", planted.display()),
+        )
+        .unwrap();
+        let c = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        let rule = OsSandboxRule::Wrap { writes: &[] };
+        let plan = SandboxPlan::for_launch(rule, &spec, &inv).expect("a plan");
+        assert!(
+            !plan.dirs().contains(&c(&planted)),
+            "the gitfile chose a writable dir: {:?}",
+            plan.dirs()
+        );
+        let admin = dir.join("verified-admin");
+        std::fs::create_dir_all(&admin).unwrap();
+        spec.extra.git_admin_dir = Some(admin.clone());
+        let plan = SandboxPlan::for_launch(rule, &spec, &inv).expect("a plan");
+        assert!(plan.dirs().contains(&c(&admin)), "{:?}", plan.dirs());
+        assert!(!plan.dirs().contains(&c(&planted)));
     }
 
     /// **No node reads another node's token**: under its plan a process reads its own agent dir

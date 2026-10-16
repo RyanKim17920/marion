@@ -7,7 +7,8 @@
   and supported (`marion_harness::os_sandbox::support`). claude, opencode, copilot, goose, qwen
   and pi are wrapped; codex replaces its own Seatbelt (it cannot nest) with marion's and opens
   its thread `danger-full-access` inside it. cline, acp and agy are `Unsupported`, each with why.
-- **What it may write.** Its agent dir, its working directory, its git worktree's admin dir, its
+- **What it may write.** Its agent dir, its working directory, its git worktree's admin dir (the
+  one its registration under the operator's repository proves, never what its own `.git` names), its
   `TMPDIR`, and its row's measured paths (claude: `~/.claude/projects/<cwd key>` and
   `/tmp/claude-<uid>/<cwd key>`; goose: `~/.local/state/goose`, which a canned goose's relocated
   home already covers). Reads, exec, the network and the supervisor socket are unchanged.

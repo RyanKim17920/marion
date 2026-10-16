@@ -2506,6 +2506,25 @@ mod tests {
         assert!(!marker.exists(), "marion ran the child's fsmonitor program");
     }
 
+    /// **The admin dir a node's sandbox may write is proven, not read off its gitfile**: a
+    /// worktree marion made gets its own registration; the same tree with its `.git` repointed
+    /// at the operator's repository gets nothing, and so does a main checkout.
+    #[test]
+    fn the_writable_admin_dir_is_the_registered_one_or_none() {
+        let (dir, repo, _) = committed_repo("spawn-admin-dir");
+        let common = crate::socket::project_root(&repo);
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+            .expect("the child's worktree");
+        assert_eq!(
+            crate::gitcmd::admin_dir(&wt, &common),
+            Some(common.join("worktrees/child-wt"))
+        );
+        assert_eq!(crate::gitcmd::admin_dir(&repo, &common), None);
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", common.display())).unwrap();
+        assert_eq!(crate::gitcmd::admin_dir(&wt, &common), None);
+    }
+
     /// A program that leaves `marker` behind when run, for a git config value to name.
     fn marker_program(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
         let marker = dir.join(format!("{name}-ran"));

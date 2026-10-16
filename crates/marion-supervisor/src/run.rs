@@ -3649,6 +3649,8 @@ pub fn child_launch_spec(
             os_sandbox: env.os_sandbox,
             // The repository's own harness config loads only where the operator trusted it.
             repo_trusted: crate::trust::repo_trusted(&env.project_root),
+            // The only admin dir the sandbox writes: proven against the registration.
+            git_admin_dir: crate::gitcmd::admin_dir(wt, &env.project_root),
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
             approval_mode: agent_type.approval_mode.clone(),
