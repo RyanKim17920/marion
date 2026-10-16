@@ -125,6 +125,12 @@ pub struct HarnessSpec {
     /// **Data, so the resume feature has no per-harness branch**: [`Fields::resume`] is seeded from
     /// `LaunchSpec::resume` for every adapter alike, and this row decides how it is spelled.
     pub resume: Option<Resume>,
+    /// **The first characters this harness's argv parser gives a meaning of its own to**, beyond
+    /// the `-` every parser does: pi 0.80.2's `pi [options] [@files...] [messages...]` reads an
+    /// `@path` argument as a file to attach. A prompt that rides argv and begins with one is
+    /// refused by name ([`Refusal::SpecialPrompt`]), never sent as something other than text.
+    /// Empty for a parser with none, and moot for a row whose prompt travels over its channel.
+    pub prompt_specials: &'static [char],
     /// How a node of this harness is kept from **updating itself under marion**, measured on the
     /// installed binary — an environment variable, a pair on the row's override channel, keys in
     /// the declaration document the row already emits, or the explicit statement that none is
@@ -1584,6 +1590,9 @@ pub enum Refusal {
     /// The launch's prompt begins with `-`, and the row does not place it straight after a `--`
     /// that ends its harness's options, so the harness would read it as a flag of its own.
     FlagLikePrompt,
+    /// The launch's prompt rides argv and begins with a character the row's parser reads as
+    /// something other than text ([`HarnessSpec::prompt_specials`]).
+    SpecialPrompt(char),
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -1711,20 +1720,32 @@ fn apply_recipe(env: &mut Vec<(String, String)>, recipe: &WireRecipe) {
     }
 }
 
-/// **Whether `prompt` would read as an option**: it begins with `-`, and `argv` does not place it
-/// straight after a `--` that ends them — the row carries it as a flag's value, or its parser has
-/// no `--` (pi), or the row does not say.
-fn prompt_reads_as_a_flag(argv: &[Arg], prompt: &str) -> bool {
-    let is_prompt = |a: &Arg| {
+/// **Why `prompt` cannot ride `argv` as the text it is**, where it rides `argv` at all: it begins
+/// with one of the row's [`HarnessSpec::prompt_specials`], or with `-` and `argv` does not place it
+/// straight after a `--` that ends the options — the row carries it as a flag's value, or its
+/// parser has no `--` (pi), or the row does not say. A prompt that travels over the row's channel
+/// instead is text whatever it begins with.
+fn prompt_refusal(spec: &HarnessSpec, argv: &[Arg], prompt: &str) -> Option<Refusal> {
+    let is_pos = |a: &Arg| {
         matches!(
             a,
             Arg::Pos(Field::Prompt) | Arg::PosIfNonEmpty(Field::Prompt)
         )
     };
-    prompt.starts_with('-')
-        && !argv
-            .windows(2)
-            .any(|w| w[0] == Arg::Lit("--") && is_prompt(&w[1]))
+    let carried = argv
+        .iter()
+        .any(|a| is_pos(a) || matches!(a, Arg::Flag(_, Field::Prompt)));
+    let first = prompt.chars().next()?;
+    if !carried {
+        return None;
+    }
+    if spec.prompt_specials.contains(&first) {
+        return Some(Refusal::SpecialPrompt(first));
+    }
+    let guarded = argv
+        .windows(2)
+        .any(|w| w[0] == Arg::Lit("--") && is_pos(&w[1]));
+    (first == '-' && !guarded).then_some(Refusal::FlagLikePrompt)
 }
 
 /// argv + env for one shape of one row, or the [`Refusal`] the row states.
@@ -1746,8 +1767,8 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     if f.model.as_deref().is_some_and(|m| m.starts_with('-')) {
         return Err(Refusal::FlagLikeModel);
     }
-    if prompt_reads_as_a_flag(argv, &f.prompt) {
-        return Err(Refusal::FlagLikePrompt);
+    if let Some(why) = prompt_refusal(spec, argv, &f.prompt) {
+        return Err(why);
     }
     // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
     // (claude 2.1.268), and appended it would swallow the positional prompt the pane seeds.
@@ -2534,6 +2555,42 @@ mod tests {
         );
         // An empty prompt is no option either: it renders as the row renders one.
         assert!(argv(&crate::pi::LAUNCH_ONLY, Shape::Headless, "").is_ok());
+    }
+
+    /// **A prompt is refused for its first character only where it rides the command line**: a
+    /// row whose prompt travels over its channel (codex's app-server, pi's rpc) takes `- a list`
+    /// and `@notes` as text, while pi's one-shot row, whose parser reads `@path` as a file to
+    /// attach ([`HarnessSpec::prompt_specials`]), refuses `@` as it refuses `-`.
+    #[test]
+    fn a_prompt_is_refused_for_its_lead_only_where_argv_carries_it() {
+        let with = |p: &str| Fields {
+            prompt: p.into(),
+            ..Fields::default()
+        };
+        for row in [
+            crate::adapter::harness_spec(Harness::Codex),
+            crate::adapter::harness_spec(Harness::Pi),
+        ] {
+            for p in ["- a list", "--yolo", "@~/notes.txt summarise"] {
+                assert!(
+                    render(row, Shape::Headless, &with(p)).is_ok(),
+                    "{:?} {p:?}",
+                    row.harness
+                );
+            }
+        }
+        assert_eq!(crate::pi::LAUNCH_ONLY.prompt_specials, ['@']);
+        assert_eq!(
+            render(
+                &crate::pi::LAUNCH_ONLY,
+                Shape::Headless,
+                &with("@/etc/hosts")
+            )
+            .map(|_| ()),
+            Err(Refusal::SpecialPrompt('@'))
+        );
+        assert!(render(&crate::pi::LAUNCH_ONLY, Shape::Headless, &with("mail a@b")).is_ok());
+        assert!(render(&crate::codex::EXEC, Shape::Headless, &with("@notes")).is_ok());
     }
 
     /// **A model that would read as a flag is refused, not rendered**: `--model -x` hands the

@@ -127,6 +127,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // ACP resumes through `session/load` where the agent advertises `loadSession` — a protocol
     // request, not argv — so the row names no flag and an argv resume is refused.
     resume: None,
+    prompt_specials: &[],
     // The program is the agent's own, chosen at bind time, so no one switch fits the row: an
     // opencode agent's would be opencode's and a codex-acp agent's codex-acp's. The row states no
     // policy; the opencode agent's canned recipe reuses opencode's row, switch included

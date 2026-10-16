@@ -204,6 +204,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "allow-tool:",
     },
     resume: Some(Resume::FlagEq("--resume")),
+    prompt_specials: &[],
     // 1.0.83's check, verbatim from `app.js`: `let e = process.env.COPILOT_AUTO_UPDATE; return
     // !(e && e.toLowerCase() === "false")` — so the value is exactly `false`, and `0` would leave
     // the updater **on**. Gates the start-up check-and-download of a newer build and plugin

@@ -166,6 +166,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // The `--tools` list itself, prefixed with its axis.
     constraint: Constraint::Allowed { prefix: "tools:" },
     resume: Some(Resume::Flag("--session")),
+    // `pi [options] [@files...] [messages...]` (0.80.2 `--help`): an `@path` argument is a file to attach.
+    prompt_specials: &['@'],
     // pi never replaces itself (`pi update` is manual); the one startup update traffic is the
     // version check, which `dist/utils/version-check.js` skips on `PI_SKIP_VERSION_CHECK`.
     // `PI_OFFLINE` would skip it too, but it also cuts every other startup network operation,

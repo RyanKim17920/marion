@@ -171,6 +171,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--id <session-id>` sets the startup target to interactive before the prompt is read, and
     // headless it exits 1 under both `--json` and plain output (s27 item 11).
     resume: None,
+    prompt_specials: &[],
     // cline 3.0.61 updates itself **silently, on every invocation** — headless prompt and `--acp`
     // alike: `autoUpdateOnStartup` runs in `runCli` before argv is parsed, fetches npm's latest
     // version, and `applyDeferredUpdate` spawns the package-manager update detached at exit

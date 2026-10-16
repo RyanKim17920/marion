@@ -207,6 +207,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // A resume is app-server's own `thread/resume` ([`APP`]), never argv (S36 P8: after a SIGKILL
     // and relaunch it carries the thread's history, and it reopens `exec` threads too).
     resume: None,
+    prompt_specials: &[],
     // codex 0.147.0 has **no** update-related variable in its `CODEX_*` list; the switch is the
     // config key `check_for_update_on_startup` (a boolean in its `ConfigToml` field list, and
     // runtime-typed: `-c check_for_update_on_startup=notabool` fails with "expected a boolean",

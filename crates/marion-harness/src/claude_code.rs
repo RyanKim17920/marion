@@ -270,6 +270,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `-r, --resume [value]  Resume a conversation by session ID` (2.1.224 `--help`); the same flag
     // on the TUI.
     resume: Some(Resume::Flag("--resume")),
+    prompt_specials: &[],
     // 2.1.263's own read, from the binary: `if (Ie(process.env.DISABLE_AUTOUPDATER)) return {type:
     // "env", envVar: "DISABLE_AUTOUPDATER"}` — a truthy parse (`1`/`true`/`yes`/`on`), and `"1"`
     // is the value claude sets for the children it launches itself. It gates the background

@@ -265,6 +265,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         value: NO_COMPILED_TOOL_CONSTRAINT,
     },
     resume: Some(Resume::Flag("--session")),
+    prompt_specials: &[],
     // 1.18.29's check, verbatim from the binary: `if (j.autoupdate === false ||
     // T.OPENCODE_DISABLE_AUTOUPDATE) return;` ahead of any network call, where the variable is
     // read as `toLowerCase() === "true" || === "1"`. Unset, a patch release is installed

@@ -737,6 +737,9 @@ pub struct RowDto {
     pub constraint: ConstraintDto,
     #[serde(default)]
     pub resume: Option<ResumeDto>,
+    /// [`HarnessSpec::prompt_specials`]: each a single character.
+    #[serde(default)]
+    pub prompt_specials: Vec<char>,
     pub updates: UpdatePolicyDto,
     pub boot: BootDto,
     #[serde(default)]
@@ -1661,6 +1664,7 @@ impl RowDto {
                     value: leak(value),
                 },
             },
+            prompt_specials: leak_all(self.prompt_specials),
             resume: self.resume.map(|r| match r {
                 ResumeDto::Flag(f) => Resume::Flag(leak(f)),
                 ResumeDto::FlagEq(f) => Resume::FlagEq(leak(f)),

@@ -1227,6 +1227,13 @@ fn render_row(
                    end its options before it, so it would read the prompt as a flag of its own"
                 .into(),
         },
+        spec::Refusal::SpecialPrompt(c) => HarnessError::Unspellable {
+            harness: row.harness,
+            what: format!(
+                "the prompt begins with `{c}`, which this harness's command line reads as \
+                 something other than text (pi: a file to attach)"
+            ),
+        },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
             what: "this harness has no measured way to name a session to resume on this shape's \

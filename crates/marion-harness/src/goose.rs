@@ -201,6 +201,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // stream carries the id (`goose-session-first.stdout.jsonl` is byte-identical to the
     // no-session run), so marion has nothing to hand back and a resume is refused by name.
     resume: None,
+    prompt_specials: &[],
     // goose 1.49.0 does not update itself: `goose update` is an explicit subcommand (`--help`:
     // "Update the goose CLI version"; its strings carry the Sigstore-verified replace path and
     // nothing else), the binary contains no check-for-update, "new version" or "update

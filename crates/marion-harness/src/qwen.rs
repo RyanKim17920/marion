@@ -217,6 +217,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--resume <session_id>`, the id off `init.session_id`, keyed by `QWEN_HOME` **and** cwd
     // (item 13): turn two replays turn one's history and repeats the id.
     resume: Some(Resume::Flag("--resume")),
+    prompt_specials: &[],
     // qwen 0.23.0 reads `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE` as the exact string `"true"` on
     // **every** launch despite the `_ONCE` in its name, and skips the check, the banner and the
     // install. The settings spelling (`general.enableAutoUpdate=false`) does the same; the

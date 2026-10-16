@@ -146,6 +146,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         allowed: None,
     },
     resume: Some(Resume::Flag("--conversation")),
+    prompt_specials: &[],
     updates: UpdatePolicy::Env {
         key: "AGY_CLI_DISABLE_AUTO_UPDATE",
         value: "true",
