@@ -69,38 +69,54 @@ names nodes too.
 
 ## When a pinned harness drifts
 
-The version gate is `marion_testsupport::PINNED_HARNESSES`. When a harness auto-updates, the
-gate goes red and names both versions. **The fix is never to widen the set.** It is to re-run
-everything that drives that harness against the new version and admit it with the evidence:
+The version gate is `marion_testsupport::on_path`, reading each row's `verified` list
+(`PINNED_HARNESSES` points at it). Every harness updates itself, so a release the list does not
+name is also admitted when it passes the **basic tests**: the conformance battery, $0 against
+marion's canned provider, judged against the cells the newest verified release scored in the
+committed matrix. One command, once per release:
+
+```sh
+scripts/conformance.sh --harness claude-code      # the row's name; or --harness opencode, ...
+```
+
+It records the verdict for that exact binary under marion's state directory
+(`<state>/conformance/<row>-<version>.json`), and from then on the gate drives it. A release
+whose basics fail — or that was never probed, or whose record is another binary's — fails every
+gated test naming the harness, the version and why; `marion doctor` says the same on its row.
+
+`.github/workflows/canary.yml` does this every night on a macOS runner and needs no hand: it
+installs the newest release of every harness (npm, and Homebrew for goose; no logins), runs the
+battery on each unlisted one, runs the whole suite strict, and opens one pull request adding every
+release the battery admitted to its row's `verified` list (`scripts/admit-harness.sh
+--list-only`), set to merge itself once `main`'s rules pass. Any red — a regressed conformance
+cell, a failing test — opens (or comments on) an issue labelled `harness-canary` naming the cells,
+the failing tests and every installed version. Live cells — real model calls through a vendor
+login — are outside it and stay manual.
+
+For the canary's pull request, the owner once enables Settings → Actions → General → "Allow GitHub
+Actions to create and approve pull requests" and Settings → General → "Allow auto-merge". A pull
+request opened with the default token does not start `ci.yml`, so under the ruleset below it would
+wait forever; adding a secret `CANARY_TOKEN` (a fine-grained token with Contents and Pull requests
+write on this repository) makes CI run and the merge happen.
+
+The hand ritual is still there for an admission that should carry more evidence than the battery
+— the observation comment beside the entry and the MILESTONES paragraph:
 
 ```sh
 scripts/admit-harness.sh claude 2.1.263
 scripts/admit-harness.sh opencode 1.18.30 goose 1.50.0   # two at once when both drifted
 ```
 
-The script adds each version to its `accepted` list (entry zero — the pin — is never touched),
-runs the table's own tests plus every gated suite that names the harness, and on all green
+It adds each version to its row's `verified` list (entry zero — the pin — is never touched), runs
+the table's own tests, every gated suite that names the harness and the battery, and on all green
 writes the dated observation comment and prints the MILESTONES paragraph and commit message. On
-any red it restores the table exactly and exits non-zero. It does not commit; read the diff
+any red it restores every file exactly and exits non-zero. It does not commit; read the diff
 first.
 
-To run the suites against an unadmitted release anyway — to see whether it works before
-admitting it — set `MARION_GATE=warn`. The gate then prints a banner naming the release instead
-of failing, and does not fetch pinned npm releases. A green run under it is not admission
-evidence; `admit-harness.sh` always runs strict.
-
-`.github/workflows/canary.yml` does this every night on a macOS runner: it installs the newest
-release of every harness (npm, and Homebrew for goose; no logins), runs `doctor` and the whole
-suite against the canned provider under `MARION_GATE=warn`, and then either opens a pull request
-from `admit-harness.sh` for the releases that held, or opens (or comments on) an issue labelled
-`harness-canary` naming the failing tests and every installed version. Live cells — real model
-calls through a vendor login — are outside it and stay manual. The canary's PR carries the
-MILESTONES paragraph in its body; paste it into the branch before merging.
-
-For the canary to open pull requests, the owner enables Settings → Actions → General → "Allow
-GitHub Actions to create and approve pull requests" once. A PR opened with the default token does
-not start `ci.yml`; adding a secret `CANARY_TOKEN` (a fine-grained token with Contents and Pull
-requests write on this repository) makes it do so.
+To run the suites against a release neither listed nor admitted — to see whether it works at all
+— set `MARION_GATE=warn`. The gate then prints a banner naming the release instead of failing, and
+does not fetch pinned npm releases. A green run under it is evidence about nothing; the battery
+and `admit-harness.sh` always run strict.
 
 ## The commit gate
 

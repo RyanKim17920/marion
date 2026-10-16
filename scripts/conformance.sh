@@ -12,14 +12,10 @@
 # for a row whose version is unchanged, the matrix and its directory keep every other probe's last
 # cell and transcript, so a single probe can be refreshed in the committed fixtures.
 #
-# Callers: scripts/admit-harness.sh runs it for the admitted programs against the committed matrix.
-# TODO(release-canary): the nightly canary (.github/workflows/canary.yml on branch release-canary,
-# not yet landed) should run, after its harness_drift step and on the newest installed harnesses,
-#   scripts/conformance.sh --all --out "$RUNNER_TEMP/conformance" \
-#       --baseline tests/fixtures/conformance/matrix.json
-# and attach "$RUNNER_TEMP/conformance/matrix.md" to the drift PR it opens, so a behaviour change
-# the suites do not assert (MCP readiness, provider faults, mid-turn writes) is seen the night it
-# ships rather than at the next admission.
+# Callers: scripts/admit-harness.sh runs it for the admitted programs against the committed matrix,
+# and the nightly canary (.github/workflows/canary.yml) on every unlisted release. Every row's
+# verdict is also recorded for the exact binary under <state>/conformance/<row>-<version>.json;
+# the test gate admits a release newer than its row's `verified` list on that record.
 set -u
 
 here=$(cd "$(dirname "$0")/.." && pwd) || exit 1

@@ -480,8 +480,9 @@ only; canned runs keep marion's own isolation.
 ## Harness detail
 
 "Pin" is the oldest version whose evidence is on record, not a ceiling; the test suite admits
-newer versions only after re-running against them (`scripts/admit-harness.sh`), and `marion
-doctor` measures whatever is installed at runtime.
+newer versions once they pass the conformance battery (`scripts/conformance.sh`; the nightly
+canary lists every release that does), and `marion doctor` measures whatever is installed at
+runtime, saying whether a newer one passed.
 
 | harness | admitted | headless shape | resume | a steer reaches it | native lane |
 |---|---|---|---|---|---|
