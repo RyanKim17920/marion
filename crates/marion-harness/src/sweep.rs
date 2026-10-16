@@ -124,14 +124,26 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
             "boot dialogs without the measurement behind them".into(),
         );
     }
-    for d in dialogs.dialogs.iter().chain(dialogs.asks) {
-        let normal = d.needle.split_whitespace().collect::<Vec<_>>().join(" ");
-        if d.needle.is_empty() || d.needle != normal {
+    let needles = dialogs.dialogs.iter().map(|d| d.needle);
+    let needles = needles.chain(dialogs.asks.iter().flat_map(|a| [a.header, a.footer]));
+    for needle in needles {
+        let normal = needle.split_whitespace().collect::<Vec<_>>().join(" ");
+        if needle.is_empty() || needle != normal {
             fault(
                 "boot_dialogs",
-                format!("needle {:?} is not written as a screen is read", d.needle),
+                format!("needle {needle:?} is not written as a screen is read"),
             );
         }
+    }
+    for a in dialogs.asks {
+        if unstated(a.note) || unstated(a.action) {
+            fault(
+                "boot_dialogs",
+                format!("ask {:?} states no note or no action", a.header),
+            );
+        }
+    }
+    for d in dialogs.dialogs {
         if unstated(d.note) || unstated(d.action) {
             fault(
                 "boot_dialogs",
@@ -142,15 +154,6 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
             fault(
                 "boot_dialogs",
                 format!("{:?} answers with nothing", d.needle),
-            );
-        }
-    }
-    // An ask is the operator's: a paste waits on it, and marion never types its keys.
-    for d in dialogs.asks {
-        if d.answer != DialogAnswer::Hold {
-            fault(
-                "boot_dialogs",
-                format!("ask {:?} is answered; an ask is only ever held", d.needle),
             );
         }
     }

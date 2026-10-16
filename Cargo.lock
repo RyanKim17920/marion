@@ -573,6 +573,7 @@ dependencies = [
  "thiserror",
  "toml",
  "toml_edit",
+ "vt100",
 ]
 
 [[package]]

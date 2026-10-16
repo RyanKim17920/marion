@@ -12,13 +12,16 @@
 //! And whether it has **set its window title** since: codex 0.155.1 draws a provisional composer
 //! that drops Enter while it boots, and only its real one sets the title.
 //!
+//! And the screen as it stands ([`Grid`]), for the row's mid-session asks: an approval prompt
+//! is up while its header and its footer are both on it, and gone when either leaves it.
+//!
 //! The other is read off the operator's own writes ([`Typing`]): when a person last typed into
 //! this terminal, and whether what they typed has been submitted. A paste landing in the middle of
 //! a half-typed line would be submitted *with* it — the operator's words and marion's as one turn.
 
 use std::time::Instant;
 
-use marion_harness::spec::BootDialog;
+use marion_harness::spec::{Ask, BootDialog};
 
 /// Longest parameter list kept for one private-mode CSI. Real mode sets are a handful of short
 /// numbers; anything longer is not one marion needs to read, and a bound keeps a hostile stream
@@ -30,6 +33,47 @@ const BRACKETED_PASTE: &[u8] = b"2004";
 
 /// Longest OSC command number kept: every command marion reads is one digit.
 const MAX_OSC_DIGITS: usize = 4;
+
+/// **The node's screen as it stands now**, cell for cell, for the row's [`Ask`]s: what a prompt's
+/// header and footer are looked for on. A terminal emulator's grid rather than the text written,
+/// because a reply can quote a prompt's line and scroll it away, and a TUI that redraws only the
+/// cells that changed (claude) leaves a prompt's header standing while it moves the selection.
+struct Grid {
+    parser: vt100::Parser,
+    /// The screen's text with every run of whitespace one space, reused across looks.
+    words: String,
+}
+
+impl std::fmt::Debug for Grid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Grid")
+            .field("size", &self.parser.screen().size())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Grid {
+    fn new(rows: u16, cols: u16) -> Grid {
+        // No scrollback: only what is on the screen now counts.
+        Grid {
+            parser: vt100::Parser::new(rows.max(1), cols.max(1), 0),
+            words: String::new(),
+        }
+    }
+
+    /// The first of `asks` whose header and footer are both on the screen.
+    fn showing(&mut self, asks: &'static [Ask]) -> Option<&'static Ask> {
+        self.words.clear();
+        for word in self.parser.screen().contents().split_whitespace() {
+            if !self.words.is_empty() {
+                self.words.push(' ');
+            }
+            self.words.push_str(word);
+        }
+        asks.iter()
+            .find(|a| self.words.contains(a.header) && self.words.contains(a.footer))
+    }
+}
 
 /// Most screen text kept for recognising a boot dialog. The longest measured first screen with a
 /// dialog carries about 1.5 KiB of text (copilot 1.0.83, banner and box included); a TUI that
@@ -62,6 +106,10 @@ enum Scan {
 /// boundary anywhere inside one is carried, because a `read()` is not a frame (S11).
 #[derive(Debug, Default)]
 pub(crate) struct ModeScan {
+    /// The screen, for [`Self::asks`]: kept from the first byte, because a prompt can be up before
+    /// anyone watches for it, and dropped for good by a [`Self::watch`] with no asks. `None` from
+    /// [`Default`] (a scan with no screen size, in tests of the stream alone).
+    grid: Option<Grid>,
     state: Scan,
     params: Vec<u8>,
     overflowed: bool,
@@ -71,13 +119,14 @@ pub(crate) struct ModeScan {
     last_output: Option<Instant>,
     /// The row's boot dialogs this scan recognises ([`Self::showing`]).
     dialogs: &'static [BootDialog],
-    /// The row's mid-session asks this scan recognises, before boot and after it
-    /// ([`Self::asking`]).
-    asks: &'static [BootDialog],
+    /// The row's mid-session asks this scan recognises on [`Self::grid`], before boot and after
+    /// it ([`Self::asking`]).
+    asks: &'static [Ask],
+    /// The ask on the grid as of the last read.
+    ask: Option<&'static Ask>,
     /// The visible text written since anyone last typed, words joined by one space — what a
     /// dialog's needle is matched against. Kept from the first byte, because a TUI can draw its
-    /// dialog before a paste driver is attached, and dropped for good at [`Self::boot_over`]
-    /// unless the row has asks to look for.
+    /// dialog before a paste driver is attached, and dropped for good at [`Self::boot_over`].
     screen: Vec<u8>,
     /// How much of [`Self::screen`] every watched needle has been looked for in: a look reads only
     /// what came after it (and a needle's length before), so a TUI that keeps drawing costs each
@@ -89,8 +138,6 @@ pub(crate) struct ModeScan {
     /// [`Self::screen`], because a TUI that animates behind its dialog (codex's welcome art)
     /// writes past the cap while the dialog, drawn once, stays on screen.
     seen: u64,
-    /// Bit `i`: `asks[i]` was drawn since anyone last typed — latched as [`Self::seen`] is.
-    asked: u64,
     /// What [`Self::showing`] or [`Self::asking`] answers changed since [`Self::take_changed`].
     changed: bool,
     /// Visible text arrived since the last look for needles.
@@ -99,6 +146,23 @@ pub(crate) struct ModeScan {
 }
 
 impl ModeScan {
+    /// A scan of a terminal `rows` by `cols`, keeping its screen for the row's asks.
+    pub(crate) fn new(rows: u16, cols: u16) -> ModeScan {
+        ModeScan {
+            grid: Some(Grid::new(rows, cols)),
+            ..ModeScan::default()
+        }
+    }
+
+    /// The terminal is now `rows` by `cols`. The node redraws for it; the grid is resized first,
+    /// as the terminal it stands for was.
+    pub(crate) fn resize(&mut self, rows: u16, cols: u16) {
+        if let Some(grid) = &mut self.grid {
+            grid.parser.screen_mut().set_size(rows.max(1), cols.max(1));
+            self.look_for_asks();
+        }
+    }
+
     /// Whether the node has asked for bracketed paste and not since withdrawn it.
     pub(crate) fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
@@ -124,15 +188,19 @@ impl ModeScan {
 
     /// Recognise `dialogs` before the first paste and `asks` at any time, on the screen from now
     /// on — over what was drawn already, too.
-    pub(crate) fn watch(&mut self, dialogs: &'static [BootDialog], asks: &'static [BootDialog]) {
+    pub(crate) fn watch(&mut self, dialogs: &'static [BootDialog], asks: &'static [Ask]) {
         // One bit per dialog; a row lists two or three.
         if !self.boot_over {
             self.dialogs = &dialogs[..dialogs.len().min(64)];
         }
-        self.asks = &asks[..asks.len().min(64)];
+        self.asks = asks;
+        if asks.is_empty() {
+            self.grid = None;
+        }
         self.forget_latches();
         self.scanned = 0;
         self.look();
+        self.look_for_asks();
     }
 
     /// **The first of the watched dialogs on the screen**, in the row's order: its needle was
@@ -145,14 +213,21 @@ impl ModeScan {
             .map(|(_, d)| d)
     }
 
-    /// **The first of the watched asks on the screen**, in the row's order: its needle was drawn
-    /// since anyone last typed. Before boot and after it.
-    pub(crate) fn asking(&self) -> Option<&'static BootDialog> {
-        self.asks
-            .iter()
-            .enumerate()
-            .find(|(i, _)| self.asked & (1 << i) != 0)
-            .map(|(_, d)| d)
+    /// **The first of the watched asks on the screen now**, in the row's order: its header and
+    /// its footer both stand on the grid. Before boot and after it, and no key clears it — only
+    /// the prompt leaving the screen does.
+    pub(crate) fn asking(&self) -> Option<&'static Ask> {
+        self.ask
+    }
+
+    /// Read the grid for the watched asks.
+    fn look_for_asks(&mut self) {
+        let Some(grid) = &mut self.grid else {
+            return;
+        };
+        let ask = grid.showing(self.asks);
+        self.changed |= ask != self.ask;
+        self.ask = ask;
     }
 
     /// Whether [`Self::showing`] or [`Self::asking`] changed since the last call.
@@ -160,46 +235,41 @@ impl ModeScan {
         std::mem::take(&mut self.changed)
     }
 
-    /// Latch every watched needle the text kept since the last look now holds.
+    /// Latch every watched dialog's needle the text kept since the last look now holds.
     fn look(&mut self) {
         self.fresh = false;
         let longest = self
             .dialogs
             .iter()
-            .chain(self.asks)
             .map(|d| d.needle.len())
             .max()
             .unwrap_or(0);
         // A needle that ends in the new text may start up to its length before it.
         let from = self.scanned.saturating_sub(longest.saturating_sub(1));
         let hay = &self.screen[from.min(self.screen.len())..];
-        let latch = |watched: &[BootDialog], bits: &mut u64| {
-            let before = *bits;
-            for (i, d) in watched.iter().enumerate() {
-                let needle = d.needle.as_bytes();
-                if *bits & (1 << i) == 0
-                    && !needle.is_empty()
-                    && hay.windows(needle.len()).any(|w| w == needle)
-                {
-                    *bits |= 1 << i;
-                }
+        let before = self.seen;
+        for (i, d) in self.dialogs.iter().enumerate() {
+            let needle = d.needle.as_bytes();
+            if self.seen & (1 << i) == 0
+                && !needle.is_empty()
+                && hay.windows(needle.len()).any(|w| w == needle)
+            {
+                self.seen |= 1 << i;
             }
-            *bits != before
-        };
-        let seen = latch(self.dialogs, &mut self.seen);
-        let asked = latch(self.asks, &mut self.asked);
-        self.changed |= seen || asked;
+        }
+        self.changed |= self.seen != before;
         self.scanned = self.screen.len();
     }
 
-    /// Nothing is on the screen any more as far as the latches know.
+    /// No boot dialog is on the screen any more as far as the latches know.
     fn forget_latches(&mut self) {
-        self.changed |= self.seen != 0 || self.asked != 0;
+        self.changed |= self.seen != 0;
         self.seen = 0;
-        self.asked = 0;
     }
 
-    /// The operator typed: a key is what dismisses a dialog, and one that survives it redraws.
+    /// The operator typed: a key is what dismisses a boot dialog, and one that survives it
+    /// redraws. An ask is read off the grid instead: an arrow moves its selection, a focus report
+    /// is no key at all, and either leaves the prompt up.
     pub(crate) fn operator_typed(&mut self) {
         self.screen.clear();
         self.scanned = 0;
@@ -214,17 +284,14 @@ impl ModeScan {
         self.drawn = false;
     }
 
-    /// The first paste landed: no boot dialog is looked for again, and no screen text is kept
-    /// unless the row has asks to look for.
+    /// The first paste landed: no boot dialog is looked for again, and no screen text is kept for
+    /// them. The asks' grid stays.
     pub(crate) fn boot_over(&mut self) {
         self.boot_over = true;
         self.dialogs = &[];
-        self.changed |= self.seen != 0;
-        self.seen = 0;
-        if self.asks.is_empty() {
-            self.screen = Vec::new();
-            self.scanned = 0;
-        }
+        self.forget_latches();
+        self.screen = Vec::new();
+        self.scanned = 0;
     }
 
     #[cfg(test)]
@@ -233,7 +300,7 @@ impl ModeScan {
     }
 
     fn visible(&mut self, b: u8) {
-        if self.boot_over && self.asks.is_empty() {
+        if self.boot_over {
             return;
         }
         if self.screen.len() >= SCREEN_TEXT_CAP {
@@ -267,8 +334,14 @@ impl ModeScan {
         for &b in chunk {
             self.step(b);
         }
-        if self.fresh && !(self.dialogs.is_empty() && self.asks.is_empty()) {
+        if self.fresh && !self.dialogs.is_empty() {
             self.look();
+        }
+        if let Some(grid) = &mut self.grid {
+            grid.parser.process(chunk);
+            if !self.asks.is_empty() {
+                self.look_for_asks();
+            }
         }
     }
 
@@ -406,8 +479,8 @@ pub struct InputState {
     /// The row's boot dialog drawn since anyone last typed, before the first paste
     /// ([`ModeScan::showing`]).
     pub boot_dialog: Option<&'static BootDialog>,
-    /// The row's mid-session ask drawn since anyone last typed ([`ModeScan::asking`]).
-    pub ask: Option<&'static BootDialog>,
+    /// The row's mid-session ask on the screen now ([`ModeScan::asking`]).
+    pub ask: Option<&'static Ask>,
 }
 
 /// The operator's typing, as far as the host saw it. See [`InputState`].
@@ -794,48 +867,121 @@ mod tests {
         }
     }
 
-    const ASK: BootDialog = BootDialog {
-        needle: "Would you like to run the following command?",
+    const ASK: Ask = Ask {
+        header: "Would you like to run the following command?",
+        footer: "Press enter to confirm or esc to cancel",
         action: "answer the approval",
-        answer: DialogAnswer::Hold,
         note: "test",
     };
 
-    /// **An ask is seen after boot too**, at every read boundary, until a key clears it — and
-    /// the screen text the asks are read from stays bounded.
+    /// A scan of a 24 by 80 terminal watching [`ASK`], booted.
+    fn asked() -> ModeScan {
+        let mut scan = ModeScan::new(24, 80);
+        scan.watch(std::slice::from_ref(&HELD), std::slice::from_ref(&ASK));
+        scan.boot_over();
+        scan.feed(b"\x1b[?2004h\x1b[2J\x1b[H> composer", Instant::now());
+        scan
+    }
+
+    /// The approval prompt, drawn over the composer: header, an option, footer.
+    const PROMPT: &[u8] = b"\x1b[2;3HWould\x1b[2;9Hyou like to run the following command?\
+        \x1b[4;3H\xe2\x80\xba 1. Yes, proceed (y)\x1b[5;5H2. No\
+        \x1b[7;3HPress enter to confirm or esc to cancel";
+
+    /// **An ask is up while its header and its footer are on the screen**, at every read
+    /// boundary, after boot — and no key takes it down, only the prompt leaving the screen.
     #[test]
-    fn an_ask_is_seen_after_boot_at_every_read_boundary_until_a_key() {
-        let screen: &[u8] = b"\x1b[2;3HWould\x1b[2;9Hyou like to run the following command?";
-        for at in 0..=screen.len() {
-            let mut scan = ModeScan::default();
-            scan.watch(std::slice::from_ref(&HELD), std::slice::from_ref(&ASK));
-            scan.boot_over();
-            scan.feed(b"\x1b[?2004h> composer", Instant::now());
+    fn an_ask_is_up_while_header_and_footer_are_on_the_screen_until_it_leaves() {
+        for at in 0..=PROMPT.len() {
+            let mut scan = asked();
             assert_eq!(scan.asking(), None);
-            scan.feed(&screen[..at], Instant::now());
-            scan.feed(&screen[at..], Instant::now());
+            scan.feed(&PROMPT[..at], Instant::now());
+            scan.feed(&PROMPT[at..], Instant::now());
             assert_eq!(scan.asking(), Some(&ASK), "split at {at}");
             assert!(scan.take_changed() && !scan.take_changed());
             assert_eq!(scan.showing(), None, "boot dialogs end with boot");
             scan.operator_typed();
-            assert_eq!(scan.asking(), None, "a key dismisses it");
+            assert_eq!(scan.asking(), Some(&ASK), "a key alone takes nothing down");
+            scan.feed(b"\x1b[2J\x1b[H> composer", Instant::now());
+            assert_eq!(scan.asking(), None, "the prompt left the screen");
             assert!(scan.take_changed());
         }
-        let mut scan = ModeScan::default();
-        scan.watch(&[], std::slice::from_ref(&ASK));
-        scan.boot_over();
-        let filler = vec![b'x'; 3 * SCREEN_TEXT_CAP];
-        scan.feed(&filler, Instant::now());
-        assert!(scan.screen_len() <= SCREEN_TEXT_CAP);
-        scan.feed(
-            b" Would you like to run the following command?",
-            Instant::now(),
-        );
-        assert_eq!(scan.asking(), Some(&ASK), "past the cap, too");
     }
 
-    /// **Every row's ask is on a screen it was measured on** (`tests/fixtures/pane-asks/`), and
-    /// every recorded ask screen shows one of some row's asks.
+    /// **A reply that quotes a prompt is not one**: the header alone, the footer alone, or the two
+    /// with the header already scrolled off the screen.
+    #[test]
+    fn a_model_reply_with_the_prompts_words_is_not_an_ask() {
+        let mut scan = asked();
+        scan.feed(
+            b"\r\n  I will ask: Would you like to run the following command?\r\n",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), None, "the header alone");
+        let mut scan = asked();
+        scan.feed(
+            b"\r\n  Then: Press enter to confirm or esc to cancel\r\n",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), None, "the footer alone");
+        let mut scan = asked();
+        scan.feed(
+            b"\x1b[24;1H Would you like to run the following command?",
+            Instant::now(),
+        );
+        scan.feed(&b"\r\n line".repeat(30), Instant::now());
+        scan.feed(
+            b"\r\n Press enter to confirm or esc to cancel",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), None, "the header scrolled away first");
+    }
+
+    /// **A prompt redrawn by its changed cells alone stays up**: the selection moves under an
+    /// arrow key and only the option rows are written; a second prompt drawn over the first
+    /// keeps the header cells it shares. Overwriting the header takes it down.
+    #[test]
+    fn a_prompt_redrawn_without_its_header_stays_up() {
+        let mut scan = asked();
+        scan.feed(PROMPT, Instant::now());
+        scan.operator_typed();
+        scan.feed(
+            b"\x1b[4;3H  1. Yes, proceed (y)\x1b[5;3H\xe2\x80\xba 2. No",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), Some(&ASK), "the selection moved");
+        scan.feed(b"\x1b[I\x1b[O", Instant::now());
+        assert_eq!(scan.asking(), Some(&ASK));
+        scan.feed(b"\x1b[3;3H$ cargo test\x1b[3;15H\x1b[K", Instant::now());
+        assert_eq!(
+            scan.asking(),
+            Some(&ASK),
+            "a second command, header unchanged"
+        );
+        scan.feed(b"\x1b[2;1H\x1b[2K> composer", Instant::now());
+        assert_eq!(scan.asking(), None, "the header was overwritten");
+    }
+
+    /// **A resize keeps the grid in step**: a prompt drawn at the new size is read at it.
+    #[test]
+    fn an_ask_is_read_at_the_terminals_size() {
+        let mut scan = asked();
+        scan.resize(40, 120);
+        scan.feed(
+            b"\x1b[30;3HWould you like to run the following command?\
+              \x1b[35;70HPress enter to confirm or esc to cancel",
+            Instant::now(),
+        );
+        assert_eq!(scan.asking(), Some(&ASK));
+        let mut none = ModeScan::new(24, 80);
+        none.watch(&[], &[]);
+        none.feed(PROMPT, Instant::now());
+        assert_eq!(none.asking(), None, "a row with no asks keeps no grid");
+        assert!(none.grid.is_none());
+    }
+
+    /// **Every row's ask is on a screen it was measured on** (`tests/fixtures/pane-asks/`, at
+    /// conformance's 120 by 40), and every recorded ask screen shows one of some row's asks.
     #[test]
     fn every_rows_ask_is_found_on_its_measured_screen() {
         let dir =
@@ -846,8 +992,8 @@ mod tests {
             .map(|p| (p.display().to_string(), std::fs::read(&p).unwrap()))
             .collect();
         assert!(!screens.is_empty());
-        let asks_on = |asks: &'static [BootDialog], bytes: &[u8]| {
-            let mut scan = ModeScan::default();
+        let asks_on = |asks: &'static [Ask], bytes: &[u8]| {
+            let mut scan = ModeScan::new(40, 120);
             scan.watch(&[], asks);
             // In reads of a pty's size, as the host sees them.
             for chunk in bytes.chunks(1024) {
@@ -857,15 +1003,15 @@ mod tests {
         };
         let mut matched = vec![false; screens.len()];
         for h in marion_core::harness::Harness::ALL {
-            for d in marion_harness::adapter::harness_spec(h).boot_dialogs.asks {
+            for a in marion_harness::adapter::harness_spec(h).boot_dialogs.asks {
                 let mut any = false;
                 for (i, (_, bytes)) in screens.iter().enumerate() {
-                    if asks_on(std::slice::from_ref(d), bytes).is_some() {
+                    if asks_on(std::slice::from_ref(a), bytes).is_some() {
                         matched[i] = true;
                         any = true;
                     }
                 }
-                assert!(any, "{h}: ask {:?} is on no measured screen", d.needle);
+                assert!(any, "{h}: ask {:?} is on no measured screen", a.header);
             }
         }
         for ((name, _), m) in screens.iter().zip(matched) {

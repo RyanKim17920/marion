@@ -2349,12 +2349,15 @@ fn a_pane_showing_an_approval_prompt_needs_its_operator_at_once() {
     let screen = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/pane-asks/codex-0.160.1-approval.raw");
     let id = AgentId("root-pane-ask-attention".into());
+    // The size the screen was recorded at (conformance's terminal): the prompt is read off the
+    // grid, where a smaller one would wrap and clip it.
+    let size = crate::pty::WinSize::new(120, 40);
     let host = Arc::new(
         crate::pty::PtyHost::start(
             id.clone(),
-            crate::pty::PtyMaster::open(PANE_SIZE).expect("open pty"),
+            crate::pty::PtyMaster::open(size).expect("open pty"),
             &dir.join("pty.cast"),
-            PANE_SIZE,
+            size,
             PANE_TERM,
             std::time::Instant::now(),
         )
@@ -2419,10 +2422,10 @@ fn a_panes_screen_reads_as_blocked_on_its_dialog_or_ask_else_running() {
         answer: DialogAnswer::Hold,
         note: "test",
     };
-    const ASK: BootDialog = BootDialog {
-        needle: "Do you want to proceed?",
+    const ASK: marion_harness::spec::Ask = marion_harness::spec::Ask {
+        header: "Do you want to proceed?",
+        footer: "Esc to cancel · Tab to amend",
         action: "answer it in its pane",
-        answer: DialogAnswer::Hold,
         note: "test",
     };
     let screen = |boot_dialog, ask| crate::pty::InputState {

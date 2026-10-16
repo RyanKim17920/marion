@@ -557,7 +557,9 @@ impl Bed {
     ) -> Bed {
         let dir = marion_testsupport::scratch(tag);
         let cast = dir.join("pty.cast");
-        let size = WinSize::new(80, 24);
+        // Conformance's terminal, which the recorded screens (`tests/fixtures/pane-asks/`) were
+        // drawn on: an ask is read off the grid, where a smaller one would clip them.
+        let size = WinSize::new(120, 40);
         let master = PtyMaster::open(size).expect("a pty");
         let slave = std::fs::File::from(master.open_slave().expect("the slave opens"));
         let mut termios = rustix::termios::tcgetattr(&slave).expect("termios");
@@ -1217,10 +1219,10 @@ fn a_nodes_policy_bounds_only_the_dialog_hold_by_the_node() {
 /// grace runs out on it, because the node is on its operator's attention queue meanwhile.
 #[test]
 fn an_ask_holds_every_paste_and_never_refuses_it() {
-    const ASK: BootDialog = BootDialog {
-        needle: "Would you like to run the following command?",
+    const ASK: marion_harness::spec::Ask = marion_harness::spec::Ask {
+        header: "Would you like to run the following command?",
+        footer: "Press enter to confirm or esc to cancel",
         action: "answer the approval",
-        answer: DialogAnswer::Hold,
         note: "test",
     };
     let asking = crate::pty::InputState {
@@ -1296,11 +1298,30 @@ fn a_steer_waits_out_an_approval_prompt_and_never_answers_it() {
             "{h}: the prompt is still recognised"
         );
 
-        // The operator answers it (Enter, its default); marion's own keys never do.
+        // An arrow key moves the selection and a focus report is no key: the prompt is still
+        // up, and so is the hold.
         let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+        bed.host
+            .write_opaque_input(&lease, b"\x1b[B\x1b[I")
+            .unwrap();
+        assert_eq!(
+            bed.read_slave(6),
+            b"\x1b[B\x1b[I",
+            "{h}: the operator's keys alone"
+        );
+        assert!(
+            bed.host.input_state().ask.is_some(),
+            "{h}: an arrow or a focus event leaves the prompt up"
+        );
+        assert!(
+            nothing_reaches(&mut bed.slave, Duration::from_millis(300)),
+            "{h}: a paste was typed into its approval prompt after an arrow key"
+        );
+        // The operator answers it (Enter, its default); marion's own keys never do. The hold ends
+        // when the prompt leaves the screen, not at the key.
         bed.host.write_opaque_input(&lease, b"\r").unwrap();
         assert_eq!(bed.read_slave(1), b"\r", "{h}: the operator's key alone");
-        assert_eq!(bed.host.input_state().ask, None, "{h}: a key dismisses it");
+        assert!(bed.host.input_state().ask.is_some(), "{h}: not yet redrawn");
         bed.node_writes(b"\x1b[2J\x1b[H> ");
         let want = expected_paste("a steer mid-ask");
         assert_eq!(bed.read_slave(want.len()), want, "{h}");

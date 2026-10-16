@@ -97,6 +97,11 @@ rustix = { version = "1", features = ["event", "fs", "net", "process", "termios"
 # strings its refusals name with it, on the daemon's side.
 similar = { version = "2", optional = true }
 toml_edit = "0.22"
+# The node's screen as it stands, cell for cell, for the asks a pane's TUI raises mid-session
+# (`pty::input`): a prompt is up while its header and footer are on the screen, which only a grid
+# can say. Small and pure Rust, already in the build as marion-term's test emulator; the daemon
+# takes it rather than alacritty, which stays on the client's side.
+vt100 = "0.16"
 # `profiles::ProfilesFile` reads `$XDG_CONFIG_HOME/marion/profiles.toml`, with the parser
 # `.marion/agents.toml` is read with.
 toml.workspace = true

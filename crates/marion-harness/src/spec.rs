@@ -644,12 +644,12 @@ pub enum IdleSignal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootDialogs {
     pub dialogs: &'static [BootDialog],
-    /// **Asks the TUI raises mid-session** — an approval or permission prompt — recognised the
-    /// same way, on the screen at any time, not only before the composer. A paste typed into one
-    /// answers it: codex 0.160.1's `› 1. Yes, proceed` takes the paste's Enter as approval. So
-    /// every paste waits while one is up, for as long as it is up, and marion never answers one:
-    /// each is [`DialogAnswer::Hold`], and the node needs its operator meanwhile.
-    pub asks: &'static [BootDialog],
+    /// **Asks the TUI raises mid-session** — an approval or permission prompt — on the screen at
+    /// any time, not only before the composer. A paste typed into one answers it: codex 0.160.1's
+    /// `› 1. Yes, proceed` takes the paste's Enter as approval. So every paste waits while one is
+    /// up, for as long as it is up, and marion never answers one: the node needs its operator
+    /// meanwhile.
+    pub asks: &'static [Ask],
     /// Where the TUI keeps an answer marion gives with a dialog's [`DialogAnswer::Keys`] or
     /// [`DialogAnswer::Setup`].
     pub remembers: Remembers,
@@ -717,6 +717,27 @@ pub struct BootDialog {
 }
 
 impl BootDialog {
+    /// [`Self::action`] for `repo`.
+    pub fn action_for(&self, repo: &str) -> String {
+        self.action.replace("{repo}", repo)
+    }
+}
+
+/// **One prompt a TUI raises mid-session**, up while its `header` and its `footer` are both on the
+/// screen as it stands now — not as it was drawn: a model's reply can quote either line, and a
+/// TUI that redraws only the cells that changed leaves a prompt's text where it was. Each is
+/// written as a [`BootDialog`]'s needle is, and the two together are what no reply draws. Never
+/// answered by marion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ask {
+    pub header: &'static str,
+    pub footer: &'static str,
+    /// What the operator does about it, with `{repo}` as in [`BootDialog::action`].
+    pub action: &'static str,
+    pub note: &'static str,
+}
+
+impl Ask {
     /// [`Self::action`] for `repo`.
     pub fn action_for(&self, repo: &str) -> String {
         self.action.replace("{repo}", repo)

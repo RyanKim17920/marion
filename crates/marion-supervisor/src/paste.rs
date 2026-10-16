@@ -43,9 +43,10 @@
 //! mid-session. A live steer into a codex 0.160.1 pane sitting on `Would you like to run the
 //! following command? › 1. Yes, proceed` lost its text and its Enter approved the command. An ask
 //! is never answered by marion and never refused for: the message waits ([`Hold::Ask`]) for as
-//! long as the prompt is up, which is until someone's key dismisses it, and the node's launcher
-//! puts it on the operator's attention queue meanwhile. Where the screen cannot be told apart from
-//! an ask — a needle drawn since the last key — it holds.
+//! long as the prompt is up — its header and its footer both on the screen as it stands now — and
+//! the node's launcher puts it on the operator's attention queue meanwhile. A key does not end
+//! the hold (an arrow moves the selection and leaves the prompt up); the prompt leaving the
+//! screen does.
 //!
 //! # Why the row's [`IdleSignal`] is waited on once, not before every paste
 //!
@@ -144,7 +145,7 @@ pub struct PasteParams {
     pub dialogs: &'static [BootDialog],
     /// The asks it can raise mid-session ([`marion_harness::spec::BootDialogs::asks`]): no paste
     /// is ever typed into one.
-    pub asks: &'static [BootDialog],
+    pub asks: &'static [marion_harness::spec::Ask],
 }
 
 impl PasteParams {

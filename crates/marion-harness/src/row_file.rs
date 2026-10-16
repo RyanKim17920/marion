@@ -37,7 +37,7 @@ use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::os_sandbox::{OsSandboxRule, WritePath};
 use crate::profile::{ProfileCarrier, Status};
 use crate::spec::{
-    self, AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialog,
+    self, AbortVerb, Aborts, Advertised, Approval, Arg, Ask, AxesRule, Body, Boot, BootDialog,
     BootDialogs, BootSignal, CommandLine, ConfigFile, Constraint, Deliveries, DialogAnswer, Env,
     Field, HarnessSpec, IdleSignal, KeyRecipe, LiveDeclaration, McpRoute, McpRoutes, McpServers,
     ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
@@ -1393,7 +1393,7 @@ pub struct BootDialogsDto {
     #[serde(default)]
     pub dialogs: Vec<BootDialogDto>,
     #[serde(default)]
-    pub asks: Vec<BootDialogDto>,
+    pub asks: Vec<AskDto>,
     pub remembers: RemembersDto,
     pub note: String,
 }
@@ -1417,6 +1417,26 @@ impl BootDialogDto {
                 DialogAnswerDto::Setup(k) => DialogAnswer::Setup(leak(k).as_bytes()),
                 DialogAnswerDto::Hold => DialogAnswer::Hold,
             },
+            note: leak(self.note),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskDto {
+    pub header: String,
+    pub footer: String,
+    pub action: String,
+    pub note: String,
+}
+
+impl AskDto {
+    fn ask(self) -> Ask {
+        Ask {
+            header: leak(self.header),
+            footer: leak(self.footer),
+            action: leak(self.action),
             note: leak(self.note),
         }
     }
@@ -1777,7 +1797,7 @@ impl RowDto {
                     self.boot_dialogs
                         .asks
                         .into_iter()
-                        .map(BootDialogDto::dialog)
+                        .map(AskDto::ask)
                         .collect(),
                 ),
                 remembers: match self.boot_dialogs.remembers {

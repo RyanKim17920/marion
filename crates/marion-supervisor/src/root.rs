@@ -3078,7 +3078,7 @@ fn needs_operator(
             NodeState::Blocked(BlockReason::Permission),
             Some(format!(
                 "{program} is asking (`{}`), which marion never answers: {}",
-                a.needle,
+                a.header,
                 a.action_for(repo)
             )),
         ),

@@ -24,11 +24,11 @@ pub use crate::mcp_bridge::{
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialog, BootDialogs,
-    ChannelPush, Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, McpServers, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers,
-    Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, Ask, AxesRule, Body, Boot, BootDialog,
+    BootDialogs, ChannelPush, Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, McpServers, MidTurn, ModelForm, Push, ReadOnly,
+    Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -416,22 +416,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // (`tests/fixtures/pane-asks/claude-code-2.1.301-permission.raw`): the permission
         // dialog `Do you want to proceed?` over `❯ 1. Yes` / `2. Yes, and always allow …` /
         // `4. No`, then `Esc to cancel · Tab to amend`. Enter takes the selection, `1. Yes`, so a
-        // paste's submit would run the command. Two needles, either one enough, because claude
-        // redraws only the cells that changed and a word over the same letters loses them.
-        asks: &[
-            BootDialog {
-                needle: "Do you want to proceed?",
-                action: "answer claude's permission prompt in its pane",
-                answer: DialogAnswer::Hold,
-                note: "2.1.301 permission dialog for a Bash call, default `❯ 1. Yes`",
-            },
-            BootDialog {
-                needle: "Esc to cancel · Tab to amend",
-                action: "answer claude's permission prompt in its pane",
-                answer: DialogAnswer::Hold,
-                note: "2.1.301 permission dialog footer",
-            },
-        ],
+        // paste's submit would run the command. Header and footer together: a reply can quote
+        // either.
+        asks: &[Ask {
+            header: "Do you want to proceed?",
+            footer: "Esc to cancel · Tab to amend",
+            action: "answer claude's permission prompt in its pane",
+            note: "2.1.301 permission dialog for a Bash call, default `❯ 1. Yes`",
+        }],
         remembers: Remembers::CannedHome,
         note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
                onboarding done: folder trust, then (pane shape, claude.ai login) the development \

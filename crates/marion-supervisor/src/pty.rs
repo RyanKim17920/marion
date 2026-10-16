@@ -2097,7 +2097,11 @@ impl Shared {
         {
             return Err(io::Error::other(error));
         }
-        master.set_size(size)
+        master.set_size(size)?;
+        // The node repaints for the new size the moment the ioctl lands; the screen it is read
+        // into is that size first.
+        self.with_modes(|m| m.resize(size.rows, size.cols));
+        Ok(())
     }
 
     fn resize_cast(&self, cast: &mut CastWriter, size: WinSize) -> io::Result<()> {
@@ -2735,7 +2739,7 @@ impl PtyHost {
             ),
             splice_error: Mutex::new(None),
             splice_disabled: AtomicBool::new(false),
-            modes: Mutex::new(input::ModeScan::default()),
+            modes: Mutex::new(input::ModeScan::new(size.rows, size.cols)),
             dialogs_changed: crate::wake::Signal::new(),
             pane_streams: Mutex::new(PaneStreams {
                 generation: 1,
@@ -3542,13 +3546,12 @@ impl PtyHost {
     pub fn watch_dialogs(
         &self,
         dialogs: &'static [marion_harness::spec::BootDialog],
-        asks: &'static [marion_harness::spec::BootDialog],
+        asks: &'static [marion_harness::spec::Ask],
     ) {
         self.shared.with_modes(|m| m.watch(dialogs, asks));
     }
 
-    /// The first paste landed: stop reading the screen for boot dialogs, and keep screen text
-    /// only where the row has asks to read it for.
+    /// The first paste landed: stop reading the screen for boot dialogs.
     pub fn boot_over(&self) {
         self.shared.with_modes(input::ModeScan::boot_over);
     }
