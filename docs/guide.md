@@ -452,7 +452,7 @@ only; canned runs keep marion's own isolation.
 | `claude` | `CLAUDE_CONFIG_DIR` (and `CLAUDE_SECURESTORAGE_CONFIG_DIR` removed) | `claude auth status --json` | `settings.json`, `CLAUDE.md`, `skills`, `agents`, `commands`, `keybindings.json` (links) |
 | `codex` | `CODEX_HOME` | `codex login status` | `config.toml`, `AGENTS.md` (links; never `auth.json`) |
 | `opencode` | `XDG_DATA_HOME` | `opencode/auth.json` exists | — |
-| `pi` | `PI_CODING_AGENT_DIR` | `auth.json` exists | `settings.json` (link) |
+| `pi` | `PI_CODING_AGENT_DIR` | `auth.json` exists | `settings.json`, `extensions`, `skills`, `prompts`, `themes`, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `npm`, `git`, `trust.json`, `keybindings.json` (links; never `auth.json` or `models.json`) |
 | `copilot` | none: a fresh `COPILOT_HOME` still authenticates (1.0.83), so a directory cannot choose an account | | |
 | `goose`, `cline`, `qwen`, `agy`, `acp:` | none yet: unmeasured | | |
 
@@ -475,7 +475,12 @@ doctor` measures whatever is installed at runtime.
 | `agy` (Antigravity) | 1.2.8 | `-p` stream-json; needs your own `permissions.allow` rule for `mcp(marion/*)`, which marion never writes | `--conversation` | next generation | disabled |
 | `acp:<command>` | n/a | the Agent Client Protocol | `session/load` where offered | per agent | — |
 
-Known gaps: a pi child cannot call `spawn` (pi's `--tools` also governs extension tools); agy has
+On your own login a pi child runs on your agent dir as you configured it: your extensions, skills,
+prompts and packages load, and marion adds only its own `-e` extension. Canned pi keeps them out
+(`--no-extensions`).
+
+Known gaps: a pi child cannot call `spawn`, and is offered no tool your extensions register (pi's
+`--tools`, which marion always names, also governs extension tools); agy has
 no canned route, so it is tested only live; `opencode run` names its session only once its first
 response streams, so a node whose supervisor dies during its first request has nothing to resume.
 
