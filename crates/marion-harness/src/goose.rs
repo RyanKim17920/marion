@@ -617,6 +617,7 @@ mod tests {
             depth: 1,
             node_token: Some("tok-secret-7c1f".into()),
             ready_file: None,
+            spawn_path: None,
         }
     }
 

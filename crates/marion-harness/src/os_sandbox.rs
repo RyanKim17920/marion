@@ -645,6 +645,7 @@ mod tests {
             state_dir: dir.to_path_buf(),
             bridge: "/bin/marion-supervisor".into(),
             bridge_args: vec!["mcp".into()],
+            spawn_path: None,
         }
     }
 

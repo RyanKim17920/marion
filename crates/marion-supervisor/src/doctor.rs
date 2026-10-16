@@ -1835,12 +1835,16 @@ pub fn version_token(out: &str) -> Option<String> {
 
 /// First executable match on `$PATH`, with §7.7's symlink resolution applied.
 pub fn which(program: &str) -> Option<PathBuf> {
+    which_in(program, &std::env::var_os("PATH")?)
+}
+
+/// [`which`] on a `PATH` stated rather than this process's own.
+pub fn which_in(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     if program.contains('/') {
         let p = Path::new(program);
         return is_executable(p).then(|| std::fs::canonicalize(p).unwrap_or_else(|_| p.into()));
     }
-    std::env::var_os("PATH")?
-        .to_str()?
+    path.to_str()?
         .split(':')
         .filter(|d| !d.is_empty())
         .map(|d| Path::new(d).join(program))
@@ -1945,6 +1949,7 @@ fn probe_ctx() -> SpawnCtx {
         // because it is what a real spawn would use — `mcp` is a subcommand of this binary (§10).
         bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
         bridge_args: vec!["mcp".into()],
+        spawn_path: None,
     }
 }
 

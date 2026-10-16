@@ -302,12 +302,13 @@ pub fn workflow_names_description(names: &[String]) -> String {
 /// type's description. A free-form `acp:<command>` is not offered: a model may run one only where
 /// the operator listed it (`trust::require_model_named`).
 ///
-/// **Only the built-ins this host can launch** ([`installed_here`]): the list is paid in every
+/// **Only the built-ins this host can launch** ([`installed_on`] the [`spawn_path`]): the list is paid in every
 /// context on every turn, and a type whose program is not installed is one a spawn of would only
 /// fail. The rest are counted, not named. A row of the tree's own file is always listed — the
 /// operator wrote it on purpose, and a missing program is then a refusal worth reading.
 pub fn agent_type_description(types: &AgentTypes) -> String {
-    agent_type_description_where(types, installed_here)
+    let path = spawn_path();
+    agent_type_description_where(types, |t| installed_on(&path, t))
 }
 
 /// [`agent_type_description`] with what counts as launchable stated: the seam a test names its
@@ -341,10 +342,20 @@ fn agent_type_description_where(
     )
 }
 
-/// **Whether this host can launch a type**: its program — the row's, or an ACP agent's own
-/// command — is an executable on `PATH`. Read off the registry, never a list of names here; a type
+/// **The `PATH` a spawn from here is launched on**: the supervisor's, stated on this bridge's
+/// declaration ([`marion_harness::mcp_bridge::SPAWN_PATH_ENV`]) because it, not this process,
+/// execs the child, and a harness may start its MCP server on another. A bridge with no such
+/// declaration (a top-level client's) reads its own.
+fn spawn_path() -> std::ffi::OsString {
+    std::env::var_os(marion_harness::mcp_bridge::SPAWN_PATH_ENV)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default()
+}
+
+/// **Whether a spawn on `path` can launch a type**: its program — the row's, or an ACP agent's
+/// own command — is an executable there. Read off the registry, never a list of names here; a type
 /// whose program marion cannot name is kept, so nothing is hidden on a guess.
-fn installed_here(t: &marion_core::agent_type::AgentType) -> bool {
+fn installed_on(path: &std::ffi::OsStr, t: &marion_core::agent_type::AgentType) -> bool {
     let program = match t.acp_agent.as_deref() {
         Some(selector) => marion_harness::acp::Binding::resolve(selector)
             .ok()
@@ -354,7 +365,7 @@ fn installed_here(t: &marion_core::agent_type::AgentType) -> bool {
             .program
             .map(str::to_string),
     };
-    program.is_none_or(|p| crate::doctor::which(&p).is_some())
+    program.is_none_or(|p| crate::doctor::which_in(&p, path).is_some())
 }
 
 /// The tool list over one already-composed `agent_type` sentence — the seam [`tools_list_result`]

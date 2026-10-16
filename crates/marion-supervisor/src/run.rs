@@ -1778,6 +1778,14 @@ pub fn tree_in<'a>(
 /// Where a working tree declares its own agent types, relative to the tree's root.
 pub const AGENT_TYPES_FILE: &str = ".marion/agents.toml";
 
+/// **The `PATH` this process launches nodes on**, as a node's bridge is told it
+/// ([`marion_harness::mcp_bridge::SPAWN_PATH_ENV`]): `Invocation::command` inherits this
+/// process's own, so a child the node spawns is looked up on exactly this one. `None` when it is
+/// unset or not UTF-8, and the bridge then reads its own.
+pub fn spawn_path() -> Option<String> {
+    std::env::var("PATH").ok()
+}
+
 /// The agent types a working tree can spawn: the built-ins plus [`AGENT_TYPES_FILE`]'s rows.
 ///
 /// Keyed on the **tree**, not on [`Env::project_root`] — that is the git common dir, which a
@@ -2280,6 +2288,7 @@ pub fn run_spawn_watched(
             .to_path_buf(),
         bridge: env.bridge.clone(),
         bridge_args: vec!["mcp".into()],
+        spawn_path: spawn_path(),
     };
     // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
     // entirely inside a detached window is the case re-attach cannot answer from anything else: it
