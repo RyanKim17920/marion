@@ -108,6 +108,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // agents read (copilot's GitHub token, claude-agent-acp's token, a Vertex credential).
     files: &[],
     overlay_documents: &[],
+    repo_config: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("COPILOT_GITHUB_TOKEN"),

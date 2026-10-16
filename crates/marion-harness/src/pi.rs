@@ -163,6 +163,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Any provider pi is configured for, by its key.
     files: &[],
     overlay_documents: &[],
+    repo_config: &[".pi"],
     login_env: LoginEnv {
         login: &[],
         any_provider: true,

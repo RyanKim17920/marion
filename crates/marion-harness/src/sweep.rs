@@ -228,6 +228,14 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
         }
         _ => {}
     }
+    for p in row.repo_config {
+        if !plain_relative(p) {
+            fault(
+                "repo_config",
+                format!("{p:?} is not a plain path under the repository's checkout"),
+            );
+        }
+    }
     for v in row.verified {
         if v.is_empty() || !v.split('.').all(|p| p.parse::<u64>().is_ok()) {
             fault("version.verified", format!("{v:?} is not a dotted version"));
@@ -237,13 +245,7 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
         fault("version.verified", "a version repeats".into());
     }
     for file in row.files {
-        let path = std::path::Path::new(file.path);
-        if file.path.is_empty()
-            || path.is_absolute()
-            || path
-                .components()
-                .any(|c| !matches!(c, std::path::Component::Normal(_)))
-        {
+        if !plain_relative(file.path) {
             fault(
                 "files",
                 format!(
@@ -365,6 +367,16 @@ fn abort_faults(row: &HarnessSpec, shape: NodeShape, fault: &mut impl FnMut(&'st
     }
 }
 
+/// A non-empty relative path of plain components only: no root, no `.` or `..`.
+fn plain_relative(p: &str) -> bool {
+    let path = std::path::Path::new(p);
+    !p.is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +467,14 @@ mod tests {
                 },
                 "spelling",
                 "spelling: a spelling per agent needs a row whose program arrives per launch",
+            ),
+            (
+                HarnessSpec {
+                    repo_config: &["../.mcp.json"],
+                    ..qwen
+                },
+                "repo_config",
+                "repo_config: \"../.mcp.json\" is not a plain path under the repository's checkout",
             ),
             (
                 HarnessSpec {

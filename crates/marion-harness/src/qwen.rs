@@ -205,6 +205,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         pretty: true,
     }],
     overlay_documents: &[],
+    repo_config: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("OPENAI_API_KEY"),

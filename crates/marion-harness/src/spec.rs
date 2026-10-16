@@ -56,6 +56,11 @@ pub struct HarnessSpec {
     /// relocates there needs so the harness opens as it would on the operator's own (claude's
     /// `.claude.json` past onboarding). Never written under live auth, where the home is theirs.
     pub overlay_documents: &'static [(&'static str, &'static str)],
+    /// **The configuration this harness reads from the repository it runs in**, as paths relative
+    /// to the checkout: what a node on the operator's own login loads only once they trust the
+    /// repository ([`repo_config_rule`]), and what marion names when it asks them to. Empty where
+    /// the row holds no repository configuration back.
+    pub repo_config: &'static [&'static str],
     /// What the harness's own login reads from the operator's environment — the one exception to
     /// the credentials every launch withholds ([`crate::env_filter`]).
     pub login_env: crate::env_filter::LoginEnv,

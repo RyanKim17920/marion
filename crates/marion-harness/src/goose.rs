@@ -182,6 +182,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Any provider goose is configured for, by its key.
     files: &[],
     overlay_documents: &[],
+    repo_config: &[],
     login_env: LoginEnv {
         login: &[],
         any_provider: true,

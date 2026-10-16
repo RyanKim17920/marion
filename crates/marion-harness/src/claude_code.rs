@@ -268,6 +268,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Its own `CLAUDE_CONFIG_DIR` under an overlay (the `env` row above), past onboarding.
     files: &[],
     overlay_documents: &[CONFIG_SEED],
+    repo_config: &[
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".mcp.json",
+    ],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("ANTHROPIC_API_KEY"),

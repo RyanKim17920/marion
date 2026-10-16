@@ -178,6 +178,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Its OpenAI key; a custom `model_providers.*.env_key` is the operator's `env_passthrough`.
     files: &[],
     overlay_documents: &[],
+    repo_config: &[".codex/config.toml"],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("OPENAI_API_KEY"),

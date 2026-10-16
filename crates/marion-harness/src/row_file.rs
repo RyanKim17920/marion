@@ -732,6 +732,8 @@ pub struct RowDto {
     pub files: Vec<ConfigFileDto>,
     #[serde(default)]
     pub overlay_documents: Vec<(String, String)>,
+    #[serde(default)]
+    pub repo_config: Vec<String>,
     pub login_env: LoginEnvDto,
     pub token: TokenCarriersDto,
     pub constraint: ConstraintDto,
@@ -1911,6 +1913,7 @@ impl RowDto {
                     .map(|(p, b)| (leak(p), leak(b)))
                     .collect(),
             ),
+            repo_config: leak_all(self.repo_config.into_iter().map(leak).collect()),
             model: match self.model {
                 ModelFormDto::AsGiven => ModelForm::AsGiven,
                 ModelFormDto::OmitUnderCanned => ModelForm::OmitUnderCanned,

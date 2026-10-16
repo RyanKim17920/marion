@@ -131,6 +131,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Its Google login.
     files: &[],
     overlay_documents: &[],
+    repo_config: &[],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("GEMINI_API_KEY"),
