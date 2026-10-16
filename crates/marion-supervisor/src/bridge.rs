@@ -1599,22 +1599,43 @@ pub fn list_result(id: &Value, nodes: &[marion_core::proto::model::NodeSummary])
             false,
         );
     }
-    let lines: Vec<String> = nodes
-        .iter()
-        .map(|n| format!("  {}", node_line(n)))
-        .collect();
+    // Whole lines up to the cap, never a line cut mid-way: `bounded` used to cut this answer at
+    // [`SUMMARY_CAP`], so a tree of a dozen children came back ending mid-name with nothing to
+    // say the rest existed.
+    let mut lines = String::new();
+    let mut shown = 0;
+    for n in nodes {
+        let line = format!("  {}\n", node_line(n));
+        if lines.len() + line.len() > LIST_CAP {
+            break;
+        }
+        lines.push_str(&line);
+        shown += 1;
+    }
+    let left_out = match nodes.len() - shown {
+        0 => String::new(),
+        more => format!(
+            "  … and {more} more not shown: this answer holds at most {LIST_CAP} bytes. `status` \
+             with a child's id reads any one of them.\n"
+        ),
+    };
     tool_result(
         id,
-        &bounded(&format!(
+        &format!(
             "marion: {} child agent{} of yours, as this project's supervisor holds them right \
-             now:\n{}\nCall `wait` with a child's task_id to collect its task contract.",
+             now:\n{lines}{left_out}Call `wait` with a child's task_id to collect its task \
+             contract.",
             nodes.len(),
             if nodes.len() == 1 { "" } else { "s" },
-            lines.join("\n")
-        )),
+        ),
         false,
     )
 }
+
+/// The most bytes of node lines [`list_result`] carries. Far more than a tree read at a glance
+/// (a few hundred children), far under the ~64 KB at which a host persists a tool result
+/// instead of showing it ([`SUMMARY_CAP`]'s reason). A list past it names how many it left out.
+pub const LIST_CAP: usize = 16 * 1024;
 
 pub fn method_not_found(id: &Value, method: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id,
@@ -2482,30 +2503,27 @@ mod tests {
         );
     }
 
-    /// **`status` says what a `wait` will do for a node in this state.** Measured live
-    /// (2026-09-22): a finished child's `status` read "finished (Unreported) … Call `wait` … to
-    /// block until it finishes", which contradicts itself.
-    #[test]
-    fn status_wording_follows_the_nodes_state() {
+    /// A running-or-not child of `019f-root`, as the supervisor's tree summarises it.
+    fn child_summary(
+        agent: &str,
+        state: marion_core::node::NodeState,
+    ) -> marion_core::proto::model::NodeSummary {
         use marion_core::contract::AgentId;
-        use marion_core::harness::Harness;
-        use marion_core::node::{NodeState, ReapState};
-        use marion_core::proto::model::NodeSummary;
-        let node = |state| NodeSummary {
+        marion_core::proto::model::NodeSummary {
             widened: vec![],
             budget: None,
             changed: None,
             review_of: None,
             review: None,
-            agent_id: AgentId("019f-child".into()),
+            agent_id: AgentId(agent.into()),
             parent_id: Some(AgentId("019f-root".into())),
             name: None,
             agent_type: "codex-impl".into(),
-            harness: Harness::Codex,
+            harness: marion_core::harness::Harness::Codex,
             harness_version: None,
             depth: 1,
             state,
-            reap_state: ReapState::Live,
+            reap_state: marion_core::node::ReapState::Live,
             timeout: marion_core::encoding::Duration::from_secs(60),
             pane: false,
             started_at: None,
@@ -2516,7 +2534,53 @@ mod tests {
             race: None,
             cancel: None,
             workflow: None,
+        }
+    }
+
+    /// **`list` returns every child it can in whole lines, and says what it left out.** It used
+    /// to pass through `bounded`, so about a dozen children came back cut mid-name at 1 KiB with
+    /// nothing to say there were more.
+    #[test]
+    fn list_returns_whole_lines_for_every_child_and_names_any_it_leaves_out() {
+        use marion_core::node::NodeState;
+        let tree = |n: usize| -> Vec<_> {
+            (0..n)
+                .map(|i| child_summary(&format!("019f-child-{i:04}"), NodeState::Running))
+                .collect()
         };
+        let dozen = text(&list_result(&json!(1), &tree(40)));
+        for i in 0..40 {
+            assert!(
+                dozen.contains(&format!("019f-child-{i:04} (codex-impl) — running")),
+                "{dozen}"
+            );
+        }
+        assert!(
+            !dozen.contains("more not shown") && !dozen.contains('…'),
+            "{dozen}"
+        );
+
+        let many = text(&list_result(&json!(1), &tree(1000)));
+        assert!(
+            many.starts_with("marion: 1000 child agents of yours"),
+            "{many}"
+        );
+        let shown = many.lines().filter(|l| l.contains("— running")).count();
+        assert!(shown > 100 && shown < 1000, "{shown}");
+        assert!(
+            many.contains(&format!("… and {} more not shown", 1000 - shown)),
+            "the cut is named with its count: {many}"
+        );
+        assert!(many.len() < LIST_CAP + 512, "{}", many.len());
+    }
+
+    /// **`status` says what a `wait` will do for a node in this state.** Measured live
+    /// (2026-09-22): a finished child's `status` read "finished (Unreported) … Call `wait` … to
+    /// block until it finishes", which contradicts itself.
+    #[test]
+    fn status_wording_follows_the_nodes_state() {
+        use marion_core::node::NodeState;
+        let node = |state| child_summary("019f-child", state);
         let done = text(&status_result(
             &json!(1),
             "t-1",
