@@ -62,6 +62,8 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::{fs, io};
 
+use marion_harness::row_file::{self, Admission};
+
 use crate::{PINNED_HARNESSES, PinnedHarness, check_version, parse_version};
 
 /// Where a harness's installer keeps releases side by side — or that it does not.
@@ -188,6 +190,9 @@ pub struct Shim {
     table: &'static [PinnedHarness],
     installs_pins: bool,
     resolved: Mutex<BTreeMap<&'static str, Resolution>>,
+    /// The versions [`Self::gate`] admitted on a conformance record rather than the table, per
+    /// program, so a recorded `harness_version` can be judged by the same verdict.
+    recorded: Mutex<BTreeMap<&'static str, String>>,
 }
 
 impl Shim {
@@ -207,6 +212,7 @@ impl Shim {
             table,
             installs_pins: true,
             resolved: Mutex::new(BTreeMap::new()),
+            recorded: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -293,8 +299,10 @@ impl Shim {
         }
     }
 
-    /// Does the `program` first on the *inherited* `PATH` already satisfy the table? Asked only
-    /// before an npm install, because that is the one step with a cost worth avoiding.
+    /// Does the `program` first on the *inherited* `PATH` already pass the gate — listed, or
+    /// admitted by its conformance record ([`Self::by_record`])? Asked only before an npm install,
+    /// because that is the one step with a cost worth avoiding, and installing an old pin over a
+    /// newer release the record admits would hide the release the nightly canary installed.
     fn path_binary_is_admitted(&self, pin: &PinnedHarness) -> bool {
         let Ok((mut probe, _document)) = version_probe(pin, &self.inherited_path) else {
             return false;
@@ -304,10 +312,45 @@ impl Shim {
             .ok()
             .filter(|o| o.status.success())
             .and_then(|o| {
-                parse_version(&String::from_utf8_lossy(&o.stdout))
-                    .map(|v| pin.accepted.contains(&v))
+                parse_version(&String::from_utf8_lossy(&o.stdout)).map(|v| {
+                    pin.accepted.contains(&v)
+                        || self.by_record(pin, v, &self.inherited_path).is_ok()
+                })
             })
             .unwrap_or(false)
+    }
+
+    /// **The gate's second way in: `found`, a version the table does not list, is admitted when it
+    /// is at or past the pin and this machine's conformance record admits the exact binary
+    /// `program` resolves to on `path`** (`row_file::admission_for`: the battery's P-version,
+    /// P-launch, P-tools and P-approval passed on it, and nothing else failed). `Err` is the clause
+    /// the diagnosis carries: older than the pin, never run, not admitted and why, or a record for
+    /// another binary.
+    ///
+    /// A release older than the pin is refused outright: the pin is where the measured behaviours
+    /// begin, so nothing below it has the shape the suites assert.
+    fn by_record(&self, pin: &PinnedHarness, found: &str, path: &OsStr) -> Result<(), String> {
+        let pinned = pin.accepted[0];
+        if marion_harness::cmp_versions(found, pinned).is_lt() {
+            return Err(format!(
+                "{found} is older than {pinned}, the release these behaviours were first measured \
+                 on, so no conformance record admits it"
+            ));
+        }
+        let row = crate::row_name(pin.program);
+        let Some(binary) = row_file::binary_on_path(pin.program, path) else {
+            return Err(Admission::NeverRun.describe(row, found));
+        };
+        match row_file::admission_for(&self.stores.state, row, found, &binary) {
+            Admission::Admitted => Ok(()),
+            other => Err(other.describe(row, found)),
+        }
+    }
+
+    /// The version [`Self::gate`] admitted `program` at on its conformance record, if it did.
+    pub fn recorded_version(&self, program: &str) -> Option<String> {
+        let recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
+        recorded.get(program).cloned()
     }
 
     /// `npm install -g --prefix <state>/harness-pins/<program>/<ver> <pkg>@<ver>`. Network. A
@@ -348,7 +391,8 @@ impl Shim {
     }
 
     /// The version gate, probed **through the shim**: `<program> --version` with [`Self::path`],
-    /// judged by [`check_version`], and — when nothing was pinned — told where this looked.
+    /// judged by [`check_version`] — or, for a version the table does not list, by its conformance
+    /// record ([`Self::by_record`]) — and, when nothing was pinned, told where this looked.
     pub fn gate(&self, program: &str) -> Result<(), GateFailure> {
         let pin = self.pin(program);
         let resolution = self.resolve(program);
@@ -360,11 +404,26 @@ impl Shim {
             return Err(GateFailure::Absent);
         }
         let stdout = String::from_utf8_lossy(&out.stdout);
-        check_version(pin, &stdout, &String::from_utf8_lossy(&out.stderr)).map_err(|diagnosis| {
+        let listed = check_version(pin, &stdout, &String::from_utf8_lossy(&out.stderr));
+        let record = match (&listed, parse_version(&stdout)) {
+            (Err(_), Some(found)) => Some((found, self.by_record(pin, found, &self.path()))),
+            _ => None,
+        };
+        if let Some((found, Ok(()))) = record {
+            let mut recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
+            recorded.insert(pin.program, found.to_string());
+            return Ok(());
+        }
+        let record_clause = match record {
+            Some((_, Err(why))) => format!("\nNot admitted on a conformance record either: {why}."),
+            _ => String::new(),
+        };
+        listed.map_err(|diagnosis| {
             let diagnosis = match resolution {
                 Resolution::PathOnly { looked } => format!(
-                    "{diagnosis}\nThe binary that answered is the one first on PATH, because there \
-                     is no pinned release on disk to shim in ahead of it (looked in {looked})."
+                    "{diagnosis}{record_clause}\nThe binary that answered is the one first on \
+                     PATH, because there is no pinned release on disk to shim in ahead of it \
+                     (looked in {looked})."
                 ),
                 Resolution::Pinned { version, release } => format!(
                     "{diagnosis}\nThe shim pointed `{program}` at {} expecting {version}, and it \
@@ -750,6 +809,117 @@ mod tests {
             Resolution::PathOnly {
                 looked: shim.stores.describe(shim.pin("copilot"))
             }
+        );
+    }
+
+    /// This machine's conformance record for `row` at `version`, taken on `binary`.
+    fn record(dir: &Path, row: &str, version: &str, binary: &Path, why: &[&str]) {
+        let path = row_file::admission_path(&dir.join("state"), row, version);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = serde_json::json!({
+            "row": row,
+            "version": version,
+            "admitted": why.is_empty(),
+            "why": why,
+            "binary_sha256": marion_harness::file_sha256(binary).unwrap(),
+        });
+        std::fs::write(path, body.to_string()).unwrap();
+    }
+
+    /// **The release the table does not list yet, admitted on its basic tests.** 2.1.999 is first
+    /// on PATH, no listed release is on disk, and this machine's conformance battery admitted that
+    /// exact binary: the gate passes, drives PATH's own binary, and remembers the version so a
+    /// recorded `harness_version` is judged the same way.
+    #[test]
+    fn a_newer_release_its_conformance_record_admits_passes_the_gate() {
+        let dir = scratch("shim-recorded");
+        let bin = dir.join("bin/claude");
+        fake_release(&bin, "2.1.999 (Claude Code)");
+        record(&dir, "claude-code", "2.1.999", &bin, &[]);
+        let shim = shim_in(
+            &dir,
+            table("claude", &["2.1.220"], ReleaseStore::ClaudeVersions),
+        );
+
+        shim.gate("claude")
+            .expect("the record admits this binary at this version");
+        assert_eq!(shim.recorded_version("claude").as_deref(), Some("2.1.999"));
+        assert!(
+            !dir.join("shim/claude").exists(),
+            "nothing is shimmed: PATH's own binary is the admitted one"
+        );
+    }
+
+    /// A release whose basics failed, one never probed, one whose record was taken on another
+    /// binary, and one older than the pin are each refused, naming the program, the version and
+    /// why — with the command that would probe it where probing could help.
+    #[test]
+    fn a_newer_release_without_an_admitting_record_fails_naming_why() {
+        let unadmitted = |dir: &Path| {
+            let shim = shim_in(
+                dir,
+                table("claude", &["2.1.220"], ReleaseStore::ClaudeVersions),
+            );
+            let e = refused(shim.gate("claude"));
+            assert_eq!(shim.recorded_version("claude"), None);
+            e
+        };
+
+        let dir = scratch("shim-record-refused");
+        let bin = dir.join("bin/claude");
+        fake_release(&bin, "2.1.999 (Claude Code)");
+        record(&dir, "claude-code", "2.1.999", &bin, &["P-tools FAIL"]);
+        let e = unadmitted(&dir);
+        assert!(
+            e.contains("did NOT admit claude-code 2.1.999: P-tools FAIL"),
+            "{e}"
+        );
+
+        let dir = scratch("shim-record-none");
+        fake_release(&dir.join("bin/claude"), "2.1.999 (Claude Code)");
+        let e = unadmitted(&dir);
+        assert!(e.contains("never ran against claude-code 2.1.999"), "{e}");
+        assert!(
+            e.contains("scripts/conformance.sh --harness claude-code"),
+            "{e}"
+        );
+
+        let dir = scratch("shim-record-other");
+        let bin = dir.join("bin/claude");
+        let elsewhere = dir.join("elsewhere/claude");
+        fake_release(&bin, "2.1.999 (Claude Code)");
+        fake_release(&elsewhere, "2.1.999 (Claude Code) built elsewhere");
+        record(&dir, "claude-code", "2.1.999", &elsewhere, &[]);
+        let e = unadmitted(&dir);
+        assert!(e.contains("is for another binary"), "{e}");
+
+        let dir = scratch("shim-record-older");
+        let bin = dir.join("bin/claude");
+        fake_release(&bin, "2.1.100 (Claude Code)");
+        record(&dir, "claude-code", "2.1.100", &bin, &[]);
+        let e = unadmitted(&dir);
+        assert!(e.contains("2.1.100 is older than 2.1.220"), "{e}");
+    }
+
+    /// An npm harness whose newer PATH binary its record admits is never replaced by an install of
+    /// the old pin: that would hide the release the nightly canary installed to test.
+    #[test]
+    fn a_recorded_npm_binary_on_path_is_not_replaced_by_the_pin() {
+        let dir = scratch("shim-npm-recorded");
+        let ran = recording_npm(&dir);
+        let bin = dir.join("bin/copilot");
+        fake_release(&bin, "GitHub Copilot CLI 1.0.99.");
+        record(&dir, "copilot", "1.0.99", &bin, &[]);
+        let shim = shim_in(
+            &dir,
+            table("copilot", &["1.0.83"], ReleaseStore::Npm("@github/copilot")),
+        );
+
+        shim.gate("copilot")
+            .expect("the record admits PATH's copilot");
+        assert!(
+            !ran.exists(),
+            "no npm install for a binary the record admits"
         );
     }
 

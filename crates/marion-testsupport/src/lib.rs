@@ -325,9 +325,10 @@ pub struct ProbeDocument {
 /// — entry zero — is never replaced, because the pin is what the prose claims. That keeps the two
 /// questions apart: *"which version were these behaviours measured on"* is answered by the pin and
 /// does not move; *"which versions has this been checked against since"* is answered by the tail and
-/// grows by deliberate edit. An upgrade that has not been re-checked is a red suite, which is the
-/// point — the four measured behaviours below are version-specific, so attributing them to a version
-/// that never ran is the failure this table exists to prevent.
+/// grows — by `scripts/admit-harness.sh`, or by the nightly canary once a release passes the
+/// conformance battery (`.github/workflows/canary.yml`). An upgrade that has not been re-checked
+/// is a red suite, which is the point — the four measured behaviours below are version-specific,
+/// so attributing them to a version that never ran is the failure this table exists to prevent.
 pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "claude",
@@ -1021,6 +1022,16 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     },
 ];
 
+/// **The row that runs `program` natively** (`claude` → `claude-code`): the name its conformance
+/// records are filed under. Read off the rows, so a harness gains it by having one; `program`
+/// itself where no row runs it.
+pub fn row_name(program: &str) -> &str {
+    marion_core::Harness::ALL
+        .into_iter()
+        .find(|h| marion_harness::adapter::harness_spec(*h).program == Some(program))
+        .map_or(program, |h| h.as_str())
+}
+
 /// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].
 ///
 /// For call sites that need to *say* the version rather than check it, so they say it from the same
@@ -1110,6 +1121,18 @@ fn parse_version(output: &str) -> Option<&str> {
 /// 0.146.0 that were produced by whatever else was installed. A hard pin does cost a red suite the
 /// day a CLI is upgraded; that cost is the correct one and it is bounded to a one-line edit next to
 /// the reason, made after re-running. The alternative cost is unbounded and silent.
+///
+/// # A newer release, admitted on its conformance record
+///
+/// Every harness updates itself, so an exact list alone kept the suite red for a release nobody had
+/// got round to admitting. A version the table does not list is therefore also admitted when it is
+/// at or past the pin **and** this machine's conformance battery admitted that exact binary at that
+/// version (`marion_harness::row_file::admission_for`: P-version, P-launch, P-tools and P-approval
+/// passed, nothing else failed, and the recorded digest is this binary's). That is the basic test;
+/// `scripts/conformance.sh --harness <row>` writes the record, and the nightly canary runs it on
+/// every drifted release and lists the ones it admits in the row's `verified` versions. A release
+/// that breaks the basics still fails here, naming the program, the version and the probes that
+/// failed; one never probed fails naming the command that would probe it.
 ///
 /// # The one exception: `MARION_GATE=warn`, asked for by name
 ///
@@ -1220,12 +1243,12 @@ fn gate_mode_from(value: Option<&str>) -> Result<GateMode, String> {
     }
 }
 
-/// **Whether a version a harness reported is one [`PINNED_HARNESSES`] admits for `program`**, read
-/// through the same gate as [`on_path`]: a token of `reported` that starts with an admitted version
-/// is admitted (`2.1.285 (Claude Code)`, `codex-cli 0.159.2`), and under `MARION_GATE=warn` an
+/// **Whether a version a harness reported is one the gate admits for `program`**, read through the
+/// same gate as [`on_path`]: a token of `reported` that starts with an admitted version is admitted
+/// (`2.1.285 (Claude Code)`, `codex-cli 0.159.2`) — a version [`PINNED_HARNESSES`] lists, or the one
+/// [`on_path`] admitted this process on its conformance record — and under `MARION_GATE=warn` an
 /// unadmitted one is announced and let through, as `on_path` lets the binary through. A test that
-/// checks a recorded `harness_version` asks this rather than the table directly, so the canary's
-/// warn run reaches its admission step instead of failing on the patch release it exists to find.
+/// checks a recorded `harness_version` asks this rather than the table directly, after `on_path`.
 pub fn reported_version_admitted(program: &str, reported: &str) -> bool {
     let accepted = PINNED_HARNESSES
         .iter()
@@ -1233,6 +1256,11 @@ pub fn reported_version_admitted(program: &str, reported: &str) -> bool {
         .unwrap_or_else(|| panic!("{program:?} is not pinned; see PINNED_HARNESSES"))
         .accepted;
     if reported_in(accepted, reported) {
+        return true;
+    }
+    if let Some(recorded) = process_shim().recorded_version(program)
+        && reported_in(&[recorded.as_str()], reported)
+    {
         return true;
     }
     match gate_mode() {
@@ -1256,8 +1284,10 @@ fn unadmitted_warning(program: &str, found: &str, accepted: &[&str]) -> String {
     format!(
         "\n!!!! {GATE_VAR}=warn: running an UNADMITTED {program} {found} !!!!\n\
          PINNED_HARNESSES admits {program} {accepted:?}. These tests drive {found} anyway, so \
-         their results say nothing about the admitted releases. If they hold, admit it with \
-         `scripts/admit-harness.sh {program} {found}` (run without {GATE_VAR}).\n"
+         their results say nothing about the admitted releases. The gate admits it without \
+         {GATE_VAR} once its basic conformance battery passes: \
+         `scripts/conformance.sh --harness {row}`.\n",
+        row = row_name(program),
     )
 }
 
@@ -1379,10 +1409,12 @@ fn check_version(pin: &PinnedHarness, stdout: &str, stderr: &str) -> Result<(), 
              were measured on {expected}.\n\
              Accepted: {accepted:?}.\n\
              A matrix cell that runs {found} and reports a result attributed to {expected} is the \
-             silent pass this check exists to rule out. Re-run the cells that drive {program}, and \
-             if they hold, add {found:?} to that program's entry in \
-             `marion_testsupport::PINNED_HARNESSES` with the observation beside it.",
+             silent pass this check exists to rule out. Run the basic conformance battery \
+             against it, `scripts/conformance.sh --harness {row}`: when it admits {found}, this \
+             gate admits this exact binary on that record, and the nightly canary adds every \
+             release that passes to the row's verified versions.",
             accepted = pin.accepted,
+            row = row_name(program),
         )),
         None => Err(format!(
             "`{program} --version` printed nothing this can read a version out of, so the binary \
@@ -2498,7 +2530,7 @@ mod tests {
             "claude 2.1.999",
             "\"2.1.280\"",
             "UNADMITTED",
-            "scripts/admit-harness.sh claude 2.1.999",
+            "scripts/conformance.sh --harness claude-code",
             GATE_VAR,
         ] {
             assert!(w.contains(needle), "missing {needle:?} in {w}");
