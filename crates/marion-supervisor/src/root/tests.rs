@@ -1739,8 +1739,10 @@ fn a_live_claude_root_pushes_no_anthropic_pair_and_keeps_its_fileless_isolation(
     let declaration = node.mcp_config.as_ref().unwrap();
     assert!(declaration.is_file());
     assert!(declaration.starts_with(node.agent_dir.path()));
+    // Beside the operator's own servers, which a live node keeps.
     assert!(
-        node.invocation
+        !node
+            .invocation
             .args
             .iter()
             .any(|a| a == "--strict-mcp-config")

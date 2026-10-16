@@ -117,8 +117,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // dialog and a native session keeps its own mode.
         Arg::Lit("--permission-mode"),
         Arg::Lit("default"),
-        // Only the MCP servers marion declared; never the user's.
-        Arg::Lit("--strict-mcp-config"),
+        // Only the MCP servers marion declared, **canned only**. On the operator's own login the
+        // node keeps their servers beside marion's, as their `claude` does: measured on 2.1.301
+        // (conformance pane, a user-scope `opsrv` and a user-scope `marion` beside marion's
+        // `--mcp-config`) — `opsrv`'s tool was offered, and the `marion` marion declared won over
+        // the operator's, so nothing of marion's depends on the flag. An operator's tool is
+        // still not marion's grant: headless, a call to it is asked and answered from the grant.
+        Arg::CannedLit("--strict-mcp-config"),
         Arg::Flag("--mcp-config", Field::McpConfig),
         // No user settings, plugins or hooks leak into a canned node. This does NOT suppress the
         // session-title request (§5.5). **Canned only**: a settings file is a credential source
@@ -145,7 +150,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     pane: Some(&[
         Arg::Joined("--tools", Field::Tools),
         Arg::Joined("--allowedTools", Field::Allowed),
-        Arg::Lit("--strict-mcp-config"),
+        Arg::CannedLit("--strict-mcp-config"),
         Arg::Flag("--mcp-config", Field::McpConfig),
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
@@ -798,11 +803,12 @@ pub const MCP_SERVERS: McpServers = McpServers {
 ///
 /// **Live is pure removal, and this harness is the case where that is literally true.**
 /// `CLAUDE_CONFIG_DIR` is already never set (isolating it breaks OAuth — the Keychain entry is
-/// keyed to the real config dir), `--strict-mcp-config --mcp-config` already keeps the MCP
-/// declaration fileless inside marion's own agent dir, and `--setting-sources ""` already
-/// excludes the user's settings, plugins and hooks. So the only thing standing between a
-/// logged-in `claude` and marion is the three env vars marion overlays, and dropping them is
-/// the whole of live mode — which the neutral fields does for every harness at once.
+/// keyed to the real config dir), `--mcp-config` already keeps the MCP declaration fileless
+/// inside marion's own agent dir, and the operator's settings, servers, plugins and hooks are
+/// excluded only by two canned-only switches (`--setting-sources ""`, `--strict-mcp-config`). So
+/// the only thing standing between a logged-in `claude` and marion is the three env vars marion
+/// overlays and those switches, and dropping them is the whole of live mode — which the neutral
+/// fields does for every harness at once.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeCodeAdapter;
 

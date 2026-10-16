@@ -3815,13 +3815,14 @@ mod tests {
             .unwrap();
         let mut without_exclusion = canned.clone();
         without_exclusion.drain(i..i + 2);
+        without_exclusion.retain(|a| a != "--strict-mcp-config");
         assert_eq!(
             ClaudeCodeAdapter.compile(&live, &ctx()).unwrap().args,
             without_exclusion,
-            "live differs from canned in env and the settings exclusion only"
+            "live differs from canned in env and the two exclusions only"
         );
         let inv = ClaudeCodeAdapter.compile(&live, &ctx()).unwrap();
-        assert!(inv.args.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(!inv.args.iter().any(|a| a == "--strict-mcp-config"));
         let i = inv.args.iter().position(|a| a == "--mcp-config").unwrap();
         assert_eq!(
             PathBuf::from(&inv.args[i + 1]),
@@ -3854,8 +3855,8 @@ mod tests {
                 inv.args
             );
             assert!(
-                inv.args.iter().any(|a| a == "--strict-mcp-config"),
-                "{shape}: MCP isolation is not a credential source and stays: {:?}",
+                !inv.args.iter().any(|a| a == "--strict-mcp-config"),
+                "{shape}: a live node keeps the operator's MCP servers beside marion's: {:?}",
                 inv.args
             );
         }

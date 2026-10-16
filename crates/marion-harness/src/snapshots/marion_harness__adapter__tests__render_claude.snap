@@ -104,7 +104,6 @@ args:
   stdio
   --permission-mode
   default
-  --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
   --settings
@@ -147,7 +146,6 @@ args:
   
   --allowedTools
   mcp__marion__spawn,mcp__marion__status
-  --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
   --settings
@@ -676,7 +674,6 @@ args:
   stdio
   --permission-mode
   default
-  --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
   --settings
@@ -721,7 +718,6 @@ args:
   
   --allowedTools
   mcp__marion__spawn,mcp__marion__status
-  --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
   --settings
