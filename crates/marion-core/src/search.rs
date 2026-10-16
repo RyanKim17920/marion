@@ -162,8 +162,8 @@ impl Query {
     pub fn parse(text: &str, now_ms: u64) -> Result<Query, QueryError> {
         let mut q = Query::empty();
         let mut scopes: Option<Scopes> = None;
-        for token in tokens(text)? {
-            q.take(token, now_ms, &mut scopes)?;
+        for piece in pieces(text)? {
+            q.take(piece, now_ms, &mut scopes)?;
         }
         q.scopes = scopes.unwrap_or(Scopes::ALL);
         Ok(q)
@@ -207,16 +207,16 @@ impl Query {
 
     fn take(
         &mut self,
-        token: Token,
+        piece: Piece,
         now_ms: u64,
         scopes: &mut Option<Scopes>,
     ) -> Result<(), QueryError> {
-        let (key, value) = match token {
-            Token::Term(t) => {
+        let (key, value) = match piece {
+            Piece::Term(t) => {
                 self.terms.push(t);
                 return Ok(());
             }
-            Token::Filter(k, v) => (k, v),
+            Piece::Filter(k, v) => (k, v),
         };
         if value.is_empty() {
             return refuse(format!("`{key}:` needs a value"));
@@ -283,7 +283,7 @@ impl Query {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Token {
+enum Piece {
     Term(String),
     Filter(String, String),
 }
@@ -294,9 +294,9 @@ fn is_filter(word: &str) -> bool {
         .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
-/// The tokens of `text`: whitespace-separated words, `"…"` phrases, and `key:value` filters
+/// The pieces of `text`: whitespace-separated words, `"…"` phrases, and `key:value` filters
 /// whose value may itself be quoted.
-fn tokens(text: &str) -> Result<Vec<Token>, QueryError> {
+fn pieces(text: &str) -> Result<Vec<Piece>, QueryError> {
     let mut out = Vec::new();
     let mut chars = text.chars().peekable();
     loop {
@@ -308,7 +308,7 @@ fn tokens(text: &str) -> Result<Vec<Token>, QueryError> {
             chars.next();
             let phrase = quoted(&mut chars)?;
             if !phrase.is_empty() {
-                out.push(Token::Term(phrase));
+                out.push(Piece::Term(phrase));
             }
             continue;
         }
@@ -322,9 +322,9 @@ fn tokens(text: &str) -> Result<Vec<Token>, QueryError> {
         }
         match word.split_once(':') {
             Some((k, v)) if is_filter(&word) => {
-                out.push(Token::Filter(k.to_ascii_lowercase(), v.to_string()))
+                out.push(Piece::Filter(k.to_ascii_lowercase(), v.to_string()))
             }
-            _ => out.push(Token::Term(word)),
+            _ => out.push(Piece::Term(word)),
         }
     }
 }
