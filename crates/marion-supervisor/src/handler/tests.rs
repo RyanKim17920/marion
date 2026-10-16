@@ -5860,6 +5860,33 @@ fn node_attach_replays_the_detached_window_and_then_follows_the_same_cursor_live
     );
 }
 
+/// **A history longer than the outbound queue replays whole.** The queue holds
+/// [`crate::serve::OUTBOUND_CAPACITY`] frames, and a replay pushed faster than the writer drains
+/// it must not judge the attaching client too slow before it has read a byte.
+#[test]
+fn node_attach_replays_a_history_longer_than_the_outbound_queue() {
+    let w = Wired::new("handler-attach-long");
+    let stream = events_of(&w.fx, "root");
+    let n = 3 * crate::serve::OUTBOUND_CAPACITY;
+    let tags: Vec<String> = (0..n).map(|i| format!("e-{i}")).collect();
+    say(
+        &stream,
+        "root",
+        &tags.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let mut c = w.dial();
+    let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+    let (replay, outcome) = attach(&mut c, &mut r, "root", 1);
+    let got = attached_ok(outcome);
+    let seqs: Vec<u64> = heard(&replay).into_iter().map(|(s, _)| s).collect();
+    assert_eq!(
+        seqs,
+        (0..n as u64).collect::<Vec<_>>(),
+        "all of it, in order, once"
+    );
+    assert_eq!(got.mode.replay_point().records, n as u64);
+}
+
 /// **An attachment is woken by its file, not read on a timer.** While a client follows a node
 /// the handler asks for no deadline at all, and a second writer's append to the node's
 /// `events.jsonl` is what wakes the accept loop — through the same `changes` signal its wake

@@ -635,8 +635,9 @@ impl RegistryHandle {
             (None, None)
         };
         // Sent before the reader is parked, so nothing appended between the two can be delivered
-        // ahead of the replay it comes after.
-        let live = deliver_events(out, id, &replayed);
+        // ahead of the replay it comes after. Paced, on this connection's own thread and under no
+        // lock: a history longer than the outbound queue is the common case for a long run.
+        let live = deliver_events(out, id, &replayed, Outbound::notify_paced);
         if !live {
             if let Some(host) = reserved_host {
                 self.rollback_pane_attach(id, out.conn(), &host);

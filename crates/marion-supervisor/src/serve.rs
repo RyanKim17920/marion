@@ -599,6 +599,30 @@ impl Outbound {
         self.send(&Frame::Notification(Notification::new(event)))
     }
 
+    /// [`Self::notify`], **waiting for room instead of judging the client too slow.** For a burst
+    /// the connection's own thread pushes before it answers — `node/attach`'s replay — where a full
+    /// queue means only that the writer has not drained it yet: a history longer than
+    /// [`OUTBOUND_CAPACITY`] events otherwise closed the connection before the client read a byte.
+    ///
+    /// Bounded by the writer, not by a timer here: a writer that cannot put a frame on the socket
+    /// within [`OUTBOUND_FRAME_WRITE_TIMEOUT`] fails the connection and returns, dropping the
+    /// queue, and the wait ends with `false`. Never call it under a lock another connection needs.
+    pub(crate) fn notify_paced(&self, event: Event) -> bool {
+        if self.departed().is_some() {
+            return false;
+        }
+        let line = Frame::Notification(Notification::new(event)).to_line();
+        if self
+            .tx
+            .send(OutboundItem::Frame(line.into_bytes()))
+            .is_err()
+        {
+            self.fail(Departure::Eof);
+            return false;
+        }
+        true
+    }
+
     /// Schedule a writer-paced stream. The connection writer pulls one frame per queue turn and
     /// requeues the producer at the tail, bounding memory and preserving fairness with ordinary
     /// responses and notifications.

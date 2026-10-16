@@ -200,7 +200,7 @@ impl RegistryHandle {
         g.attached.retain_mut(|a| {
             let mut fresh = Vec::new();
             read += a.reader.poll(&mut fresh);
-            deliver_events(&a.out, &a.agent_id, &fresh)
+            deliver_events(&a.out, &a.agent_id, &fresh, Outbound::notify)
         });
         read
     }
@@ -246,7 +246,8 @@ impl RegistryHandle {
     }
 }
 
-/// Send a run of a node's events to one client. `false` means the connection is finished.
+/// Send a run of a node's events to one client with `send` ([`Outbound::notify`], or
+/// [`Outbound::notify_paced`] off any lock for a replay). `false` means the connection is finished.
 ///
 /// Every field a client needs to place the event in the stream comes off the event itself; nothing
 /// is derived from the moment of delivery. In particular `ts` is the writer's, not this process's
@@ -256,6 +257,7 @@ pub(super) fn deliver_events(
     out: &Outbound,
     agent_id: &AgentId,
     events: &[marion_core::event::Event],
+    send: fn(&Outbound, Event) -> bool,
 ) -> bool {
     for e in events {
         let payload = serde_json::to_value(&e.payload).unwrap_or_else(|err| {
@@ -264,14 +266,17 @@ pub(super) fn deliver_events(
             // nothing" from "marion could not re-encode what the node said".
             serde_json::json!({ "marion_unencodable": err.to_string() })
         });
-        let ok = out.notify(Event::NodeEvent {
-            agent_id: agent_id.clone(),
-            agent_seq: e.agent_seq,
-            ts: e.ts,
-            provenance: e.provenance.clone(),
-            src_seq: e.src_seq.clone(),
-            payload,
-        });
+        let ok = send(
+            out,
+            Event::NodeEvent {
+                agent_id: agent_id.clone(),
+                agent_seq: e.agent_seq,
+                ts: e.ts,
+                provenance: e.provenance.clone(),
+                src_seq: e.src_seq.clone(),
+                payload,
+            },
+        );
         if !ok {
             return false;
         }
