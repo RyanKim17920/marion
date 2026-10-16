@@ -19,9 +19,9 @@
 #      unset: a missing harness is a failure here, not a skip. The `--ignored` suites
 #      (restart_resume, acp_child) spend real tokens and stay out;
 #   5. `admit` adds every admitted release to its row's `verified` list
-#      (`scripts/admit-harness.sh --list-only`) and pushes that one commit to the default branch,
-#      whatever the matrix said: the basic tests are the bar for listing, and a red matrix still
-#      reaches the issue;
+#      (`scripts/admit-harness.sh --list-only`) in one pull request that merges itself once the
+#      default branch's rules pass, whatever the matrix said: the basic tests are the bar for
+#      listing, and a red matrix still reaches the issue;
 #   6. on red anywhere, opens or updates one issue labelled `harness-canary` with each release's
 #      conformance verdict, the failing tests, their first panic lines and every harness version.
 #
@@ -37,10 +37,12 @@
 # output alone, the admitted `<harness> <version>` pairs, matched against a strict pattern (lower
 # case names, dotted digits) and refused by the script unless each names a pinned program; it
 # downloads nothing, runs only perl and rustfmt from its own checkout of the default branch, and
-# refuses to commit a change outside the harness row files. So the most a compromised `run` can do
-# is list a version string that did not pass: a test-gate entry and doctor's note, which the
-# shipped marion never refuses on, in a commit that names the run it came from. `admit` holds
-# contents: write and CANARY_TOKEN, `report` issues: write; neither runs anything installed.
+# refuses a change outside the harness row files. Its result is a pull request held to the default
+# branch's rules (CONTRIBUTING.md's ruleset requires CI), never a push. So the most a compromised
+# `run` can do is list a version string that did not pass: a test-gate entry and doctor's note,
+# which the shipped marion never refuses on, in a pull request that names the run it came from.
+# `admit` holds contents and pull-requests write and CANARY_TOKEN, `report` issues: write;
+# neither runs anything installed.
 
 name: Harness canary
 
@@ -215,8 +217,9 @@ jobs:
             issue.md
           if-no-files-found: ignore
 
-  # Lists the releases the basic tests admitted in their rows and pushes that one commit. It takes
-  # nothing from `run` but the pairs, checked below, and executes only this repository's own
+  # Lists the releases the basic tests admitted in their rows, opens (or updates) one pull request
+  # with that commit and sets it to merge itself once main's rules pass. It takes nothing from
+  # `run` but the pairs, checked below, and executes only this repository's own
   # `admit-harness.sh --list-only` (perl and rustfmt, no build) from its own checkout.
   admit:
     needs: run
@@ -228,23 +231,22 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      pull-requests: write
     steps:
       # The default branch's tip, not the commit `run` tested: the commit only adds versions to
       # lists, and the next run re-tests them on whatever the branch then holds.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
-          # A push with the default token does not trigger ci.yml; a CANARY_TOKEN secret (a token
-          # with contents write) makes it run. See CONTRIBUTING.md.
-          token: ${{ secrets.CANARY_TOKEN || github.token }}
+          persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
       - name: List the admitted releases
         id: list
         env:
           PAIRS: ${{ needs.run.outputs.admitted }}
         run: |
-          # `<harness> <version>` pairs and nothing else: they reach a commit message, and the
-          # script refuses a harness that is not a pinned program.
+          # `<harness> <version>` pairs and nothing else: they reach a commit message and a title,
+          # and the script refuses a harness that is not a pinned program.
           if ! [[ "$PAIRS" =~ ^[a-z]+\ [0-9]+(\.[0-9]+)+(\ [a-z]+\ [0-9]+(\.[0-9]+)+)*$ ]]; then
             echo "::error::admitted pairs from the run job are not <harness> <version> pairs"
             exit 1
@@ -257,31 +259,43 @@ jobs:
             exit 1
           fi
           echo "pairs=$PAIRS" >> "$GITHUB_OUTPUT"
-      - name: Commit and push
+
+      - name: Open or update the admission pull request
+        id: pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
+        with:
+          # A pull request opened with the default token does not start ci.yml, so one whose
+          # merge waits on CI never merges; a CANARY_TOKEN (a token with contents and
+          # pull-requests write) makes it start. See CONTRIBUTING.md.
+          token: ${{ secrets.CANARY_TOKEN || github.token }}
+          branch: canary/admit-harnesses
+          delete-branch: true
+          add-paths: crates/marion-harness/src/*.rs
+          commit-message: |
+            test: admit ${{ steps.list.outputs.pairs }} to the verified harness releases
+
+            The nightly canary installed these releases, and the conformance
+            battery admitted each exact binary: every probe its newest verified
+            release passed in the committed matrix passed again.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          title: "test: admit ${{ steps.list.outputs.pairs }} to the verified harness releases"
+          body: |
+            The nightly canary's conformance battery admitted these releases: every probe their
+            newest verified release passed in the committed matrix passed again on the exact binary
+            installed. This adds them to their rows' `verified` lists and merges itself once the
+            default branch's rules pass.
+
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      # Auto-merge where the branch has rules to wait on; where it has none, GitHub refuses
+      # auto-merge on a pull request that is already mergeable, and it is merged at once.
+      - name: Merge it once the rules pass
+        if: steps.pr.outputs.pull-request-number != ''
         env:
-          PAIRS: ${{ steps.list.outputs.pairs }}
-          BRANCH: ${{ github.event.repository.default_branch }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          if git diff --quiet; then
-            echo "every admitted release is already listed"
-            exit 0
-          fi
-          git config user.name "marion canary"
-          git config user.email "canary@marion.invalid"
-          printf '%s\n' "test: admit $PAIRS to the verified harness releases" "" \
-            "The nightly canary installed these releases, and the conformance" \
-            "battery admitted each exact binary: every probe its newest verified" \
-            "release passed in the committed matrix passed again." "" \
-            "Run: $RUN_URL" > "$RUNNER_TEMP/message"
-          git commit -q -a -F "$RUNNER_TEMP/message"
-          for attempt in 1 2 3; do
-            if git push -q origin "HEAD:$BRANCH"; then exit 0; fi
-            echo "push $attempt refused; rebasing onto $BRANCH"
-            git pull -q --rebase origin "$BRANCH" || exit 1
-          done
-          echo "::error::could not push the admission to $BRANCH"
-          exit 1
+          GH_TOKEN: ${{ secrets.CANARY_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+        run: gh pr merge "$NUMBER" --squash --auto || gh pr merge "$NUMBER" --squash
 
   # Opens or comments on the canary issue from the artifact when either job above failed. Runs
   # nothing from `run`.
