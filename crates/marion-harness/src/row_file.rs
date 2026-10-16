@@ -489,6 +489,12 @@ pub fn admission_for(state: &Path, name: &str, version: &str, binary: &Path) -> 
 /// The file `program` resolves to on `path` (a `PATH`-shaped list): the first directory holding
 /// it, with every symlink followed, so a record names the release and not the launcher symlink an
 /// updater repoints.
+///
+/// Its digest is what a record is keyed on, and it is only as strong as that file: for a single
+/// executable (claude's, codex's standalone release) it is the release; for an npm package it is
+/// the package's entry script, not the native optional dependency or transitive modules it loads.
+/// It tells this machine's binaries apart — a stub from the real thing, one install from another —
+/// and says nothing about the bytes another machine installs for the same version.
 pub fn binary_on_path(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     std::env::split_paths(path)
         .map(|d| d.join(program))
