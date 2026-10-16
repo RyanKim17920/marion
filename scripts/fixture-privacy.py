@@ -15,7 +15,9 @@ Three kinds of rule:
 - the runner's own inventory, read from the machine running the scan and never committed: the
   names of its installed skills, plugins and MCP servers, from the harness config directories
   listed in INVENTORY. A name matches only as a whole token, and names short or common enough to
-  collide with ordinary text are skipped (see `distinctive`).
+  collide with ordinary text are skipped in prose (see `distinctive`). A common one that is
+  installed here still matches as an exact quoted string (`"incident"`), the shape it takes in a
+  harness's command or skill list, where a common word proves exactly as much as a rare one.
 
 A per-operator needle list, in the demo tooling's redact.tsv shape (`needle<TAB>replacement`, `#`
 comments), is read from $MARION_FIXTURE_DENY, else $XDG_CONFIG_HOME/marion/fixture-deny.tsv. It is
@@ -54,16 +56,19 @@ INVENTORY_DIRS = [
     ".gemini/extensions", ".config/opencode/skills", ".config/opencode/agent", ".pi/agent/skills",
 ]
 
-# Names that are also ordinary words or harness built-ins, so a match proves nothing.
-COMMON = {
-    "review", "simplify", "handoff", "incident", "synced", "security-review", "update-config",
-    "keybindings-help", "skill-creator", "frontend-design", "code-review", "general-purpose",
-    "statusline-setup", "claude-code-guide", "deep-research", "design-sync", "codex-cli",
-    "browser", "context-management",
-    # Harness built-in: qwen-code ships a `computer-use` feature and lists it among its own commands,
-    # and Claude Code's bundled `claude-api` skill names it in its description. An operator's MCP
-    # server of the same name is not what those captures carry.
+# Names a harness ships itself, so a capture listing one names the harness, not the operator.
+BUILTINS = {
+    "review", "simplify", "security-review", "update-config", "keybindings-help", "skill-creator",
+    "frontend-design", "code-review", "general-purpose", "statusline-setup", "claude-code-guide",
+    "deep-research",
+    # qwen-code ships a `computer-use` feature and lists it among its own commands, and Claude
+    # Code's bundled `claude-api` skill names it in its description. An operator's MCP server of the
+    # same name is not what those captures carry.
     "computer-use",
+}
+# Names that are also ordinary words or harness built-ins, so a match in prose proves nothing.
+COMMON = BUILTINS | {
+    "handoff", "incident", "synced", "design-sync", "codex-cli", "browser", "context-management",
 }
 
 
@@ -99,7 +104,7 @@ def inventory(home: Path) -> set[str]:
         names.update(re.findall(r"^\[mcp_servers\.([A-Za-z0-9_-]+)", text, re.M))
     except OSError:
         pass
-    return {n for n in names if distinctive(n)}
+    return {n for n in names if n and not n.startswith(".")}
 
 
 def deny_file() -> Path | None:
@@ -166,11 +171,18 @@ def main() -> int:
 
     home = Path.home()
     user = os.environ.get("USER") or home.name
-    needles = {n.encode(): "installed on this machine" for n in inventory(home)}
+    installed = inventory(home)
+    needles = {n.encode(): "installed on this machine" for n in installed if distinctive(n)}
     deny = deny_file()
     if deny:
         needles.update({n: f"listed in {deny}" for n, _ in read_tsv(deny)})
     patterns = [(token(n), n, why) for n, why in sorted(needles.items())]
+    # Installed names too common to match in prose, matched only as a listed name.
+    patterns += [
+        (re.compile(re.escape(b'"' + n.encode() + b'"')), n.encode(), "installed here, listed by name")
+        for n in sorted(installed)
+        if not distinctive(n) and n.lower() in COMMON - BUILTINS
+    ]
     own_home = str(home).encode() if len(str(home)) > 5 else None
 
     findings = []

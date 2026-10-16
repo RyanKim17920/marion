@@ -134,6 +134,12 @@ in the `system`/`init` frame; each name was replaced by a same-length `skillNNâ€
 1.0.89 summaries named the scratch npm prefix the releases were installed under; it reads
 `<NPM_PREFIX>`.
 
+**2026-10-16, common-word skill names.** Two of the operator's installed skills, `handoff` and
+`incident`, are also ordinary words, so the scan skipped them, and the qwen 0.24.7 conformance and
+S38 qwen captures still listed them in qwen's command list. Each was replaced by a same-length
+`skillNNâ€¦` placeholder with `--fix`; every byte length is unchanged. The scan now also matches an
+installed common-word name as an exact quoted string, the shape a harness's command list gives it.
+
 **2026-09-30, goose 1.52.0 P-approval refresh.** Only P-approval (and P-version, which every run
 reads) was rerun, canned, after goose's row declared approve-all: the cell is now UNSUPPORTED with
 the row's note, and the stripped-grant transcript `goose-1.52.0/p-approval-ungranted.jsonl` is gone
