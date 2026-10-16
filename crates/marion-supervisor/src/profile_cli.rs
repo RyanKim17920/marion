@@ -25,7 +25,7 @@ use marion_core::harness::Harness;
 
 use crate::profiles::{
     Listed, LoginState, ProfileEntry, ProfileError, ProfilePaths, ProfilesFile, carrier,
-    display_name, listed, login_state, parse_harness,
+    display_name, link_shared, listed, login_state, parse_harness,
 };
 
 /// The usage line `marion --help` shows, and what a malformed `profile` verb prints.
@@ -149,7 +149,10 @@ fn add(
         .map(str::to_string)
         .unwrap_or_else(|| paths.dir_for(harness, name).to_string_lossy().into_owned());
     std::fs::create_dir_all(&dir)?;
-    let shared = link_shared(home, carrier, Path::new(&dir))?;
+    let shared = match home {
+        Some(home) => link_shared(home, carrier, Path::new(&dir))?,
+        None => Vec::new(),
+    };
     file.profile.push(ProfileEntry {
         name: name.into(),
         harness: harness.as_str().into(),
@@ -178,30 +181,6 @@ fn add(
         display_name(harness)
     )?;
     Ok(())
-}
-
-/// Link each of the carrier's shared names from the harness's default directory into `dir`, where
-/// the source exists and the target does not. **Never** a credential: the carrier's list is
-/// non-secret by the row sweep, and nothing is copied — a link, so the operator's settings stay
-/// one file.
-fn link_shared(
-    home: Option<&Path>,
-    carrier: &marion_harness::profile::ProfileCarrier,
-    dir: &Path,
-) -> Result<Vec<String>, Refusal> {
-    let Some(home) = home else {
-        return Ok(Vec::new());
-    };
-    let source_root = home.join(carrier.home_default);
-    let mut linked = Vec::new();
-    for name in carrier.shared {
-        let (source, target) = (source_root.join(name), dir.join(name));
-        if source.exists() && target.symlink_metadata().is_err() {
-            std::os::unix::fs::symlink(&source, &target)?;
-            linked.push((*name).to_string());
-        }
-    }
-    Ok(linked)
 }
 
 /// `CLAUDE_CONFIG_DIR='<dir>' claude auth login` — one shell word per value.

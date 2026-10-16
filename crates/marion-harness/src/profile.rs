@@ -184,6 +184,35 @@ mod tests {
         ".claude.json",
     ];
 
+    /// **A pi profile shares the operator's pi but its login**: everything pi loads from the agent
+    /// dir (pi 0.80.2 `resource-loader.js`, `package-manager.js`), and never `auth.json` (the
+    /// login) or `models.json` (a custom provider may carry its `apiKey` inline).
+    #[test]
+    fn a_pi_profile_shares_the_operators_pi_but_its_login_and_provider_keys() {
+        let carrier = harness_spec(Harness::Pi).profile.expect("pi has a carrier");
+        assert_eq!(carrier.home_default, ".pi/agent");
+        for denied in ["auth.json", "models.json"] {
+            assert!(!carrier.shared.contains(&denied), "pi shares {denied}");
+        }
+        assert_eq!(
+            carrier.shared,
+            [
+                "settings.json",
+                "extensions",
+                "skills",
+                "prompts",
+                "themes",
+                "AGENTS.md",
+                "SYSTEM.md",
+                "APPEND_SYSTEM.md",
+                "npm",
+                "git",
+                "trust.json",
+                "keybindings.json",
+            ]
+        );
+    }
+
     #[test]
     fn every_row_states_its_profile_carrier_or_why_not() {
         for h in Harness::ALL {

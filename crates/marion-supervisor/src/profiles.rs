@@ -610,6 +610,38 @@ fn update_usage(paths: &ProfilePaths, profile: &Profile, change: impl FnOnce(&mu
     }
 }
 
+/// Link each of the carrier's shared names from the harness's default directory under `home`
+/// into `dir`, where the source exists and the target does not — **never** over anything already
+/// there, so a file the operator keeps apart in a profile stays theirs. **Never** a credential:
+/// the carrier's list is non-secret by the row sweep, and nothing is copied — a link, so the
+/// operator's settings stay one file. Answers the names linked.
+pub fn link_shared(
+    home: &Path,
+    carrier: &ProfileCarrier,
+    dir: &Path,
+) -> std::io::Result<Vec<String>> {
+    let source_root = home.join(carrier.home_default);
+    let mut linked = Vec::new();
+    for name in carrier.shared {
+        let (source, target) = (source_root.join(name), dir.join(name));
+        if source.exists() && target.symlink_metadata().is_err() {
+            std::os::unix::fs::symlink(&source, &target)?;
+            linked.push((*name).to_string());
+        }
+    }
+    Ok(linked)
+}
+
+/// **A profile in use gets the shared links it is missing**: one the operator's directory gained
+/// since `marion profile add` (a pi `extensions/` made later), or a profile made before the row
+/// shared it. The same rule as `add` ([`link_shared`]); best effort, so a link that cannot be made
+/// costs the node that resource, never its launch.
+pub fn heal_links(profile: &Profile, home: Option<&Path>) {
+    if let (Some(home), Ok(carrier)) = (home, carrier(profile.harness)) {
+        let _ = link_shared(home, carrier, Path::new(&profile.dir));
+    }
+}
+
 /// A node was launched on `profile`.
 pub fn record_used(paths: &ProfilePaths, profile: &Profile, now_ms: u64) {
     update_usage(paths, profile, |u| u.last_used_ms = Some(now_ms));
@@ -695,9 +727,11 @@ impl Launch {
         self.profile(at).map(|p| PathBuf::from(&p.dir))
     }
 
-    /// Attempt `at` is launching: stamp the profile's last use.
+    /// Attempt `at` is launching: stamp the profile's last use, and link what it is missing of
+    /// the operator's shared files ([`heal_links`]).
     pub fn used(&self, at: usize) {
         if let (Some(paths), Some(p)) = (&self.paths, self.profile(at)) {
+            heal_links(p, std::env::var_os("HOME").map(PathBuf::from).as_deref());
             record_used(paths, p, crate::clock::unix_millis());
         }
     }
@@ -841,6 +875,7 @@ pub fn apply_native(
     let carrier = carrier(harness)?;
     env.retain(|(k, _)| k != carrier.env && !carrier.clear.iter().any(|c| k == c));
     env.push((carrier.env.into(), profile.dir.clone().into()));
+    heal_links(&profile, var("HOME").map(PathBuf::from).as_deref());
     record_used(&paths, &profile, crate::clock::unix_millis());
     Ok(Some(profile))
 }
@@ -934,6 +969,58 @@ mod tests {
                 entry("gone", "claude-code", "/nonexistent/marion-profile"),
             ],
         }
+    }
+
+    /// **A profile in use gets the shared links it is missing, and nothing else**: what the
+    /// operator's pi gained since the profile was made is linked at the next use; a file the
+    /// profile keeps of its own is never replaced; the login and the provider keys are never
+    /// linked, whatever the operator's directory holds.
+    #[test]
+    fn a_profile_in_use_heals_its_missing_links_and_never_overwrites() {
+        let dir = marion_testsupport::scratch("profiles-heal");
+        let home = dir.join("home");
+        let agent = home.join(".pi/agent");
+        std::fs::create_dir_all(agent.join("extensions")).unwrap();
+        for f in [
+            "settings.json",
+            "keybindings.json",
+            "auth.json",
+            "models.json",
+        ] {
+            std::fs::write(agent.join(f), "operator").unwrap();
+        }
+        let own = dir.join("work");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("keybindings.json"), "the profile's own").unwrap();
+        let profile = Profile {
+            name: "work".into(),
+            harness: Harness::Pi,
+            dir: own.to_string_lossy().into_owned(),
+        };
+        let link = |n: &str| std::fs::read_link(own.join(n)).ok();
+        heal_links(&profile, Some(&home));
+        assert_eq!(link("settings.json"), Some(agent.join("settings.json")));
+        assert_eq!(link("extensions"), Some(agent.join("extensions")));
+        assert_eq!(
+            std::fs::read_to_string(own.join("keybindings.json")).unwrap(),
+            "the profile's own",
+            "a file the profile keeps is never replaced"
+        );
+        for denied in ["auth.json", "models.json"] {
+            assert!(
+                own.join(denied).symlink_metadata().is_err(),
+                "{denied} linked"
+            );
+        }
+        assert_eq!(link("skills"), None, "nothing to link yet");
+        std::fs::create_dir_all(agent.join("skills")).unwrap();
+        heal_links(&profile, Some(&home));
+        assert_eq!(
+            link("skills"),
+            Some(agent.join("skills")),
+            "what the operator gained later is linked at the next use"
+        );
+        heal_links(&profile, None);
     }
 
     /// Every carrier whose status is a probe launches its binary with the row's update switch:
