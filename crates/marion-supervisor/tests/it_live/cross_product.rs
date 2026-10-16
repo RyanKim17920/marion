@@ -1180,8 +1180,8 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
          Keeping it under that threshold is what §6.7's cap rules exist to guarantee.\n\
          {result_text}"
     );
-    // The root reads `bridge::contract_view` of the record: what it sent and the quiet defaults
-    // left out, every other field the record's own.
+    // The root reads `bridge::contract_view` of the record: the quiet completion defaults left
+    // out, every other field the record's own.
     let returned: serde_json::Value = serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
         panic!("{cell}: the root's tool result does not carry a contract document: {e}\n{result_text}")
     });
