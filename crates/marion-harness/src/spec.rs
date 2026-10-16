@@ -673,18 +673,23 @@ pub enum Remembers {
 }
 
 impl Remembers {
-    /// **Whether marion may answer the row's boot dialog with its keys, under `auth`**: only where
-    /// the answer cannot land in the operator's own config — nowhere past the session, or a home
-    /// the overlay moved onto marion's directory (canned and endpoint alike). Under live auth that
-    /// home is the operator's. Measured 2026-09-27 on claude 2.1.283 and codex 0.155.1: in a git
-    /// worktree both key folder trust on the **main repository**, so an answer marion gave there
-    /// would trust the operator's repository for good. Where they already trust it no dialog
-    /// shows at all; where they do not, it is theirs.
-    pub fn marion_may_answer(&self, auth: Auth) -> bool {
-        match self {
-            Remembers::Nothing => true,
-            Remembers::CannedHome => auth.overlays(),
-        }
+    /// **Whether marion may answer the row's boot dialog with its keys, under `auth`, in a
+    /// repository the operator has (`repo_trusted`) or has not trusted in marion**: never in an
+    /// untrusted one — a folder-trust answer is what lets a harness load the repository's own
+    /// configuration (codex's `.codex/config.toml`), which marion keeps out until the operator
+    /// trusts it (owner decision 2026-10-16) — and otherwise only where the answer cannot land in
+    /// the operator's own config: nowhere past the session, or a home the overlay moved onto
+    /// marion's directory (canned and endpoint alike). Under live auth that home is the
+    /// operator's. Measured 2026-09-27 on claude 2.1.283 and codex 0.155.1: in a git worktree both
+    /// key folder trust on the **main repository**, so an answer marion gave there would trust the
+    /// operator's repository for good. Where they already trust it no dialog shows at all; where
+    /// they do not, it is theirs.
+    pub fn marion_may_answer(&self, auth: Auth, repo_trusted: bool) -> bool {
+        repo_trusted
+            && match self {
+                Remembers::Nothing => true,
+                Remembers::CannedHome => auth.overlays(),
+            }
     }
 }
 
@@ -1304,6 +1309,15 @@ pub enum Arg {
     /// live (claude's `--setting-sources ""` drops a settings `apiKeyHelper` or `env` block;
     /// opencode's `--pure` drops an auth plugin).
     CannedLit(&'static str),
+    /// A literal token on a **live** launch in a repository the operator has **not** trusted
+    /// ([`Fields::repo_trusted`]): the switch that keeps the repository's own harness
+    /// configuration — its settings, hooks, plugins, extensions — out of a node running on the
+    /// operator's login. An overlaying launch keeps all of it out already ([`Self::CannedLit`]).
+    Untrusted(&'static str),
+    /// A literal token on a **live** launch in a repository the operator **has** trusted: the
+    /// switch that loads that configuration where the harness would otherwise stop to ask (pi's
+    /// `--approve` in a mode with no one to answer).
+    Trusted(&'static str),
 }
 
 /// How a harness names a session to resume on argv, as `<harness> --help` spells it.
@@ -1341,6 +1355,9 @@ pub enum When {
     /// Only under [`Auth::Canned`] — where marion owns the whole environment and the provider is
     /// its own local one, so nothing the node needs is on the network.
     Canned,
+    /// Only on a **live** launch in a repository the operator has not trusted — [`Arg::Untrusted`]
+    /// for a variable (opencode's `OPENCODE_DISABLE_PROJECT_CONFIG`).
+    Untrusted,
     /// Only when the field carries a value. Claude Code blanks `ANTHROPIC_API_KEY` **beside** a
     /// token, and only beside one.
     Present(Field),
@@ -1420,6 +1437,10 @@ pub struct Fields {
     /// The launch is granted writes: its availability axis names marion's `write`, and it is not
     /// read-only. What [`Arg::Allowlist`] reads.
     pub writes: bool,
+    /// **The operator has trusted this launch's repository** (`marion trust allow --repo`), so a
+    /// live node may load the repository's own harness configuration: [`Arg::Untrusted`],
+    /// [`Arg::Trusted`] and [`When::Untrusted`] read it. `false` — untrusted — by default.
+    pub repo_trusted: bool,
 }
 
 /// **The strings a declaration or a credential can travel in print their shape, never their
@@ -1456,6 +1477,7 @@ impl std::fmt::Debug for Fields {
             read_only,
             writes,
             env_passthrough,
+            repo_trusted,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -1468,6 +1490,7 @@ impl std::fmt::Debug for Fields {
         let bytes = |s: &Option<String>| s.as_ref().map(|s| format!("<{} bytes>", s.len()));
         f.debug_struct("Fields")
             .field("env_passthrough", env_passthrough)
+            .field("repo_trusted", repo_trusted)
             .field("cwd", cwd)
             .field("config_dir", config_dir)
             .field("auth", auth)
@@ -1571,6 +1594,7 @@ fn env_applies(when: When, f: &Fields) -> bool {
         When::Overlay => f.auth.overlays(),
         When::Endpoint => f.auth == Auth::Endpoint,
         When::Canned => f.auth == Auth::Canned,
+        When::Untrusted => repo_config_rule(f) == Some(false),
         When::Present(field) => f.value(field).is_some(),
     }
 }
@@ -1726,8 +1750,25 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
             true => vec![s.to_string()],
             false => Vec::new(),
         },
+        Arg::Untrusted(s) => match repo_config_rule(f) {
+            Some(false) => vec![s.to_string()],
+            _ => Vec::new(),
+        },
+        Arg::Trusted(s) => match repo_config_rule(f) {
+            Some(true) => vec![s.to_string()],
+            _ => Vec::new(),
+        },
         Arg::Resume => arg_resume(spec, f),
     }
+}
+
+/// **The one trust-aware rule over a repository's own harness configuration**: `None` on an
+/// overlaying launch, which loads none of it whatever the repository's trust (its row's
+/// [`Arg::CannedLit`] isolation); on a live launch, whether the operator trusted the repository.
+/// [`Arg::Untrusted`], [`Arg::Trusted`] and [`When::Untrusted`] are its three readers, so every row
+/// states what it does about a repository as data, and none decides it in code.
+pub fn repo_config_rule(f: &Fields) -> Option<bool> {
+    (!f.auth.overlays()).then_some(f.repo_trusted)
 }
 
 /// The row's recipe for `wire`, where it has one.

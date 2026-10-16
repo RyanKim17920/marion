@@ -49,10 +49,16 @@ pub const CONFIG_SEED: (&str, &str) = (
     r#"{"hasCompletedOnboarding":true}"#,
 );
 
-/// The `--settings` overlay every node marion launches carries: the operator's hooks off, their
-/// settings otherwise as they wrote them. Not on the native facade, where the operator drives
-/// their own claude.
+/// The `--settings` overlay a canned or endpoint node carries: no hooks, belt and braces beside
+/// `--setting-sources ""`. A node on the operator's own login runs their hooks, as their `claude`
+/// does (owner decision 2026-10-16), and so does the native facade.
 pub const HOOKS_OFF_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+
+/// The `--settings` overlay a live node in an **untrusted** repository carries beside
+/// `--setting-sources user`: none of the repository's `.mcp.json` servers is approved wholesale,
+/// whatever the operator's own settings say. `--setting-sources user` already drops the
+/// repository's settings, hooks and permissions; the `.mcp.json` approval is a user-layer key.
+pub const UNTRUSTED_REPO_SETTINGS: &str = r#"{"enableAllProjectMcpServers":false}"#;
 
 /// [`mcp_config_json`] as the bytes `--mcp-config` reads: the live declaration's body.
 pub fn mcp_config_document(b: &BridgeEnv) -> String {
@@ -133,14 +139,20 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // `--setting-sources=user`. A live node runs on the operator's settings as they wrote them.
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
-        // None of the operator's hooks, user or plugin, run in a node marion launches: a blocking
-        // `Stop` hook (a review gate) would hold or loop a node no one is watching. `--settings`
-        // merges this one key over their layers, so the credential keys the line above keeps
-        // (`apiKeyHelper`, the `env` block) still apply — measured on 2.1.283 (MILESTONES,
-        // verified harness facts). Both modes: redundant under canned, where the exclusion above
-        // already keeps hooks out. Hook callbacks marion registers in `initialize` still fire.
-        Arg::Lit("--settings"),
-        Arg::Lit(HOOKS_OFF_SETTINGS),
+        // **A repository's own settings load only once the operator has trusted it** (owner
+        // decision 2026-10-16). `-p` skips claude's folder-trust dialog, so a cloned repository's
+        // `.claude/settings.json` would otherwise supply an `apiKeyHelper` or `env` block that runs
+        // as the operator. `user` keeps the operator's own layer, credential route included
+        // (measured on 2.1.280: `--setting-sources=user` took a user `settings.json`'s route); a
+        // trusted repository gets every source, as the operator's `claude` there would.
+        Arg::Untrusted("--setting-sources"),
+        Arg::Untrusted("user"),
+        Arg::Untrusted("--settings"),
+        Arg::Untrusted(UNTRUSTED_REPO_SETTINGS),
+        // None of anyone's hooks in a canned or endpoint node; Hook callbacks marion registers in
+        // `initialize` still fire. A live node runs the operator's (owner decision 2026-10-16).
+        Arg::CannedLit("--settings"),
+        Arg::CannedLit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
     ],
@@ -159,8 +171,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Flag("--mcp-config", Field::McpConfig),
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
-        Arg::Lit("--settings"),
-        Arg::Lit(HOOKS_OFF_SETTINGS),
+        Arg::Untrusted("--setting-sources"),
+        Arg::Untrusted("user"),
+        Arg::Untrusted("--settings"),
+        Arg::Untrusted(UNTRUSTED_REPO_SETTINGS),
+        Arg::CannedLit("--settings"),
+        Arg::CannedLit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
         // `--` so a prompt beginning with `-` is the prompt: commander ends options there
@@ -1013,7 +1029,7 @@ mod tests {
         assert!(
             inv.args
                 .iter()
-                .filter(|a| *a != HOOKS_OFF_SETTINGS)
+                .filter(|a| *a != HOOKS_OFF_SETTINGS && *a != UNTRUSTED_REPO_SETTINGS)
                 .all(|a| !a.contains('\'') && !a.contains('"'))
         );
     }

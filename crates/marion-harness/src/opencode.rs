@@ -169,12 +169,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Lit("1"),
             when: When::Overlay,
         },
-        // Canned only: a project `opencode.json` / `.opencode/` can hold the provider block, its
-        // key reference and an auth plugin, which a live node runs on as the operator set them up.
+        // A project `opencode.json` / `.opencode/` can hold a provider block, a key reference, a
+        // JS plugin opencode runs at startup and local MCP commands. A canned node never loads it;
+        // a live node loads it once the operator has trusted the repository (owner decision
+        // 2026-10-16) — opencode has no trust prompt of its own. The two gates never both apply.
         Env {
             key: "OPENCODE_DISABLE_PROJECT_CONFIG",
             val: Val::Lit("1"),
             when: When::Overlay,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_PROJECT_CONFIG",
+            val: Val::Lit("1"),
+            when: When::Untrusted,
         },
         Env {
             key: "OPENCODE_DISABLE_MODELS_FETCH",

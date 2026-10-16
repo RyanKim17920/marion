@@ -20,6 +20,16 @@
 //! marion supplies those argv, the file only selects them. User-level configuration
 //! (`~/.config/marion/…`) is the operator's own and names no repository command.
 //!
+//! **A repository's own harness configuration** — `.claude/settings.json`, `opencode.json` and
+//! `.opencode/`, `.pi/`, `.codex/config.toml`, `.mcp.json` — loads into a node on the operator's
+//! login only once they have trusted the repository itself: `marion trust allow --repo` records
+//! its canonical git directory ([`crate::socket::project_root`], shared by every worktree of it)
+//! in the same store, and [`repo_trusted`] is what each launch asks. Trust here is by **place**,
+//! as a harness's own folder trust is, because the files it covers are many and the repository
+//! edits them; any repository not recorded is untrusted. The harness rows decide what that means
+//! for each harness ([`marion_harness::spec::repo_config_rule`]); marion never answers a harness's
+//! own folder-trust dialog in an untrusted repository.
+//!
 //! A **model-named** command is gated separately ([`require_model_named`]): a `spawn` a node or
 //! an MCP client sends may name a free-form `acp:<command>` only where the operator listed it in
 //! the user-level [`ACP_ALLOW_FILE`].
@@ -42,9 +52,11 @@ use marion_core::text::visible;
 pub const STORE_FILE: &str = "trusted.toml";
 
 pub const USAGE: &str = "usage: marion trust allow [<file>] | deny [<file>] | list\n\
+    \x20      marion trust allow --repo [<dir>] | deny --repo [<dir>]\n\
     \x20 <file> defaults to the nearest .marion/agents.toml at or above the current directory; a\n\
     \x20 .marion/workflows/<name>.toml is a workflow and a .marion/harnesses/<name>.toml a harness\n\
-    \x20 row, and allow shows what each runs";
+    \x20 row, and allow shows what each runs. --repo trusts the repository at <dir> (default: the\n\
+    \x20 current directory), so nodes on your own login load its harness config";
 
 /// Why a repository command was not run, or the trust store could not be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -492,6 +504,15 @@ pub enum Verdict {
 struct StoreFile {
     #[serde(default, rename = "file")]
     files: Vec<Entry>,
+    #[serde(default, rename = "repo")]
+    repos: Vec<RepoEntry>,
+}
+
+/// A repository the operator trusted: its canonical git directory.
+#[derive(serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct RepoEntry {
+    path: PathBuf,
 }
 
 #[derive(serde::Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -505,6 +526,7 @@ struct Entry {
 pub struct Store {
     path: PathBuf,
     files: Vec<Entry>,
+    repos: Vec<RepoEntry>,
     /// Held from [`Self::edit`] to drop: the store's lock, so two changes at once cannot each read
     /// the old list and the later save drop the other's entry.
     _lock: Option<std::fs::File>,
@@ -520,6 +542,7 @@ impl Store {
                 return Ok(Self {
                     path,
                     files: Vec::new(),
+                    repos: Vec::new(),
                     _lock: None,
                 });
             }
@@ -531,6 +554,7 @@ impl Store {
         Ok(Self {
             path,
             files: file.files,
+            repos: file.repos,
             _lock: None,
         })
     }
@@ -571,20 +595,42 @@ impl Store {
         self.files.len() != before
     }
 
+    /// Whether the repository whose canonical git directory is `root` is trusted.
+    pub fn repo_trusted(&self, root: &Path) -> bool {
+        self.repos.iter().any(|r| r.path == root)
+    }
+
+    /// Trust the repository at `root` (canonical); whether it was not trusted already.
+    fn allow_repo(&mut self, root: PathBuf) -> bool {
+        if self.repo_trusted(&root) {
+            return false;
+        }
+        self.repos.push(RepoEntry { path: root });
+        true
+    }
+
+    /// Forget the repository at `root`; whether it was trusted.
+    fn deny_repo(&mut self, root: &Path) -> bool {
+        let before = self.repos.len();
+        self.repos.retain(|r| r.path != root);
+        self.repos.len() != before
+    }
+
     fn save(&self) -> Result<(), TrustError> {
         // `toml` is built without its serializer here; `toml_edit` quotes each value.
         let quote = toml_string;
-        let body: String = self
-            .files
+        let files = self.files.iter().map(|e| {
+            format!(
+                "[[file]]\npath = {}\nsha256 = {}\n\n",
+                quote(&e.path.to_string_lossy()),
+                quote(&e.sha256)
+            )
+        });
+        let repos = self
+            .repos
             .iter()
-            .map(|e| {
-                format!(
-                    "[[file]]\npath = {}\nsha256 = {}\n\n",
-                    quote(&e.path.to_string_lossy()),
-                    quote(&e.sha256)
-                )
-            })
-            .collect();
+            .map(|r| format!("[[repo]]\npath = {}\n\n", quote(&r.path.to_string_lossy())));
+        let body: String = files.chain(repos).collect();
         crate::private_fs::write_atomic(&self.path, body.as_bytes())
             .map_err(|e| TrustError::Io(format!("{}: {e}", self.path.display())))
     }
@@ -619,6 +665,18 @@ fn check_private(path: &Path) -> Result<(), TrustError> {
         }
     }
     Ok(())
+}
+
+/// **Whether the operator trusted the repository whose canonical git directory is
+/// `project_root`** ([`crate::socket::project_root`]), read from their store now, so a `trust
+/// allow --repo` applies to the next node launched. A store that cannot be read trusts nothing.
+pub fn repo_trusted(project_root: &Path) -> bool {
+    store_path().is_some_and(|store| repo_trusted_in(store, project_root))
+}
+
+/// [`repo_trusted`] over an explicit store.
+pub fn repo_trusted_in(store: PathBuf, project_root: &Path) -> bool {
+    Store::open(store).is_ok_and(|s| s.repo_trusted(project_root))
 }
 
 /// `file`'s canonical path; for a file that no longer exists, its directory's canonical path and
@@ -687,7 +745,41 @@ pub fn run(
     };
     let err = |e: TrustError| Some(e.to_string());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
+    let repo_arg = |rest: &[String]| -> Result<PathBuf, Option<String>> {
+        let dir = match rest {
+            [] => cwd.to_path_buf(),
+            [d] => cwd.join(d),
+            _ => return Err(None),
+        };
+        let dir =
+            std::fs::canonicalize(&dir).map_err(|e| Some(format!("{}: {e}", dir.display())))?;
+        Ok(crate::socket::project_root(&dir))
+    };
     match args {
+        [verb, flag, rest @ ..] if verb == "allow" && flag == "--repo" => {
+            let root = repo_arg(rest)?;
+            let mut store = Store::edit(store).map_err(err)?;
+            let added = store.allow_repo(root.clone());
+            store.save().map_err(err)?;
+            w(writeln!(
+                out,
+                "{} {}: nodes on your own login there now load its harness config (.claude, \
+                 .mcp.json, opencode.json, .opencode, .pi, .codex) and marion answers its \
+                 harnesses' folder-trust dialogs. Undo with: marion trust deny --repo",
+                if added { "trusted" } else { "already trusted" },
+                root.display()
+            ))
+        }
+        [verb, flag, rest @ ..] if verb == "deny" && flag == "--repo" => {
+            let root = repo_arg(rest)?;
+            let mut store = Store::edit(store).map_err(err)?;
+            if store.deny_repo(&root) {
+                store.save().map_err(err)?;
+                w(writeln!(out, "denied {}", root.display()))
+            } else {
+                w(writeln!(out, "{} was not trusted", root.display()))
+            }
+        }
         [verb, rest @ ..] if verb == "allow" => {
             let file = file_arg(rest)?;
             let canonical = canonical(&file).map_err(err)?;
@@ -734,6 +826,9 @@ pub fn run(
         }
         [verb] if verb == "list" => {
             let store = Store::open(store).map_err(err)?;
+            for r in &store.repos {
+                w(writeln!(out, "repo     {}", r.path.display()))?;
+            }
             if store.files.is_empty() {
                 return w(out_to!(out, "no trusted files"));
             }
@@ -1290,6 +1385,85 @@ mod tests {
         assert!(
             matches!(e, TrustError::Untrusted { edited: false, .. }),
             "{e:?}"
+        );
+    }
+
+    /// **A repository is trusted by place, for every worktree of it, until denied**: `allow
+    /// --repo` from a subdirectory records the repository's git directory, a linked worktree asks
+    /// the same question and gets the same answer, `list` shows it, and `deny --repo` forgets it.
+    /// File trust beside it is untouched.
+    #[test]
+    fn a_repository_is_trusted_by_its_git_dir_for_every_worktree_until_denied() {
+        let (repo, _file, store) = repo("repo-trust", CUSTOM);
+        let git = |args: &[&str]| {
+            let ok = marion_harness::env_filter::git_command()
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "i",
+        ]);
+        let wt = repo.parent().unwrap().join("wt");
+        git(&["worktree", "add", "-q", &wt.to_string_lossy()]);
+        let root = crate::socket::project_root(&repo);
+        assert!(
+            !repo_trusted_in(store.clone(), &root),
+            "untrusted by default"
+        );
+
+        allow(&repo, &store);
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        let mut out = Vec::new();
+        run(
+            &["allow".into(), "--repo".into(), "sub".into()],
+            &repo,
+            store.clone(),
+            &mut out,
+        )
+        .unwrap();
+        assert!(String::from_utf8(out).unwrap().starts_with("trusted "));
+        assert!(repo_trusted_in(store.clone(), &root));
+        assert!(
+            repo_trusted_in(store.clone(), &crate::socket::project_root(&wt)),
+            "a worktree of a trusted repository is that repository"
+        );
+        let mut out = Vec::new();
+        run(&["list".into()], &repo, store.clone(), &mut out).unwrap();
+        let list = String::from_utf8(out).unwrap();
+        assert!(
+            list.contains(&format!("repo     {}", root.display())),
+            "{list}"
+        );
+        assert!(list.contains("trusted "), "the file entry is kept: {list}");
+
+        let mut out = Vec::new();
+        run(
+            &["deny".into(), "--repo".into()],
+            &wt,
+            store.clone(),
+            &mut out,
+        )
+        .unwrap();
+        assert!(String::from_utf8(out).unwrap().starts_with("denied "));
+        assert!(!repo_trusted_in(store.clone(), &root));
+        let other = tmp("repo-trust-other");
+        assert!(
+            !repo_trusted_in(store, &crate::socket::project_root(&other)),
+            "an unrecorded directory is untrusted"
         );
     }
 

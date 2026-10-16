@@ -96,8 +96,6 @@ args:
   -c
   mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
   -c
-  features.plugins=false
-  -c
   features.shell_snapshot=false
   -c
   approval_policy="never"
@@ -137,8 +135,6 @@ args:
   mcp_servers.marion.env.MARION_READY_FILE="/state/x/mcp-ready"
   -c
   mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
-  -c
-  features.plugins=false
   -c
   features.shell_snapshot=false
   -C
@@ -494,8 +490,6 @@ args:
   mcp_servers.marion.env.MARION_READY_FILE="/state/x/mcp-ready"
   -c
   mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
-  -c
-  features.plugins=false
   -c
   features.shell_snapshot=false
   -c

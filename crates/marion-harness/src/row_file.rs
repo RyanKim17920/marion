@@ -208,7 +208,7 @@ fn security_faults(spec: &HarnessSpec) -> Vec<String> {
             ));
         }
         let lits: Vec<&str> = match arg {
-            Arg::Lit(l) | Arg::CannedLit(l) => vec![l],
+            Arg::Lit(l) | Arg::CannedLit(l) | Arg::Untrusted(l) | Arg::Trusted(l) => vec![l],
             Arg::Flag(l, _) | Arg::FlagEq(l, _) | Arg::Each(l, _) | Arg::EachEq(l, _) => vec![l],
             Arg::Pair(a, b, _) | Arg::Isolation(a, b) => vec![a, b],
             Arg::Joined(l, _) | Arg::Allowlist(l, _) => vec![l],
@@ -847,6 +847,8 @@ pub enum ArgDto {
     Resume,
     Isolation(String, String),
     CannedLit(String),
+    Untrusted(String),
+    Trusted(String),
 }
 
 impl ArgDto {
@@ -866,6 +868,8 @@ impl ArgDto {
             ArgDto::Resume => Arg::Resume,
             ArgDto::Isolation(a, b) => Arg::Isolation(leak(a), leak(b)),
             ArgDto::CannedLit(l) => Arg::CannedLit(leak(l)),
+            ArgDto::Untrusted(l) => Arg::Untrusted(leak(l)),
+            ArgDto::Trusted(l) => Arg::Trusted(leak(l)),
         }
     }
 }
@@ -912,6 +916,7 @@ pub enum WhenDto {
     Always,
     Overlay,
     Endpoint,
+    Untrusted,
     Present(FieldDto),
 }
 
@@ -921,6 +926,7 @@ impl WhenDto {
             WhenDto::Always => When::Always,
             WhenDto::Overlay => When::Overlay,
             WhenDto::Endpoint => When::Endpoint,
+            WhenDto::Untrusted => When::Untrusted,
             WhenDto::Present(f) => When::Present(f.field()),
         }
     }

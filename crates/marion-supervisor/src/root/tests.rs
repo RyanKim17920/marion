@@ -1840,12 +1840,12 @@ fn a_live_codex_root_writes_no_file_and_so_cannot_touch_the_operators_own_codex_
         );
     }
     // The declaration `McpRoute::Argv` promised, actually present — including the two settings
-    // whose absence is silent (§12): the approval mode and the plugin fetch.
+    // whose absence is silent (§12): the approval mode and the shell snapshot.
     let joined = node.invocation.args.join(" ");
     for needle in [
         "-c mcp_servers.marion.command=",
         r#"-c mcp_servers.marion.default_tools_approval_mode="approve""#,
-        "-c features.plugins=false",
+        "-c features.shell_snapshot=false",
         r#"-c mcp_servers.marion.env.MARION_DEPTH="0""#,
         r#"-c mcp_servers.marion.env.MARION_AUTH="inherited""#,
     ] {

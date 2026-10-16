@@ -107,8 +107,10 @@ args:
   default
   --mcp-config
   /state/x/config/mcp.json
+  --setting-sources
+  user
   --settings
-  {"disableAllHooks":true}
+  {"enableAllProjectMcpServers":false}
   --model
   haiku
 env:
@@ -150,8 +152,10 @@ args:
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
+  --setting-sources
+  user
   --settings
-  {"disableAllHooks":true}
+  {"enableAllProjectMcpServers":false}
   --model
   haiku
   --
@@ -685,8 +689,10 @@ args:
   default
   --mcp-config
   /state/x/config/mcp.json
+  --setting-sources
+  user
   --settings
-  {"disableAllHooks":true}
+  {"enableAllProjectMcpServers":false}
   --model
   haiku
   --resume
@@ -730,8 +736,10 @@ args:
   --strict-mcp-config
   --mcp-config
   /state/x/config/mcp.json
+  --setting-sources
+  user
   --settings
-  {"disableAllHooks":true}
+  {"enableAllProjectMcpServers":false}
   --model
   haiku
   --resume

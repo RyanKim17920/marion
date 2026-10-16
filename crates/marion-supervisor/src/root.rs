@@ -403,6 +403,9 @@ pub struct RootNode {
     /// model named a provider. It decides whether marion may answer the pane's boot dialog
     /// (`Remembers::marion_may_answer`).
     pub auth: Auth,
+    /// The operator had trusted this root's repository when it launched (`marion trust allow
+    /// --repo`): read off the launch, beside [`Self::auth`], for the same decision.
+    pub repo_trusted: bool,
     /// The shapes this run selected (§3.4) — `HarnessAdapter::surfaces` for an ordinary run,
     /// `pane_surfaces` for one that asked for a pane.
     ///
@@ -771,7 +774,8 @@ pub fn prepare_watched(
     // is a different question — keying the journal on it gave a linked worktree its own tree while
     // `socket::resolve` pointed every bridge and TUI at the main repository's supervisor. The same
     // call is made in `marion run` and in the bridge's `spawn_env`, so the three cannot drift.
-    let project = ProjectDir::new(&spec.state, &crate::socket::project_root(&spec.repo));
+    let project_root = crate::socket::project_root(&spec.repo);
+    let project = ProjectDir::new(&spec.state, &project_root);
     let agent_dir = project.agent(&agent_id);
     crate::private_fs::create_dir_all(&agent_dir.config_dir())?;
 
@@ -882,6 +886,8 @@ pub fn prepare_watched(
         Extras {
             // A node: marion's own sandbox applies wherever its row and auth allow.
             os_sandbox: spec.os_sandbox,
+            // The repository's own harness config loads only where the operator trusted it.
+            repo_trusted: crate::trust::repo_trusted(&project_root),
             acp_agent: agent_type.acp_agent.clone(),
             approval_mode: agent_type.approval_mode.clone(),
             profile_dir: profiles.dir(0),
@@ -1050,6 +1056,7 @@ pub fn prepare_watched(
         token,
         harness,
         auth: launch.auth,
+        repo_trusted: launch.extra.repo_trusted,
         surfaces,
         path,
         prompt: spec.prompt.clone(),
@@ -2990,15 +2997,17 @@ fn launch_terminal(
         Some(on_started),
     )?);
     // A boot dialog (folder trust) is marion's to answer only in a worktree marion created for
-    // this node, and only where the answer cannot land in the operator's own config: in a git
-    // worktree claude and codex key trust on the main repository, so answering there would trust
-    // the operator's repository for good. Before `opened`, so the paste driver that publication
-    // starts reads it.
+    // this node, of a repository the operator trusted, and only where the answer cannot land in
+    // the operator's own config: in a git worktree claude and codex key trust on the main
+    // repository, so answering there would trust the operator's repository for good. Before
+    // `opened`, so the paste driver that publication starts reads it.
     // First-run setup is harness UI state in its config, so where marion owns that config it is
     // marion's to answer in any directory.
     let dialogs = marion_harness::adapter::harness_spec(node.harness).boot_dialogs;
     host.license_boot_dialog_answers(crate::paste::Answers {
-        workspace: dialogs.remembers.marion_may_answer(node.auth)
+        workspace: dialogs
+            .remembers
+            .marion_may_answer(node.auth, node.repo_trusted)
             && inv.cwd.starts_with(node.agent_dir.worktree()),
         config: dialogs.remembers.marion_owns_config(node.auth),
     });

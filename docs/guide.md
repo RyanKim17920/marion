@@ -390,6 +390,26 @@ trust, and `allow` lists each such key: an `approval_mode` other than `default`,
 `read`, a `prompt_prefix`, a `provider`, `credentials` or a `profile`. Other types on built-in
 harness rows, or on an ACP refinement row by its id (`acp:copilot`), need no trust.
 
+### A repository's own harness config
+
+A cloned repository can carry configuration for the harnesses themselves: `.claude/settings.json`
+(an `apiKeyHelper` or hook runs as you), `.mcp.json`, `opencode.json` and `.opencode/` (a JS plugin
+runs at startup), `.pi/` extensions, `.codex/config.toml`. A node on your own login loads none of
+it until you trust the repository: `marion trust allow --repo [<dir>]` (default: the current
+directory) records the repository's git directory, which covers every worktree of it, and
+`marion trust deny --repo [<dir>]` forgets it; `marion trust list` shows each trusted repository.
+
+| harness | untrusted repository | trusted repository |
+|---|---|---|
+| `claude` | `--setting-sources user` (your settings, not the repository's) and `.mcp.json` servers not approved wholesale | every settings source |
+| `codex` | the checkout pinned `trust_level="untrusted"` for the node | pinned `trusted`, unless your `config.toml` states a trust for it |
+| `opencode` | `OPENCODE_DISABLE_PROJECT_CONFIG=1` | the project config loads |
+| `pi` | `--no-approve` (your own extensions still load) | `--approve` |
+
+marion answers a harness's own folder-trust dialog only in a repository you trusted. Canned and
+endpoint nodes load no repository config either way; a canned codex states the same trust in its
+own `config.toml`.
+
 A model's own `spawn`, from a node or from a `marion mcp` client, may name a free-form
 `acp:<command>` only when you have listed that exact command line in your user-level
 `$XDG_CONFIG_HOME/marion/acp.toml` (0600), as `allow = ["my-agent --acp"]`. Anything else is
@@ -419,14 +439,15 @@ codex-impl = ["MY_PROVIDER_KEY"]   # say, a codex model_providers env_key
 
 A node on your own login also runs on your configuration as you wrote it: your settings, MCP
 servers, extensions, skills, instructions and plugins load as they do when you run the harness
-yourself, and marion adds only its own server or extension beside them. A canned or endpoint node
-keeps them out. What a node on your login still changes, and why each is needed:
+yourself, and marion adds only its own server or extension beside them; your hooks run too. A
+repository's own config loads only once you trust it (above). A canned or endpoint node keeps all
+of it out. What a node on your login still changes, and why each is needed:
 
 | harness | kept on your login | why |
 |---|---|---|
 | every TUI | marion's MCP declaration, a no-self-update switch | marion's tools; a version that changes under a running suite |
-| `claude` | `--tools` / `--allowedTools`, `--settings {"disableAllHooks":true}`, `--permission-mode default` headless, `--strict-mcp-config` in a pane | the agent type's grant; a blocking `Stop` hook would hold a node nobody watches; a mode that asks, so marion's grant is consulted; a repository's `.mcp.json` must not start servers in a pane (its approval dialog would boot the pane), so a pane goes without your user-scope servers too |
-| `codex` | `sandbox_mode="workspace-write"`, `features.plugins=false`, `features.shell_snapshot=false` (each a `-c` pair, never a write to your `config.toml`) | the write scope the contract records (an untrusted worktree would resolve read-only); the plugins feature leaves a `git fetch` running after the node exits; a shell snapshot writes the node's whole environment, keys included, to disk every session |
+| `claude` | `--tools` / `--allowedTools`, `--permission-mode default` headless, `--strict-mcp-config` in a pane | the agent type's grant; a mode that asks, so marion's grant is consulted; a repository's `.mcp.json` must not start servers in a pane (its approval dialog would boot the pane), so a pane goes without your user-scope servers too |
+| `codex` | `sandbox_mode="workspace-write"`, `features.shell_snapshot=false` (each a `-c` pair, never a write to your `config.toml`) | the write scope the contract records (an untrusted worktree would resolve read-only); a shell snapshot writes the node's whole environment, keys included, to disk every session |
 | `copilot` | `--disable-builtin-mcps` | the GitHub MCP server's tools are hidden from the model by the agent type's `--available-tools`; started anyway, it is a server holding your GitHub token in every node |
 | `goose` | `--no-profile` | goose has no per-tool grant: your profile's extensions (its `developer` among them) would hand a read-only agent `write` and `shell`. Built-ins come only as the agent type declares them |
 | `opencode` | a session store of the node's own (`OPENCODE_DB`), and the models fetch, LSP download, auto-update and sharing switched off | resume finds the node's session in its own store; work a spawned node has no use for |

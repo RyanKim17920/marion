@@ -165,6 +165,10 @@ pub struct Extras {
     /// wherever its row, its auth and the host allow ([`crate::os_sandbox::applies`]). `false` on
     /// a probe, which is no node.
     pub os_sandbox: bool,
+    /// **The operator has trusted this node's repository** (`marion trust allow --repo`): a live
+    /// node then loads the repository's own harness configuration, which it otherwise keeps out
+    /// ([`spec::repo_config_rule`]). `false` on a probe and wherever the supervisor did not ask.
+    pub repo_trusted: bool,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -1074,6 +1078,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
                 .iter()
                 .any(|t| t == marion_core::agent_type::TOOL_WRITE),
         env_passthrough: spec.extra.env_passthrough.clone(),
+        repo_trusted: spec.extra.repo_trusted,
         ..spec::Fields::default()
     }
 }
@@ -2229,6 +2234,32 @@ mod tests {
             api_key: Some("sk-fake".into()),
             allowed_tools: vec!["mcp__marion__report".into()],
             ..codex_spec()
+        }
+    }
+
+    /// **pi decides its project trust as marion's operator did**: a live node runs `--no-approve`
+    /// in a repository they have not trusted, so pi loads none of its `.pi/` (extensions, settings,
+    /// skills), and `--approve` in one they trusted, where an rpc node would otherwise refuse it
+    /// for want of someone to ask. A canned node says neither: `--no-extensions` and its relocated
+    /// agent dir already keep everything out.
+    #[test]
+    fn a_pi_node_approves_a_repositorys_own_config_only_where_the_operator_trusted_it() {
+        let switches = |auth: Auth, repo_trusted: bool| {
+            let mut spec = LaunchSpec { auth, ..pi_spec() };
+            spec.extra.repo_trusted = repo_trusted;
+            let inv = launch_adapter(Harness::Pi)
+                .unwrap()
+                .compile(&spec, &ctx())
+                .unwrap();
+            inv.args
+                .into_iter()
+                .filter(|a| a == "--approve" || a == "--no-approve")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(switches(Auth::Inherited, false), ["--no-approve"]);
+        assert_eq!(switches(Auth::Inherited, true), ["--approve"]);
+        for trusted in [false, true] {
+            assert!(switches(Auth::Canned, trusted).is_empty(), "{trusted}");
         }
     }
 
@@ -3838,78 +3869,112 @@ mod tests {
         );
     }
 
-    /// The other half: nothing *else* changes. A live headless node still gets the fileless MCP
-    /// declaration, beside the operator's own servers; the argv differs from canned by the two
-    /// exclusions alone — the settings one, which a live node must not carry (the test below), and
-    /// `--strict-mcp-config`.
-    #[test]
-    fn a_live_claude_node_keeps_the_same_argv_as_a_canned_one_but_the_two_exclusions() {
-        let live = LaunchSpec {
+    /// A live claude node in a repository the operator trusted (`repo_trusted`) or did not.
+    fn live_claude(repo_trusted: bool) -> LaunchSpec {
+        let mut spec = LaunchSpec {
             auth: Auth::Inherited,
             base_url: None,
             api_key: None,
             ..claude_spec()
         };
+        spec.extra.repo_trusted = repo_trusted;
+        spec
+    }
+
+    /// The other half: nothing *else* changes. A live node still gets the fileless MCP declaration;
+    /// in a trusted repository its argv is the canned one less the canned-only exclusions, and in
+    /// an untrusted one it adds the repository exclusion and nothing more.
+    #[test]
+    fn a_live_claude_node_keeps_the_same_argv_as_a_canned_one_but_the_settings_exclusion() {
         let canned = ClaudeCodeAdapter
             .compile(&claude_spec(), &ctx())
             .unwrap()
             .args;
-        let i = canned
+        let drop_pair = |args: &mut Vec<String>, flag: &str| {
+            let i = args.iter().position(|a| a == flag).unwrap();
+            args.drain(i..i + 2);
+        };
+        let mut without_exclusions = canned.clone();
+        drop_pair(&mut without_exclusions, "--setting-sources");
+        drop_pair(&mut without_exclusions, "--settings");
+        without_exclusions.retain(|a| a != "--strict-mcp-config");
+        let trusted = ClaudeCodeAdapter
+            .compile(&live_claude(true), &ctx())
+            .unwrap();
+        assert_eq!(
+            trusted.args, without_exclusions,
+            "live in a trusted repository differs from canned in env and the exclusions only"
+        );
+        let mut untrusted = ClaudeCodeAdapter
+            .compile(&live_claude(false), &ctx())
+            .unwrap()
+            .args;
+        let i = untrusted
             .iter()
             .position(|a| a == "--setting-sources")
             .unwrap();
-        let mut without_exclusion = canned.clone();
-        without_exclusion.drain(i..i + 2);
-        without_exclusion.retain(|a| a != "--strict-mcp-config");
         assert_eq!(
-            ClaudeCodeAdapter.compile(&live, &ctx()).unwrap().args,
-            without_exclusion,
-            "live differs from canned in env and the two exclusions only"
+            untrusted.drain(i..i + 4).collect::<Vec<_>>(),
+            [
+                "--setting-sources",
+                "user",
+                "--settings",
+                claude_code::UNTRUSTED_REPO_SETTINGS
+            ],
+            "an untrusted repository's own layers are dropped"
         );
-        let inv = ClaudeCodeAdapter.compile(&live, &ctx()).unwrap();
-        assert!(!inv.args.iter().any(|a| a == "--strict-mcp-config"));
-        let i = inv.args.iter().position(|a| a == "--mcp-config").unwrap();
+        assert_eq!(untrusted, trusted.args, "and nothing else differs");
+        let i = trusted
+            .args
+            .iter()
+            .position(|a| a == "--mcp-config")
+            .unwrap();
         assert_eq!(
-            PathBuf::from(&inv.args[i + 1]),
-            ClaudeCodeAdapter.config_files(&live, &ctx()).unwrap()[0].0,
+            PathBuf::from(&trusted.args[i + 1]),
+            ClaudeCodeAdapter
+                .config_files(&live_claude(true), &ctx())
+                .unwrap()[0]
+                .0,
             "the declaration a live node reads is still the one marion wrote in its agent dir"
         );
     }
 
     /// **A live claude node reads the operator's own settings, because a settings file can be
-    /// where their credential lives.** `apiKeyHelper`, `awsAuthRefresh` and the `env` block
-    /// (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, a gateway's `ANTHROPIC_BASE_URL`) are all
-    /// settings keys, and `--setting-sources ""` drops every one of them — measured on 2.1.280:
-    /// a config dir whose `settings.json` alone carries the credential answers `Not logged in` with
-    /// the flag and takes the settings' route with `--setting-sources=user`. Canned keeps the flag:
-    /// there marion supplies the credential and the operator's settings have nothing to add.
+    /// where their credential lives — and a repository's only once the operator trusted it.**
+    /// `apiKeyHelper`, `awsAuthRefresh` and the `env` block are all settings keys, and
+    /// `--setting-sources ""` drops every one of them — measured on 2.1.280: a config dir whose
+    /// `settings.json` alone carries the credential answers `Not logged in` with the flag and takes
+    /// the settings' route with `--setting-sources=user`. So an untrusted repository's node keeps
+    /// the `user` source, which is that route, and a trusted one's keeps every source. Canned keeps
+    /// `""`: there marion supplies the credential and the operator's settings have nothing to add.
     #[test]
     fn a_live_claude_node_loads_the_operators_own_settings_so_a_settings_credential_reaches_it() {
-        let live = LaunchSpec {
-            auth: Auth::Inherited,
-            base_url: None,
-            api_key: None,
-            ..claude_spec()
-        };
-        let headless = ClaudeCodeAdapter.compile(&live, &ctx()).unwrap();
-        let pane = ClaudeCodeAdapter.compile_pane(&live, &ctx()).unwrap();
-        for (shape, inv) in [("headless", &headless), ("pane", &pane)] {
-            assert!(
-                !inv.args.iter().any(|a| a == "--setting-sources"),
-                "{shape}: a live node must not drop the operator's settings: {:?}",
-                inv.args
-            );
+        for trusted in [false, true] {
+            let live = live_claude(trusted);
+            let headless = ClaudeCodeAdapter.compile(&live, &ctx()).unwrap();
+            let pane = ClaudeCodeAdapter.compile_pane(&live, &ctx()).unwrap();
+            for (shape, inv) in [("headless", &headless), ("pane", &pane)] {
+                let sources = inv
+                    .args
+                    .iter()
+                    .position(|a| a == "--setting-sources")
+                    .map(|i| inv.args[i + 1].as_str());
+                assert_eq!(
+                    sources,
+                    (!trusted).then_some("user"),
+                    "{shape}, trusted {trusted}: a live node keeps the operator's settings: {:?}",
+                    inv.args
+                );
+                // A headless node keeps the operator's MCP servers beside marion's; a pane carries
+                // `--strict-mcp-config`, so no repository server's approval dialog boots it.
+                assert_eq!(
+                    inv.args.iter().any(|a| a == "--strict-mcp-config"),
+                    shape == "pane",
+                    "{shape}: {:?}",
+                    inv.args
+                );
+            }
         }
-        assert!(
-            !headless.args.iter().any(|a| a == "--strict-mcp-config"),
-            "headless: a live node keeps the operator's MCP servers beside marion's: {:?}",
-            headless.args
-        );
-        assert!(
-            pane.args.iter().any(|a| a == "--strict-mcp-config"),
-            "pane: no repository's .mcp.json loads, so no server approval boots it: {:?}",
-            pane.args
-        );
         for inv in [
             ClaudeCodeAdapter.compile(&claude_spec(), &ctx()).unwrap(),
             ClaudeCodeAdapter
@@ -3925,34 +3990,24 @@ mod tests {
         }
     }
 
-    /// **A claude node marion launches runs none of the operator's hooks, while still reading the
-    /// settings its login may live in.** Loading the operator's settings (the test above) also
-    /// loads their hooks and their plugins' hooks, and a `Stop` hook that blocks — a review gate —
-    /// would hold or loop a headless node no one is watching. `--settings '{"disableAllHooks":
-    /// true}'` merges one key over their layers: measured on 2.1.283 with a config dir whose
-    /// `settings.json` carried an `env` credential (and, separately, an `apiKeyHelper`) plus user
-    /// `SessionStart`/`UserPromptSubmit`/`Stop` hooks and an installed plugin's `SessionStart`/`Stop`
-    /// hooks, no hook fired and the request still reached the endpoint with the settings' key.
-    /// Control-protocol hook callbacks registered in `initialize` still fire under it.
-    ///
-    /// Every shape marion launches carries it, headless and pane, live and canned (where
-    /// `--setting-sources ""` already keeps the hooks out, so it is redundant, not different).
-    /// The native facade does not: there the operator drives their own claude, hooks and all.
+    /// **A canned or endpoint claude node runs no hooks; a node on the operator's own login runs
+    /// theirs, as their `claude` does** (owner decision 2026-10-16), and so does the native
+    /// facade. Canned carries `--settings '{"disableAllHooks":true}'` beside
+    /// `--setting-sources ""`; a live node carries no hooks overlay in either repository state —
+    /// in an untrusted one its `--settings` only withholds the repository's `.mcp.json` approval.
     #[test]
     fn a_claude_node_marion_launches_runs_no_operator_hooks_but_the_native_facade_does() {
         use std::ffi::OsString;
 
         use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
 
-        let live = LaunchSpec {
-            auth: Auth::Inherited,
-            base_url: None,
-            api_key: None,
-            ..claude_spec()
+        let settings = |inv: Result<Invocation, HarnessError>| {
+            let args = inv.unwrap().args;
+            args.iter()
+                .position(|a| a == "--settings")
+                .map(|i| serde_json::from_str::<serde_json::Value>(&args[i + 1]).unwrap())
         };
         for (shape, inv) in [
-            ("live headless", ClaudeCodeAdapter.compile(&live, &ctx())),
-            ("live pane", ClaudeCodeAdapter.compile_pane(&live, &ctx())),
             (
                 "canned headless",
                 ClaudeCodeAdapter.compile(&claude_spec(), &ctx()),
@@ -3962,19 +4017,29 @@ mod tests {
                 ClaudeCodeAdapter.compile_pane(&claude_spec(), &ctx()),
             ),
         ] {
-            let args = inv.unwrap().args;
-            let i = args
-                .iter()
-                .position(|a| a == "--settings")
-                .unwrap_or_else(|| panic!("{shape}: no hooks-off overlay: {args:?}"));
-            let overlay: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
             assert_eq!(
-                overlay,
-                serde_json::json!({"disableAllHooks": true}),
+                settings(inv),
+                Some(serde_json::json!({"disableAllHooks": true})),
                 "{shape}: the overlay turns hooks off and adds nothing else"
             );
         }
+        for trusted in [false, true] {
+            let live = live_claude(trusted);
+            for (shape, inv) in [
+                ("live headless", ClaudeCodeAdapter.compile(&live, &ctx())),
+                ("live pane", ClaudeCodeAdapter.compile_pane(&live, &ctx())),
+            ] {
+                let want =
+                    (!trusted).then(|| serde_json::json!({"enableAllProjectMcpServers": false}));
+                assert_eq!(
+                    settings(inv),
+                    want,
+                    "{shape}, trusted {trusted}: no hooks overlay"
+                );
+            }
+        }
 
+        let live = live_claude(false);
         let native = native_adapter(Harness::ClaudeCode).unwrap();
         let operator_env = vec![(OsString::from("PATH"), OsString::from("/usr/bin"))];
         let injection = native
@@ -4660,14 +4725,18 @@ mod tests {
     /// wiring between `compile` and `codex::live_config_overrides` is covered and not just the
     /// builder in isolation.
     #[test]
-    fn a_live_codex_nodes_argv_carries_the_bridge_its_approval_mode_and_the_plugin_kill() {
+    fn a_live_codex_nodes_argv_carries_the_bridge_its_approval_mode_and_no_shell_snapshot() {
         let inv = CodexAdapter.compile(&codex_live_spec(), &ctx()).unwrap();
         let joined = inv.args.join(" ");
+        assert!(
+            !joined.contains("features.plugins"),
+            "the operator's plugins are theirs: {joined}"
+        );
         for needle in [
             r#"-c mcp_servers.marion.command="/bin/marion-supervisor""#,
             r#"-c mcp_servers.marion.args=["mcp"]"#,
             r#"-c mcp_servers.marion.default_tools_approval_mode="approve""#,
-            "-c features.plugins=false",
+            "-c features.shell_snapshot=false",
             // The env block, whose absence is silent in exactly the way §12 keeps recording: a
             // codex root whose bridge got none of these answers `MARION_REPO is not set`.
             r#"-c mcp_servers.marion.env.MARION_REPO="/repo""#,
@@ -5045,27 +5114,39 @@ mod tests {
         );
     }
 
-    /// **A live opencode node loads the operator's plugins and project config**, because both can
-    /// be where their credential comes from. 1.18.32 gates the user's plugin list on `--pure`
+    /// **A live opencode node loads the operator's plugins, and a project's config once the
+    /// operator has trusted the repository.** 1.18.32 gates the user's plugin list on `--pure`
     /// (`Q.pure ? [] : plugin_origins`, internal plugins untouched), and an auth plugin supplies
-    /// the provider's `auth` hook; a project `opencode.json` / `.opencode/` can carry the provider
-    /// block and its key reference. Canned keeps both switches: there marion owns the provider.
+    /// the provider's `auth` hook. A project `opencode.json` / `.opencode/` can carry a JS plugin
+    /// opencode runs at startup, so an untrusted repository's is skipped (owner decision
+    /// 2026-10-16). Canned keeps both switches: there marion owns the provider.
     #[test]
     fn a_live_opencode_node_loads_the_operators_plugins_and_project_config() {
-        let live = OpenCodeAdapter
-            .compile(&opencode_live_spec(), &ctx())
-            .unwrap();
+        let mut spec = opencode_live_spec();
+        let untrusted = OpenCodeAdapter.compile(&spec, &ctx()).unwrap();
+        spec.extra.repo_trusted = true;
+        let live = OpenCodeAdapter.compile(&spec, &ctx()).unwrap();
+        for inv in [&untrusted, &live] {
+            assert!(
+                !inv.args.iter().any(|a| a == "--pure"),
+                "a live node must not skip the operator's plugins: {:?}",
+                inv.args
+            );
+        }
         assert!(
-            !live.args.iter().any(|a| a == "--pure"),
-            "a live node must not skip the operator's plugins: {:?}",
-            live.args
+            untrusted
+                .env
+                .iter()
+                .any(|(k, v)| k == "OPENCODE_DISABLE_PROJECT_CONFIG" && v == "1"),
+            "an untrusted repository's project config is skipped: {:?}",
+            untrusted.env
         );
         assert!(
             !live
                 .env
                 .iter()
                 .any(|(k, _)| k == "OPENCODE_DISABLE_PROJECT_CONFIG"),
-            "a live node must not skip the project config: {:?}",
+            "a trusted repository's project config loads: {:?}",
             live.env
         );
         let canned = OpenCodeAdapter.compile(&opencode_spec(), &ctx()).unwrap();
@@ -6977,7 +7058,9 @@ mod tests {
                 assert!(content.get(shadowing).is_none(), "{mode}: {shadowing}");
             }
         }
-        let live = acp_adapter().compile(&acp_spec(), &ctx()).unwrap();
+        let mut trusted = acp_spec();
+        trusted.extra.repo_trusted = true;
+        let live = acp_adapter().compile(&trusted, &ctx()).unwrap();
         for relocation in [
             "HOME",
             "XDG_CONFIG_HOME",
@@ -6989,6 +7072,17 @@ mod tests {
                 "live: {relocation} would hide the operator's login or config"
             );
         }
+        // The one gate a live node keeps: a repository the operator has not trusted loads no
+        // project config of its own.
+        let untrusted = acp_adapter().compile(&acp_spec(), &ctx()).unwrap();
+        assert!(
+            untrusted
+                .env
+                .iter()
+                .any(|(k, v)| k == "OPENCODE_DISABLE_PROJECT_CONFIG" && v == "1"),
+            "{:?}",
+            untrusted.env
+        );
     }
 
     /// The canned document's `model` key is **the only channel that reaches an ACP session**, so a
@@ -8162,12 +8256,20 @@ mod tests {
         "--data-dir",
     ];
 
-    /// The one value a live launch may pass a [`CONFIG_EXCLUDING_FLAGS`] switch, allowed
-    /// deliberately: claude's `--settings` *merges* over the operator's layers, and this overlay
-    /// adds only `disableAllHooks`. Turning hooks off hides no credential — measured on 2.1.283,
-    /// a settings `env` key and an `apiKeyHelper` both still reached the endpoint under it.
-    /// Spelled out rather than borrowed from the row, so widening the row's overlay fails here.
-    const HOOKS_ONLY_OVERLAY: (&str, &str) = ("--settings", r#"{"disableAllHooks":true}"#);
+    /// The values a live launch **in a repository the operator has not trusted** may pass a
+    /// [`CONFIG_EXCLUDING_FLAGS`] switch, allowed deliberately: each drops the repository's own
+    /// layer and none of the operator's. claude's `user` source keeps their settings — measured on
+    /// 2.1.280, a user `settings.json` credential took its route under it — and its `--settings`
+    /// *merges* one key over their layers, withholding only the repository's `.mcp.json`
+    /// approval. Spelled out rather than borrowed from the row, so widening either fails here.
+    const REPO_LAYER_ONLY: &[(&str, &str)] = &[
+        ("--setting-sources", "user"),
+        ("--settings", r#"{"enableAllProjectMcpServers":false}"#),
+    ];
+
+    /// The variables a live launch in an untrusted repository may set: each drops the
+    /// repository's own configuration and nothing of the operator's.
+    const REPO_LAYER_ENV: &[(&str, &str)] = &[("OPENCODE_DISABLE_PROJECT_CONFIG", "1")];
 
     /// Keys that select an auth route, a provider or a credential, in any declaration document or
     /// inline override marion writes.
@@ -8184,8 +8286,14 @@ mod tests {
         "base_url",
     ];
 
-    fn assert_leaves_the_auth_source_alone(who: &str, args: &[String], env: &[(String, String)]) {
-        for (k, v) in env {
+    fn assert_leaves_the_auth_source_alone(
+        who: &str,
+        args: &[String],
+        env: &[(String, String)],
+        repo_trusted: bool,
+    ) {
+        let repo_layer = |k: &str, v: &str| !repo_trusted && REPO_LAYER_ENV.contains(&(k, v));
+        for (k, v) in env.iter().filter(|(k, v)| !repo_layer(k, v)) {
             assert!(
                 !is_credential_or_relocation(k),
                 "{who}: a live launch set `{k}`, which selects or hides a credential: {env:?}"
@@ -8198,8 +8306,10 @@ mod tests {
         for flag in CONFIG_EXCLUDING_FLAGS {
             let excluding = |(i, a): (usize, &String)| {
                 a == flag
-                    && (*flag, args.get(i + 1).map(String::as_str))
-                        != (HOOKS_ONLY_OVERLAY.0, Some(HOOKS_ONLY_OVERLAY.1))
+                    && (repo_trusted
+                        || !args
+                            .get(i + 1)
+                            .is_some_and(|v| REPO_LAYER_ONLY.contains(&(*flag, v.as_str()))))
             };
             assert!(
                 !args.iter().enumerate().any(excluding),
@@ -8234,6 +8344,9 @@ mod tests {
     /// The spec it launches from still *carries* a base URL and a key, as a caller might hand
     /// one: live mode must drop them, not merely never have been given them.
     ///
+    /// A repository the operator has not trusted keeps its own layer out ([`REPO_LAYER_ONLY`],
+    /// [`REPO_LAYER_ENV`]) and nothing else; a trusted one's launch carries no exclusion at all.
+    ///
     /// Mutation: make any `HOME`/`XDG_*`/`CODEX_HOME`/`*_API_KEY` row `When::Always`, blank `ANTHROPIC_API_KEY` beside no token, or turn
     /// claude's `--setting-sources` / opencode's `--pure` back into `Arg::Lit`.
     #[test]
@@ -8262,13 +8375,22 @@ mod tests {
                 "{h}: the sweep hands every row an endpoint so live mode is seen dropping it"
             );
             let adapter = launch_adapter(h).unwrap();
-            let mut shapes = vec![("headless", adapter.compile(&live, &ctx))];
-            if row.pane.is_some() {
-                shapes.push(("pane", adapter.compile_pane(&live, &ctx)));
-            }
-            for (shape, inv) in shapes {
-                let inv = inv.unwrap_or_else(|e| panic!("{h} {shape}: {e}"));
-                assert_leaves_the_auth_source_alone(&format!("{h} {shape}"), &inv.args, &inv.env);
+            for repo_trusted in [false, true] {
+                let mut live = live.clone();
+                live.extra.repo_trusted = repo_trusted;
+                let mut shapes = vec![("headless", adapter.compile(&live, &ctx))];
+                if row.pane.is_some() {
+                    shapes.push(("pane", adapter.compile_pane(&live, &ctx)));
+                }
+                for (shape, inv) in shapes {
+                    let inv = inv.unwrap_or_else(|e| panic!("{h} {shape}: {e}"));
+                    assert_leaves_the_auth_source_alone(
+                        &format!("{h} {shape} trusted={repo_trusted}"),
+                        &inv.args,
+                        &inv.env,
+                        repo_trusted,
+                    );
+                }
             }
             for (path, document) in adapter.config_files(&live, &ctx).unwrap() {
                 assert_selects_no_auth(&format!("{h} {}", path.display()), &document);
@@ -8297,7 +8419,7 @@ mod tests {
                 .map(|(k, v)| (lossy(k), lossy(v)))
                 .collect();
             let prefix: Vec<String> = injection.argv_prefix.iter().map(lossy).collect();
-            assert_leaves_the_auth_source_alone(&format!("{h} native"), &prefix, &overlay);
+            assert_leaves_the_auth_source_alone(&format!("{h} native"), &prefix, &overlay, true);
             for doc in &injection.documents {
                 assert_selects_no_auth(
                     &format!("{h} native {}", doc.path.display()),
@@ -8969,7 +9091,11 @@ mod tests {
                     "{h} {auth:?}"
                 );
                 assert!(!remembers.marion_owns_config(Auth::Inherited), "{h}");
-                let may = remembers.marion_may_answer(auth);
+                assert!(
+                    !remembers.marion_may_answer(auth, false),
+                    "{h} {auth:?}: never in a repository the operator has not trusted"
+                );
+                let may = remembers.marion_may_answer(auth, true);
                 match remembers {
                     Remembers::Nothing => assert!(may, "{h} {auth:?}"),
                     Remembers::CannedHome => assert_eq!(may, auth.overlays(), "{h} {auth:?}"),

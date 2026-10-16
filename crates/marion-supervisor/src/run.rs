@@ -3647,6 +3647,8 @@ pub fn child_launch_spec(
             read_only: req.is_read_only(),
             // A node: marion's own sandbox applies wherever its row and auth allow.
             os_sandbox: env.os_sandbox,
+            // The repository's own harness config loads only where the operator trusted it.
+            repo_trusted: crate::trust::repo_trusted(&env.project_root),
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
             approval_mode: agent_type.approval_mode.clone(),

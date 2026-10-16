@@ -141,6 +141,7 @@ session_mode: None
 args:
   --mode
   rpc
+  --no-approve
   --model
   canned-1
   --tools
@@ -909,6 +910,7 @@ args:
   rpc
   --session
   session-1
+  --no-approve
   --model
   canned-1
   --tools

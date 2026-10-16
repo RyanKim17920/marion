@@ -1008,22 +1008,54 @@ pub const APPROVAL_KEY: &str = "approval_policy";
 /// written. `untrusted` is what an unset trust already means, so the run is the one codex would
 /// have made — marion only declines to record a trust the operator never gave.
 ///
-/// `None` — nothing to add — outside git, or where the operator's `config.toml` (`theirs`)
-/// already states a trust for the checkout: there codex writes nothing either, and their choice
-/// stands.
-pub fn live_trust_override(cwd: &Path, theirs: Option<&str>) -> Option<(String, String)> {
+/// **A repository the operator has not trusted in marion is pinned `untrusted` whatever their
+/// own `config.toml` says** (owner decision 2026-10-16): codex loads a project's
+/// `.codex/config.toml` — its MCP commands, `notify`, provider overrides — only for a trusted
+/// project, and a node marion launches skips the dialog that would have asked. A repository they
+/// trusted in marion is pinned `trusted`, so it loads as it would in their own codex, unless their
+/// `config.toml` (`theirs`) already states a trust for the checkout: then their choice stands and
+/// codex writes nothing either. `None` — nothing to add — outside git, and in that last case.
+pub fn live_trust_override(
+    cwd: &Path,
+    theirs: Option<&str>,
+    repo_trusted: bool,
+) -> Option<(String, String)> {
     let checkout = main_checkout(cwd)?;
     let key = checkout.to_string_lossy().into_owned();
     let stated = theirs
         .and_then(|t| t.parse::<toml::Table>().ok())
         .and_then(|t| t.get("projects")?.get(&key)?.get("trust_level").cloned())
         .is_some();
-    (!stated).then(|| {
-        (
-            "projects".to_string(),
-            format!("{{{}={{trust_level=\"untrusted\"}}}}", toml_str(&key)),
-        )
-    })
+    if repo_trusted && stated {
+        return None;
+    }
+    Some((
+        "projects".to_string(),
+        format!(
+            "{{{}={{trust_level={}}}}}",
+            toml_str(&key),
+            toml_str(trust_level(repo_trusted))
+        ),
+    ))
+}
+
+/// The `trust_level` codex records for a repository marion's operator trusted, or did not.
+fn trust_level(repo_trusted: bool) -> &'static str {
+    if repo_trusted { "trusted" } else { "untrusted" }
+}
+
+/// **A canned or endpoint node's project trust, stated in its own `config.toml`**: the repository's
+/// `.codex/config.toml` loads only where the operator trusted the repository in marion, and with a
+/// trust stated codex shows no directory-trust dialog to answer. Empty outside git.
+pub fn canned_trust_table(cwd: &Path, repo_trusted: bool) -> String {
+    match main_checkout(cwd) {
+        Some(checkout) => format!(
+            "\n[projects.{}]\ntrust_level = {}\n",
+            toml_str(&checkout.to_string_lossy()),
+            toml_str(trust_level(repo_trusted))
+        ),
+        None => String::new(),
+    }
 }
 
 /// The main checkout of the git repository `cwd` is in — codex's key for a project's trust —
@@ -1091,15 +1123,6 @@ pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
 /// Doubles as the needle [`crate::McpRoute::Argv`] hands the supervisor: an argv that does not
 /// mention this key carries no declaration, whatever else it carries.
 pub const MCP_SERVER_KEY: &str = "mcp_servers.marion";
-
-/// The feature flag whose default `true` leaves a `git fetch` running after `exec` has exited.
-///
-/// Verified against the installed 0.146.0: `codex features list` reports `plugins  stable  true`
-/// by default and `plugins  stable  false` under `-c features.plugins=false`. `--disable plugins`
-/// is documented as the exact equivalent (`-c features.<name>=false`); the dotted form is emitted
-/// because it is the same key path the generated `config.toml` has always written, so the two
-/// routes cannot drift into disabling different things.
-pub const PLUGINS_FEATURE_KEY: &str = "features.plugins";
 
 /// The feature flag whose default `true` writes a snapshot of the login shell — its whole
 /// environment, a provider key included — to `$CODEX_HOME/shell_snapshots/*.sh` for every session.
@@ -1174,12 +1197,9 @@ pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
             .join(", ");
         out.push((format!("{MCP_SERVER_KEY}.env_vars"), format!("[{names}]")));
     }
-    // Measured (S7 / §12): left on, `codex exec` starts a curated-plugin-marketplace clone whose
-    // `git fetch` OUTLIVES the process, reparents to pid 1, writes into the agent dir after
-    // teardown, and reaches the network on a run specified to make none. It is not reapable after
-    // the fact — §9's kill rule turns on enumerating descendants *before* the child dies — so
-    // prevention at config time is the only remedy, on this route exactly as on the other.
-    out.push((PLUGINS_FEATURE_KEY.to_string(), "false".to_string()));
+    // Plugins stay the operator's on their own login (owner decision 2026-10-16): their codex
+    // runs its plugin marketplace as it always does. The canned document turns it off, where the
+    // fetch would write into an agent dir marion is deleting ([`config_toml`]).
     // The operator's environment, credentials included, written into `~/.codex` for every node
     // marion starts: see [`SHELL_SNAPSHOT_FEATURE_KEY`].
     out.push((SHELL_SNAPSHOT_FEATURE_KEY.to_string(), "false".to_string()));
@@ -1288,8 +1308,11 @@ impl HarnessAdapter for CodexAdapter {
                 .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
                 .and_then(|d| std::fs::read_to_string(d.join("config.toml")).ok());
-            f.pairs
-                .extend(live_trust_override(&spec.cwd, theirs.as_deref()));
+            f.pairs.extend(live_trust_override(
+                &spec.cwd,
+                theirs.as_deref(),
+                spec.extra.repo_trusted,
+            ));
             // A headless node has no one to answer an approval, so it asks for none
             // ([`live_approval_override`]); a pane keeps the operator's policy for them to answer.
             if shape == spec::Shape::Headless {
@@ -1327,7 +1350,8 @@ impl HarnessAdapter for CodexAdapter {
         let bridge = declared_bridge(self, spec, ctx);
         Ok(vec![(
             Self::config_path(spec),
-            config_toml(&bridge, base_url),
+            config_toml(&bridge, base_url)
+                + &canned_trust_table(&spec.cwd, spec.extra.repo_trusted),
         )])
     }
 }
@@ -1398,11 +1422,13 @@ mod tests {
             .collect()
     }
 
-    /// **A live node's sandbox does not trust the operator's repository for them.** Unset, the
-    /// override pins the main checkout — also from a linked worktree — to `untrusted` in memory;
-    /// where their `config.toml` states any trust for it, or outside git, nothing is added.
+    /// **A live node's sandbox trusts the operator's repository only as marion's operator did.**
+    /// Untrusted in marion, the override pins the main checkout — also from a linked worktree — to
+    /// `untrusted` in memory, whatever their `config.toml` states; trusted in marion, to `trusted`
+    /// where their `config.toml` states nothing, and nothing is added where it states a trust.
+    /// Outside git nothing is added.
     #[test]
-    fn a_live_sandbox_pins_an_unstated_trust_to_untrusted_and_leaves_a_stated_one() {
+    fn a_live_sandbox_pins_trust_as_the_operator_gave_it_in_marion() {
         let dir = marion_testsupport::scratch("codex-trust-override");
         let main = dir.join("main");
         let wt = dir.join("wt");
@@ -1425,7 +1451,7 @@ mod tests {
         assert_eq!(main_checkout(&main).as_deref(), Some(canon.as_path()));
 
         let key = canon.to_string_lossy().into_owned();
-        let (k, v) = live_trust_override(&wt, None).expect("unset trust is pinned");
+        let (k, v) = live_trust_override(&wt, None, false).expect("unset trust is pinned");
         assert_eq!(k, "projects");
         assert_eq!(
             v,
@@ -1438,17 +1464,44 @@ mod tests {
             Some("untrusted")
         );
         let other = "[projects.\"/elsewhere\"]\ntrust_level = \"trusted\"\n";
-        assert!(live_trust_override(&wt, Some(other)).is_some());
+        assert!(live_trust_override(&wt, Some(other), false).is_some());
         for stated in ["trusted", "untrusted"] {
             let theirs = format!(
                 "[projects.{}]\ntrust_level = \"{stated}\"\n",
                 toml_str(&key)
             );
-            assert_eq!(live_trust_override(&wt, Some(&theirs)), None, "{stated}");
+            assert_eq!(
+                live_trust_override(&wt, Some(&theirs), false).map(|(_, v)| v),
+                Some(v.clone()),
+                "untrusted in marion is pinned over their {stated}"
+            );
+            assert_eq!(
+                live_trust_override(&wt, Some(&theirs), true),
+                None,
+                "trusted in marion, their {stated} stands"
+            );
         }
+        assert_eq!(
+            live_trust_override(&wt, None, true).map(|(_, v)| v),
+            Some(format!(
+                "{{{}={{trust_level=\"trusted\"}}}}",
+                toml_str(&key)
+            ))
+        );
+        // A canned node states the same trust in its own document, so codex asks nothing.
+        let table: toml::Table = canned_trust_table(&wt, false).parse().unwrap();
+        assert_eq!(
+            table["projects"][key.as_str()]["trust_level"].as_str(),
+            Some("untrusted")
+        );
         let plain = dir.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        assert_eq!(live_trust_override(&plain, None), None, "outside git");
+        assert_eq!(
+            live_trust_override(&plain, None, false),
+            None,
+            "outside git"
+        );
+        assert_eq!(canned_trust_table(&plain, true), "", "outside git");
     }
 
     /// **A failed turn is the stream's failure claim, in codex's own words** — measured on 0.155.1
@@ -1899,17 +1952,17 @@ mod tests {
         );
     }
 
-    /// The runaway `git fetch` is prevented on the live route too — and it has to be prevented
-    /// *here*, at config time, because after `exec` exits its descendants have reparented to pid 1
-    /// and no ancestry walk can find them.
+    /// **The operator's plugins are theirs on their own login** (owner decision 2026-10-16): the
+    /// live route leaves `features.plugins` as their codex has it, and only the canned document,
+    /// whose home marion deletes, turns it off. The shell snapshot stays off on both.
     #[test]
-    fn the_background_plugin_fetch_that_outlives_exec_is_disabled_on_the_live_route_too() {
+    fn the_live_route_keeps_the_operators_plugins_and_no_shell_snapshot() {
+        let live = live_config_overrides(&bridge_env());
         assert!(
-            live_config_overrides(&bridge_env())
-                .contains(&("features.plugins".to_string(), "false".to_string())),
-            "otherwise every live node leaves a network fetch behind it, writing into an agent \
-             dir marion is deleting"
+            !live.iter().any(|(k, _)| k == "features.plugins"),
+            "{live:?}"
         );
+        assert!(live.contains(&(SHELL_SNAPSHOT_FEATURE_KEY.to_string(), "false".to_string())));
     }
 
     /// The live overlay adds exactly what the canned document adds and nothing that belongs to the
