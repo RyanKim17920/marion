@@ -3527,6 +3527,9 @@ impl PtyHost {
 
     fn input_state_locked(&self, typing: &input::Typing) -> input::InputState {
         self.settle_boot();
+        // Read afresh: a writer's safety never rests on the hint that decides when a chunk is
+        // read ([`input::ModeScan::read_asks`]).
+        let ask = self.shared.with_modes(input::ModeScan::read_asks);
         let modes = self.modes();
         input::InputState {
             bracketed_paste: modes.bracketed_paste(),
@@ -3536,7 +3539,7 @@ impl PtyHost {
             titled: modes.titled(),
             last_output: modes.last_output(),
             boot_dialog: modes.showing(),
-            ask: modes.asking(),
+            ask,
         }
     }
 
@@ -3660,7 +3663,7 @@ impl PtyHost {
             // Read again at the last moment: a prompt raised since the guard looked takes the
             // submit as its answer. Residual: one drawn after this read and before the node reads
             // the submit still does.
-            if self.modes().asking().is_some() {
+            if self.shared.with_modes(input::ModeScan::read_asks).is_some() {
                 return Ok(Injected::Unsubmitted);
             }
             self.inject_part(None, injection.submit)?;

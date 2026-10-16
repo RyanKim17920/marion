@@ -178,7 +178,7 @@ pub(crate) struct ModeScan {
     /// The row's boot dialogs this scan recognises ([`Self::showing`]).
     dialogs: &'static [BootDialog],
     /// The row's mid-session asks this scan recognises on [`Self::grid`], before boot and after
-    /// it ([`Self::asking`]).
+    /// it ([`Self::read_asks`]).
     asks: &'static [Ask],
     /// The ask on the grid as of the last read.
     ask: Option<&'static Ask>,
@@ -208,7 +208,7 @@ pub(crate) struct ModeScan {
     /// [`Self::screen`], because a TUI that animates behind its dialog (codex's welcome art)
     /// writes past the cap while the dialog, drawn once, stays on screen.
     seen: u64,
-    /// What [`Self::showing`] or [`Self::asking`] answers changed since [`Self::take_changed`].
+    /// What [`Self::showing`] or the grid's ask changed since [`Self::take_changed`].
     changed: bool,
     /// Visible text arrived since the last look for needles.
     fresh: bool,
@@ -300,10 +300,22 @@ impl ModeScan {
             .map(|(_, d)| d)
     }
 
-    /// **The first of the watched asks on the screen now**, in the row's order: its footer stands
-    /// on the grid, or its header with its option line ([`Grid::showing`]). Before boot and after it, and no key clears it — only the
-    /// prompt leaving the screen does.
+    /// **The first of the watched asks on the screen as the last read left it**, in the row's
+    /// order: its footer stood on the grid, or its header with its option line
+    /// ([`Grid::showing`]). Before boot and after it, and no key clears it — only the prompt
+    /// leaving the screen does. A writer reads afresh instead ([`Self::read_asks`]).
+    #[cfg(test)]
     pub(crate) fn asking(&self) -> Option<&'static Ask> {
+        self.ask
+    }
+
+    /// **The first of the watched asks on the grid, read now** rather than as the last read left
+    /// it: what a writer checks right before it types. A chunk is read only on a hint (an ask
+    /// word written, the screen switched or reset), and a TUI can draw a prompt the hint misses —
+    /// cell by cell, its words never written whole — so the hint saves reads, and this is the
+    /// safety.
+    pub(crate) fn read_asks(&mut self) -> Option<&'static Ask> {
+        self.look_for_asks();
         self.ask
     }
 
@@ -362,7 +374,7 @@ impl ModeScan {
         None
     }
 
-    /// Whether [`Self::showing`] or [`Self::asking`] changed since the last call.
+    /// Whether [`Self::showing`] or the grid's ask changed since the last call.
     pub(crate) fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }
@@ -634,7 +646,7 @@ pub struct InputState {
     /// The row's boot dialog drawn since anyone last typed, before the first paste
     /// ([`ModeScan::showing`]).
     pub boot_dialog: Option<&'static BootDialog>,
-    /// The row's mid-session ask on the screen now ([`ModeScan::asking`]).
+    /// The row's mid-session ask on the screen now ([`ModeScan::read_asks`]).
     pub ask: Option<&'static Ask>,
 }
 
@@ -1209,6 +1221,25 @@ mod tests {
         let gone = looks(&scan);
         scan.feed(b"\x1b[3;3Hthe next answer", Instant::now());
         assert_eq!(looks(&scan), gone, "and none once it left");
+    }
+
+    /// **A prompt drawn one cell at a time is still read before a paste**: its words are never
+    /// written whole, so no chunk hints at it and [`ModeScan::asking`] has not seen it, but the
+    /// fresh read a writer makes ([`ModeScan::read_asks`]) does.
+    #[test]
+    fn a_prompt_the_hint_misses_is_read_afresh_before_typing() {
+        let cells = |row: usize, line: &str| -> Vec<u8> {
+            line.chars()
+                .enumerate()
+                .filter(|&(_, c)| c != ' ')
+                .flat_map(|(i, c)| format!("\x1b[{row};{}H{c}", i + 3).into_bytes())
+                .collect()
+        };
+        let mut scan = asked();
+        scan.feed(&cells(7, ASK.footer), Instant::now());
+        assert_eq!(scan.asking(), None, "no ask word was written whole");
+        assert_eq!(scan.read_asks(), Some(&ASK));
+        assert_eq!(scan.asking(), Some(&ASK), "and the read is kept");
     }
 
     /// **A prompt redrawn by its changed cells alone stays up**: the selection moves under an

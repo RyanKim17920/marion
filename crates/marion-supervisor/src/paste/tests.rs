@@ -1377,6 +1377,33 @@ fn a_steer_waits_on_a_prompt_showing_only_part_of_it() {
     }
 }
 
+/// **A prompt drawn one cell at a time holds a steer**: a renderer that places the cursor before
+/// each letter never writes a word of it whole, so nothing hints at it as it streams, and the
+/// paste is held on the fresh read made before it is typed.
+#[test]
+fn a_steer_waits_on_a_prompt_drawn_cell_by_cell() {
+    use marion_core::harness::Harness;
+    let mut bed = Bed::for_harness("paste-ask-cells", fast(), Harness::Codex);
+    bed.node_writes(BOOTED_TITLED);
+    bed.steer("the first turn");
+    let first = expected_paste("the first turn");
+    assert_eq!(bed.read_slave(first.len()), first, "boot is over");
+    let footer = "Press enter to confirm or esc to cancel";
+    let cells: Vec<u8> = footer
+        .chars()
+        .enumerate()
+        .filter(|&(_, c)| c != ' ')
+        .flat_map(|(i, c)| format!("\x1b[40;{}H{c}", i + 3).into_bytes())
+        .collect();
+    bed.node_writes(&cells);
+    bed.steer("a steer mid-ask");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::Ask, _)));
+    assert!(
+        nothing_reaches(&mut bed.slave, Duration::from_millis(400)),
+        "a paste or its Enter reached the prompt"
+    );
+}
+
 /// **An idle reply that ends on a prompt's header holds nothing**: claude can close a turn with
 /// `Do you want to proceed?` itself, and a hold on that would keep the steer that answers it
 /// waiting for good. With no option line and no footer on the screen, the steer is pasted.
