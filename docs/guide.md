@@ -412,9 +412,9 @@ Which paths count is each harness row's `repo_config`.
 | harness | untrusted repository | trusted repository |
 |---|---|---|
 | `claude` | `--setting-sources user` (your settings, not the repository's) and `.mcp.json` servers not approved wholesale | every settings source |
-| `codex` | the checkout pinned `trust_level="untrusted"` for the node | pinned `trusted`, unless your `config.toml` states a trust for it |
+| `codex` | the trust your `config.toml` states for the checkout, else pinned `trust_level="untrusted"`; always pinned `untrusted` in a child tree whose config was edited | pinned `trusted`, unless your `config.toml` states a trust for it |
 | `opencode` | `OPENCODE_DISABLE_PROJECT_CONFIG=1` | the project config loads |
-| `pi` | `--no-approve` (your own extensions still load) | `--approve` |
+| `pi` | no switch, so pi's own `trust.json` (or `defaultProjectTrust`) decides; `--no-approve` in a child tree whose `.pi/` was edited (your own extensions still load) | `--approve` |
 
 marion answers a harness's own folder-trust dialog only in a repository you trusted. Canned and
 endpoint nodes load no repository config either way; a canned codex states the same trust in its

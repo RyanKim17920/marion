@@ -98,9 +98,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // (item 1). A live node keeps them, since an extension can be where a provider lives.
         Arg::CannedLit("--no-extensions"),
         // A live node loads the repository's own `.pi/` (settings, extensions, skills, prompts)
-        // only once the operator has trusted the repository: pi's own project trust, decided
-        // here because an rpc node has no one to ask (`--no-approve` / `--approve`, 0.80).
-        Arg::Untrusted("--no-approve"),
+        // where the operator trusted the repository (`--approve`, since an rpc node has no one to
+        // ask); never where a child edited it (`--no-approve`); and otherwise as pi's own saved
+        // trust or `defaultProjectTrust` decides (0.80: rpc mode shows no prompt).
+        Arg::Disowned("--no-approve"),
         Arg::Trusted("--approve"),
         // The provider `models.json` declares under the relocated agent dir.
         Arg::CannedLit("--provider"),
@@ -384,7 +385,7 @@ pub const LAUNCH_ONLY: HarnessSpec = HarnessSpec {
         Arg::Lit("json"),
         Arg::Resume,
         Arg::CannedLit("--no-extensions"),
-        Arg::Untrusted("--no-approve"),
+        Arg::Disowned("--no-approve"),
         Arg::Trusted("--approve"),
         Arg::CannedLit("--provider"),
         Arg::CannedLit(PROVIDER),

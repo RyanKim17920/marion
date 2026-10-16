@@ -2514,19 +2514,20 @@ pub fn run_spawn_watched(
     let node_tmp = crate::node_tmp::NodeTmp::create(&agent_dir)?;
     let launched_at = Instant::now();
     // Trust is by place, and a child writes its own tree: in a worktree marion made, the
-    // repository's own harness config loads only while it is exactly the operator's.
-    let repo_trusted = crate::trust::repo_trusted(&env.project_root)
-        && match tree_of(env, &wt) {
-            tree @ crate::spawn::Tree::Child { .. } => base.as_ref().is_some_and(|b| {
-                crate::spawn::repo_config_unchanged(
-                    tree,
-                    b,
-                    &env.project_root,
-                    &crate::trust::repo_config_paths(),
-                )
-            }),
-            crate::spawn::Tree::Operator(_) => true,
-        };
+    // repository's own harness config is the operator's only while it is exactly their commit,
+    // and loads only then.
+    let repo_config_own = match tree_of(env, &wt) {
+        tree @ crate::spawn::Tree::Child { .. } => base.as_ref().is_some_and(|b| {
+            crate::spawn::repo_config_unchanged(
+                tree,
+                b,
+                &env.project_root,
+                &crate::trust::repo_config_paths(),
+            )
+        }),
+        crate::spawn::Tree::Operator(_) => true,
+    };
+    let repo_trusted = repo_config_own && crate::trust::repo_trusted(&env.project_root);
     // The profile this attempt runs on: an index into `profiles`, 0 for the first.
     let mut at = 0;
     let (launch, inv, mut run, version) = loop {
@@ -2556,6 +2557,7 @@ pub fn run_spawn_watched(
         );
         launch.extra.env_passthrough = passthrough.clone();
         launch.extra.repo_trusted = repo_trusted;
+        launch.extra.repo_config_own = repo_config_own;
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep, gateway.as_ref());
         }

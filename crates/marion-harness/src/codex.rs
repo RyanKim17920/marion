@@ -1021,17 +1021,19 @@ pub const APPROVAL_KEY: &str = "approval_policy";
 /// written. `untrusted` is what an unset trust already means, so the run is the one codex would
 /// have made — marion only declines to record a trust the operator never gave.
 ///
-/// **A repository the operator has not trusted in marion is pinned `untrusted` whatever their
-/// own `config.toml` says** (owner decision 2026-10-16): codex loads a project's
-/// `.codex/config.toml` — its MCP commands, `notify`, provider overrides — only for a trusted
-/// project, and a node marion launches skips the dialog that would have asked. A repository they
-/// trusted in marion is pinned `trusted`, so it loads as it would in their own codex, unless their
-/// `config.toml` (`theirs`) already states a trust for the checkout: then their choice stands and
-/// codex writes nothing either. `None` — nothing to add — outside git, and in that last case.
+/// **Where the tree's config is the operator's own (`own`), a trust their `config.toml`
+/// (`theirs`) states for the checkout stands**: it is the choice their own codex would act on, and
+/// codex writes nothing either. Otherwise the checkout is pinned: `trusted` where they trusted the
+/// repository in marion, so it loads as in their own codex, and `untrusted` where they did not —
+/// codex loads a project's `.codex/config.toml` (its MCP commands, `notify`, provider overrides)
+/// only for a trusted project, and a node marion launches skips the dialog that would have asked.
+/// A tree whose config a child edited is never `own`, so their trust, keyed on the main checkout,
+/// never reaches what a child wrote. `None` — nothing to add — outside git, and where theirs stands.
 pub fn live_trust_override(
     cwd: &Path,
     theirs: Option<&str>,
     repo_trusted: bool,
+    own: bool,
 ) -> Option<(String, String)> {
     let checkout = main_checkout(cwd)?;
     let key = checkout.to_string_lossy().into_owned();
@@ -1039,7 +1041,7 @@ pub fn live_trust_override(
         .and_then(|t| t.parse::<toml::Table>().ok())
         .and_then(|t| t.get("projects")?.get(&key)?.get("trust_level").cloned())
         .is_some();
-    if repo_trusted && stated {
+    if stated && own {
         return None;
     }
     Some((
@@ -1325,6 +1327,7 @@ impl HarnessAdapter for CodexAdapter {
                 &spec.cwd,
                 theirs.as_deref(),
                 spec.extra.repo_trusted,
+                spec.extra.repo_config_own,
             ));
             // A headless node has no one to answer an approval, so it asks for none
             // ([`live_approval_override`]); a pane keeps the operator's policy for them to answer.
@@ -1464,7 +1467,7 @@ mod tests {
         assert_eq!(main_checkout(&main).as_deref(), Some(canon.as_path()));
 
         let key = canon.to_string_lossy().into_owned();
-        let (k, v) = live_trust_override(&wt, None, false).expect("unset trust is pinned");
+        let (k, v) = live_trust_override(&wt, None, false, false).expect("unset trust is pinned");
         assert_eq!(k, "projects");
         assert_eq!(
             v,
@@ -1477,25 +1480,30 @@ mod tests {
             Some("untrusted")
         );
         let other = "[projects.\"/elsewhere\"]\ntrust_level = \"trusted\"\n";
-        assert!(live_trust_override(&wt, Some(other), false).is_some());
+        assert!(live_trust_override(&wt, Some(other), false, false).is_some());
         for stated in ["trusted", "untrusted"] {
             let theirs = format!(
                 "[projects.{}]\ntrust_level = \"{stated}\"\n",
                 toml_str(&key)
             );
             assert_eq!(
-                live_trust_override(&wt, Some(&theirs), false).map(|(_, v)| v),
+                live_trust_override(&wt, Some(&theirs), false, false).map(|(_, v)| v),
                 Some(v.clone()),
-                "untrusted in marion is pinned over their {stated}"
+                "a tree whose config is not theirs is pinned over their {stated}"
             );
             assert_eq!(
-                live_trust_override(&wt, Some(&theirs), true),
+                live_trust_override(&wt, Some(&theirs), false, true),
+                None,
+                "untrusted in marion, the config theirs: their {stated} stands"
+            );
+            assert_eq!(
+                live_trust_override(&wt, Some(&theirs), true, true),
                 None,
                 "trusted in marion, their {stated} stands"
             );
         }
         assert_eq!(
-            live_trust_override(&wt, None, true).map(|(_, v)| v),
+            live_trust_override(&wt, None, true, true).map(|(_, v)| v),
             Some(format!(
                 "{{{}={{trust_level=\"trusted\"}}}}",
                 toml_str(&key)
@@ -1510,7 +1518,7 @@ mod tests {
         let plain = dir.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(
-            live_trust_override(&plain, None, false),
+            live_trust_override(&plain, None, false, false),
             None,
             "outside git"
         );

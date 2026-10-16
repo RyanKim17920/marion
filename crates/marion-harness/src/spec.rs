@@ -1326,6 +1326,11 @@ pub enum Arg {
     /// configuration — its settings, hooks, plugins, extensions — out of a node running on the
     /// operator's login. An overlaying launch keeps all of it out already ([`Self::CannedLit`]).
     Untrusted(&'static str),
+    /// A literal token on a **live** launch where the tree's repository config is **not** the
+    /// operator's ([`Fields::repo_config_own`]) and the repository is not trusted: a child edited
+    /// or planted it. Where the config is theirs, the harness's own project trust decides, as it
+    /// would in their own harness (pi's `trust.json`).
+    Disowned(&'static str),
     /// A literal token on a **live** launch in a repository the operator **has** trusted: the
     /// switch that loads that configuration where the harness would otherwise stop to ask (pi's
     /// `--approve` in a mode with no one to answer).
@@ -1453,6 +1458,8 @@ pub struct Fields {
     /// live node may load the repository's own harness configuration: [`Arg::Untrusted`],
     /// [`Arg::Trusted`] and [`When::Untrusted`] read it. `false` — untrusted — by default.
     pub repo_trusted: bool,
+    /// The tree's repository config is the operator's own: what [`Arg::Disowned`] reads.
+    pub repo_config_own: bool,
 }
 
 /// **The strings a declaration or a credential can travel in print their shape, never their
@@ -1490,6 +1497,7 @@ impl std::fmt::Debug for Fields {
             writes,
             env_passthrough,
             repo_trusted,
+            repo_config_own,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -1503,6 +1511,7 @@ impl std::fmt::Debug for Fields {
         f.debug_struct("Fields")
             .field("env_passthrough", env_passthrough)
             .field("repo_trusted", repo_trusted)
+            .field("repo_config_own", repo_config_own)
             .field("cwd", cwd)
             .field("config_dir", config_dir)
             .field("auth", auth)
@@ -1768,6 +1777,10 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
         },
         Arg::Trusted(s) => match repo_config_rule(f) {
             Some(true) => vec![s.to_string()],
+            _ => Vec::new(),
+        },
+        Arg::Disowned(s) => match repo_config_rule(f) {
+            Some(false) if !f.repo_config_own => vec![s.to_string()],
             _ => Vec::new(),
         },
         Arg::Resume => arg_resume(spec, f),

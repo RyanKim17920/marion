@@ -888,6 +888,8 @@ pub fn prepare_watched(
             os_sandbox: spec.os_sandbox,
             // The repository's own harness config loads only where the operator trusted it.
             repo_trusted: crate::trust::repo_trusted(&project_root),
+            // A root runs in the operator's own checkout: its config is theirs.
+            repo_config_own: true,
             // The only admin dir the sandbox writes: proven against the registration.
             git_admin_dir: crate::gitcmd::admin_dir(&spec.repo, &project_root),
             acp_agent: agent_type.acp_agent.clone(),

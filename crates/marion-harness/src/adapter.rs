@@ -169,6 +169,13 @@ pub struct Extras {
     /// node then loads the repository's own harness configuration, which it otherwise keeps out
     /// ([`spec::repo_config_rule`]). `false` on a probe and wherever the supervisor did not ask.
     pub repo_trusted: bool,
+    /// **The repository's own harness config in this node's tree is the operator's**: their
+    /// checkout, or a child's worktree holding it exactly as their history does. Where it is,
+    /// a harness's own project trust (codex's `config.toml`, pi's `trust.json`) may decide for an
+    /// untrusted repository, as it would in their own harness; where a child edited or planted it,
+    /// the row's switch keeps it out ([`spec::Arg::Disowned`]). `false` by default: nothing is the
+    /// operator's unless the supervisor said so. A trusted repository is always its own.
+    pub repo_config_own: bool,
     /// **The admin dir of the git worktree the node works in** (`<common>/worktrees/<name>`,
     /// where its index and HEAD live), as the supervisor proved it against the operator's
     /// worktree registration — never read from the tree's own `.git`, which the node can rewrite.
@@ -1086,6 +1093,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
                 .any(|t| t == marion_core::agent_type::TOOL_WRITE),
         env_passthrough: spec.extra.env_passthrough.clone(),
         repo_trusted: spec.extra.repo_trusted,
+        repo_config_own: spec.extra.repo_config_own,
         ..spec::Fields::default()
     }
 }
@@ -2245,15 +2253,17 @@ mod tests {
     }
 
     /// **pi decides its project trust as marion's operator did**: a live node runs `--no-approve`
-    /// in a repository they have not trusted, so pi loads none of its `.pi/` (extensions, settings,
-    /// skills), and `--approve` in one they trusted, where an rpc node would otherwise refuse it
+    /// where the tree's `.pi/` is not the operator's (a child edited it), so pi loads none of it;
+    /// says nothing where the repository is untrusted in marion but the config is theirs, so pi's
+    /// own saved trust (or `defaultProjectTrust`) decides; and `--approve` in one they trusted, where an rpc node would otherwise refuse it
     /// for want of someone to ask. A canned node says neither: `--no-extensions` and its relocated
     /// agent dir already keep everything out.
     #[test]
     fn a_pi_node_approves_a_repositorys_own_config_only_where_the_operator_trusted_it() {
-        let switches = |auth: Auth, repo_trusted: bool| {
+        let switches_own = |auth: Auth, repo_trusted: bool, own: bool| {
             let mut spec = LaunchSpec { auth, ..pi_spec() };
             spec.extra.repo_trusted = repo_trusted;
+            spec.extra.repo_config_own = own;
             let inv = launch_adapter(Harness::Pi)
                 .unwrap()
                 .compile(&spec, &ctx())
@@ -2263,8 +2273,14 @@ mod tests {
                 .filter(|a| a == "--approve" || a == "--no-approve")
                 .collect::<Vec<_>>()
         };
+        let switches =
+            |auth: Auth, repo_trusted: bool| switches_own(auth, repo_trusted, repo_trusted);
         assert_eq!(switches(Auth::Inherited, false), ["--no-approve"]);
         assert_eq!(switches(Auth::Inherited, true), ["--approve"]);
+        assert!(
+            switches_own(Auth::Inherited, false, true).is_empty(),
+            "untrusted in marion, the config the operator's: pi's own trust.json decides"
+        );
         for trusted in [false, true] {
             assert!(switches(Auth::Canned, trusted).is_empty(), "{trusted}");
         }
