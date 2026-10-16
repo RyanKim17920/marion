@@ -44,11 +44,11 @@
 # refused; the list script refuses a harness with no row, a version not newer than the row's
 # newest (no downgrade) and a program named twice; and only the row files the script names may
 # change. It installs nothing and runs only perl, rustfmt, npm view, curl and jq (formulae.brew.sh
-# and GitHub release metadata) and gh. Even so, what it lists is a version string a person never
-# read: CI on the pull request runs with no harness binaries and checks only that the edit builds,
-# so the real gate is the checks above, not the branch's rules. The listed version reaches only
-# the test gate and doctor's note — the shipped marion never refuses on it, and no test installs
-# it.
+# metadata), and gh (GitHub release dates and the pull request). Even so, what it lists is a
+# version string a person never read: CI on the pull request runs with no harness binaries and
+# checks only that the edit builds, so the real gate is the checks above, not the branch's rules.
+# The listed version reaches only the test gate and doctor's note — the shipped marion never
+# refuses on it, and no test installs it.
 # `admit` holds contents and pull-requests write and CANARY_TOKEN, `report` issues: write;
 # neither runs anything installed.
 
@@ -365,9 +365,9 @@ jobs:
             The nightly canary's conformance battery admitted these releases: every probe their
             newest verified release passed in the committed matrix passed again on the exact binary
             installed, each release is past its cooldown (its npm publish, or a Homebrew formula's
-            upstream release), each Homebrew release is its formula's stable version, and the whole canary run was green. This adds them to their
-            rows' `verified` lists. CI on this pull request only checks that the edit builds; it
-            does not drive the harnesses.
+            upstream release), each Homebrew release is its formula's stable version, and the whole
+            canary run was green. This adds them to their rows' `verified` lists. CI on this pull
+            request only checks that the edit builds; it does not drive the harnesses.
 
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
