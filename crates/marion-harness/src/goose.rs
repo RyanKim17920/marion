@@ -79,6 +79,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // No session row for a node whose id marion cannot read back anyway (see `resume`).
         Arg::Lit("--no-session"),
         // Nothing but marion, measured: the alternative is nineteen tools from five extensions.
+        // **Under every auth, the operator's own login included**: goose has no per-tool grant,
+        // so the profile's extensions (`developer` among them) would hand a read-only node
+        // `write` and `shell`. `--with-builtin` below is the one way a grant adds tools.
         Arg::Lit("--no-profile"),
         // The built-in extension a `write` declaration compiles; nothing under the default mode.
         Arg::Flag("--with-builtin", Field::Mode),

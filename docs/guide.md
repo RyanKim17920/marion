@@ -384,6 +384,21 @@ codex-impl = ["MY_PROVIDER_KEY"]   # say, a codex model_providers env_key
 "*" = ["CORP_*"]                  # every agent type
 ```
 
+A node on your own login also runs on your configuration as you wrote it: your settings, MCP
+servers, extensions, skills, instructions and plugins load as they do when you run the harness
+yourself, and marion adds only its own server or extension beside them. A canned or endpoint node
+keeps them out. What a node on your login still changes, and why each is needed:
+
+| harness | kept on your login | why |
+|---|---|---|
+| every TUI | marion's MCP declaration, a no-self-update switch | marion's tools; a version that changes under a running suite |
+| `claude` | `--tools` / `--allowedTools`, `--settings {"disableAllHooks":true}`, `--permission-mode default` headless | the agent type's grant; a blocking `Stop` hook would hold a node nobody watches; a mode that asks, so marion's grant is consulted |
+| `codex` | `sandbox_mode="workspace-write"`, `features.plugins=false`, `features.shell_snapshot=false` (each a `-c` pair, never a write to your `config.toml`) | the write scope the contract records (an untrusted worktree would resolve read-only); the plugins feature leaves a `git fetch` running after the node exits; a shell snapshot writes the node's whole environment, keys included, to disk every session |
+| `goose` | `--no-profile` | goose has no per-tool grant: your profile's extensions (its `developer` among them) would hand a read-only agent `write` and `shell`. Built-ins come only as the agent type declares them |
+| `opencode` | a session store of the node's own (`OPENCODE_DB`), and the models fetch, LSP download, auto-update and sharing switched off | resume finds the node's session in its own store; work a spawned node has no use for |
+| `pi` | `--tools` | the agent type's grant; pi's list also decides which of your extensions' tools are offered |
+| every row | the credential filter above | a key a node's login does not read stays out of every command its model runs |
+
 `marion key` is only for API keys and endpoints you give it:
 
 ```sh
