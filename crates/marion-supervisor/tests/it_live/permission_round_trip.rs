@@ -676,7 +676,10 @@ fn shape(v: &Value) -> Value {
 /// * `mcp_server` — `{"name": "marion", "source": "dynamic"}`, set when the asked-about tool is an
 ///   MCP tool. Absent through 2.1.269; present in 2.1.276, 2.1.278 and 2.1.280 (the binary's
 ///   `...s.mcpInfo&&{mcp_server:…}` spread); found at the 2.1.280 admission, 2026-09-22.
-const REQUEST_KEYS_ADDED_SINCE_THE_PIN: &[&str] = &["mcp_server"];
+/// * `server_policy_ask_only` — `true` on the ask for marion's `report`. Absent from the 2.1.296
+///   binary's strings, present in 2.1.299's and 2.1.301's; found when the nightly canary drove
+///   2.1.301 and this comparison failed on it, 2026-10-16.
+const REQUEST_KEYS_ADDED_SINCE_THE_PIN: &[&str] = &["mcp_server", "server_policy_ask_only"];
 
 /// Removes each [`REQUEST_KEYS_ADDED_SINCE_THE_PIN`] from `live`'s `request`, but only where the
 /// committed frame lacks it, so a recording that later carries the key compares it again.
