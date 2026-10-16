@@ -1725,7 +1725,7 @@ mod tests {
             "finished Ok",
             "codex-impl · Ok · no verification declared",
             "Added average(nums), 0.0 on empty input, with tests.",
-            "merge with: git merge --no-ff marion/t1",
+            "merge with: git merge --no-ff -- marion/t1",
         ] {
             assert!(text.contains(fact), "{fact:?} missing from {text}");
         }
@@ -2674,7 +2674,7 @@ mod tests {
         let line = body.lines().next().unwrap_or_default();
         assert!(
             line.ends_with(
-                "· changes on branch marion/t1 (0123456789ab); merge with: git merge --no-ff marion/t1"
+                "· changes on branch marion/t1 (0123456789ab); merge with: git merge --no-ff -- marion/t1"
             ),
             "{line}"
         );

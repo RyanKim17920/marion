@@ -501,7 +501,7 @@ fn a_childs_changes_are_committed_onto_its_branch_before_the_reap() {
         comp.landed_line().as_deref(),
         Some(
             format!(
-                "changes on branch {branch} ({}); merge with: git merge --no-ff {branch}",
+                "changes on branch {branch} ({}); merge with: git merge --no-ff -- {branch}",
                 &tip[..12]
             )
             .as_str()

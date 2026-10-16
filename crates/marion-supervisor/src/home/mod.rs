@@ -73,7 +73,7 @@ pub enum Effect {
     Diff(String),
     /// Put this text on the operator's clipboard (OSC 52).
     Copy(String),
-    /// Leave the screen, run `git merge --no-ff <branch>` in the project, come back. It changes the
+    /// Leave the screen, run `git merge --no-ff -- <branch>` in the project, come back. It changes the
     /// operator's checkout: only ever after a `y`.
     Merge(String),
     /// Probe the harnesses again (`marion doctor`).
@@ -159,7 +159,8 @@ impl Effect {
             }
             Effect::Diff(branch) => v(&["git", "log", "-p", "--stat", &format!("HEAD..{branch}")]),
             Effect::Copy(text) => vec![text.clone()],
-            Effect::Merge(branch) => v(&["git", "merge", "--no-ff", branch]),
+            // `--` so a branch name cannot be read as a flag.
+            Effect::Merge(branch) => v(&["git", "merge", "--no-ff", "--", branch]),
             Effect::Recheck => v(&["marion", "doctor"]),
             Effect::Notify(on) => v(&["marion", "notify", if *on { "on" } else { "off" }]),
             Effect::EditTypes => {

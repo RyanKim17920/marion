@@ -77,7 +77,7 @@ claude 8ea3 · exited:ok · claude (claude-opus-5-5) · 257.1k tokens
 
 > Added src/limits/bucket.rs with a refill-on-read token bucket. \*\*\*
 
-**Landed** on `marion/t-1` at `4f2a9c1e0b7d` · merge with `git merge --no-ff marion/t-1`
+**Landed** on `marion/t-1` at `4f2a9c1e0b7d` · merge with `git merge --no-ff -- marion/t-1`
 
 Changed: `src/limits/bucket.rs`, `src/limits/mod.rs`
 

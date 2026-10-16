@@ -20,7 +20,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
          TOKENS           184k in · 12.9k out · 151k cached
                           ━━━━━━━━━━━━━━━━  41% of context
          RESULT           marion/t-3c33  +84 −12 · 3 files
-                          git merge --no-ff marion/t-3c33   c copies
+                          git merge --no-ff -- marion/t-3c33   c copies
          CAN              steer · resume · interrupt
 
  ╭────────────────────────────────────────────────────────────────────────────╮
@@ -28,7 +28,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel           F1 help
 --- styles ---
-  138  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexcodex✓impl3c33Addto"
+  140  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexcodex✓impl3c33Addto"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
    34  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
   581  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
@@ -61,7 +61,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
          TOKENS           184k in · 12.9k out · 151k cached
                           ━━━━━━━━━━━━━━━━  41% of context
          RESULT           marion/t-3c33  +84 −12 · 3 files
-                          git merge --no-ff marion/t-3c33   c copies
+                          git merge --no-ff -- marion/t-3c33   c copies
          CAN              steer · resume · interrupt
   ✓ claude review 88f2              1h ago     54k             landed marion/t-88f2
 
@@ -71,7 +71,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                     F1 help
 --- styles ---
-  188  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+  190  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
    34  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
   797  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
@@ -111,7 +111,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
                           ▃▂▄▅▇█▆▄▃▄▅▄▃▂▁▁  peak 26k / 30s
                           ━━━━━━━━━━━━━━━━  41% of context
          RESULT           marion/t-3c33  +84 −12 · 3 files
-                          git merge --no-ff marion/t-3c33   c copies
+                          git merge --no-ff -- marion/t-3c33   c copies
          CAN              steer · resume · interrupt
          WORKSPACE        worktree marion/t-3c33   o opens a shell
   ✓ claude review 88f2              1h ago     54k             landed marion/t-88f2
@@ -134,7 +134,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                                                                                 F1 help
 --- styles ---
-  359  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+  361  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
    51  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
  1385  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"

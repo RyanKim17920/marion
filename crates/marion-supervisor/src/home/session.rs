@@ -133,7 +133,9 @@ pub fn run(opts: &Options) -> Result<(), String> {
             }
             Handoff::Merge(branch) => {
                 let mut c = std::process::Command::new("git");
-                c.arg("-C").arg(&s.repo).args(["merge", "--no-ff", &branch]);
+                c.arg("-C")
+                    .arg(&s.repo)
+                    .args(["merge", "--no-ff", "--", &branch]);
                 s.foreground(c, "git merge");
                 if s.home.notice.is_none() {
                     s.home.notice = Some(format!("merged {branch}"));

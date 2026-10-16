@@ -4277,7 +4277,7 @@ mod tests {
         assert!(
             lines[1].ends_with(
                 "changes on branch marion/01a0ca90 (52dff3a01234); merge with: git merge \
-                 --no-ff marion/01a0ca90"
+                 --no-ff -- marion/01a0ca90"
             ),
             "{lines:?}"
         );
@@ -5708,7 +5708,7 @@ mod tests {
         let text = detail_text(&head, &with, None);
         assert!(text.contains("  diff       +6 −3 · 1 files\n"), "{text}");
         assert!(
-            text.contains("  merge      git merge --no-ff marion/t-1\n"),
+            text.contains("  merge      git merge --no-ff -- marion/t-1\n"),
             "{text}"
         );
         let without = NodeDetail {

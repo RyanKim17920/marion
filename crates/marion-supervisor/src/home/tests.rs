@@ -313,7 +313,7 @@ fn copy_merge_and_diff_need_a_landed_branch() {
     );
     assert_eq!(
         h.key(Key::Char('c')),
-        Effect::Copy("git merge --no-ff marion/t-1".into())
+        Effect::Copy("git merge --no-ff -- marion/t-1".into())
     );
     assert_eq!(h.key(Key::Char('d')), Effect::Diff("marion/t-1".into()));
 }
@@ -663,7 +663,7 @@ fn m_merges_a_landed_branch_after_a_y() {
         panic!("a confirm");
     };
     assert!(question.contains("marion/t1"), "{question}");
-    assert_eq!(command, "git merge --no-ff marion/t1");
+    assert_eq!(command, "git merge --no-ff -- marion/t1");
     assert_eq!(h.key(Key::Char('n')), Effect::None);
     assert_eq!(h.notice.as_deref(), Some("not merged"));
     h.key(Key::Char('m'));
@@ -757,7 +757,7 @@ fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
     assert_eq!(
         merge.argv(),
         Some(
-            ["git", "merge", "--no-ff", "marion/t1"]
+            ["git", "merge", "--no-ff", "--", "marion/t1"]
                 .map(String::from)
                 .to_vec()
         )

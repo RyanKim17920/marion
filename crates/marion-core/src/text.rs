@@ -25,6 +25,22 @@ pub fn shell_word(arg: &str) -> String {
     out
 }
 
+/// One argument as a POSIX shell must receive it **when the operator pastes it to run**: bare
+/// where it is plainly safe, else in single quotes, inside which no shell expands anything (`$`,
+/// `` ` ``, and an interactive bash's `!` included). [`shell_word`] is for reading an argv; this is
+/// for a command marion hands the operator to run.
+pub fn shell_quote(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._-+:@".contains(&b))
+    {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
 /// A duration in seconds the way a row prints it: `42s`, `2m17s`, `1h04m`, `2d03h`. The unit
 /// below the largest is zero-padded so a ticking column does not jitter.
 pub fn elapsed(secs: u64) -> String {

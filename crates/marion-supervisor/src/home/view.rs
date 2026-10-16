@@ -901,7 +901,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             (
                 "m",
                 "merge its branch, asks first",
-                "git merge --no-ff <branch>",
+                "git merge --no-ff -- <branch>",
             ),
             ("c", "copy the merge", ""),
             ("!", "next that needs you", "marion ls --attention"),

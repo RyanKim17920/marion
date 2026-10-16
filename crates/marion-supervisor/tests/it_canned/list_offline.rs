@@ -167,7 +167,7 @@ fn ls_of_a_finished_node_prints_its_contract_from_the_journal_without_a_supervis
         ("tokens", "1200 in · 340 out · 5000 cached".to_string()),
         ("branch", fx.branch.clone()),
         ("result", "done".to_string()),
-        ("merge", format!("git merge --no-ff {}", fx.branch)),
+        ("merge", format!("git merge --no-ff -- {}", fx.branch)),
     ] {
         assert!(
             stdout

@@ -54,7 +54,7 @@ pub enum TrustError {
          repository asks for only after you have reviewed it; read the file, then run: marion \
          trust allow {quoted}",
         why = if *edited { "has changed since you allowed it" } else { "you have not allowed" },
-        quoted = shell_word(&file.display().to_string()),
+        quoted = marion_core::text::shell_quote(&file.display().to_string()),
     )]
     Untrusted {
         file: PathBuf,
@@ -81,7 +81,7 @@ pub enum TrustError {
          it only after you have reviewed it. Read it (`marion workflow check {quoted}` says what it \
          runs), then run: marion trust allow {quoted}",
         why = if *edited { "has changed since you allowed it" } else { "is not one you have allowed" },
-        quoted = shell_word(&file.display().to_string()),
+        quoted = marion_core::text::shell_quote(&file.display().to_string()),
     )]
     UntrustedWorkflow { file: PathBuf, edited: bool },
     #[error(
@@ -89,7 +89,7 @@ pub enum TrustError {
          repository's row only after you have reviewed it. Read it (`marion harness check {quoted}` \
          says what it runs), then run: marion trust allow {quoted}",
         why = if *edited { "has changed since you allowed it" } else { "is not one you have allowed" },
-        quoted = shell_word(&file.display().to_string()),
+        quoted = marion_core::text::shell_quote(&file.display().to_string()),
     )]
     UntrustedRow { file: PathBuf, edited: bool },
     #[error(
@@ -586,18 +586,6 @@ fn canonical(file: &Path) -> Result<PathBuf, TrustError> {
             Ok(std::fs::canonicalize(dir).map_err(io)?.join(name))
         }
         Err(e) => Err(io(e)),
-    }
-}
-
-/// `s` as one shell word: bare where it is plainly safe, single-quoted otherwise.
-fn shell_word(s: &str) -> String {
-    if !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"/._-+:@".contains(&b))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
     }
 }
 
@@ -1298,7 +1286,10 @@ mod tests {
 
     #[test]
     fn a_path_with_spaces_is_quoted_in_the_allow_command() {
-        assert_eq!(shell_word("/a/b.toml"), "/a/b.toml");
-        assert_eq!(shell_word("/a b/it's"), r"'/a b/it'\''s'");
+        assert_eq!(marion_core::text::shell_quote("/a/b.toml"), "/a/b.toml");
+        assert_eq!(
+            marion_core::text::shell_quote("/a b/it's"),
+            r"'/a b/it'\''s'"
+        );
     }
 }
