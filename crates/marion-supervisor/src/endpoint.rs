@@ -142,31 +142,42 @@ pub fn translated_wire<'p>(
 }
 
 /// The provider a launch names, and the model with any prefix removed — or `None` where it names
-/// no provider and runs canned or live as before.
-fn named_provider<'m>(
+/// no provider and runs canned or live as before. A model the launch asks for replaces the type's
+/// own, and with it a provider only that model's prefix named.
+fn named_provider(
     registry: &Registry,
-    model_req: Option<&'m str>,
-    agent_type: &'m AgentType,
+    model_req: Option<&str>,
+    agent_type: &AgentType,
 ) -> Option<(String, Option<String>)> {
     if let Some((p, m)) = model_req.and_then(|m| registry.split_model(m)) {
         return Some((p.id.clone(), Some(m.to_string())));
     }
-    let type_model = agent_type.model.as_deref();
-    if let Some(p) = &agent_type.provider {
-        let model = model_req
-            .or(type_model)
-            .map(|m| match registry.split_model(m) {
-                Some((q, rest)) if q.id == *p => rest.to_string(),
-                _ => m.to_string(),
-            });
+    let (id, type_model) = type_provider(registry, agent_type)?;
+    match model_req {
+        None => Some((id, type_model)),
+        Some(m) => agent_type
+            .provider
+            .is_some()
+            .then(|| (id, Some(m.to_string()))),
+    }
+}
+
+/// **The provider an agent type selects by itself**: its `provider`, else the one its `model`'s
+/// prefix names in `registry`, with the model that prefix leaves. What a launch that asks for no
+/// model of its own runs on ([`named_provider`]), and so what a repository's type is trusted for
+/// before it may spend the operator's keys ([`crate::trust::widening`]) — one function, so the
+/// two cannot disagree on which spellings select one.
+pub fn type_provider(registry: &Registry, ty: &AgentType) -> Option<(String, Option<String>)> {
+    let type_model = ty.model.as_deref();
+    if let Some(p) = &ty.provider {
+        let model = type_model.map(|m| match registry.split_model(m) {
+            Some((q, rest)) if q.id == *p => rest.to_string(),
+            _ => m.to_string(),
+        });
         return Some((p.clone(), model));
     }
-    if model_req.is_none()
-        && let Some((p, m)) = type_model.and_then(|m| registry.split_model(m))
-    {
-        return Some((p.id.clone(), Some(m.to_string())));
-    }
-    None
+    let (p, m) = type_model.and_then(|m| registry.split_model(m))?;
+    Some((p.id.clone(), Some(m.to_string())))
 }
 
 /// The order `provider`'s credentials are tried in: the type's own list, else the user's stated
@@ -469,6 +480,33 @@ mod tests {
 
     const CHAT: &[Wire] = &[Wire::OpenAiChat];
     const ANTHROPIC: &[Wire] = &[Wire::AnthropicMessages];
+
+    /// **The provider a type selects by itself**, named outright or by its model's prefix, with
+    /// the model that prefix leaves; a prefix the registry does not know is part of a model name.
+    #[test]
+    fn a_type_selects_a_provider_by_name_or_by_its_models_prefix() {
+        let reg = Registry::seed();
+        let got = |p, m| type_provider(&reg, &ty(Harness::Codex, p, m));
+        assert_eq!(
+            got(None, Some("openrouter:anthropic/x")),
+            Some(("openrouter".into(), Some("anthropic/x".into())))
+        );
+        assert_eq!(
+            got(Some("openrouter"), Some("openrouter:a/b")),
+            Some(("openrouter".into(), Some("a/b".into())))
+        );
+        assert_eq!(
+            got(Some("openrouter"), Some("ollama:q")),
+            Some(("openrouter".into(), Some("ollama:q".into())))
+        );
+        assert_eq!(
+            got(Some("openrouter"), None),
+            Some(("openrouter".into(), None))
+        );
+        assert_eq!(got(None, Some("qwen3:32b")), None);
+        assert_eq!(got(None, Some("gpt-5")), None);
+        assert_eq!(got(None, None), None);
+    }
 
     #[test]
     fn a_launch_naming_no_provider_resolves_to_none_and_reads_no_key() {

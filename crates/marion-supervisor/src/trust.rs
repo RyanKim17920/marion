@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use marion_core::agent_type::{AgentType, AgentTypes};
+use marion_core::provider::Registry;
 use marion_core::text::visible;
 
 /// The trust store's file name, under `$XDG_DATA_HOME/marion/`.
@@ -117,10 +118,11 @@ pub struct RepoCommand {
 }
 
 impl RepoCommand {
-    /// What `ty` asks for, or `None` where it asks for nothing that needs trust.
-    pub fn of(ty: &AgentType) -> Option<Self> {
+    /// What `ty` asks for, or `None` where it asks for nothing that needs trust. `registry` is the
+    /// one a launch resolves providers in, so a model prefix that would select one is seen.
+    pub fn of(registry: &Registry, ty: &AgentType) -> Option<Self> {
         let argv = repo_command(ty);
-        let widens = widening(ty);
+        let widens = widening(registry, ty);
         (argv.is_some() || !widens.is_empty()).then(|| Self {
             agent_type: ty.name.clone(),
             argv,
@@ -154,8 +156,9 @@ impl RepoCommand {
 /// The keys `ty` sets that widen what its node may do beyond a plain row on its harness, each with
 /// its value as the file spells it. An ACP `approval_mode` other than `default`; any tool but
 /// reading; a `prompt_prefix`, which stands in front of every task the type is given; and a
-/// `provider`, `credentials` or `profile`, each of which spends the operator's keys or logins.
-pub fn widening(ty: &AgentType) -> Vec<(&'static str, String)> {
+/// `provider` (or a `model` whose prefix names one, [`crate::endpoint::type_provider`]),
+/// `credentials` or `profile`, each of which spends the operator's keys or logins.
+pub fn widening(registry: &Registry, ty: &AgentType) -> Vec<(&'static str, String)> {
     let list = |v: &[String]| {
         let items: Vec<String> = v.iter().map(|s| toml_string(s)).collect();
         format!("[{}]", items.join(", "))
@@ -174,8 +177,12 @@ pub fn widening(ty: &AgentType) -> Vec<(&'static str, String)> {
     if let Some(prefix) = &ty.prompt_prefix {
         w.push(("prompt_prefix", toml_string(prefix)));
     }
-    if let Some(provider) = &ty.provider {
-        w.push(("provider", toml_string(provider)));
+    // The provider the type runs on by itself, named outright or by its model's prefix.
+    if crate::endpoint::type_provider(registry, ty).is_some() {
+        match (&ty.provider, &ty.model) {
+            (Some(p), _) => w.push(("provider", toml_string(p))),
+            (None, m) => w.push(("model", toml_string(m.as_deref().unwrap_or_default()))),
+        }
     }
     if !ty.credentials.is_empty() {
         w.push(("credentials", list(&ty.credentials)));
@@ -196,9 +203,21 @@ pub fn repo_command(ty: &AgentType) -> Option<Vec<String>> {
         .then(|| binding.argv().to_vec())
 }
 
+/// The providers a launch resolves a model in: the operator's own registry. One that cannot be
+/// read is the seed table, which loses nothing here — a launch on that registry fails before it
+/// reads a key ([`crate::endpoint::resolve_for_launch`]).
+fn launch_registry() -> Registry {
+    crate::credentials::user_registry().unwrap_or_else(|_| Registry::seed())
+}
+
 /// Every row of a parsed `.marion/agents.toml` that needs trust, in file order.
 pub fn commands(types: &AgentTypes) -> Vec<RepoCommand> {
-    types.user().iter().filter_map(RepoCommand::of).collect()
+    let registry = launch_registry();
+    types
+        .user()
+        .iter()
+        .filter_map(|ty| RepoCommand::of(&registry, ty))
+        .collect()
 }
 
 /// **The gate.** `ty`, resolved from `file` whose bytes were `text`, may run only if it asks for
@@ -208,10 +227,7 @@ pub fn commands(types: &AgentTypes) -> Vec<RepoCommand> {
 /// `text` is the text the caller parsed, so the digest is of what will run and not of a second
 /// read that a writer could have changed in between.
 pub fn require(file: &Path, text: &str, ty: &AgentType) -> Result<(), TrustError> {
-    if RepoCommand::of(ty).is_none() {
-        return Ok(());
-    }
-    require_in(store_path().ok_or(TrustError::NoStore)?, file, text, ty)
+    gate(|| store_path().ok_or(TrustError::NoStore), file, text, ty)
 }
 
 /// [`require`] against the store at `store`.
@@ -221,10 +237,20 @@ pub fn require_in(
     text: &str,
     ty: &AgentType,
 ) -> Result<(), TrustError> {
-    let Some(asked) = RepoCommand::of(ty) else {
+    gate(|| Ok(store), file, text, ty)
+}
+
+/// [`require`], finding the store only for a type that needs one.
+fn gate(
+    store: impl FnOnce() -> Result<PathBuf, TrustError>,
+    file: &Path,
+    text: &str,
+    ty: &AgentType,
+) -> Result<(), TrustError> {
+    let Some(asked) = RepoCommand::of(&launch_registry(), ty) else {
         return Ok(());
     };
-    let store = Store::open(store)?;
+    let store = Store::open(store()?)?;
     let file = canonical(file)?;
     match store.verdict(&file, &crate::inbox::sha256_hex(text.as_bytes())) {
         Verdict::Trusted => Ok(()),
@@ -956,8 +982,9 @@ mod tests {
 
     /// **A row that names no command can still widen what its node may do**, and each widening
     /// key needs the whole file trusted: approval past the default, tools past reading, a prompt
-    /// prefix, and a provider, credentials or profile that spend the operator's keys and logins.
-    /// A row that sets none of them, or only `read`, needs nothing.
+    /// prefix, and a provider, credentials or profile that spend the operator's keys and logins —
+    /// a provider named by a model's prefix as much as outright. A row that sets none of them, or
+    /// only `read`, needs nothing.
     #[test]
     fn an_authority_widening_key_needs_the_file_trusted_like_a_command() {
         let row = |extra: &str| {
@@ -986,6 +1013,10 @@ mod tests {
                 row("provider = \"openrouter\"\n"),
                 r#"provider = "openrouter""#,
             ),
+            (
+                row("model = \"openrouter:anthropic/claude\"\n"),
+                r#"model = "openrouter:anthropic/claude""#,
+            ),
             (row("profile = \"work\"\n"), r#"profile = ["work"]"#),
         ] {
             let (repo, file, store) = repo("widening", &text);
@@ -1006,6 +1037,7 @@ mod tests {
             row(""),
             row("tools = [\"read\"]\n"),
             row("model = \"gpt-5\"\n"),
+            row("model = \"qwen3:32b\"\n"),
             acp("approval_mode = \"default\"\n"),
         ] {
             let (_, file, store) = repo("narrow", &text);
