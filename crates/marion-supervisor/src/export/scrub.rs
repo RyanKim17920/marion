@@ -58,6 +58,12 @@ fn is_format(c: char) -> bool {
     )
 }
 
+/// Unicode's line and paragraph separators: not controls, but a line break to a reader that
+/// honours them.
+fn is_line_separator(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}')
+}
+
 /// **`text` as it reads on a screen, with nothing in it that drives one**: every terminal escape
 /// sequence taken out whole (CSI, a control string — OSC, DCS, APC, PM, SOS — to its terminator,
 /// any other `ESC` sequence, and their 8-bit forms), every other control character but the line
@@ -184,13 +190,13 @@ impl Scrubber {
 
     /// **`text` as one line safe to journal and print to a terminal**: [`Self::clean`]ed (a
     /// vendor's error can echo the key it refused, and escapes and invisible characters are gone
-    /// with it), every line break written as its escape (`\n`, `\t`) so the line
+    /// with it), every line break written as its escape (`\n`, `\t`, `\u{2028}`) so the line
     /// stays one, and capped at [`LINE_CAP`] characters with `…` where it was cut.
     pub fn one_line(&self, text: &str) -> String {
         let mut out = String::new();
         let mut kept = 0;
         for c in self.clean(text).chars() {
-            let piece: String = if c.is_control() {
+            let piece: String = if c.is_control() || is_line_separator(c) {
                 c.escape_default().collect()
             } else {
                 c.to_string()
@@ -571,6 +577,11 @@ mod tests {
         assert_eq!(s.one_line("rate limit: 429"), "rate limit: 429");
         let bidi = s.one_line("ok \u{202e}txt.exe\u{200b}\u{2066}x\u{feff}");
         assert_eq!(bidi, "ok txt.exex", "nothing left to reorder the line");
+        assert_eq!(
+            s.one_line("one\u{2028}two\u{2029}three"),
+            "one\\u{2028}two\\u{2029}three",
+            "a Unicode line break keeps the line one"
+        );
         assert_eq!(
             s.one_line("naïve — ✓ 東京"),
             "naïve — ✓ 東京",
