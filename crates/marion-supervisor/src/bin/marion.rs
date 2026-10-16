@@ -1062,6 +1062,9 @@ fn is_loopback_url(url: &str) -> bool {
 /// capability is merely absent, while advertising one that does not exist is the bug. The usage
 /// text is part of that promise and is corrected alongside this.
 ///
+/// `$MARION_BASE_URL` is ignored without `--canned` because it names marion's canned server, and
+/// inheriting it silently is exactly the loopback accident of case 1.
+///
 /// **`--canned` is untouched.** Endpoint, environment, then marion's own provider — that is the
 /// whole test suite's launch path, and it is the half a careless refusal breaks.
 ///
@@ -1079,10 +1082,10 @@ fn resolve_base_url(
              --base-url, or add --canned to run against the canned endpoint."
         )),
         (false, Some(u)) => Err(format!(
-            "--base-url ({u}) without --canned is not implemented: on your own login every \
-             harness talks to its own vendor and ignores a base URL, so the run would have \
-             reached the vendor directly instead of {u}. Drop --base-url, or add --canned to run \
-             against marion's canned endpoint."
+            "--base-url ({u}) without --canned is not implemented: marion does not pass a base \
+             URL to a node on your own login, so the run would have reached the vendor directly \
+             instead of {u}. Drop --base-url, or add --canned to run against marion's canned \
+             endpoint."
         )),
         (false, None) => Ok(None),
         (true, explicit) => Ok(Some(

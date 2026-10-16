@@ -325,7 +325,9 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
                             returns a handle at once and the child runs while you work; call \
                             `wait` with the handle's task_id to collect the contract. Some \
                             clients also announce a background child's end; `wait` returns the \
-                            same contract either way.",
+                            same contract either way. Some clients background a long blocking \
+                            call on their own and hand you its result later; that needs nothing \
+                            from you.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -461,8 +463,8 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             // an answer that is wrong precisely when it is asked for.
             "name": "status",
             "description": "Check what a child is doing now, without blocking: its state and, \
-                            while it runs, its last few tool calls and its last line of output. \
-                            Works after the child has ended and after `wait` collected it. To get \
+                            while it runs, its last few tool calls and its last line of output \
+                            where marion reads the child's harness stream. Works after the child has ended and after `wait` collected it. To get \
                             the result, call `wait`.",
             "inputSchema": {
                 "type": "object",
