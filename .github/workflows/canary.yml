@@ -19,7 +19,7 @@
 #      unset: a missing harness is a failure here, not a skip. The `--ignored` suites
 #      (restart_resume, acp_child) spend real tokens and stay out;
 #   5. `admit` adds every admitted release to its row's `verified` list
-#      (`scripts/admit-harness.sh --list-only`) in one pull request that merges itself once the
+#      (`scripts/admit-harness.sh`) in one pull request that merges itself once the
 #      default branch's rules pass, whatever the matrix said: the basic tests are the bar for
 #      listing, and a red matrix still reaches the issue;
 #   6. on red anywhere, opens or updates one issue labelled `harness-canary` with each release's
@@ -75,7 +75,7 @@ jobs:
       contents: read
     env:
       # Three cores: the cells carry 60 s bounds that a fully parallel run starves on a loaded box
-      # (see the opencode 1.18.32 admission note in PINNED_HARNESSES).
+      # (measured at the opencode 1.18.32 admission).
       RUST_TEST_THREADS: 3
     outputs:
       pairs: ${{ steps.drift.outputs.pairs }}
@@ -90,7 +90,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v0-canary
-      - run: test -x scripts/cargo-runner.sh
       - name: Give git a committer identity
         run: |
           git config --global user.name "marion canary"
@@ -220,7 +219,7 @@ jobs:
   # Lists the releases the basic tests admitted in their rows, opens (or updates) one pull request
   # with that commit and sets it to merge itself once main's rules pass. It takes nothing from
   # `run` but the pairs, checked below, and executes only this repository's own
-  # `admit-harness.sh --list-only` (perl and rustfmt, no build) from its own checkout.
+  # `admit-harness.sh` (perl and rustfmt, no build) from its own checkout.
   admit:
     needs: run
     # The matrix may be red for a reason that is not the release (another harness's cell, a
@@ -253,7 +252,7 @@ jobs:
           fi
           # Word splitting of $PAIRS is the point: it is `<harness> <version> ...`.
           # shellcheck disable=SC2086
-          scripts/admit-harness.sh --list-only $PAIRS
+          scripts/admit-harness.sh $PAIRS
           if [ -n "$(git status --porcelain -- . ':(exclude)crates/marion-harness/src/*.rs')" ]; then
             echo "::error::listing touched files other than the harness rows"
             exit 1
