@@ -37,7 +37,7 @@ pub const MAX_CALLS: usize = 5;
 pub const LINE_CAP: usize = 160;
 /// The most bytes a whole peek carries.
 pub const PEEK_CAP: usize = 2048;
-/// How much of the end of `events.jsonl` is read. Four times the largest single event
+/// The most of the end of `events.jsonl` a peek reads. Four times the largest single event
 /// (`marion_core::event::MAX_EVENT_BYTES`), so the last few frames are always whole.
 const TAIL_BYTES: u64 = 1024 * 1024;
 
@@ -49,14 +49,32 @@ pub fn peek(events: &Path, harness: Harness) -> String {
              cannot say which tools this node called."
         );
     };
-    let frames = tail_frames(events);
-    if frames.is_empty() {
-        return "Recent activity: nothing recorded yet — the node has not said anything marion \
-                could read."
-            .to_string();
+    // **The smallest window that answers**: a status call peeks on every poll, and parsing the
+    // last 1 MiB of JSON each time was most of its cost. One call more than is shown, so the
+    // oldest shown has its start frame inside the window, and last words, or the whole tail.
+    let len = std::fs::metadata(events).map_or(0, |m| m.len());
+    let mut limit = PEEK_FIRST_BYTES;
+    loop {
+        let frames = frames_within(events, limit);
+        let mut a = recent_activity(rule, &frames, MAX_CALLS + 1);
+        let enough = a.calls.len() > MAX_CALLS && a.text.is_some();
+        if enough || limit >= len.min(TAIL_BYTES) {
+            if frames.is_empty() {
+                return "Recent activity: nothing recorded yet — the node has not said anything \
+                        marion could read."
+                    .to_string();
+            }
+            let over = a.calls.len().saturating_sub(MAX_CALLS);
+            a.calls.drain(..over);
+            return render(&a);
+        }
+        limit = (limit * 4).min(TAIL_BYTES);
     }
-    render(&recent_activity(rule, &frames, MAX_CALLS))
 }
+
+/// The window a peek reads first. It widens fourfold, to [`TAIL_BYTES`] at most, only while what
+/// it holds is not enough to answer.
+const PEEK_FIRST_BYTES: u64 = 64 * 1024;
 
 /// [`peek`]'s text for an activity already read: the calls oldest first, then the last words.
 pub fn render(a: &RecentActivity) -> String {
@@ -450,38 +468,20 @@ pub(crate) fn rfc3339(ts: marion_core::encoding::SystemTime) -> String {
         .unwrap_or_default()
 }
 
-/// Every harness frame in the last [`TAIL_BYTES`] of `path`, in order. A missing or unreadable
-/// file is no frames: a peek is a view and never a reason to fail the answer it rides on.
-fn tail_frames(path: &Path) -> Vec<Value> {
-    frames_within(path, TAIL_BYTES)
-}
-
 /// Every harness frame in `path`, in order: for a reading that must see the whole run, such as a
 /// usage fold that sums per-turn counters. Missing or unreadable is no frames, as for a peek.
 pub fn all_frames(path: &Path) -> Vec<Value> {
     frames_within(path, u64::MAX)
 }
 
-/// The harness frames in the last `limit` bytes of `path`.
+/// The harness frames in the last `limit` bytes of `path`. A missing or unreadable file is no
+/// frames: a peek is a view and never a reason to fail the answer it rides on.
 fn frames_within(path: &Path, limit: u64) -> Vec<Value> {
-    let Ok(mut file) = std::fs::File::open(path) else {
+    let Ok(bytes) =
+        std::fs::File::open(path).and_then(|mut f| crate::events::tail_lines(&mut f, limit))
+    else {
         return Vec::new();
     };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(limit);
-    let mut bytes = Vec::new();
-    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut bytes).is_err() {
-        return Vec::new();
-    }
-    // Started mid-file: the first line is a fragment of an event, not an event.
-    if start > 0 {
-        match bytes.iter().position(|b| *b == b'\n') {
-            Some(nl) => {
-                bytes.drain(..=nl);
-            }
-            None => return Vec::new(),
-        }
-    }
     let mut events = Vec::new();
     EventLog::default().extend(&bytes, &mut events);
     events
@@ -692,6 +692,44 @@ mod tests {
              - report({\"narrative\":\"p4 via js\"})\n\
              - last said: p4 final message"
         );
+    }
+
+    /// **A peek of a long stream reads a small window and says what the full tail says**: the
+    /// same lines as a peek over [`TAIL_BYTES`], from the first window that holds enough.
+    #[test]
+    fn a_peek_of_a_long_stream_answers_from_a_small_window_as_the_full_tail_would() {
+        use crate::events::{EventSink, EventWriter};
+        let dir = marion_testsupport::scratch("activity-long");
+        let path = dir.join("events.jsonl");
+        let agent = marion_core::contract::AgentId("019f-peek-long".into());
+        {
+            let s = EventSink::new(
+                EventWriter::open_path(&path, &agent).unwrap(),
+                Harness::Codex,
+                "unused".into(),
+            );
+            s.lifecycle(marion_core::event::Lifecycle::Opened);
+            // Each round under ids of its own, as a long run's calls are: a call repeated under
+            // one id is one call however often it recurs.
+            let capture = marion_testsupport::app_server_capture("p4-items.jsonl");
+            let mut round = 0;
+            while std::fs::metadata(&path).unwrap().len() < 2 * TAIL_BYTES {
+                let ids = format!("\"call_r{round}_");
+                let execs = format!("\"exec-r{round}-");
+                for line in capture.lines() {
+                    s.record_line(&line.replace("\"call_", &ids).replace("\"exec-", &execs));
+                }
+                round += 1;
+            }
+        }
+        let rule = adapter_for(Harness::Codex).unwrap().activity().unwrap();
+        let full = render(&recent_activity(
+            rule,
+            &frames_within(&path, TAIL_BYTES),
+            MAX_CALLS,
+        ));
+        assert_eq!(peek(&path, Harness::Codex), full);
+        assert!(full.contains("last said: p4 final message"), "{full}");
     }
 
     /// A watcher polls with `next` and reads each call once: a second page after more was recorded
