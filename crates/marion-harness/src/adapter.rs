@@ -1101,6 +1101,10 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         repo_config_own: spec.extra.repo_config_own,
         repo_mcp_servers: repo_mcp.clone().unwrap_or_default(),
         repo_mcp_unreadable: repo_mcp.is_none(),
+        repo_mcp_unapproved: match &repo_mcp {
+            Some(names) => !repo_mcp_approved(&spec.cwd, names),
+            None => true,
+        },
         ..spec::Fields::default()
     }
 }
@@ -1537,6 +1541,35 @@ fn repo_mcp_servers(cwd: &std::path::Path) -> Option<Vec<String>> {
     };
     names.sort();
     Some(names)
+}
+
+/// **Whether the tree's own claude settings approve every one of `names`**: `true` for none, else
+/// each named in `enabledMcpjsonServers` or `disabledMcpjsonServers` (a disabled one never asks),
+/// or `enableAllProjectMcpServers: true`, in `<cwd>/.claude/settings.json` or
+/// `settings.local.json`. Only the repository's own files are read — never the operator's user
+/// settings or `~/.claude.json` — and one that does not read approves nothing.
+fn repo_mcp_approved(cwd: &std::path::Path, names: &[String]) -> bool {
+    if names.is_empty() {
+        return true;
+    }
+    let mut approved: Vec<String> = Vec::new();
+    for file in ["settings.json", "settings.local.json"] {
+        let Some(doc) = std::fs::read_to_string(cwd.join(".claude").join(file))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        else {
+            continue;
+        };
+        if doc["enableAllProjectMcpServers"] == serde_json::Value::Bool(true) {
+            return true;
+        }
+        for key in ["enabledMcpjsonServers", "disabledMcpjsonServers"] {
+            if let Some(list) = doc[key].as_array() {
+                approved.extend(list.iter().filter_map(|n| n.as_str().map(str::to_string)));
+            }
+        }
+    }
+    names.iter().all(|n| approved.contains(n))
 }
 
 #[cfg(test)]
@@ -4025,6 +4058,63 @@ mod tests {
         }
     }
 
+    /// **A claude pane drops `--strict-mcp-config` only in a trusted repository whose own settings
+    /// approve every `.mcp.json` server**: an unapproved one would boot the pane on its approval
+    /// dialog, so it stays wherever one is, wherever the file does not read, in an untrusted
+    /// repository, and under every overlay. marion's own `--mcp-config` is there in every case.
+    #[test]
+    fn a_claude_pane_loads_repository_servers_only_where_all_are_approved() {
+        let dir = marion_testsupport::scratch("claude-pane-mcp-approved");
+        let pane = |trusted: bool| {
+            let mut spec = live_claude(trusted);
+            spec.cwd = dir.to_path_buf();
+            let args = ClaudeCodeAdapter.compile_pane(&spec, &ctx()).unwrap().args;
+            assert!(args.iter().any(|a| a == "--mcp-config"), "{args:?}");
+            args.iter().any(|a| a == "--strict-mcp-config")
+        };
+        assert!(!pane(true), "no .mcp.json: nothing to ask about");
+        assert!(pane(false), "untrusted");
+        std::fs::write(
+            dir.join(".mcp.json"),
+            r#"{"mcpServers":{"x":{"command":"x"},"y":{"command":"y"}}}"#,
+        )
+        .unwrap();
+        assert!(pane(true), "trusted, neither approved");
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        std::fs::write(
+            dir.join(".claude/settings.json"),
+            r#"{"enabledMcpjsonServers":["x"]}"#,
+        )
+        .unwrap();
+        assert!(pane(true), "trusted, y unapproved");
+        std::fs::write(
+            dir.join(".claude/settings.local.json"),
+            r#"{"disabledMcpjsonServers":["y"]}"#,
+        )
+        .unwrap();
+        assert!(!pane(true), "trusted, x approved and y disabled");
+        assert!(pane(false), "still not in an untrusted repository");
+        std::fs::write(dir.join(".claude/settings.local.json"), "not json").unwrap();
+        assert!(pane(true), "an unreadable settings file approves nothing");
+        std::fs::write(
+            dir.join(".claude/settings.json"),
+            r#"{"enableAllProjectMcpServers":true}"#,
+        )
+        .unwrap();
+        assert!(!pane(true), "all approved wholesale");
+        let canned = ClaudeCodeAdapter
+            .compile_pane(
+                &LaunchSpec {
+                    cwd: dir.to_path_buf(),
+                    ..claude_spec()
+                },
+                &ctx(),
+            )
+            .unwrap()
+            .args;
+        assert!(canned.iter().any(|a| a == "--strict-mcp-config"), "canned");
+    }
+
     /// **A live qwen node in an untrusted repository with its own `.qwen/` is refused**, naming
     /// the trust command: qwen has no measured switch that keeps the project layer out. Trusted,
     /// or with no `.qwen/` in the tree, or canned, it launches.
@@ -4271,11 +4361,12 @@ mod tests {
                     "{shape}, trusted {trusted}: a live node keeps the operator's settings: {:?}",
                     inv.args
                 );
-                // A headless node keeps the operator's MCP servers beside marion's; a pane carries
-                // `--strict-mcp-config`, so no repository server's approval dialog boots it.
+                // A headless node keeps the operator's MCP servers beside marion's; an untrusted
+                // pane carries `--strict-mcp-config`, so no repository server's approval dialog
+                // boots it (a trusted one with no `.mcp.json` has nothing to ask about).
                 assert_eq!(
                     inv.args.iter().any(|a| a == "--strict-mcp-config"),
-                    shape == "pane",
+                    shape == "pane" && !trusted,
                     "{shape}: {:?}",
                     inv.args
                 );

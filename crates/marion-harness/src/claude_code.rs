@@ -61,6 +61,13 @@ pub const HOOKS_OFF_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
 /// permissions; the `.mcp.json` approvals are user-layer keys. Where the repository names servers,
 /// each is also rejected by name: measured on 2.1.302, `disabledMcpjsonServers` wins over an
 /// `enabledMcpjsonServers` naming the same server (`claude mcp get`: "Rejected").
+///
+/// **Which layer does the work**: `--setting-sources user` is the primary one — measured on
+/// 2.1.302 (conformance P-untrusted-mcp), claude reads `.mcp.json` only with the project source
+/// on, so under `user` the file never loads. This overlay is the second, proven on its own by the
+/// same probe's judged arm that turns the project source back on (`--setting-sources
+/// user,project`) and still sees the server stay down, so a later change to the sources cannot
+/// drop the protection silently.
 pub const UNTRUSTED_REPO_SETTINGS: &str =
     r#"{"enableAllProjectMcpServers":false,"disabledMcpjsonServers":[]}"#;
 
@@ -165,12 +172,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     pane: Some(&[
         Arg::Joined("--tools", Field::Tools),
         Arg::Joined("--allowedTools", Field::Allowed),
-        // **Every auth, on a pane**: without it a repository's `.mcp.json` loads, and in one the
-        // operator has not approved the TUI boots on its `New MCP server(s) found` approval — a
-        // dialog no row needle has measured, which the operator's first key would answer into
-        // `~/.claude.json`. A repository marion runs a node in must not start servers of its own.
-        // The cost is the operator's user-scope servers, which a pane goes without.
-        Arg::Lit("--strict-mcp-config"),
+        // **On a pane, wherever a repository's server could ask**: without it a repository's
+        // `.mcp.json` loads, and where its servers are not approved the TUI boots on `New MCP
+        // server(s) found` — a dialog no row needle has measured, which the operator's first key
+        // would answer into `~/.claude.json`. So it is carried under every overlay, in an untrusted
+        // repository, and in a trusted one whose own settings leave a server unapproved; a trusted
+        // repository whose servers its settings all approve loads them, as the operator's
+        // `claude` there would. Where it is carried the operator's user-scope servers go too.
+        Arg::UnlessRepoMcpApproved("--strict-mcp-config"),
         Arg::Flag("--mcp-config", Field::McpConfig),
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),

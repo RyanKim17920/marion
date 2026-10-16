@@ -212,6 +212,7 @@ fn security_faults(spec: &HarnessSpec) -> Vec<String> {
             | Arg::CannedLit(l)
             | Arg::Untrusted(l)
             | Arg::Disowned(l)
+            | Arg::UnlessRepoMcpApproved(l)
             | Arg::Trusted(l) => vec![l],
             Arg::Flag(l, _) | Arg::FlagEq(l, _) | Arg::Each(l, _) | Arg::EachEq(l, _) => vec![l],
             Arg::Pair(a, b, _) | Arg::Isolation(a, b) => vec![a, b],
@@ -858,6 +859,7 @@ pub enum ArgDto {
     RefuseUntrusted,
     RefuseUntrustedAnyAuth,
     Trusted(String),
+    UnlessRepoMcpApproved(String),
 }
 
 impl ArgDto {
@@ -882,6 +884,7 @@ impl ArgDto {
             ArgDto::RefuseUntrusted => Arg::RefuseUntrusted,
             ArgDto::RefuseUntrustedAnyAuth => Arg::RefuseUntrustedAnyAuth,
             ArgDto::Trusted(l) => Arg::Trusted(leak(l)),
+            ArgDto::UnlessRepoMcpApproved(l) => Arg::UnlessRepoMcpApproved(leak(l)),
         }
     }
 }

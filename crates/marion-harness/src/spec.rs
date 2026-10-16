@@ -1351,6 +1351,14 @@ pub enum Arg {
     /// switch that loads that configuration where the harness would otherwise stop to ask (pi's
     /// `--approve` in a mode with no one to answer).
     Trusted(&'static str),
+    /// **A literal token wherever a repository's own MCP servers could stop the TUI on their
+    /// approval**: every overlaying launch, and a live one unless the repository is trusted and its
+    /// own settings approve every server its `.mcp.json` names ([`Fields::repo_mcp_unapproved`]).
+    /// claude's `--strict-mcp-config` on a pane: in a trusted repository whose servers are all
+    /// approved they load, as in the operator's own `claude`; anywhere else they would raise `New
+    /// MCP server(s) found`, which no one is there to answer. marion's own server is the
+    /// `--mcp-config` beside it either way.
+    UnlessRepoMcpApproved(&'static str),
 }
 
 /// How a harness names a session to resume on argv, as `<harness> --help` spells it.
@@ -1482,6 +1490,12 @@ pub struct Fields {
     /// The tree's `.mcp.json` is there and does not read as an object of servers, so
     /// [`Self::repo_mcp_servers`] cannot be all it names ([`Refusal::UnreadableRepoMcp`]).
     pub repo_mcp_unreadable: bool,
+    /// Some server the tree's `.mcp.json` names is not approved in the tree's own claude settings
+    /// (`enabledMcpjsonServers`, or `enableAllProjectMcpServers`, in `.claude/settings.json` or
+    /// `.claude/settings.local.json`), or the file does not read: what
+    /// [`Arg::UnlessRepoMcpApproved`] reads. An approval held only in the operator's user
+    /// settings or `~/.claude.json` is not read, so it counts as none.
+    pub repo_mcp_unapproved: bool,
 }
 
 /// **The strings a declaration or a credential can travel in print their shape, never their
@@ -1522,6 +1536,7 @@ impl std::fmt::Debug for Fields {
             repo_config_own,
             repo_mcp_servers,
             repo_mcp_unreadable,
+            repo_mcp_unapproved,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -1538,6 +1553,7 @@ impl std::fmt::Debug for Fields {
             .field("repo_config_own", repo_config_own)
             .field("repo_mcp_servers", repo_mcp_servers)
             .field("repo_mcp_unreadable", repo_mcp_unreadable)
+            .field("repo_mcp_unapproved", repo_mcp_unapproved)
             .field("cwd", cwd)
             .field("config_dir", config_dir)
             .field("auth", auth)
@@ -1809,6 +1825,10 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
         Arg::CannedLit(s) => match f.auth.overlays() {
             true => vec![s.to_string()],
             false => Vec::new(),
+        },
+        Arg::UnlessRepoMcpApproved(s) => match repo_config_rule(f) {
+            Some(true) if !f.repo_mcp_unapproved => Vec::new(),
+            _ => vec![s.to_string()],
         },
         Arg::Untrusted(s) => match repo_config_rule(f) {
             Some(false) => vec![s.to_string()],
