@@ -437,7 +437,7 @@ fn an_opencode_child_held_to_its_bound_exits_held_to_timeout_and_its_grandchild_
         .as_str()
         .unwrap_or_default();
     assert!(
-        description.contains("descendant") && description.contains("§7.6"),
-        "the exit description must name the rule that held the node: {description:?}"
+        description.contains("held:") && description.contains("descendant"),
+        "the exit description must say the node was held for its descendants: {description:?}"
     );
 }
