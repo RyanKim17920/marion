@@ -171,6 +171,11 @@ pub struct Knobs {
     pub bridge: Option<PathBuf>,
     /// Compile the row's pane shape (a TUI opened at its composer) instead of the headless one.
     pub pane: bool,
+    /// Take argv from the **live** launch (`Auth::Inherited`) in a repository the operator has
+    /// (`Some(true)`) or has not trusted, and keep everything else — environment, config home,
+    /// documents — the canned launch's: the repository rules a live node carries, run on the
+    /// canned provider and nobody's login.
+    pub live: Option<bool>,
 }
 
 pub fn compile(
@@ -262,12 +267,21 @@ pub fn compile(
         std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
         written.push(path);
     }
-    let inv = if knobs.pane {
-        t.adapter.compile_pane(&spec, &ctx)
-    } else {
-        t.adapter.compile(&spec, &ctx)
+    let shape = |spec: &marion_harness::adapter::LaunchSpec| {
+        if knobs.pane {
+            t.adapter.compile_pane(spec, &ctx)
+        } else {
+            t.adapter.compile(spec, &ctx)
+        }
+        .map_err(|e| format!("compile: {e}"))
+    };
+    let mut inv = shape(&spec)?;
+    if let Some(trusted) = knobs.live {
+        let mut live = spec.clone();
+        live.auth = Auth::Inherited;
+        live.extra.repo_trusted = trusted;
+        inv.args = shape(&live)?.args;
     }
-    .map_err(|e| format!("compile: {e}"))?;
     let session = t
         .adapter
         .session_declaration(&spec, &ctx)

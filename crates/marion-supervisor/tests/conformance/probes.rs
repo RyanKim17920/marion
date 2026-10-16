@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::{FailureCause, TokenUsage};
 use marion_harness::grammar;
-use marion_harness::spec::{Approval, HarnessSpec, MidTurn, NodeShape, TurnDelivery, UpdatePolicy};
+use marion_harness::spec::{
+    Approval, Arg, Field, HarnessSpec, MidTurn, NodeShape, TurnDelivery, UpdatePolicy,
+};
 use marion_harness::stream::{CallOutcome, ChildExit, json_frames};
 use marion_supervisor::duplex::LaunchPath;
 use serde_json::{Value, json};
@@ -34,6 +36,7 @@ pub const PROBES: &[&str] = &[
     "P-lifecycle",
     "P-errors",
     "P-tui",
+    "P-untrusted-mcp",
 ];
 
 /// A healthy scripted turn on any harness is seconds; this bounds a wedged one.
@@ -165,7 +168,7 @@ pub fn run_all(c: &mut Ctx<'_>) -> (String, Vec<Outcome>) {
         v.observed
     );
     let mut outcomes = vec![v];
-    let probes: [fn(&mut Ctx<'_>) -> Outcome; 10] = [
+    let probes: [fn(&mut Ctx<'_>) -> Outcome; 11] = [
         p_launch,
         p_tools,
         p_activity,
@@ -176,6 +179,7 @@ pub fn run_all(c: &mut Ctx<'_>) -> (String, Vec<Outcome>) {
         p_lifecycle,
         p_errors,
         p_tui,
+        p_untrusted_mcp,
     ];
     // `MARION_CONFORMANCE_PROBES=P-tui,P-errors` runs only those; the rest are not run, and the
     // matrix and the row's directory keep their last results for the same version.
@@ -1582,12 +1586,9 @@ fn p_errors(c: &mut Ctx<'_>) -> Outcome {
 /// the turn is done — the terminal delivery a native lane rests on.
 pub fn p_tui(c: &mut Ctx<'_>) -> Outcome {
     const P: &str = "P-tui";
-    let Some(surfaces) = c.t.adapter.pane_surfaces() else {
-        return Outcome::unsupported(P, "the row has no pane shape (`pane: None`)");
-    };
-    let Some(witness) = surfaces.display_plane() else {
-        return Outcome::unsupported(P, "the row's pane surfaces declare no display plane");
-    };
+    if let Err(why) = pane_plane(c) {
+        return Outcome::unsupported(P, why);
+    }
     let s = c.session(P, "");
     let marker = "CONFTUI";
     s.provider
@@ -1603,17 +1604,108 @@ pub fn p_tui(c: &mut Ctx<'_>) -> Outcome {
             return Outcome::unsupported(P, format!("marion will not compile a canned pane: {e}"));
         }
     };
-    let tty =
-        match crate::tty::Tty::spawn(witness, surfaces.control, &launch.inv, Arc::clone(&s.log)) {
-            Ok(t) => t,
-            Err(e) => return Outcome::judged(P, false, "", format!("pane did not start: {e}")),
-        };
+    let run = match pane_turn(c, &s, &launch, marker) {
+        Ok(r) => r,
+        Err(e) => return Outcome::judged(P, false, "", e),
+    };
+    let tty = &run.tty;
+    paste(tty, "/mcp");
+    tty.quiet(PANE_QUIET, Duration::from_secs(15));
+    // Scrubbed first: the scratch path itself says `marion`.
+    let mcp_screen: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
+    s.log.w("note", &json!({"/mcp screen": mcp_screen}));
+    let mcp_listed = mcp_screen.iter().any(|l| l.contains("marion"));
+    let observed = format!(
+        "DECSET 2004 at boot: {}; first screen {:?}; boot dialog {}; bracketed paste + CR \
+         submitted: {}; output quiet {} ms after the turn: {}; `/mcp` screen names marion: \
+         {mcp_listed}",
+        run.decset,
+        tail(&run.first_screen, 6),
+        match run.dialog {
+            None => "none of the row's on the first screen".to_string(),
+            Some(d) => format!(
+                "{:?} ({}) {}",
+                d.needle,
+                match d.answer.keys() {
+                    Some(k) => format!("answered with {:?}", String::from_utf8_lossy(k)),
+                    None => "held by the row".into(),
+                },
+                match run.then {
+                    _ if run.answered => "and dismissed".to_string(),
+                    Some(next) if next != d =>
+                        format!("and dismissed, then {:?} ({})", next.needle, next.note),
+                    _ => "and NOT dismissed".to_string(),
+                }
+            ),
+        },
+        if run.submitted {
+            "on the first paste"
+        } else if run.retried {
+            "only on a second paste — the first-paint screen (above) swallowed the first"
+        } else {
+            "NO"
+        },
+        PANE_QUIET.as_millis(),
+        run.settled,
+    );
+    Outcome::judged(
+        P,
+        run.decset && run.answered && run.submitted && run.settled,
+        "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys \
+         dismiss, a bracketed paste + CR then submits, and the terminal goes quiet \
+         (IdleSignal::OutputQuiet) once the turn is done",
+        observed,
+    )
+}
+
+/// How long a pane's output must be still to read as quiet (`IdleSignal::OutputQuiet`).
+const PANE_QUIET: Duration = Duration::from_millis(1500);
+
+/// The row's pane surfaces' display plane and control, or why it has none.
+fn pane_plane(
+    c: &Ctx<'_>,
+) -> Result<(marion_harness::PtyWitness, marion_harness::ControlTransport), &'static str> {
+    let Some(surfaces) = c.t.adapter.pane_surfaces() else {
+        return Err("the row has no pane shape (`pane: None`)");
+    };
+    let Some(witness) = surfaces.display_plane() else {
+        return Err("the row's pane surfaces declare no display plane");
+    };
+    Ok((witness, surfaces.control))
+}
+
+/// A bracketed paste, then the CR that submits it.
+fn paste(tty: &crate::tty::Tty, text: &str) {
+    tty.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
+    std::thread::sleep(Duration::from_millis(50));
+    tty.write(b"\r");
+}
+
+/// What one scripted turn in a pane did, from boot to the quiet after it ([`pane_turn`]).
+struct PaneTurn {
+    tty: crate::tty::Tty,
+    decset: bool,
+    first_screen: Vec<String>,
+    dialog: Option<&'static marion_harness::spec::BootDialog>,
+    /// The row's dialog on screen after the last answer, where one was.
+    then: Option<&'static marion_harness::spec::BootDialog>,
+    answered: bool,
+    submitted: bool,
+    retried: bool,
+    settled: bool,
+}
+
+/// Open `launch`'s pane, walk the row's boot dialogs, paste `marker`'s prompt and wait for the
+/// turn to go quiet — P-tui's drive, which every pane probe shares.
+fn pane_turn(c: &Ctx<'_>, s: &Session, launch: &Launch, marker: &str) -> Result<PaneTurn, String> {
+    let (witness, control) = pane_plane(c)?;
+    let tty = crate::tty::Tty::spawn(witness, control, &launch.inv, Arc::clone(&s.log))
+        .map_err(|e| format!("pane did not start: {e}"))?;
     let decset = tty.wait(Duration::from_secs(30), |b, _| {
         crate::tty::has(b, b"\x1b[?2004h")
     });
-    let quiet = Duration::from_millis(1500);
     // A splash that animates never goes quiet; the bound is the first paint's, not the turn's.
-    let painted = tty.quiet(quiet, Duration::from_secs(20));
+    let painted = tty.quiet(PANE_QUIET, Duration::from_secs(20));
     let first_screen: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
     s.log.w(
         "note",
@@ -1658,7 +1750,7 @@ pub fn p_tui(c: &mut Ctx<'_>) -> Outcome {
         tty.write(keys);
         // The redraw first, then its quiet: the first screen was already quiet.
         tty.wait(Duration::from_secs(20), |b, _| b.len() > before);
-        tty.quiet(quiet, Duration::from_secs(20));
+        tty.quiet(PANE_QUIET, Duration::from_secs(20));
         let after: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
         s.log.w(
             "note",
@@ -1667,78 +1759,216 @@ pub fn p_tui(c: &mut Ctx<'_>) -> Outcome {
         then = on_screen(&after);
         current = then;
     };
-    let paste = |text: &str| {
-        tty.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
-        std::thread::sleep(Duration::from_millis(50));
-        tty.write(b"\r");
-    };
     let asked = |bound: Duration| {
         s.provider.hold.wait(bound, |seen, _| {
             seen.iter()
                 .any(|r| r.turn.as_ref().is_some_and(|(m, _)| m == marker))
         })
     };
-    paste(&prompt(marker));
+    paste(&tty, &prompt(marker));
     let submitted = asked(Duration::from_secs(20));
     // A dialog no row names (or one the row's keys did not dismiss) swallows the first paste; a
     // second one shows whether the composer behind it submits.
     let retried = !submitted && {
-        tty.quiet(quiet, Duration::from_secs(10));
+        tty.quiet(PANE_QUIET, Duration::from_secs(10));
         s.log.w(
             "note",
             &json!({"screen after an unsubmitted paste": tty.screen()}),
         );
-        paste(&prompt(marker));
+        paste(&tty, &prompt(marker));
         asked(Duration::from_secs(30))
     };
-    let settled = (submitted || retried) && tty.quiet(quiet, TURN);
+    let settled = (submitted || retried) && tty.quiet(PANE_QUIET, TURN);
     s.log
         .w("note", &json!({"screen after the turn": tty.screen()}));
-    paste("/mcp");
-    tty.quiet(quiet, Duration::from_secs(15));
-    // Scrubbed first: the scratch path itself says `marion`.
-    let mcp_screen: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
-    s.log.w("note", &json!({"/mcp screen": mcp_screen}));
-    let mcp_listed = mcp_screen.iter().any(|l| l.contains("marion"));
-    let observed = format!(
-        "DECSET 2004 at boot: {decset}; first screen {:?}; boot dialog {}; bracketed paste + \
-         CR submitted: {}; output quiet {} ms after the turn: {settled}; `/mcp` screen names \
-         marion: {mcp_listed}",
-        tail(&first_screen, 6),
-        match dialog {
-            None => "none of the row's on the first screen".to_string(),
-            Some(d) => format!(
-                "{:?} ({}) {}",
-                d.needle,
-                match d.answer.keys() {
-                    Some(k) => format!("answered with {:?}", String::from_utf8_lossy(k)),
-                    None => "held by the row".into(),
-                },
-                match then {
-                    _ if answered => "and dismissed".to_string(),
-                    Some(next) if next != d =>
-                        format!("and dismissed, then {:?} ({})", next.needle, next.note),
-                    _ => "and NOT dismissed".to_string(),
-                }
-            ),
-        },
-        if submitted {
-            "on the first paste"
-        } else if retried {
-            "only on a second paste — the first-paint screen (above) swallowed the first"
-        } else {
-            "NO"
-        },
-        quiet.as_millis(),
-    );
+    Ok(PaneTurn {
+        tty,
+        decset,
+        first_screen,
+        dialog,
+        then,
+        answered,
+        submitted,
+        retried,
+        settled,
+    })
+}
+
+// --- P-untrusted-mcp ----------------------------------------------------------------------------
+
+/// The server the probe's repository declares in `.mcp.json`, and the operator's settings approve.
+const REPO_SERVER: &str = "x";
+
+/// **A repository's `.mcp.json` server does not start on a live node in a repository the operator
+/// has not trusted, even where the operator's own settings approve it by name**
+/// (`enabledMcpjsonServers`), which would otherwise run a cloned repository's server of that name
+/// as the operator. Headless and pane, each beside a control on the live launch of a *trusted*
+/// repository, in which the same server must start: so a PASS is the untrusted launch's doing,
+/// not a server that never would have started.
+///
+/// Probed on rows whose shapes carry [`Field::UntrustedSettings`]. Which of the untrusted rules
+/// does the work is recorded, not judged: a third run removes the field's flag alone. Measured on
+/// claude 2.1.302: `--setting-sources user` already keeps `.mcp.json` out (that run's server stays
+/// down too), and `disabledMcpjsonServers` is what still holds where the project source loads.
+///
+/// Live without a login: argv is the live launch's ([`Knobs::live`]); the environment is the
+/// canned launch's — its own config home (where the operator's approval is written, as a user
+/// `settings.json`), the canned provider, the placeholder key. The server is a shell that touches
+/// a marker in the probe's world, so "started" is a file, not a screen.
+///
+/// Mutation: drop the untrusted `--setting-sources user` and `disabledMcpjsonServers` both and
+/// the untrusted runs start the server (FAIL); give the server nothing to start (a `.mcp.json` the
+/// harness does not read) and the controls do not start it either (FAIL, never a vacuous PASS).
+fn p_untrusted_mcp(c: &mut Ctx<'_>) -> Outcome {
+    const P: &str = "P-untrusted-mcp";
+    let shapes = [Some(c.t.spec.argv), c.t.spec.pane];
+    let flag = shapes
+        .iter()
+        .flatten()
+        .flat_map(|a| a.iter())
+        .find_map(|a| match a {
+            Arg::Flag(flag, Field::UntrustedSettings) => Some(*flag),
+            _ => None,
+        });
+    let Some(flag) = flag else {
+        return Outcome::unsupported(
+            P,
+            "the row carries no `Field::UntrustedSettings` overlay: a live node in an untrusted \
+             repository has no settings layer of the operator's to outweigh",
+        );
+    };
+    // The overlay's config home: where its seed sits, and the operator's settings beside it.
+    let Some(home) =
+        c.t.spec
+            .overlay_documents
+            .first()
+            .and_then(|(rel, _)| Path::new(rel).parent())
+    else {
+        return Outcome::unsupported(
+            P,
+            "the row's overlay seeds no config home to hold the operator's approval",
+        );
+    };
+    let mut parts = Vec::new();
+    let mut pass = true;
+    for (pane, shape) in [(false, c.t.spec.argv), (true, c.t.spec.pane.unwrap_or(&[]))] {
+        let carries = shape
+            .iter()
+            .any(|a| matches!(a, Arg::Flag(f, Field::UntrustedSettings) if *f == flag));
+        let name = if pane { "pane" } else { "headless" };
+        if !carries || (pane && pane_plane(c).is_err()) {
+            parts.push(format!(
+                "{name}: the shape carries no `{flag}` overlay, not run"
+            ));
+            continue;
+        }
+        let untrusted = untrusted_run(c, name, home, pane, false, None);
+        let trusted = untrusted_run(c, &format!("{name}-trusted"), home, pane, true, None);
+        let bare = untrusted_run(
+            c,
+            &format!("{name}-no-{}", flag.trim_start_matches('-')),
+            home,
+            pane,
+            false,
+            Some(flag),
+        );
+        let word = |r: &Result<Started, String>| match r {
+            Ok(r) => format!("server started {} (turn {})", r.started, r.turned),
+            Err(e) => e.clone(),
+        };
+        let ok =
+            matches!((&untrusted, &trusted), (Ok(u), Ok(t)) if !u.started && u.turned && t.started);
+        pass &= ok;
+        parts.push(format!(
+            "{name}: untrusted: {}; trusted (control): {}; untrusted less `{flag}` (recorded, \
+             not judged): {}",
+            word(&untrusted),
+            word(&trusted),
+            word(&bare)
+        ));
+    }
     Outcome::judged(
         P,
-        decset && answered && submitted && settled,
-        "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys \
-         dismiss, a bracketed paste + CR then submits, and the terminal goes quiet \
-         (IdleSignal::OutputQuiet) once the turn is done",
-        observed,
+        pass,
+        "on a live launch in an untrusted repository, a `.mcp.json` server the operator's \
+         settings approve by name (`enabledMcpjsonServers`) does not start, headless or in the \
+         pane, and the same server starts on the live launch of a trusted repository",
+        parts.join(" | "),
     )
+}
+
+/// What one [`p_untrusted_mcp`] run saw.
+struct Started {
+    /// The repository's server touched its marker.
+    started: bool,
+    /// The scripted turn reached the provider: the node got as far as a turn.
+    turned: bool,
+}
+
+/// One run of [`p_untrusted_mcp`]: the repository's server, the operator's approval, the live
+/// launch of a repository `trusted` or not (less `strip`'s flag), one scripted turn.
+fn untrusted_run(
+    c: &Ctx<'_>,
+    part: &str,
+    home: &Path,
+    pane: bool,
+    trusted: bool,
+    strip: Option<&str>,
+) -> Result<Started, String> {
+    let s = c.session("P-untrusted-mcp", part);
+    let marker_file = s.world.config.join("repo-server-started");
+    // Planted before the compile: the launch reads the server names it rejects off this file.
+    let server = json!({"mcpServers": {REPO_SERVER: {"command": "/bin/sh", "args": ["-c",
+        format!("touch '{}'; sleep 5", marker_file.display())]}}});
+    std::fs::write(s.world.repo.join(".mcp.json"), server.to_string())
+        .map_err(|e| format!(".mcp.json: {e}"))?;
+    let marker = "CONFREPOMCP";
+    s.provider
+        .hold
+        .add_turn(c.turn(marker, 0, "conformance repo mcp done"));
+    let knobs = Knobs {
+        pane,
+        live: Some(trusted),
+        ..Knobs::default()
+    };
+    let text = if pane { String::new() } else { prompt(marker) };
+    let mut launch = c
+        .compile(&s, &text, &knobs)
+        .map_err(|e| format!("marion will not compile the live launch: {e}"))?;
+    if let Some(flag) = strip {
+        strip_flag(&mut launch.inv.args, flag, true);
+    }
+    // The operator's approval of the repository's server, in the user settings the launch reads.
+    let dir = s.world.config.join(home);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::write(
+        dir.join("settings.json"),
+        json!({"enabledMcpjsonServers": [REPO_SERVER]}).to_string(),
+    )
+    .map_err(|e| format!("settings.json: {e}"))?;
+    s.log.w(
+        "note",
+        &json!({"argv": launch.inv.args, "repo .mcp.json": server}),
+    );
+    let turned = if pane {
+        let run = pane_turn(c, &s, &launch, marker)?;
+        run.submitted || run.retried
+    } else {
+        let node = Node::start(
+            c.t.path,
+            &launch,
+            &prompt(marker),
+            Arc::clone(&s.log),
+            Gate::Marion,
+        )?;
+        node.wait_ends(1, TURN)
+    };
+    let started = marker_file.exists();
+    s.log.w(
+        "note",
+        &json!({"repo server started": started, "turn": turned}),
+    );
+    Ok(Started { started, turned })
 }
 
 /// The last `n` non-blank lines of a screen — where a dialog's question and options sit.
