@@ -14,3 +14,4 @@
 //! steer or send text (the journal keeps only its length and digest).
 
 pub mod digest;
+pub mod open;
