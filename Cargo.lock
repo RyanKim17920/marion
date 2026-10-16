@@ -532,6 +532,7 @@ name = "marion-harness"
 version = "0.2.0"
 dependencies = [
  "insta",
+ "libc",
  "marion-core",
  "marion-testsupport",
  "serde",
@@ -589,7 +590,6 @@ dependencies = [
 name = "marion-testsupport"
 version = "0.2.0"
 dependencies = [
- "libc",
  "marion-core",
  "marion-harness",
  "proc-macro2",

@@ -359,6 +359,61 @@ pub fn declared_none(spec: &HarnessSpec) -> Vec<(&'static str, &'static str)> {
 /// never waits on it.
 pub const ADMISSION: &[&str] = &["P-version", "P-launch", "P-tools", "P-approval"];
 
+/// **The state directory this machine's conformance records live under**: where the battery
+/// writes them and where the test gate and `doctor` read them, so the three cannot disagree.
+///
+/// marion's own rule ([`marion_core::paths::state_dir_from`]), so `MARION_STATE_DIR` and
+/// `XDG_STATE_HOME` move it as they move every marion process's state, with one difference:
+/// `HOME` is the account's home from the password database, never `$HOME`. A test binary may
+/// rewrite `$HOME` process-wide for the harness it drives (`token_off_argv` does, so codex reads
+/// a scratch config), and the gate decides on its first call, which can come after that rewrite.
+/// Read through `$HOME`, the record is then looked for under the scratch home and a release this
+/// machine admitted is refused.
+pub fn conformance_state() -> Option<PathBuf> {
+    conformance_state_from(|k| std::env::var(k).ok(), account_home())
+}
+
+/// [`conformance_state`] over `var` and an account home passed in, so it is testable. With no
+/// account home (no password entry), `$HOME` is all there is.
+pub fn conformance_state_from(
+    var: impl Fn(&str) -> Option<String>,
+    account_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let home = account_home.map(|h| h.to_string_lossy().into_owned());
+    marion_core::paths::state_dir_from(None, |k| match k {
+        "HOME" => home.clone().or_else(|| var(k)),
+        _ => var(k),
+    })
+}
+
+/// This process's account's home directory, from the password database rather than `$HOME`.
+/// `None` for a uid with no entry (`docker run --user N`) or one too long for the buffer.
+pub fn account_home() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: an all-zero `passwd` is a valid out-parameter; `getpwuid_r` fills it with pointers
+    // into `buf`, which outlives every read of them below.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut found,
+        )
+    };
+    if rc != 0 || found.is_null() || pwd.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: non-null, NUL-terminated, and pointing into `buf`.
+    let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
+    let dir = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
+    (!dir.as_os_str().is_empty()).then_some(dir)
+}
+
 /// Where a row's last conformance result is kept: `<state>/conformance/<name>-<version>.json`.
 pub fn admission_path(state: &Path, name: &str, version: &str) -> PathBuf {
     state
@@ -1783,6 +1838,23 @@ mod tests {
 
     const QWEN_TWIN: &str = include_str!("../tests/fixtures/rows/qwen-twin.toml");
     const GOOSE_TWIN: &str = include_str!("../tests/fixtures/rows/goose-twin.toml");
+
+    /// The account's home is an absolute path when this uid has a password entry; under one with
+    /// none (`docker run --user N`) there is nothing to assert, and the resolver falls back to
+    /// `$HOME`.
+    #[test]
+    fn the_account_home_is_read_from_the_password_database() {
+        match account_home() {
+            Some(home) => assert!(home.is_absolute(), "{home:?}"),
+            None => {
+                let home = |k: &str| (k == "HOME").then(|| "/fallback".to_string());
+                assert_eq!(
+                    conformance_state_from(home, None),
+                    Some(PathBuf::from("/fallback/.local/state/marion"))
+                );
+            }
+        }
+    }
 
     /// `text` as a row file named `name`, the user's alone, in a scratch dir of its own.
     fn file(tag: &str, name: &str, text: &str) -> (marion_testsupport::Scratch, PathBuf) {

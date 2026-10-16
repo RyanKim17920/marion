@@ -19,6 +19,9 @@ thiserror.workspace = true
 # `sha256_hex`: a row file is known by the digest of its bytes (doctor, the trust store), and the
 # journal's `MessageQueued` audits a queued message by its digest, never its text.
 sha2 = "0.11"
+# `getpwuid_r`, for the account's home (`row_file::conformance_state`): a test may rewrite `$HOME`,
+# and the conformance records must not move with it. Already in the lock.
+libc = "0.2"
 
 [dev-dependencies]
 # Test-only: the version gate (`tests/newer_harness_never_refused.rs`) and shared scratch helpers.

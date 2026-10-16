@@ -309,7 +309,8 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         resolved.as_deref(),
         &mut notes,
     );
-    let state = marion_core::paths::state_dir_from_env(None);
+    // The conformance records' state: the battery writes them there, whatever `$HOME` says.
+    let state = marion_harness::row_file::conformance_state();
     if let Some(source) = marion_harness::row_file::source(h) {
         notes.extend(row_file_notes(
             h,

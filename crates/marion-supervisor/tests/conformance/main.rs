@@ -77,7 +77,7 @@ fn battery() {
     let scratch = marion_testsupport::scratch("conformance");
     // Where the gate will look for the records this writes: the account's state, which a test's
     // `$HOME` cannot move.
-    let state = marion_testsupport::conformance_state();
+    let state = marion_harness::row_file::conformance_state();
     // Read before any row runs: a run into the default `out` rewrites this very file.
     let verified_cells = std::env::var(BASELINE)
         .map(PathBuf::from)
