@@ -6575,7 +6575,7 @@ mod owns_nodes {
         std::fs::write(&file, row(100)).unwrap();
         crate::types_snapshot::TypesSnapshot::take(&fx.repo, Some("claude"))
             .unwrap()
-            .write(fx.project.agent(&id("root")).path())
+            .write(&fx.project, &id("root"))
             .unwrap();
         std::fs::write(&file, row(999_999)).unwrap();
         let budget = fx

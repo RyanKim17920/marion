@@ -2227,7 +2227,7 @@ pub fn run_spawn_watched(
     snapshot
         .clone()
         .granting(requested.clone())
-        .write(agent_dir.path())?;
+        .write(&env.project_dir, &agent_id)?;
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
     let (workspace, base, cwd_claim, mut prelaunch) = select_workspace(

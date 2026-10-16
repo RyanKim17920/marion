@@ -4,10 +4,16 @@
 //! copy of that tree the child can edit. Read afresh at every spawn, the file a child rewrote in
 //! its own worktree decided what its descendants were: a new `acp:` row, a wider tool list, a
 //! larger `max_depth` for its own type. So the table is read **once**, from the root's tree when
-//! the root is started, written into the root's agent directory, and handed down: every child's
-//! spawn copies its caller's snapshot into its own agent directory, and resolves types — its own,
-//! its caller's and its children's — through it. The agent directories are marion's state, outside
-//! every worktree.
+//! the root is started, kept in marion's state, and handed down: every child's spawn copies its
+//! caller's snapshot into its own record, and resolves types — its own, its caller's and its
+//! children's — through it.
+//!
+//! **Where it is kept is part of the rule.** The record is the node's authority — the scope it was
+//! granted, the operator's containment opt-in, the root type bounding its depth — so it lives at
+//! [`ProjectDir::authority`], outside every worktree *and* outside the node's own agent directory,
+//! which a sandboxed node may write: a record it could rewrite would let it widen itself. A node
+//! on the operator's own login runs unsandboxed as the operator's uid, and no file is out of its
+//! reach; that limit is stated in docs/os-sandbox.md.
 //!
 //! The root's own type is recorded too, and its `max_depth` bounds the whole tree
 //! ([`TypesSnapshot::bounded`]): no descendant's type can extend delegation past what the root was
@@ -21,9 +27,6 @@ use marion_core::paths::ProjectDir;
 use serde::{Deserialize, Serialize};
 
 use crate::spawn::SpawnError;
-
-/// The file each node's agent directory holds its tree's table in.
-pub const SNAPSHOT_FILE: &str = "agent-types.json";
 
 /// The table a node's tree was started under. See the module doc.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,9 +115,9 @@ impl TypesSnapshot {
         self.allow_wider_children
     }
 
-    /// The snapshot in `agent_dir`, or `None` where the node has none.
-    pub fn read(agent_dir: &Path) -> Result<Option<TypesSnapshot>, SpawnError> {
-        let path = agent_dir.join(SNAPSHOT_FILE);
+    /// The snapshot kept for `node`, or `None` where marion keeps none.
+    pub fn read(project: &ProjectDir, node: &AgentId) -> Result<Option<TypesSnapshot>, SpawnError> {
+        let path = project.authority(node);
         match std::fs::read(&path) {
             Ok(bytes) => {
                 serde_json::from_slice(&bytes)
@@ -132,10 +135,10 @@ impl TypesSnapshot {
         }
     }
 
-    /// Keep this snapshot in `agent_dir`, owner-only.
-    pub fn write(&self, agent_dir: &Path) -> Result<(), SpawnError> {
+    /// Keep this snapshot as `node`'s, owner-only, where no node can write it.
+    pub fn write(&self, project: &ProjectDir, node: &AgentId) -> Result<(), SpawnError> {
         let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
-        crate::private_fs::write_atomic(&agent_dir.join(SNAPSHOT_FILE), &bytes)?;
+        crate::private_fs::write_atomic(&project.authority(node), &bytes)?;
         Ok(())
     }
 
@@ -198,12 +201,12 @@ pub fn for_caller(
     tree: &Path,
     caller_type: &str,
 ) -> Result<TypesSnapshot, SpawnError> {
-    if let Some(snapshot) = TypesSnapshot::read(project.agent(caller).path())? {
+    if let Some(snapshot) = TypesSnapshot::read(project, caller)? {
         return Ok(snapshot);
     }
     if tree.starts_with(project.agents_dir()) {
         return Err(SpawnError::AgentTypesFile {
-            path: project.agent(caller).path().join(SNAPSHOT_FILE),
+            path: project.authority(caller),
             error: format!(
                 "marion holds no record of the agent types node `{}`'s tree started with, and \
                  will not read them from the worktree it runs in, which it can edit",
@@ -236,15 +239,13 @@ pub fn for_operator(
     allow_wider_children: bool,
 ) -> Result<TypesSnapshot, SpawnError> {
     if let Some(node) = resumed {
-        return TypesSnapshot::read(project.agent(node).path())?.ok_or_else(|| {
-            SpawnError::AgentTypesFile {
-                path: project.agent(node).path().join(SNAPSHOT_FILE),
-                error: format!(
-                    "marion holds no record of the agent types node `{}`'s tree started with, \
+        return TypesSnapshot::read(project, node)?.ok_or_else(|| SpawnError::AgentTypesFile {
+            path: project.authority(node),
+            error: format!(
+                "marion holds no record of the agent types node `{}`'s tree started with, \
                      and will not read them afresh for its second life",
-                    node.0
-                ),
-            }
+                node.0
+            ),
         });
     }
     let allow = allow_wider_children
@@ -308,7 +309,7 @@ mod tests {
         );
     }
 
-    /// A snapshot survives its round trip through the agent directory byte for byte.
+    /// A snapshot survives its round trip through marion's state byte for byte.
     #[test]
     fn a_snapshot_reads_back_as_written() {
         let dir = marion_testsupport::scratch("types-snapshot-roundtrip");
@@ -320,9 +321,42 @@ mod tests {
         )
         .unwrap();
         let taken = TypesSnapshot::take(&tree, Some("claude")).unwrap();
-        let agent_dir = dir.join("agent");
-        taken.write(&agent_dir).unwrap();
-        assert_eq!(TypesSnapshot::read(&agent_dir).unwrap(), Some(taken));
-        assert_eq!(TypesSnapshot::read(&dir.join("none")).unwrap(), None);
+        let project = ProjectDir::from_hash(&dir.join("state"), "p");
+        let node = AgentId("n".into());
+        taken.write(&project, &node).unwrap();
+        assert_eq!(TypesSnapshot::read(&project, &node).unwrap(), Some(taken));
+        assert_eq!(
+            TypesSnapshot::read(&project, &AgentId("none".into())).unwrap(),
+            None
+        );
+    }
+
+    /// **A node cannot widen itself by rewriting its own agent directory**: the record is kept
+    /// outside it, so a forged `agent-types.json` there (the file an older marion kept) granting
+    /// wider children and no scope is never what marion reads back.
+    #[test]
+    fn a_record_forged_in_the_nodes_own_agent_dir_is_not_read() {
+        let dir = marion_testsupport::scratch("types-snapshot-forged");
+        let project = ProjectDir::from_hash(&dir.join("state"), "p");
+        let node = AgentId("n".into());
+        let granted = TypesSnapshot::take(&dir, Some("claude"))
+            .unwrap()
+            .granting(vec![marion_core::contract::Glob("src/**".into())]);
+        granted.write(&project, &node).unwrap();
+        let agent_dir = project.agent(&node);
+        assert!(
+            !project.authority(&node).starts_with(agent_dir.path()),
+            "the record must not live where the node writes"
+        );
+        let forged = TypesSnapshot::take(&dir, Some("claude"))
+            .unwrap()
+            .allowing_wider_children(true);
+        std::fs::create_dir_all(agent_dir.path()).unwrap();
+        std::fs::write(
+            agent_dir.path().join("agent-types.json"),
+            serde_json::to_vec(&forged).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(TypesSnapshot::read(&project, &node).unwrap(), Some(granted));
     }
 }

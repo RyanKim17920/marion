@@ -244,13 +244,13 @@ fn a_repositorys_command_runs_only_while_its_exact_bytes_are_allowed() {
     // A descendant resolves through the snapshot its root took, handed down on disk (sec-b): the
     // same untrusted widening row is refused there too, so repo trust is not skipped below the
     // root's own children.
-    let handed = root.join("handed-down");
-    std::fs::create_dir_all(&handed).unwrap();
+    let handed = marion_core::paths::ProjectDir::from_hash(&root.join("handed-down"), "p");
+    let child = marion_core::contract::AgentId("child".into());
     TypesSnapshot::take(&prefixed, None)
         .unwrap()
-        .write(&handed)
+        .write(&handed, &child)
         .unwrap();
-    let inherited = TypesSnapshot::read(&handed)
+    let inherited = TypesSnapshot::read(&handed, &child)
         .unwrap()
         .expect("the snapshot a child hands down");
     assert!(

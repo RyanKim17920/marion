@@ -105,7 +105,7 @@ fn spawn_on(
         .unwrap()
         .allowing_wider_children(opt_in)
         .with_read_only_session(read_only_session)
-        .write(env.project_dir.agent(&AgentId("root".into())).path())
+        .write(&env.project_dir, &AgentId("root".into()))
         .unwrap();
     let caller = Caller::root(
         "root",

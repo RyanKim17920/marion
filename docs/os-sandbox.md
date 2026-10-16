@@ -11,6 +11,9 @@
   `TMPDIR`, and its row's measured paths (claude: `~/.claude/projects/<cwd key>` and
   `/tmp/claude-<uid>/<cwd key>`; goose: `~/.local/state/goose`, which a canned goose's relocated
   home already covers). Reads, exec, the network and the supervisor socket are unchanged.
+- **What it cannot change.** What the node may do and hand down (its tree's agent-types table, the
+  scope its caller granted, the operator's opt-ins) is kept at `<state>/<project>/authority/<id>.json`,
+  outside its agent dir, so rewriting its own agent dir widens nothing.
 - **How.** `compile` attaches a `SandboxPlan` to the `Invocation`; `Invocation::command` runs the
   process under it: `sandbox-exec -p <profile> -D W0=… <program>` on macOS (paths only as
   parameters), Landlock ABI 2+ in `pre_exec` on Linux. A plan that cannot be prepared refuses the
@@ -36,3 +39,7 @@ marion's sandbox is for canned and endpoint nodes, where marion owns the environ
 harness home. Containment on the operator's login is unchanged: only codex counts as sandboxed,
 by its own sandbox, so the delegation rules there are as before (`marion doctor` and the guide
 say so).
+
+The honest limit: such a node runs unsandboxed as the operator's own uid, so it can read and write
+everything the operator can, marion's state included (`operator.key`, every node's records). marion
+treats it as the operator's equal, not as contained.

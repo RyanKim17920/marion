@@ -785,7 +785,7 @@ pub fn prepare_watched(
     // **Read once, here, and kept**: the table this root's tree starts with is written into its
     // agent directory and every descendant resolves through it (see [`crate::types_snapshot`]). A
     // resumed root keeps the table it first started with.
-    let snapshot = match crate::types_snapshot::TypesSnapshot::read(agent_dir.path()) {
+    let snapshot = match crate::types_snapshot::TypesSnapshot::read(&project, &agent_id) {
         Ok(Some(kept)) if spec.resume.is_some() => kept,
         Ok(_) => {
             // The operator's containment opt-in, fixed for the whole tree here: their CLI flag, or
@@ -808,7 +808,9 @@ pub fn prepare_watched(
         Err(SpawnError::UnknownAgentType(name)) => Err(RootError::UnknownAgentType(name)),
         other => other.map_err(RootError::Run),
     }?;
-    snapshot.write(agent_dir.path()).map_err(RootError::Run)?;
+    snapshot
+        .write(&project, &agent_id)
+        .map_err(RootError::Run)?;
     crate::run::check_budget_enforceable(agent_type.harness, spec.budget.as_ref())?;
     // The type's standing instruction, once, exactly where `run_spawn_watched` applies it; `spec`
     // is the prefixed spec from this line on, so the node and the record read one prompt.

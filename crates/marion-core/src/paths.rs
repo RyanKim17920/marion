@@ -14,6 +14,7 @@
 //!   supervisor.sock
 //!   journal.jsonl
 //!   snapshot.json                    # declared; no build writes it (opportunistic compaction)
+//!   authority/<agent_id>.json        # the agent types and scope a node's tree runs under
 //!   agents/<agent_id>/
 //!     meta.json                      # declared; no build writes it — and no accessor, see below
 //!     contracts/<task_id>.json
@@ -159,6 +160,15 @@ impl ProjectDir {
 
     pub fn agents_dir(&self) -> PathBuf {
         self.0.join("agents")
+    }
+
+    /// `authority/<agent_id>.json` — what a node may do and hand down: the agent-types table its
+    /// tree started with, the scope it was granted, the operator's opt-ins. **Outside the node's
+    /// agent directory on purpose**: a sandboxed node may write its own agent directory, and a
+    /// record it could rewrite would let it widen itself. The id is a UUIDv7, so it is safe as a
+    /// path component.
+    pub fn authority(&self, id: &AgentId) -> PathBuf {
+        self.0.join("authority").join(format!("{}.json", id.0))
     }
 
     pub fn races_dir(&self) -> PathBuf {

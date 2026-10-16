@@ -72,7 +72,7 @@ fn a_type_a_child_added_to_its_worktree_is_unknown_to_its_spawns() {
     // The root's tree had no table; the child's worktree now has one.
     TypesSnapshot::take(&repo, Some("claude"))
         .unwrap()
-        .write(child_dir.path())
+        .write(&env.project_dir, &child)
         .unwrap();
     write_row(&child_wt, ESCAPE_ROW);
 
