@@ -948,14 +948,24 @@ fn spawn_agent_type_description(listed: &Value) -> String {
         .to_string()
 }
 
-/// A bridge for a tree whose `.marion/agents.toml` is `file`, asked for `tools/list` once.
+/// A bridge for a tree whose `.marion/agents.toml` is `file`, asked for `tools/list` once, on a
+/// host whose `PATH` holds `codex` and `claude` and nothing else, so which built-ins are listed
+/// does not depend on what the machine running the test has installed.
 fn tools_list_for_tree(tag: &str, file: &str) -> Value {
+    use std::os::unix::fs::PermissionsExt;
     let dir = Scratch::new(tag);
     let path = dir.path.join(".marion/agents.toml");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, file).unwrap();
+    let bin = dir.path.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for program in ["codex", "claude"] {
+        let shim = bin.join(program);
+        std::fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let mut b = Bridge::spawn_with(|cmd| {
-        cmd.env("MARION_REPO", &dir.path);
+        cmd.env("MARION_REPO", &dir.path).env("PATH", &bin);
     });
     b.initialize("2025-06-18");
     b.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
@@ -983,7 +993,12 @@ fn tools_list_names_the_trees_user_defined_agent_types() {
     );
     assert!(
         description.contains("codex (") && description.contains("claude ("),
-        "beside the built-ins: {description}"
+        "beside the built-ins this host can launch: {description}"
+    );
+    assert!(
+        !description.contains("opencode (")
+            && description.contains("need a program this host lacks"),
+        "a built-in whose program is not installed is counted, not named: {description}"
     );
 }
 

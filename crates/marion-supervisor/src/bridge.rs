@@ -301,17 +301,60 @@ pub fn workflow_names_description(names: &[String]) -> String {
 /// as a built-in is. A **description and never an `enum`**: a list of names cannot carry each
 /// type's description. A free-form `acp:<command>` is not offered: a model may run one only where
 /// the operator listed it (`trust::require_model_named`).
+///
+/// **Only the built-ins this host can launch** ([`installed_here`]): the list is paid in every
+/// context on every turn, and a type whose program is not installed is one a spawn of would only
+/// fail. The rest are counted, not named. A row of the tree's own file is always listed — the
+/// operator wrote it on purpose, and a missing program is then a refusal worth reading.
 pub fn agent_type_description(types: &AgentTypes) -> String {
+    agent_type_description_where(types, installed_here)
+}
+
+/// [`agent_type_description`] with what counts as launchable stated: the seam a test names its
+/// host by.
+fn agent_type_description_where(
+    types: &AgentTypes,
+    launchable: impl Fn(&marion_core::agent_type::AgentType) -> bool,
+) -> String {
+    let user = |n: &str| types.user().iter().any(|t| t.name == n);
+    let mut hidden = 0;
     let listed = types
         .names()
         .iter()
-        .filter_map(|n| types.resolve(n).map(|t| format!("{n} ({})", t.description)))
+        .filter_map(|n| {
+            let t = types.resolve(n)?;
+            if !user(n) && !launchable(&t) {
+                hidden += 1;
+                return None;
+            }
+            Some(format!("{n} ({})", t.description))
+        })
         .collect::<Vec<_>>()
         .join(", ");
+    let not_here = match hidden {
+        0 => String::new(),
+        n => format!(" {n} more built-ins need a program this host lacks (`marion doctor`)."),
+    };
     format!(
-        "One of: {listed}. The built-ins plus the rows of this tree's {}.",
+        "One of: {listed}. The built-ins plus the rows of this tree's {}.{not_here}",
         crate::run::AGENT_TYPES_FILE
     )
+}
+
+/// **Whether this host can launch a type**: its program — the row's, or an ACP agent's own
+/// command — is an executable on `PATH`. Read off the registry, never a list of names here; a type
+/// whose program marion cannot name is kept, so nothing is hidden on a guess.
+fn installed_here(t: &marion_core::agent_type::AgentType) -> bool {
+    let program = match t.acp_agent.as_deref() {
+        Some(selector) => marion_harness::acp::Binding::resolve(selector)
+            .ok()
+            .and_then(|b| b.argv().first().cloned()),
+        None => marion_harness::adapter::row(t.harness)
+            .spec
+            .program
+            .map(str::to_string),
+    };
+    program.is_none_or(|p| crate::doctor::which(&p).is_some())
 }
 
 /// The tool list over one already-composed `agent_type` sentence — the seam [`tools_list_result`]
@@ -2625,6 +2668,44 @@ mod tests {
             cancel: None,
             workflow: None,
         }
+    }
+
+    /// **`spawn`'s types are the ones this host can launch**: a built-in whose program is missing
+    /// is counted rather than named, a tree's own row is named whatever is installed, and a host
+    /// with everything installed hears no count at all.
+    #[test]
+    fn the_agent_type_sentence_names_only_the_built_ins_this_host_can_launch() {
+        let types = AgentTypes::parse(
+            "[[agent]]\nname = \"reviewer\"\nharness = \"opencode\"\ndescription = \"r\"\n",
+        )
+        .unwrap();
+        let codex = |t: &marion_core::agent_type::AgentType| {
+            t.harness == marion_core::harness::Harness::Codex
+        };
+        let only_codex = agent_type_description_where(&types, codex);
+        assert!(only_codex.contains("codex ("), "{only_codex}");
+        assert!(!only_codex.contains("claude ("), "{only_codex}");
+        assert!(
+            only_codex.contains("reviewer (r)"),
+            "the operator's row: {only_codex}"
+        );
+        let builtins = types.names().len() - types.user().len();
+        let launchable = types
+            .names()
+            .iter()
+            .filter(|n| types.user().iter().all(|u| u.name != **n))
+            .filter(|n| types.resolve(n).is_some_and(|t| codex(&t)))
+            .count();
+        assert!(
+            only_codex.contains(&format!(
+                " {} more built-ins need a program this host lacks",
+                builtins - launchable
+            )),
+            "{only_codex}"
+        );
+        let everything = agent_type_description_where(&types, |_| true);
+        assert!(!everything.contains("this host lacks"), "{everything}");
+        assert!(everything.len() > only_codex.len());
     }
 
     /// **`list` returns every child it can in whole lines, and says what it left out.** It used
