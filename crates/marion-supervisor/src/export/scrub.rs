@@ -37,6 +37,27 @@ const MIN_SECRET: usize = 8;
 /// is one sentence, and a terminal line is not the place for a trace.
 pub const LINE_CAP: usize = 200;
 
+/// **An invisible format character**: the bidirectional embeddings, overrides and isolates that
+/// can show a line in an order other than its bytes', zero-width spaces and joiners, the soft
+/// hyphen, the word joiner and its invisible operators, the byte-order mark and the tag
+/// characters (Unicode's `Cf` category, as a terminal line can be fooled by it).
+fn is_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
 /// Environment variable names, upper-cased, whose value is a secret by the name's own say-so.
 const SECRET_ENV_SUFFIXES: &[&str] = &[
     "_API_KEY",
@@ -108,14 +129,15 @@ impl Scrubber {
     }
 
     /// **`text` as one line safe to journal and print to a terminal**: [`Self::clean`]ed (a
-    /// vendor's error can echo the key it refused), every control character written as its
-    /// escape (`\u{1b}`, `\n`) so no byte of it drives the reader's terminal, and capped at
+    /// vendor's error can echo the key it refused), every control character and invisible format
+    /// character (a bidi override among them) written as its escape (`\u{1b}`, `\n`,
+    /// `\u{202e}`) so no byte of it drives or reorders the reader's terminal, and capped at
     /// [`LINE_CAP`] characters with `…` where it was cut.
     pub fn one_line(&self, text: &str) -> String {
         let mut out = String::new();
         let mut kept = 0;
         for c in self.clean(text).chars() {
-            let piece: String = if c.is_control() {
+            let piece: String = if c.is_control() || is_format(c) {
                 c.escape_default().collect()
             } else {
                 c.to_string()
@@ -491,6 +513,13 @@ mod tests {
         assert_eq!(long.chars().count(), LINE_CAP + 1);
         assert!(long.ends_with('…'));
         assert_eq!(s.one_line("rate limit: 429"), "rate limit: 429");
+        let bidi = s.one_line("ok \u{202e}txt.exe\u{200b}\u{2066}x\u{feff}");
+        assert_eq!(bidi, "ok \\u{202e}txt.exe\\u{200b}\\u{2066}x\\u{feff}");
+        assert_eq!(
+            s.one_line("naïve — ✓ 東京"),
+            "naïve — ✓ 東京",
+            "visible text is kept"
+        );
         assert_eq!(
             s.one_line(&"y".repeat(LINE_CAP)),
             "y".repeat(LINE_CAP),
