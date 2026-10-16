@@ -23,7 +23,7 @@
 //! ```
 //!
 //! It drives the installed `claude`, `opencode` and `codex` through the suite's version gate, so
-//! it runs only on releases `PINNED_HARNESSES` admits. S31 measured the fold and the queue on
+//! it runs only on releases the gate admits. S31 measured the fold and the queue on
 //! claude 2.1.280 and opencode 1.18.32 (`tests/fixtures/s31-turn-delivery/`); each later admission
 //! re-runs this file.
 
@@ -117,7 +117,7 @@ fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
 }
 
 /// The run's `PATH`, or `None` on a runner that declared it has no harnesses. The gate panics on a
-/// `program` outside `PINNED_HARNESSES`' admitted list, so this runs on a release the admission
+/// `program` the gate does not admit, so this runs on a release the admission
 /// ritual re-checked — and `scripts/admit-harness.sh` re-runs this file when it admits one.
 fn admitted_path(program: &str) -> Option<String> {
     if !marion_testsupport::harness_available(program) {

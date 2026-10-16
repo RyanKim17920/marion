@@ -287,20 +287,21 @@ fn p_version(c: &mut Ctx<'_>) -> (String, Outcome) {
         _ => flag_version(&launch.inv.program, c.t.spec),
     };
     let (policy_ok, policy) = update_policy_reaches(c.t.spec.updates, &launch);
-    let admitted = marion_testsupport::PINNED_HARNESSES
-        .iter()
-        .find(|p| p.program == launch.inv.program)
-        .map(|p| match &version {
-            // An ACP agent's reading is `<name> <version>`.
-            Some(v)
-                if p.accepted
-                    .contains(&v.split_whitespace().last().unwrap_or("")) =>
-            {
-                "admitted in PINNED_HARNESSES".into()
-            }
-            _ => format!("NOT admitted (PINNED_HARNESSES accepts {:?})", p.accepted),
-        })
-        .unwrap_or_else(|| "no PINNED_HARNESSES entry".into());
+    // An ACP agent's reading is `<name> <version>`.
+    let listed = version
+        .as_deref()
+        .and_then(|v| v.split_whitespace().last())
+        .is_some_and(|v| {
+            // An ACP agent's releases are its program's row's.
+            marion_testsupport::gated_row(&launch.inv.program)
+                .map_or(c.t.spec.verified, |s| s.verified)
+                .contains(&v)
+        });
+    let admitted = if listed {
+        "listed in the row's verified releases"
+    } else {
+        "not listed in the row's verified releases"
+    };
     s.log
         .note(format!("version {version:?}; {policy}; {admitted}"));
     let observed = format!(

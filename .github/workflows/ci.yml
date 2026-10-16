@@ -1,13 +1,13 @@
 # What this workflow is, and what it deliberately is not.
 #
 # marion's real test suite drives REAL harness binaries — claude, codex, opencode,
-# copilot, goose, cline, qwen — at the exact releases `marion_testsupport::PINNED_HARNESSES`
-# admits, against a canned local provider. That matrix cannot run here: the binaries are not
+# copilot, goose, cline, qwen — at releases the gate (`marion_testsupport::on_path`) admits,
+# against a canned local provider. That matrix cannot run here: the binaries are not
 # installable from a manifest, they auto-update out from under a pin, some need credentials, and
 # the native-facade lanes need a real foreground controlling TTY. **The live matrix stays local
 # and manual** — see CONTRIBUTING.md and MILESTONES.md's "E2E, and how to run it". The one
 # exception is canary.yml, which installs the newest release of each harness nightly and runs the
-# canned matrix against it under MARION_GATE=warn; it is a drift detector, not a gate on pushes.
+# canned matrix against it, strict; it is a drift detector, not a gate on pushes.
 #
 # So CI covers exactly the part that needs no harness binary: format, clippy, the unit tests, and
 # the integration suites in which **every test that launches one is behind a gate that can skip**.
@@ -110,10 +110,6 @@ jobs:
         run: |
           git config --global user.name "marion ci"
           git config --global user.email "ci@marion.invalid"
-
-      # Every binary cargo runs goes through scripts/cargo-runner.sh (.cargo/config.toml), which
-      # needs its executable bit to have survived the checkout.
-      - run: test -x scripts/cargo-runner.sh
 
       - name: Unit tests
         run: cargo test --workspace --lib

@@ -2,7 +2,7 @@
 //!
 //! Harnesses update themselves (claude, codex and opencode all moved overnight on 2026-09-06), so
 //! the operator's `claude` is routinely a release marion's tests have not seen. The version gate
-//! that refuses such a release, `marion_testsupport::PINNED_HARNESSES`, exists for the *tests*: it
+//! that refuses such a release, `marion_testsupport::on_path`, exists for the *tests*: it
 //! keeps "the matrix passed" meaning "the matrix passed on the release it names". It must never
 //! become a reason the shipped `marion` declines to launch a node. Two things would make it one,
 //! and each has a check here:
@@ -16,10 +16,7 @@
 
 use std::path::Path;
 
-use marion_core::Harness;
-use marion_harness::adapter::harness_spec;
 use marion_harness::advertised;
-use marion_testsupport::PINNED_HARNESSES;
 
 /// Releases after `version`: the next patch, minor and major, and one far past all of them.
 fn newer_than(version: &str) -> Vec<String> {
@@ -40,20 +37,18 @@ fn newer_than(version: &str) -> Vec<String> {
 
 #[test]
 fn a_newer_release_keeps_every_capability_of_the_newest_admitted_one() {
-    for pin in PINNED_HARNESSES {
-        let harness = Harness::ALL
-            .into_iter()
-            .find(|h| harness_spec(*h).program == Some(pin.program))
-            .unwrap_or_else(|| panic!("pinned harness {:?} has no row", pin.program));
-        let newest = pin.accepted[pin.accepted.len() - 1];
+    for spec in marion_testsupport::gated_rows() {
+        let harness = spec.harness;
+        let program = spec.program.expect("a gated row names its program");
+        let newest = spec.verified[spec.verified.len() - 1];
         let admitted = advertised(harness, newest);
         for later in newer_than(newest) {
             let got = advertised(harness, &later);
             assert!(
                 admitted.is_at_or_below(&got),
                 "{} {later} advertises {:?}, less than admitted {newest}'s {:?}: a release newer \
-                 than the pin table must never lose a capability for being unadmitted",
-                pin.program,
+                 than the verified list must never lose a capability for being unadmitted",
+                program,
                 got.granted(),
                 admitted.granted(),
             );

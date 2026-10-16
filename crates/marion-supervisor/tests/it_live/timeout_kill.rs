@@ -27,7 +27,7 @@
 //! ```
 //!
 //! It needs a real `codex`, `opencode` and `pi` on `PATH` at versions
-//! [`marion_testsupport::PINNED_HARNESSES`] accepts, and it is not `#[ignore]`d: like `cross_product`, a
+//! the gate ([`marion_testsupport::on_path`]) admits, and it is not `#[ignore]`d: like `cross_product`, a
 //! criterion that quietly passes on a machine that cannot run it is worth less than no criterion.
 //! No model is called — everything is served by the in-process `CannedServer`.
 

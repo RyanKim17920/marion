@@ -71,11 +71,11 @@ pub struct HarnessSpec {
     /// family (`marion_core::review::model_family`).
     pub vendor: Option<&'static str>,
     /// **The versions marion verified this harness against**: the first is the pin its measured
-    /// behaviours were taken from, the rest were observed green since, in the order they were
-    /// admitted (`scripts/admit-harness.sh` appends; the evidence for each is beside its program
-    /// in `marion_testsupport::PINNED_HARNESSES`). The test gate admits exactly these, and doctor
-    /// notes an installed version newer than the newest. Empty where the version is not the row's
-    /// own — an ACP agent's.
+    /// behaviours were taken from, the rest passed the conformance battery since, in the order they
+    /// were listed (`scripts/admit-harness.sh` appends; the nightly canary runs it). The test gate
+    /// (`marion_testsupport::on_path`) admits these, and a newer release on this machine's
+    /// admitting conformance record; doctor notes one newer than the newest. Empty where the
+    /// version is not the row's own — an ACP agent's.
     pub verified: &'static [&'static str],
     /// The headless argv, in order.
     pub argv: &'static [Arg],

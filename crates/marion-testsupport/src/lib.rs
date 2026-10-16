@@ -40,6 +40,7 @@
 //! `marion` command. It kills processes by pid, removes directories on drop, and shells out to
 //! `git` and `ps`.
 
+use std::ffi::OsStr;
 use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -48,11 +49,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-mod shim;
-pub use shim::{
-    GateFailure, ReleaseStore, ReleaseStores, Resolution, SHIM_DIR_VAR, Shim, admitted_by_record,
-    installed_version, process_shim,
-};
+use marion_core::Harness;
+use marion_harness::spec::HarnessSpec;
 
 // --- waiting ------------------------------------------------------------------------------------
 
@@ -270,783 +268,43 @@ pub fn sweep(needle: &str) -> Vec<(i32, String)> {
 
 // --- the harnesses this suite drives --------------------------------------------------------------
 
-/// One real CLI the matrix drives, and the versions its measured behaviours were taken from.
-pub struct PinnedHarness {
-    /// The name marion `exec`s, which is also the name the binary must have on `PATH`.
-    pub program: &'static str,
-    /// **The first entry is the pin** — the version README, MILESTONES and these tests' own doc
-    /// comments name, and the one a failure message quotes as expected. The rest are versions
-    /// since observed green, each with the observation beside it in [`PINNED_HARNESSES`].
-    ///
-    /// **The row's own list** (`HarnessSpec::verified`): the gate and doctor read one table, so an
-    /// admission cannot widen one and not the other.
-    pub accepted: &'static [&'static str],
-    /// Where the installer keeps releases side by side, so [`Shim`] can `exec` an admitted one
-    /// while a newer release sits first on `PATH` — or that it keeps none.
-    pub store: ReleaseStore,
-    /// The no-self-update environment marion gives every node of this harness — the row's
-    /// `UpdatePolicy::Env` pair in `marion_harness`, and nothing where the row's switch is not an
-    /// environment variable. The gate's `--version` probe runs with it, because a harness that
-    /// execs a build it downloaded itself answers the bare probe with that build's version while
-    /// every node marion spawns runs the installed one: copilot's npm 1.0.83 read `1.0.87` until
-    /// `COPILOT_AUTO_UPDATE=false`, and an admission taken on that reading would have credited
-    /// 1.0.87 with passes 1.0.83 produced. `marion-harness`'s
-    /// `every_pinned_harness_probes_with_its_rows_update_env` keeps the two from drifting.
-    pub probe_env: &'static [(&'static str, &'static str)],
-    /// The row's switch where it is an argument pair instead: the arguments the probe passes after
-    /// `--version` — the row's `UpdatePolicy::Pair` on the flag of its own override channel
-    /// (codex's `-c check_for_update_on_startup=false`), exactly as `marion_harness::probe` spells
-    /// it. The same test keeps the two equal.
-    pub probe_args: &'static [&'static str],
-    /// The row's switch where it is a settings document: written to a private file for the probe's
-    /// lifetime, its path in [`ProbeDocument::env`] — the shape a row takes when it has no update
-    /// variable at all (the retired gemini CLI's bare start updated the operator's install on
-    /// 2026-09-27). No pinned row takes it today.
-    pub probe_document: Option<ProbeDocument>,
+/// **The row that runs `program`, when the suite gates it**: a built-in row naming `program` as its
+/// binary and listing the releases marion verified it on (`HarnessSpec::verified`).
+///
+/// That list is the one table. The gate admits a release it names, or a newer one this machine's
+/// conformance battery admitted ([`on_path`]); nothing in this crate restates a version, a probe
+/// switch or a release store, so a harness gains the gate by having a row.
+pub fn gated_row(program: &str) -> Option<&'static HarnessSpec> {
+    gated_rows().find(|spec| spec.program == Some(program))
 }
 
-/// A settings document a version probe carries: `body`, at a path named by the variable `env`.
-#[derive(Debug, Clone, Copy)]
-pub struct ProbeDocument {
-    pub env: &'static str,
-    pub body: &'static str,
+/// Every row the suite gates, in [`Harness::ALL`]'s order.
+pub fn gated_rows() -> impl Iterator<Item = &'static HarnessSpec> {
+    Harness::ALL
+        .into_iter()
+        .map(marion_harness::adapter::harness_spec)
+        .filter(|spec| spec.program.is_some() && !spec.verified.is_empty())
 }
-
-/// **The one table.** Every version check reads from here; nothing else in the workspace decides
-/// what version is acceptable.
-///
-/// The auth wire spelling had exactly the other shape today (`as_wire` and `from_wire` each
-/// carrying their own `"inherited"` literal, nothing tying them), and it broke in the silent
-/// direction. Two tables that must agree and do not know about each other is the bug; this is one.
-///
-/// # Why a set rather than a single pin, and why entries are added and never edited
-///
-/// A version is added here **only after the suite has been observed green against it**, and the pin
-/// — entry zero — is never replaced, because the pin is what the prose claims. That keeps the two
-/// questions apart: *"which version were these behaviours measured on"* is answered by the pin and
-/// does not move; *"which versions has this been checked against since"* is answered by the tail and
-/// grows — by `scripts/admit-harness.sh`, or by the nightly canary once a release passes the
-/// conformance battery (`.github/workflows/canary.yml`). An upgrade that has not been re-checked
-/// is a red suite, which is the point — the four measured behaviours below are version-specific,
-/// so attributing them to a version that never ran is the failure this table exists to prevent.
-pub const PINNED_HARNESSES: &[PinnedHarness] = &[
-    PinnedHarness {
-        program: "claude",
-        store: ReleaseStore::ClaudeVersions,
-        probe_env: &[("DISABLE_AUTOUPDATER", "1")],
-        probe_args: &[],
-        probe_document: None,
-        // 2.1.220 is the pin: it is the version that sends turn one `"tools":[]` when the prompt
-        // rides argv, and whose `can_use_tool` frame `tests/fixtures/s9` was captured from.
-        //
-        // 2.1.222: observed green on darwin 25.5.0, 2026-08-04. Every test that drives a real
-        // `claude` passed against it on the run that added this check — `m1_hop`,
-        // `permission_round_trip` (6), `journal_wiring` (17), `cross_product` (17),
-        // `harness_matrix` (4), `depth_gate` (4), none `#[ignore]`d — so the turn-one `"tools":[]`
-        // shape and the `can_use_tool` frame were both re-asserted against 2.1.222 rather than
-        // assumed to have survived the bump. **That is the evidence an entry here needs**, and the
-        // reason it is entry one and not a replacement for the pin.
-        //
-        // 2.1.223: observed green on darwin 25.5.0, 2026-08-06, after the **second** harness
-        // auto-update of that one day — codex moved in the morning, claude in the evening. The
-        // whole workspace passed against it, which covers every gated test that drives a real
-        // `claude`: `m1_hop`, `permission_round_trip` (6), `journal_wiring` (17), `cross_product`
-        // (17), `harness_matrix` (4), `depth_gate` (4), none `#[ignore]`d.
-        //
-        // `permission_round_trip` reads `tests/fixtures/s9` off disk, so a green suite genuinely
-        // re-asserts the `can_use_tool` frame. **Nothing else about claude is re-asserted that
-        // way**: `s10`, `s11`, `s14` and `s16` live in the workspace as prose rather than as
-        // fixture reads, and `child_stream`, `child_events` and `node_attach` drive a real
-        // `claude` without ever calling [`on_path`], so the pin does not reach them at all. Those
-        // four spikes were re-probed rather than assumed, every one against a canned local
-        // provider, total spend **$0.00**:
-        //
-        // * **s14** — `probe-claude.sh` re-run; all eight cells match `declarations.json` field
-        //   for field and seq for seq. `--tools NotATool` still declares `[]` at exit 0 with the
-        //   same stderr the *good* runs print, `Read,NotATool` still keeps `Read` and drops the
-        //   bad name, marion's own lowercase `read` still declares nothing, and `--tools` absent
-        //   and `--tools default` still declare the same eleven built-ins. **An unknown tool name
-        //   is still silently ignored**, which is the negative this fixture exists for.
-        // * **s10** — the probe re-run in all three modes: 14-key `SubagentStop`, 11-key `Stop`,
-        //   key set identical fire for fire; `agent_id` still 17 lowercase hex and still equal to
-        //   `task_started.task_id`, `task_notification.task_id` and the `tool_result`'s `agentId`;
-        //   `session_id` and `transcript_path` still the *parent's*; `decision: block` still
-        //   re-prompts with `parent_tool_use_id` on the injected `user` frame; `num_turns` still 2
-        //   in every mode; the bad-shape control still fires **zero** times.
-        // * **s11** — the pty ceiling holds: `read_size_max` 1,024 on a pty against 46,692 on a
-        //   pipe, zero reads at or above 4,096, 94 of 231 reads (41%) carrying no frame boundary
-        //   against zero on pipes, every pty line still `\r\n` and every `OPOST`-cleared line
-        //   still bare `\n`, and `claude -p` still refuses a pty *stdin* with exit 1 and a
-        //   byte-identical `Error: Input must be provided …`.
-        // * **s16** — the kill shape holds exactly: no `stdin_eof` in any harness run and one in
-        //   the control, SIGINT then SIGTERM at 100.2–101.1 ms across four runs, a third signal
-        //   nothing can catch, all pid-targeted (the own-process-group run is identical), and the
-        //   grandchild still unsignalled, reparented to pid 1 and beating 59–60 times after the
-        //   harness is gone.
-        //
-        // **Two readings moved, and neither is a shape.** SIGTERM→server-gone widened from
-        // 418–429 ms to 477–539 ms, measured one axis at a time — 2.1.222 is still on disk beside
-        // 2.1.223, so both were run on this machine within the same minute, and the ranges do not
-        // overlap. The grace a bridge would have to work inside got *larger*, so nothing that
-        // depends on it breaks; but `background.rs`'s "~450 ms" is a 2.1.222 number and is a
-        // *floor* for 2.1.223. And s11's `collapsed_sequence_identical` came back `false` on a
-        // `system/hook_progress` frame — **not** a 2.1.223 finding: that frame carries the
-        // *operator's* own `SessionStart:startup` hook output, because `S1_ARGV_TAIL` carries no
-        // `--setting-sources ""` the way the s14 probe does. It appeared once in eighteen runs and
-        // the `hook_started`/`hook_response` counts are 9/9 on both versions. s11's probe is
-        // environment-dependent in a way its fixture does not say; that is a finding about the
-        // probe, not about claude.
-        //
-        // **Nothing was re-recorded.** Every capture was compared, not refreshed.
-        //
-        // 2.1.224: observed green on darwin 25.5.0, 2026-08-07, the day after 2.1.223 and one day
-        // after codex's own second bump. The whole workspace passed against it, which covers every
-        // gated test that drives a real `claude`: `m1_hop`, `permission_round_trip` (6),
-        // `journal_wiring` (17), `cross_product` (17), `harness_matrix` (4), `depth_gate` (4), none
-        // `#[ignore]`d.
-        //
-        // **The same four spikes `9b0a06d` re-probed were re-probed here** — s10, s11, s14 and s16,
-        // every one against a canned local provider, total spend **$0.00** — so this entry does not
-        // rest on a thinner basis than the one above it. s14 and s16 were additionally re-run
-        // against 2.1.223, which is still on disk under
-        // `~/.local/share/claude/versions/`, so the readings that carry a *number* were taken on
-        // both versions on this machine within the same hour, one axis at a time.
-        //
-        // * **s14** — `probe-claude.sh` re-run on 2.1.223 **and** 2.1.224; all eight cells match
-        //   `declarations.json` field for field, `body_tools`, `system_init_tools`, exit and stderr
-        //   alike. `--tools NotATool` still declares `[]` at exit 0 with the *good* runs' stderr,
-        //   `Read,NotATool` still keeps `Read` and drops the bad name, lowercase `read` still
-        //   declares nothing, and `--tools` absent and `--tools default` still declare the same
-        //   eleven built-ins. **An unknown tool name is still silently ignored.**
-        // * **s10** — the probe re-run in all three modes: 14-key `SubagentStop` and 11-key `Stop`,
-        //   both key sets identical to the fixture's; `agent_id` still 17 lowercase hex and still
-        //   equal to the stream's `task_id`; `session_id` and `transcript_path` still the
-        //   *parent's* with `agent_transcript_path` at `<session_id>/subagents/agent-<agent_id>`;
-        //   `decision: block` still re-prompts (2 `SubagentStop` fires against 1) with
-        //   `parent_tool_use_id` on the injected `user` frame; `num_turns` still 2 in every mode;
-        //   the bad-shape control still fires **zero** times.
-        // * **s11** — `compare.json`'s whole `comparisons` block is **byte-identical** to the
-        //   committed one: `collapsed_sequence_identical: true` for `pipes` against both `pty-out`
-        //   and `pty-out-raw`, `first_divergence: null`, 38 kinds each. The pty ceiling holds —
-        //   `read_size_max` 1,024 on every pty transport against 46,692 on a pipe, **zero** reads
-        //   at or above 4,096 on a pty against 5 on a pipe, 94 of 231 reads (41%) carrying no
-        //   frame boundary against zero on pipes. Every pty line is still `\r\n` and every
-        //   `OPOST`-cleared line still bare `\n`. `claude -p` still refuses a pty *stdin* with
-        //   exit 1 and a byte-identical `Error: Input must be provided …`. 2.1.223's one-off
-        //   `collapsed_sequence_identical: false` did **not** recur, which is the confirmation the
-        //   entry above predicted: it was the operator's own `SessionStart` hook, not claude.
-        // * **s16** — every discriminating *shape* holds across all four runs: no `stdin_eof` in
-        //   any harness run and one in the control, SIGINT then SIGTERM then a third signal nothing
-        //   can catch, `server_signal_handlers_installed` 29 with none refused,
-        //   `server_voluntary_exit` / `server_orderly_shutdown` / `server_crashed` all false, all
-        //   pid-targeted (the own-process-group run is identical), and the grandchild still
-        //   unsignalled, reparented to pid 1 and beating 58–59 times after the harness is gone.
-        //
-        // **The 100 ms timer got noisier, and that is the one reading that moved.** SIGINT→SIGTERM
-        // came back **98.9, 101.7, 102.5, 103.2 ms** on 2.1.224 against **100.0–101.0 ms** on
-        // 2.1.223 re-run the same hour, and 100.0–100.5 ms in the committed 2.1.222 captures. The
-        // nominal timer is unmoved and no reading is near a different value; what changed is that
-        // the spread went from ±1 ms to ±3 ms, and one run landed *below* 100 ms for the first
-        // time. It is recorded because §11's reading of that gap as "a fixed timer rather than a
-        // race" rested on the tightness, and the tightness is now weaker evidence than it was. A
-        // bridge that treats 100 ms as an exact deadline rather than a nominal one is newly wrong.
-        //
-        // **And 2.1.223's widened SIGKILL grace does not reproduce.** Re-running the same probe
-        // today gives SIGTERM→server-gone **347–549 ms on 2.1.223** and **363–458 ms on 2.1.224** —
-        // 2.1.223's own range now straddles the 477–539 ms the entry above recorded for it and the
-        // 418–429 ms it recorded for 2.1.222. So that widening was **machine load, not a version
-        // property**, and the entry above over-attributed it. The honest reading of the grace is
-        // that it is noisy on the order of ±100 ms and `background.rs`'s "~450 ms" is a *nominal*
-        // figure with no floor under it: 347 ms was observed today. Nothing depends on a floor —
-        // marion's bridge must survive SIGKILL at any moment, not at a deadline — which is why this
-        // is a correction to the record rather than a blocker.
-        //
-        // **Nothing was re-recorded.** Every capture was compared, not refreshed.
-        //
-        // 2.1.225: admitted on the run that added `marion run --pane`, and admitted for the
-        // narrower reason this table asks for rather than because the suite was green. The CLI
-        // self-updated mid-session, so this was not a chosen upgrade; every test that drives a
-        // real claude was re-run against it and held, and the new pane path was measured on it
-        // directly — the trust dialog still lands on the **main** screen before the alternate
-        // screen is entered, `-p` still refuses an isatty(0) stdin, and the TUI still seeds an
-        // argv prompt into the composer rather than submitting it. What was **not** re-measured is
-        // the SIGINT/SIGTERM timing above; that probe is not part of the suite and this entry
-        // makes no claim about it on 2.1.225.
-        //
-        // 2.1.226: observed green on darwin 25.5.0, 2026-08-08, after the third claude
-        // auto-update in five days. The whole workspace passed against it — **1,176 tests, none
-        // `#[ignore]`d** — and that same 1,176 was measured on 2.1.225 first, through a `PATH`
-        // shim to `~/.local/share/claude/versions/2.1.225`, so the base this entry moves off was
-        // taken rather than quoted.
-        //
-        // **The same four spikes `9b0a06d` and `bd7b8eb` re-probed were re-probed here** — s10,
-        // s11, s14 and s16, every one against a canned local provider, total spend **$0.00** —
-        // and s11 and s16 were additionally re-run against 2.1.225 within the same hour, one axis
-        // at a time, because those are the two that carry a number.
-        //
-        // * **s14** — `probe-claude.sh` re-run; all eight cells match `declarations.json` field
-        //   for field: `body_tools`, `system_init_tools`, exit and stderr alike. `--tools
-        //   NotATool` still declares `[]` at exit 0 with the *good* runs' stderr, `Read,NotATool`
-        //   still keeps `Read` and drops the bad name, lowercase `read` still declares nothing,
-        //   and `--tools` absent and `--tools default` still declare the same eleven built-ins in
-        //   the body against twenty-eight in `system/init`. **An unknown tool name is still
-        //   silently ignored.**
-        // * **s10** — the probe re-run in all three modes: 14-key `SubagentStop` and 11-key
-        //   `Stop`, both key sets identical to the fixture's; `agent_id` still 17 lowercase hex
-        //   and still equal to the stream's `task_id` and the `tool_result`'s `agentId`;
-        //   `session_id` and `transcript_path` still the *parent's* with `agent_transcript_path`
-        //   at `<session_id>/subagents/agent-<agent_id>`; `decision: block` still re-prompts (2
-        //   `SubagentStop` fires against 1) with `parent_tool_use_id` on the injected `user`
-        //   frame; `num_turns` still 2 in every mode; the bad-shape control still fires **zero**
-        //   times.
-        // * **s11** — the pty ceiling holds: `read_size_max` 1,024 on every pty transport against
-        //   46,728 on a pipe, **zero** reads at or above 4,096 on a pty against 5 on a pipe. Every
-        //   pty line is still `\r\n` and every `OPOST`-cleared line still bare `\n`. `claude -p`
-        //   still refuses a pty *stdin* with exit 1 and a byte-identical `Error: Input must be
-        //   provided …`.
-        // * **s16** — every discriminating *shape* holds across four harness runs plus the
-        //   own-process-group run: no `stdin_eof` in any harness run and one in the control,
-        //   SIGINT then SIGTERM then a third signal nothing can catch,
-        //   `server_signal_handlers_installed` 29 with none refused, `server_voluntary_exit` /
-        //   `server_orderly_shutdown` / `server_crashed` all false, all pid-targeted (the
-        //   own-process-group run is identical), and the grandchild still unsignalled, reparented
-        //   to pid 1 and beating 58–59 times after the harness is gone.
-        //
-        // **The 100 ms timer's widening did not continue — it reversed, and that retires the
-        // worry `bd7b8eb` raised.** SIGINT→SIGTERM came back **100.1, 100.1, 100.4, 100.3 ms**
-        // over four runs on 2.1.226 (100.5 ms on the own-process-group run) against **100.1,
-        // 100.2, 100.2, 100.2 ms** on 2.1.225 re-run the same hour. Both versions are inside
-        // ±0.2 ms today and **no run landed below 100 ms**. So 2.1.224's 98.9–103.2 ms was
-        // machine load, not a version property, in exactly the way that entry's own closing
-        // paragraph found the SIGKILL grace to be — a spread measured once separates two runs, not
-        // two versions. §11's reading of the gap as *a fixed timer rather than a race* is back on
-        // the tightness it originally rested on. That is a correction to `bd7b8eb`'s record, not a
-        // 2.1.226 finding: nothing about 2.1.226 caused it.
-        //
-        // **The SIGKILL grace stays noisy and still has no floor.** SIGTERM→server's-last-beat is
-        // **347–394 ms on 2.1.226** and **313–372 ms on 2.1.225**, same hour, same machine —
-        // overlapping ranges, and 313 ms is below the 347 ms `bd7b8eb` recorded as its own lowest.
-        // `background.rs`'s "~450 ms" remains a *nominal* figure with nothing under it, which is
-        // the reading `bd7b8eb` established and this run only reinforces.
-        //
-        // **Terminal behaviour did not move.** Re-probed on both versions at 100x30 through a
-        // boot, a submitted turn, a resize and a `^C`: **zero `?1049h` and zero mouse modes** on
-        // 2.1.226, with the private-mode sequence — `?25`, `?2004`, `?1004`, `?2031`, then
-        // `?2026` set/reset per frame — **identical in order and count (23 each) to 2.1.225**. The
-        // change §5.3 and `pane_attach.rs` record happened between 2.1.220 and 2.1.225 and has not
-        // moved again here; the split between the live and replay halves of M3's C1 is still
-        // correct for the same reason it was.
-        //
-        // **One reading needs naming rather than rounding.** s11's `compare.json` came back with
-        // `collapsed_sequence_identical: false` on a `system/hook_progress` frame — the *third*
-        // time this has appeared, and the third time it is not claude: the frame carries the
-        // operator's own `SessionStart:startup` plugin output, because `S1_ARGV_TAIL` is S1's argv
-        // verbatim and carries no `--setting-sources ""` the way the s14 probe does. It fired
-        // **once in twenty-six runs today** and zero times in eight dedicated pipes repeats split
-        // evenly across 2.1.225 and 2.1.226, so it does not separate the versions; it landed in
-        // the one run `compare.py` reads. s11's probe is environment-dependent in a way its
-        // fixture still does not say, and that remains a finding about the probe.
-        //
-        // **Nothing was re-recorded.** Every capture was compared, not refreshed.
-        //
-        // 2.1.261: observed green on darwin 25.5.0, 2026-09-05, at `0b2b4f1` — a thirty-five-release
-        // jump. 2.1.227 through 2.1.260 were never installed here, and
-        // `~/.local/share/claude/versions/` now holds only 2.1.251, 2.1.252, 2.1.259 and 2.1.261,
-        // so **no pinned version is left on disk to vary one axis against**. Every gated suite that
-        // drives a real `claude` passed with only this entry widened: `harness_matrix` (5),
-        // `cross_product` (26), `m1_hop`, `m4_fan_in`, `acp_child` (2), `permission_round_trip`
-        // (8), `journal_wiring` (18), `depth_gate` (4), `timeout_kill`, `worktree_reap` (8),
-        // `no_git` (5), `restart_resume` (1, `--ignored`), the six native facade suites (22
-        // tests), and the workspace `--lib` set (1437). `acp_child`, `permission_round_trip`
-        // and `journal_wiring` each failed once first with the MCP bridge never becoming ready
-        // (`McpNeverReady(30s)`, "the bridge never answered tools/list") while the machine's load
-        // average was 20–28 on 12 cores from concurrent builds, and passed in full on an isolated
-        // rerun minutes later; that is the sandbox weather, not the harness.
-        // `permission_round_trip` reads `tests/fixtures/s9` off disk, so the
-        // `can_use_tool` frame is genuinely re-asserted against 2.1.261.
-        //
-        // **What did not pass, and why it is not 2.1.261's doing.** `pane_attach`'s claude cell is
-        // red at its "a keystroke arrives" step: the `\r` written to the operator's master never
-        // reaches the node — zero `i` records in the node's `pty.cast`, node output unchanged,
-        // `marion attach` still alive and in the foreground 1.5 s later. Run against 2.1.251
-        // through a `PATH` shim the cell fails identically, and the codex cell on the same fixture
-        // is green, so the byte is lost inside marion's pane-input path rather than by the
-        // harness. It is tracked as the pane input-admission bug; this entry does not vouch for
-        // that cell.
-        //
-        // **One shape moved.** 2.1.261's trust dialog reads *"Quick safety check: Is this a
-        // project you created or one you trust?"* with the cursor on **"No, exit"** by default;
-        // 2.1.226's defaulted to accepting. The moment the CR above gets through, `pane_attach`'s
-        // "Enter accepts the dialog" step will make claude exit instead, so that cell needs an
-        // arrow-down (or the trusted-projects setting) before it can be green on 2.1.261.
-        //
-        // **Not re-run:** the s10/s11/s14/s16 probes under `spikes/`. This entry rests on the suite
-        // alone; those readings are still 2.1.226's.
-        //
-        // 2.1.263: observed green on darwin 25.5.0, 2026-09-06, at `ccf13bc`, one day after
-        // 2.1.261 was admitted — the installed binary moved again overnight. Every gated suite
-        // that drives a real `claude` passed with only this entry widened (codex held at 0.147.0
-        // by the runner shim; opencode 1.18.29 widened in the same run): `harness_matrix` (8),
-        // `cross_product` (57), `journal_wiring` (18), `m1_hop` (1), `m4_fan_in` (1), `depth_gate`
-        // (4), `no_git` (5), `pane_attach` (2), `acp_child` (3), `permission_round_trip` (8),
-        // `native_facade_smoke` (1), `client_run` (7), `node_attach` (2), `timeout_kill` (1),
-        // `worktree_reap` (8), and the claude lane of `native_facade_e2e` (its copilot lane failed
-        // on copilot's own trust dialog, pinned 1.0.83, unrelated). `pane_attach`'s claude cell is
-        // green here, so the double-painted trust dialog that 2.1.261 introduced (see the
-        // paragraph above and `MILESTONES.md`) is still the shape on 2.1.263 and the fixture's
-        // settle wait still covers it; the cursor still defaults to "No, exit". 2.1.261 remains on
-        // disk under `~/.local/share/claude/versions/`, so a one-axis A/B is possible again, and
-        // was used to separate this version's gate refusal from a semantic failure before the
-        // widen.
-        //
-        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
-        // 2.1.268: observed green on Darwin 25.5.0, 2026-09-11, via scripts/admit-harness.sh
-        // (claude 2.1.268 in one run): marion-testsupport (33), acp_child (3), cross_product
-        // (57), depth_gate (4), harness_matrix (8), journal_wiring (18), m1_hop (1), m4_fan_in
-        // (1), native_facade_e2e (2), native_facade_spawn (1), no_git (5), pane_attach (2),
-        // permission_round_trip (8), restart_resume (0), timeout_kill (1), worktree_reap (8).
-        // 2.1.263 is no longer on disk (the versions dir held 2.1.259 and 2.1.266–2.1.268), so
-        // no one-axis A/B was possible. **Two things moved, neither in the harness's flags or
-        // dialogs.** (1) Request shape: every `tool_result.content` list now ends with a
-        // `<system-reminder>` text block carrying the `<total_tokens>` budget, after marion's own
-        // blocks, and the environment/model/date reminders ride as leading `text` blocks of the
-        // first user message rather than as `system` messages (2.1.263's 2026-09-09 shape). All
-        // seven claude-root `cross_product` cells failed with trailing characters until the three
-        // suite readers became `tests/common/mcp_result.rs`. (2) `pane_attach`'s claude cell read
-        // the operator's recording the instant the client exited; 2.1.268's last frame is large
-        // enough that the alt-screen restore had not been drained yet, 3/3, and always was under
-        // the bound. The trust dialog still reads "Quick safety check…" and `DISABLE_AUTOUPDATER`
-        // is still read first, both from the binary's strings.
-        //
-        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
-        // 2.1.269: observed green on Darwin 25.5.0, 2026-09-12, via scripts/admit-harness.sh
-        // (claude 2.1.269 in one run): marion-testsupport (33), acp_child (5), cross_product
-        // (57), depth_gate (4), harness_matrix (8), journal_wiring (18), m1_hop (1), m4_fan_in
-        // (1), native_facade_e2e (2), native_facade_spawn (1), no_git (5), pane_attach (2),
-        // permission_round_trip (8), restart_resume (0), timeout_kill (1), worktree_reap (8).
-        // The gate had not gone red: 2.1.268 was still on disk, so the shim held every suite
-        // there until this entry was widened; the run's user-agent reads `claude-cli/2.1.269`.
-        // acp_child's 5 is two tests landed at f8e7f71, not drift. **Nothing moved.** A same-day
-        // A/B against 2.1.268 shows one request shape on both: the reminders lead the first
-        // `user` message, a `system`-role message rides as a block list then as a string, and
-        // `tool_result.content` is marion's block alone — no `<total_tokens>` block anywhere,
-        // so the 2026-09-11 trailing block was a remote switch, not 2.1.268's. The trust dialog
-        // and `DISABLE_AUTOUPDATER` strings are unchanged.
-        //
-        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
-        // 2.1.280: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
-        // (claude 2.1.280 and opencode 1.18.32 and goose 1.51.0 in one run): marion-testsupport
-        // (33), acp_child (5), cross_product (57), depth_gate (4), harness_matrix (8),
-        // journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
-        // native_facade_spawn (1), no_git (5), pane_attach (2), permission_round_trip (9),
-        // restart_resume (0), timeout_kill (1), worktree_reap (8). 2.1.269 is no longer on disk
-        // (the versions dir holds 2.1.276, 2.1.278, 2.1.280), so the gate went red and the shim
-        // resolved `claude` to the 2.1.280 build once widened. **One shape moved:** every
-        // `can_use_tool` ask for an MCP tool now carries `mcp_server: {name, source: "dynamic"}`
-        // (already in 2.1.276's strings), which marion never reads; `permission_round_trip`
-        // names and drops it before comparing against the 2.1.220 recording (its ninth test
-        // checks that allowance). The trust dialog and `DISABLE_AUTOUPDATER` strings are
-        // unchanged in 2.1.276, 2.1.278 and 2.1.280.
-        //
-        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
-        // 2.1.283: observed green on Darwin 25.5.0, 2026-09-27, via scripts/admit-harness.sh
-        // (claude 2.1.283 in one run): marion-testsupport (35), acp_child (5), child_events (1),
-        // child_stream (1), client_run (8), cross_product (57), depth_gate (4), harness_matrix
-        // (8), journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
-        // native_facade_spawn (1), no_git (5), node_attach (2), pane_attach (2),
-        // permission_round_trip (9), restart_resume (0), timeout_kill (1), turn_delivery (2),
-        // user_agent_types (3), verification (4), worktree_reap (11).
-        // 2.1.285: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
-        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
-        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
-        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
-        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
-        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
-        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
-        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
-        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
-        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
-        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
-        // 2.1.286: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
-        // (claude 2.1.286 in one run): marion-testsupport (42), endpoint_matrix (24), acp_child
-        // (6), agy_live (1), child_events (1), child_stream (1), client_run (8), codex_app_server
-        // (4), cross_product (52), depth_gate (4), harness_matrix (8), journal_wiring (11),
-        // m4_fan_in (1), native_facade_e2e (4), native_facade_spawn (2), no_git (5), node_attach
-        // (2), node_tmpdir (2), os_sandbox_escape (6), pane_attach (2), permission_round_trip
-        // (9), pi_rpc (4), race (5), restart_resume (0), review (1), timeout_kill (4),
-        // top_level_contracted (5), turn_delivery (4), usage_record (1), verification (4),
-        // workflow (18), worktree_reap (12), repo_trust (1), token_off_argv (3), user_agent_types
-        // (3), conformance (1).
-        accepted: marion_harness::claude_code::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "codex",
-        store: ReleaseStore::CodexReleases,
-        probe_env: &[],
-        probe_args: &["-c", "check_for_update_on_startup=false"],
-        probe_document: None,
-        // 0.146.0 is the pin: the version that accepts a bogus `-c` key with a clean exit, that
-        // leaks the background `git fetch` MILESTONES records, and that `tests/fixtures/s6`, `s7`
-        // and `s14`'s codex halves were captured from.
-        //
-        // 0.146.1: observed green on darwin 25.5.0, 2026-08-06, after the local install
-        // auto-updated mid-session — §7.7's hazard, arriving exactly as described. The whole
-        // workspace passed against it (888 tests, no `#[ignore]`s), which covers every test that
-        // drives a real `codex`: `m1_hop`, `timeout_kill`, `harness_matrix`, `depth_gate`,
-        // `worktree_reap` (7), `cross_product` (7 codex cells), `journal_wiring` (7), and the
-        // ungated-but-real `child_stream`, `child_events` and `node_attach`.
-        //
-        // **A green suite alone would have been the weaker half of the evidence**, because the s6
-        // and s7 shapes live in this workspace as transcriptions rather than as fixture reads, and
-        // `s14`'s `codex-*.declaration.json` are read by no test at all — so the captures were
-        // re-probed rather than assumed. `tests/fixtures/s14/probe-codex.sh` was re-run against
-        // 0.146.1 and its three load-bearing fields still match the committed 0.146.0 capture
-        // byte for byte: `body.tools` absent, `code_mode_tool_names` the same eight names
-        // (`apply_patch, create_goal, exec_command, get_goal, update_goal, update_plan,
-        // view_image, write_stdin`, every `namespace` null), and `additional_tools` still
-        // `exec, wait, request_user_input, collaboration` — identical under `--sandbox read-only`
-        // and `--sandbox workspace-write`, so the sandbox still constrains at call time and not at
-        // declaration, and `--tools` is still `exit 2`. `--help`, `exec --help`, `features list`
-        // and `mcp --help` are byte-identical to 0.146.0 modulo the version string, so the `-m,
-        // --model` flag s6 and the adapter depend on has not moved. s7's `setsid` finding is
-        // re-asserted live by `timeout_kill`, which passed. **Nothing was re-recorded**; the
-        // captures were compared, not refreshed.
-        //
-        // 0.147.0: observed green on darwin 25.5.0, 2026-08-07, after the third harness
-        // auto-update in two days — codex has now moved twice and claude twice. The whole
-        // workspace passed against it, which covers the same real-`codex` set as above.
-        //
-        // 0.146.1 is still on disk under `~/.codex/packages/standalone/releases/`, so **every
-        // reading below was taken on both versions on this machine within the same minute**, one
-        // axis at a time. Both probes drive canned local providers on `127.0.0.1`; total spend
-        // **$0.00**.
-        //
-        // * **s14** — `probe-codex.sh` re-run. `body.tools` is still **absent** and
-        //   `code_mode_tool_names` is still the same eight names (`apply_patch, create_goal,
-        //   exec_command, get_goal, update_goal, update_plan, view_image, write_stdin`, every
-        //   `namespace` null), identical under `--sandbox read-only` and `--sandbox
-        //   workspace-write`, and `codex exec --tools Read` is still `exit 2`.
-        // * **s6** — all three questions re-answered live, not transcribed. (1) `exec` still hosts
-        //   a stdio MCP server: `initialize` (protocol `2025-06-18`, client
-        //   `codex-mcp-client/0.147.0`), `tools/list`, `tools/call`, and the server's text comes
-        //   back inside a `mcp_tool_call` item at `status: completed` — via marion's own
-        //   `marion-supervisor mcp` in one arrangement and the s6 stub server in the other. The
-        //   `tools/call` still carries `_meta.x-codex-turn-metadata` with `sandbox: "seatbelt"`
-        //   and the per-workspace `latest_git_commit_hash` + `has_changes`. (2) `file_change`
-        //   items still carry absolute `path` + `kind`, at both `item.started` and
-        //   `item.completed`. (3) `--output-schema` is still forwarded as `text.format =
-        //   {type: json_schema, strict: true, name: "codex_output_schema"}` and
-        //   `--output-last-message` writes a file byte-identical to
-        //   `tests/fixtures/s6/output-last-message.txt`.
-        //
-        // **One shape moved, and marion does not read it.** In 0.146.1 the `additional_tools`
-        // developer message holds four top-level entries — `exec`, `wait`, `request_user_input`
-        // flat, plus a `collaboration` group of six — which is what
-        // `s14`'s `codex-*.declaration.json` records as `input.additional_tools[].name`. In
-        // 0.147.0 the first three are **nested inside a `functions` group**, so the top level is
-        // `functions, collaboration`. No tool appeared or disappeared; only the grouping did. The
-        // fixture is therefore a 0.146.x reading and is left as one — nothing re-recorded. It is
-        // safe because `marion-provider`'s `classify_child` deliberately refuses to read the
-        // catalogue at all (only *call* and *call-output* items count as evidence), and the direct
-        // `{"type":"function_call","name":"report","namespace":"mcp__marion"}` dispatch s6 rests on
-        // still executes end to end under 0.147.0.
-        //
-        // **A second reading moved and it is not 0.147.0's.** `tests/fixtures/s6/README.md` records
-        // that codex "spawns the server more than once per run" (two full `initialize` +
-        // `tools/list` for one `codex exec`). Both 0.146.1 and 0.147.0 spawn it **once** — one
-        // `initialize`, one `notifications/initialized`, one `tools/list`, one `tools/call`. So
-        // that changed at 0.146.1 and `fd2fc1d` did not catch it, because `fd2fc1d` re-ran the s14
-        // probe and not the s6 one. A bridge that tolerates a second spawn is still correct; one
-        // that *requires* it never was.
-        //
-        // `--help`, `exec --help` and `mcp --help` are unchanged modulo two additions
-        // (`--approve-for-me` on both help surfaces, and `--disable` moved in the `exec` listing),
-        // so `-m, --model` has not moved. `features list` gains four rows
-        // (`executed_tool_call_metadata`, `image_resize_notice`, `recommended_plugins`,
-        // `view_image`) and removes none; `code_mode_host` is still `stable true`. s7's `setsid`
-        // finding is re-asserted live by `timeout_kill`, which passed. **Nothing was re-recorded.**
-        // 0.155.1: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
-        // (codex 0.155.1 in one run): marion-testsupport (33), acp_child (5), cross_product (57),
-        // depth_gate (4), descendant_gate (3), harness_matrix (8), journal_wiring (18), m1_hop
-        // (1), m4_fan_in (1), native_facade_e2e (2), native_facade_smoke (1), native_facade_spawn
-        // (1), no_git (5), pane_attach (2), permission_round_trip (9), restart_resume (0),
-        // timeout_kill (1), worktree_reap (8).
-        // 0.147.0 was still on disk, so the shim had held every suite there. Once this entry was
-        // widened the shim resolved 0.155.1 (release dir `0.155.1-aarch64-apple-darwin`), and the
-        // root requests name codex's default `gpt-6-astra` where 0.147.0 named `gpt-5.6-sol`.
-        // **One shape moved:** `function_call_output.output` is now a list of `input_text` blocks,
-        // the `Wall time: …\nOutput:` wrapper first and then marion's blocks verbatim, where it
-        // used to be one string. All seven codex-root `cross_product` cells failed until the two
-        // string-only readers became `tests/common/mcp_result.rs::codex_call_output_text`.
-        //
-        // **Not caught by any canned cell: MCP tools deferred behind `tool_search`.** codex reads
-        // a per-model `supports_search_tool` from its model catalog (remote-fetched into
-        // `models_cache.json`, where every listed model is `true`). A model marked `true` is sent
-        // no MCP tools up front, only `tool_search` (non-code-mode, e.g. `gpt-5.5`) or an `exec`
-        // declaration without them (code-mode, `gpt-5.6-sol` / `gpt-6-astra` on 0.155.1). The
-        // canned model slug is not in the catalog, so canned cells still get the eager
-        // `mcp__marion` namespace and stay green on both versions. Measured at $0.00 against a
-        // capture-only provider. The feature flags `tool_search` and
-        // `tool_search_always_defer_mcp_tools` read `removed` on both versions and do nothing.
-        // `-c model_catalog_json=<file>` with the entries' `supports_search_tool: false` restores
-        // eager tools on 0.155.1: `mcp__marion` in `tools[]` for `gpt-5.5`, and the tools listed
-        // in `exec`'s declaration for `gpt-5.6-sol`. marion does not pass that today.
-        // 0.159.2: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
-        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
-        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
-        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
-        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
-        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
-        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
-        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
-        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
-        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
-        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
-        accepted: marion_harness::codex::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "opencode",
-        store: ReleaseStore::PathOnly,
-        probe_env: &[("OPENCODE_DISABLE_AUTOUPDATE", "1")],
-        probe_args: &[],
-        probe_document: None,
-        // 1.17.3 is the pin: the version that never exits on a provider hang, and the one S13's
-        // `tests/fixtures/s13/` captures and the `/mcp` dialog reading were taken from.
-        //
-        // 1.18.29: observed green on darwin 25.5.0, 2026-09-06, at `ccf13bc`. Homebrew replaced
-        // the 1.17.3 binary in place (`/opt/homebrew/Cellar/opencode/1.18.29`), so unlike claude
-        // there is **no pinned build left on disk** to vary one axis against. Every gated suite
-        // that drives a real `opencode` passed with only this entry widened: `harness_matrix` (8),
-        // `cross_product` (57), `journal_wiring` (18), `acp_child` (3), `no_git` (5), `depth_gate`
-        // (4), `client_run` (7), `worktree_reap` (8), and the opencode lane of
-        // `native_facade_e2e`. That covers opencode as root and child in `cross_product`, its
-        // `harness_matrix` cell, its ACP row in `acp_child`, its journal cells, and the `opencode`
-        // native facade lane in `native_facade_e2e`. The s13 probe was not re-run, so the
-        // provider-hang and `/mcp` readings are still 1.17.3's.
-        // 1.18.30: observed green on Darwin 25.5.0, 2026-09-09, via scripts/admit-harness.sh
-        // (opencode 1.18.30 and goose 1.50.0 in one run): marion-testsupport (32), acp_child (3),
-        // cross_product (57), depth_gate (4), harness_matrix (8), journal_wiring (18),
-        // native_facade_e2e (2).
-        // 1.18.32: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
-        // (claude 2.1.280 and opencode 1.18.32 and goose 1.51.0 in one run): marion-testsupport
-        // (33), acp_child (5), cross_product (57), depth_gate (4), harness_matrix (8),
-        // journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
-        // native_facade_spawn (1), no_git (5), pane_attach (2), permission_round_trip (9),
-        // restart_resume (0), timeout_kill (1), worktree_reap (8); the recorded contracts name
-        // `opencode` `1.18.32`. Homebrew again replaced the build in place. At default test
-        // threads on a machine at load 36-130 (12 cores), `cross_product`'s goose-root and
-        // cline-root cells with an opencode child failed 2/57 twice (the child ran past its 60 s
-        // bound after writing its file); the same two cells failed the same way against an
-        // npm-installed 1.18.30 under the same load, all eight opencode-child cells passed 8/8
-        // serially on 1.18.32, and the admitting run used `RUST_TEST_THREADS=4`. Load, not drift.
-        // 1.18.33: observed green on Darwin 25.5.0, 2026-09-29, via scripts/admit-harness.sh
-        // (opencode 1.18.33 in one run): marion-testsupport (41), acp_child (5), continuation
-        // (7), cross_product (65), depth_gate (5), endpoint_matrix (19), harness_matrix (9),
-        // journal_wiring (18), native_facade_e2e (4), native_facade_spawn (2), node_tmpdir (2),
-        // restart_resume (0), timeout_kill (3), turn_delivery (4), conformance (1).
-        accepted: marion_harness::opencode::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "copilot",
-        store: ReleaseStore::Npm("@github/copilot"),
-        probe_env: &[("COPILOT_AUTO_UPDATE", "false")],
-        probe_args: &[],
-        probe_document: None,
-        // 1.0.83 is the pin: the first version on this machine with BYOK (`COPILOT_PROVIDER_*`),
-        // `--output-format json` and `--acp` at all — the 0.0.367 that Homebrew's npm tree had
-        // installed has none of the three, so nothing about copilot was measurable before it.
-        // Installed 2026-09-05 with `npm i -g @github/copilot@1.0.83`; `brew upgrade copilot-cli`
-        // was tried first and refused because the cask was never what put `copilot` on PATH.
-        //
-        // What was measured on it, every probe against a canned local provider at $0.00: the
-        // `marion-<tool>` MCP spelling in `tools[]` and in `tool.execution_start`, the
-        // `<server>(<tool>)` / `write` permission patterns, `--available-tools` withholding
-        // everything it does not name, the `code: "denied"` shape a call takes without a grant,
-        // the `success: false` + `error.message` shape an `isError` MCP result takes, and
-        // `session.error` + `exitCode: 1` on a provider 500 after five retries. See
-        // `marion_harness::copilot`.
-        // 1.0.89: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
-        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
-        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
-        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
-        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
-        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
-        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
-        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
-        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
-        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
-        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
-        accepted: marion_harness::copilot::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "goose",
-        store: ReleaseStore::PathOnly,
-        probe_env: &[],
-        probe_args: &[],
-        probe_document: None,
-        // 1.49.0 is the pin: the Homebrew `block-goose-cli` bottle present on this machine on
-        // 2026-09-05, and the version every S26 probe ran against — each against a canned local
-        // provider at $0.00 (`tests/fixtures/s26/`).
-        //
-        // What was measured on it: env-only provider selection (`GOOSE_PROVIDER`, `GOOSE_MODEL`,
-        // `OPENAI_HOST` verbatim + `OPENAI_BASE_PATH`), the `--with-extension "marion:…"` token as
-        // the declaration with the extension child inheriting goose's environment, `--no-profile`
-        // as the only way to withhold the five default extensions, the `marion__report` spelling
-        // in `tools[]` and in `toolCall.value.name`, `toolResult.value.isError` under a
-        // `status: "success"` at exit 0, a provider 500 delivered as an ordinary text message at
-        // exit 0, `GOOSE_MODE=approve` aborting headless at exit 1, no session-id frame, and
-        // `GOOSE_CONFIG_DIR` relocating nothing. See `marion_harness::goose`.
-        // 1.50.0: observed green on Darwin 25.5.0, 2026-09-09, via scripts/admit-harness.sh
-        // (opencode 1.18.30 and goose 1.50.0 in one run): marion-testsupport (32), acp_child (3),
-        // cross_product (57), depth_gate (4), harness_matrix (8), journal_wiring (18),
-        // native_facade_e2e (2).
-        // 1.51.0: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
-        // (claude 2.1.280 and opencode 1.18.32 and goose 1.51.0 in one run): marion-testsupport
-        // (33), acp_child (5), cross_product (57), depth_gate (4), harness_matrix (8),
-        // journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
-        // native_facade_spawn (1), no_git (5), pane_attach (2), permission_round_trip (9),
-        // restart_resume (0), timeout_kill (1), worktree_reap (8). No test-side change; its one
-        // red cell under load was goose-root with an opencode child (see opencode 1.18.32).
-        // 1.52.0: observed green on Darwin 25.5.0, 2026-09-27, via scripts/admit-harness.sh
-        // (goose 1.52.0 in one run): marion-testsupport (35), cross_product (57), depth_gate (4),
-        // harness_matrix (8), journal_wiring (18).
-        accepted: marion_harness::goose::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "cline",
-        store: ReleaseStore::Npm("cline"),
-        probe_env: &[("CLINE_NO_AUTO_UPDATE", "1")],
-        probe_args: &[],
-        probe_document: None,
-        // 3.0.61 is the pin: the npm `cline` present on this machine on 2026-09-05 (a Node
-        // launcher around a Bun-compiled `bin/.cline`, `@cline/core 0.0.82`), and the version
-        // every S27 probe ran against — each against a canned local provider at $0.00
-        // (`tests/fixtures/s27/`).
-        //
-        // What was measured on it: the positional headless surface with `--json` (no `task`
-        // subcommand, no `-y`), native OpenAI `tools[]` with 26 built-ins no flag narrows, the
-        // `marion__report` spelling in `tools[]` and in `content_start.toolName`, `providers.json`
-        // read from `<data>/settings/` and nowhere else (a misplaced one falls back to the vendor
-        // at exit 1), `CLINE_MCP_SETTINGS_PATH` honoured, relocation needing `CLINE_DIR` +
-        // `CLINE_DATA_DIR` + `HOME` *and* `--config`/`--data-dir` to leave no hub daemon and
-        // nothing under `~/.cline`, `content_end.output.isError` at exit 0, `run_result
-        // finishReason: "error"` at exit 1 on a provider 500, and `--id` exiting 1 headless. See
-        // `marion_harness::cline`.
-        // 3.0.66: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
-        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
-        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
-        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
-        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
-        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
-        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
-        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
-        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
-        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
-        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
-        accepted: marion_harness::cline::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "qwen",
-        store: ReleaseStore::Npm("@qwen-code/qwen-code"),
-        probe_env: &[("QWEN_CODE_SKIP_UPDATE_CHECK_ONCE", "true")],
-        probe_args: &[],
-        probe_document: None,
-        // 0.23.0 is the pin: the npm `@qwen-code/qwen-code` present on this machine on 2026-09-05
-        // (a launcher that `spawnSync`s `node --expose-gc cli.js`; kill the process group), and the
-        // version every S25 probe ran against — each against a canned local provider at $0.00
-        // (`tests/fixtures/s25/`).
-        //
-        // What was measured on it: env-only provider selection (`OPENAI_BASE_URL` verbatim,
-        // `OPENAI_API_KEY`, `OPENAI_MODEL`), Claude Code's stream shape rather than Gemini CLI's,
-        // MCP tools deferred behind `tool_search` unless `QWEN_CODE_LEGACY_MCP_BLOCKING=1`, the
-        // `mcp__marion__report` spelling, `--core-tools` with twelve exempt survivors that
-        // `--exclude-tools` removes and an *empty* `--core-tools` that is silently no allowlist,
-        // `--mcp-config` inline on argv without `--bare`, `--yolo` versus a classifier request per
-        // call, `is_error: true` at exit 0 for an MCP `isError`, 28 retries then `success` on a dead
-        // provider, and `--resume <session_id>` replaying the session under the same `QWEN_HOME`
-        // and cwd. See `marion_harness::qwen`.
-        // 0.24.7: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
-        // (claude 2.1.285 and codex 0.159.2 and copilot 1.0.89 and cline 3.0.66 and qwen 0.24.7
-        // in one run): marion-testsupport (41), acp_child (5), agy_live (1), child_events (1),
-        // child_stream (1), client_run (8), codex_app_server (4), continuation (6), cross_product
-        // (51), depth_gate (4), descendant_gate (3), endpoint_matrix (24), harness_matrix (8),
-        // journal_wiring (11), m4_fan_in (1), native_facade_e2e (4), native_facade_smoke (1),
-        // native_facade_spawn (2), no_git (5), node_attach (2), node_tmpdir (2),
-        // os_sandbox_escape (6), pane_attach (2), permission_round_trip (9), pi_rpc (3), race
-        // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
-        // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
-        // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
-        accepted: marion_harness::qwen::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "agy",
-        store: ReleaseStore::PathOnly,
-        probe_env: &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
-        probe_args: &[],
-        probe_document: None,
-        // 1.2.8 is the pin: the Homebrew cask (`/opt/homebrew/Caskroom/antigravity-cli/1.2.8,…`)
-        // present on 2026-09-22, and the version every s32 probe ran against on the operator's own
-        // keychain login (`tests/fixtures/s32/`). What was measured on it: the `--add-dir` root
-        // declaration, the lexicographic workspace order, headless auto-denial and the operator's
-        // `permissions.allow` rule, `DONE` with no output on a denied call, `--conversation`
-        // resume and the fresh conversation an unknown id starts. See `marion_harness::antigravity`.
-        accepted: marion_harness::antigravity::SPEC.verified,
-    },
-    PinnedHarness {
-        program: "pi",
-        store: ReleaseStore::Npm("@earendil-works/pi-coding-agent"),
-        probe_env: &[("PI_SKIP_VERSION_CHECK", "1")],
-        probe_args: &[],
-        probe_document: None,
-        // 0.80.2 is the pin: the npm `@earendil-works/pi-coding-agent` present on this machine on
-        // 2026-09-27 (under Homebrew's node prefix), and the version every S34 probe ran against —
-        // each against a canned local provider at $0.00 (`tests/fixtures/s34-pi/`).
-        //
-        // What was measured on it: no MCP client, and `-e <file>` loading marion's own extension for
-        // one run even under `--no-extensions`; a relocated `PI_CODING_AGENT_DIR` whose `models.json`
-        // names the canned provider; `--tools` as an allowlist over built-in and extension tools,
-        // where an empty list offers nothing; the `mcp__marion__report` spelling the extension
-        // registers; `tool_execution_start`/`_end` paired by `toolCallId` with `isError`; provider
-        // faults as `stopReason: "error"` in the final `agent_end` at exit 0; per-message usage net
-        // of cache reads; stdin read to EOF when it is not a terminal; `--session <id>` resuming
-        // under the same agent dir and cwd. See `marion_harness::pi`.
-        //
-        // 0.99.1: observed green on Darwin 25.5.0, 2026-09-30, installed side by side at
-        // `<marion state>/harness-pins/pi/0.99.1` (the operator's 0.80.2 left in place):
-        // marion-testsupport (41), pi_rpc (3), harness_matrix (9), depth_gate (5), journal_wiring
-        // (18), continuation (6), os_sandbox_escape (6), cross_product's seven pi cells (7),
-        // native_facade_e2e (4), conformance (1, every probe PASS but P-tui, which pi's row has
-        // no pane for). Suites were run one target at a time at RUST_TEST_THREADS=2 rather than
-        // through scripts/admit-harness.sh, whose sequential run outlasts one bounded call.
-        accepted: marion_harness::pi::SPEC.verified,
-    },
-];
 
 /// **The row that runs `program` natively** (`claude` → `claude-code`): the name its conformance
-/// records are filed under. Read off the rows, so a harness gains it by having one; `program`
-/// itself where no row runs it.
+/// records are filed under, and the one `scripts/conformance.sh --harness` takes. `program` itself
+/// where no row runs it.
 pub fn row_name(program: &str) -> &str {
-    marion_core::Harness::ALL
+    Harness::ALL
         .into_iter()
         .find(|h| marion_harness::adapter::harness_spec(*h).program == Some(program))
         .map_or(program, |h| h.as_str())
 }
 
-/// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].
+/// The pinned version of `program` — entry zero of its row's `verified` list, the release its
+/// measured behaviours were taken from.
 ///
 /// For call sites that need to *say* the version rather than check it, so they say it from the same
-/// table the check reads.
-///
-/// Panics for a program this suite does not drive: there is no honest answer, and returning one
-/// would let a typo silently name a version nothing pins.
+/// list the check reads. Panics for a program this suite does not gate: there is no honest answer.
 pub fn pinned_version(program: &str) -> &'static str {
-    PINNED_HARNESSES
-        .iter()
-        .find(|p| p.program == program)
-        .unwrap_or_else(|| {
-            panic!("{program:?} is not one of the harnesses this suite pins; see PINNED_HARNESSES")
-        })
-        .accepted[0]
+    gated_row(program)
+        .unwrap_or_else(|| panic!("{program:?} has no row with verified releases"))
+        .verified[0]
 }
 
 /// The first dotted-numeric token in `--version` output, e.g. `2.1.222` out of
@@ -1089,106 +347,173 @@ fn parse_version(output: &str) -> Option<&str> {
         })
 }
 
-/// Is `program` on `PATH`, runnable, **and — for a harness this suite pins — the version these
-/// tests' conclusions were measured on?**
+/// What the gate made of the `program` first on `PATH`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Gate {
+    /// It answered `version`, which its row lists (`listed`) or this machine's conformance battery
+    /// admitted for this exact binary.
+    Admitted { version: String, listed: bool },
+    /// Not on `PATH`, or `--version` did not run and exit 0. Callers phrase this one themselves.
+    Absent,
+    /// It ran and is not admitted: `found` is the version it reported, if it reported one, and
+    /// `diagnosis` says why, naming the program, the version and the probes or command that matter.
+    Refused {
+        found: Option<String>,
+        diagnosis: String,
+    },
+}
+
+/// **The gate for `program`**, decided once per process: `on_path` is asked many times a suite, and
+/// a harness's `--version` is a process start each time.
+pub fn gate(program: &str) -> Gate {
+    static DECIDED: std::sync::Mutex<Vec<(String, Gate)>> = std::sync::Mutex::new(Vec::new());
+    let mut decided = DECIDED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, g)) = decided.iter().find(|(p, _)| p == program) {
+        return g.clone();
+    }
+    let g = match gated_row(program) {
+        Some(spec) => gate_at(
+            program,
+            spec,
+            &std::env::var_os("PATH").unwrap_or_default(),
+            &marion_core::paths::state_dir_from_env(None).unwrap_or_default(),
+        ),
+        None => Gate::Refused {
+            found: None,
+            diagnosis: format!("{program:?} has no row with verified releases"),
+        },
+    };
+    decided.push((program.to_string(), g.clone()));
+    g
+}
+
+/// [`gate`]'s decision, with `PATH` and the state directory the conformance records live under
+/// passed in, so every branch is testable against a scratch tree.
 ///
-/// Callers assert on this and name the binary rather than skipping: §9's standing rule is that a
-/// criterion which quietly passes on a machine that cannot run it is worth less than no criterion.
+/// The version is read the way marion reads every harness's (`marion_harness::probe`: the row's
+/// no-self-update switch, no login variable), from the exact file `program` resolves to, which is
+/// also the file whose digest a conformance record must carry.
+pub fn gate_at(program: &str, spec: &HarnessSpec, path: &OsStr, state: &Path) -> Gate {
+    let Some(binary) = marion_harness::row_file::binary_on_path(program, path) else {
+        return Gate::Absent;
+    };
+    let mut probe = match marion_harness::probe::version_probe(spec, &binary) {
+        Ok(p) => p,
+        Err(e) => {
+            return Gate::Refused {
+                found: None,
+                diagnosis: format!("`{program} --version` is not run: {e}"),
+            };
+        }
+    };
+    let out = match probe.command.output() {
+        Ok(out) if out.status.success() => out,
+        _ => return Gate::Absent,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let Some(found) = parse_version(&stdout) else {
+        return Gate::Refused {
+            found: None,
+            diagnosis: format!(
+                "`{program} --version` printed nothing this can read a version out of, so the \
+                 binary on PATH is unidentified — and an unidentified binary is not a match. This \
+                 suite expects {program} {pinned} or later.\nstdout: {stdout:?}\nstderr: {stderr:?}\n\
+                 (A shell stub named for a harness is a real shape in this repo — see \
+                 `launch_only_root.rs` — which is why this is a failure and not a shrug.)",
+                pinned = spec.verified[0],
+                stdout = stdout.trim(),
+                stderr = String::from_utf8_lossy(&out.stderr).trim(),
+            ),
+        };
+    };
+    let admitted = |listed| Gate::Admitted {
+        version: found.to_string(),
+        listed,
+    };
+    if spec.verified.contains(&found) {
+        return admitted(true);
+    }
+    match admitted_by_record(program, spec, found, &binary, state) {
+        Ok(()) => admitted(false),
+        Err(why) => Gate::Refused {
+            found: Some(found.to_string()),
+            diagnosis: format!(
+                "`{program} --version` reports {found}, which {program}'s row does not list \
+                 ({listed:?}), and {why}.\nA cell that drives {found} and reports a result \
+                 attributed to the listed releases is the silent pass this gate rules out; the \
+                 conformance battery is the basic test that admits it.",
+                listed = spec.verified,
+            ),
+        },
+    }
+}
+
+/// **The gate's second way in: `found`, a version the row does not list, is admitted when it is
+/// at or past the pin and the conformance record under `state` admits `binary` at that version**
+/// (`row_file::admission_for`: every probe the row's newest verified release passed in the
+/// committed matrix passed again, on this file). `Err` is the clause the diagnosis carries.
+fn admitted_by_record(
+    program: &str,
+    spec: &HarnessSpec,
+    found: &str,
+    binary: &Path,
+    state: &Path,
+) -> Result<(), String> {
+    use marion_harness::row_file::{Admission, admission_for};
+    let pinned = spec.verified[0];
+    if marion_harness::cmp_versions(found, pinned).is_lt() {
+        return Err(format!(
+            "it is older than {pinned}, the release these behaviours were first measured on"
+        ));
+    }
+    let row = row_name(program);
+    match admission_for(state, row, found, binary) {
+        Admission::Admitted => Ok(()),
+        other => Err(other.describe(row, found)),
+    }
+}
+
+/// Is `program` on `PATH`, runnable, **and — for a harness this suite gates — a release the gate
+/// admits?** Callers assert on this and name the binary rather than skipping: §9's standing rule is
+/// that a criterion which quietly passes on a machine that cannot run it is worth less than no
+/// criterion.
+///
+/// # What the gate admits
+///
+/// A release the row's `verified` list names, or one at or past the pin that this machine's
+/// conformance battery admitted, for that exact binary (its digest is in the record):
+/// `scripts/conformance.sh --harness <row>` writes the record, and the nightly canary runs it on
+/// every unlisted release and lists the ones it admits. Every harness updates itself, so this is
+/// what keeps a newer release that passes the basic tests working with no one's hand on it, while a
+/// release that breaks them fails here naming the program, the version and the probes.
 ///
 /// # Why the version is checked here and not in a second function
 ///
 /// `<prog> --version` exiting 0 says only that *something named* `codex` exists. That is not a
 /// hypothetical gap in this repository: `launch_only_root.rs` deliberately puts a shell stub named
 /// `codex` on `PATH`, so a name collision is a shape that already occurs here — and the matrix's
-/// whole claim is that it drove the real binary. A separate `require_version(program)` would leave
-/// the weak `on_path` in place beside it, and this crate exists because the weak variant of a
-/// duplicated helper is the one that propagates. Folding the check into the function every call site
+/// whole claim is that it drove the real binary. Folding the check into the function every call site
 /// already calls means it cannot be forgotten and no call site changes.
 ///
-/// # Why a wrong version panics rather than returning `false`
+/// # Why a refused release panics rather than returning `false`
 ///
-/// *Absent* and *present but wrong* are different findings and only one of them the caller can
-/// phrase. A caller can write "put `codex` on PATH"; it cannot write "the `codex` on your PATH is
-/// 0.150.0 and these behaviours were measured on 0.146.0", because it does not know what is there.
-/// Returning `false` would file the second finding under the first message. So the diagnosis is
-/// raised where the evidence is, naming the program, the pinned version and what was actually found.
-///
-/// # Why hard failure rather than a warning
-///
-/// Mechanically, first: `cargo test` captures the stdout of a passing test, so a "loud warning" on a
-/// green run is *invisible*. There is no such thing as a warning here — the choice is between
-/// failing and passing quietly, and passing quietly means the matrix reports conclusions about
-/// 0.146.0 that were produced by whatever else was installed. A hard pin does cost a red suite the
-/// day a CLI is upgraded; that cost is the correct one and it is bounded to a one-line edit next to
-/// the reason, made after re-running. The alternative cost is unbounded and silent.
-///
-/// # A newer release, admitted on its conformance record
-///
-/// Every harness updates itself, so an exact list alone kept the suite red for a release nobody had
-/// got round to admitting. A version the table does not list is therefore also admitted when it is
-/// at or past the pin **and** this machine's conformance battery admitted that exact binary at that
-/// version (`marion_harness::row_file::admission_for`: every probe the row's newest verified
-/// release passed in the committed matrix passed again, and the recorded digest is this binary's).
-/// That is the basic test;
-/// `scripts/conformance.sh --harness <row>` writes the record, and the nightly canary runs it on
-/// every drifted release and lists the ones it admits in the row's `verified` versions. A release
-/// that breaks the basics still fails here, naming the program, the version and the probes that
-/// failed; one never probed fails naming the command that would probe it.
-///
-/// # The one exception: `MARION_GATE=warn`, asked for by name
-///
-/// A contributor whose `claude` updated overnight, and the nightly canary that installs the newest
-/// of every harness on purpose, both want the suite to *run* against what is installed and say so.
-/// `MARION_GATE=warn` ([`GATE_VAR`]) does that: an unadmitted version is driven, and a banner
-/// naming it and the accepted list goes to the **uncaptured** stderr handle (the one
-/// [`announce_skip`] uses, which libtest does not swallow), once per program per process. The shim
-/// also stops fetching npm pins (`Shim::without_pin_installs`), because "what I have" is the
-/// question. An unidentified binary — no version at all — still panics: warn relaxes the version,
-/// never the identification.
-///
-/// **Strict stays the default, locally as well as in CI.** A run that passed under warn is
-/// evidence about the installed release and not about the admitted ones, and a banner in the middle
-/// of a thousand-line log is still easy to miss at the end of a green run; the admission ritual
-/// (`scripts/admit-harness.sh`) and every claim of "the matrix passed" rest on the strict reading.
-/// Making the lenient reading opt-in keeps it the exception a person chose, and the strict panic
-/// names the variable so the choice is one line away.
-///
-/// # Why a pinned harness is probed through the shim
-///
-/// Since 2026-09-06 the probe for a pinned harness goes through [`process_shim`]: the directory the
-/// cargo runner put first on this process's `PATH`, into which the shim lays a symlink to the
-/// **admitted release still on disk** before asking `--version`. So when the installer has moved
-/// `claude` on, the gate and every spawn that follows it both resolve to the same pinned binary,
-/// and the gate passes because the right release answered — not because the table was widened.
-/// When no admitted release is on disk the probe falls through to `PATH` and this panics with the
-/// diagnosis below plus where the shim looked. See `shim.rs` for the mechanism and its limits.
+/// *Absent* and *present but refused* are different findings and only one of them the caller can
+/// phrase. A caller can write "put `codex` on PATH"; it cannot say what is wrong with the `codex`
+/// that is there. And `cargo test` captures the stdout of a passing test, so a warning on a green
+/// run is invisible: the choice is between failing and passing quietly.
 pub fn on_path(program: &str) -> bool {
-    if !PINNED_HARNESSES.iter().any(|p| p.program == program) {
-        // Not a harness this suite pins — `git`, and anything else a caller probes for. Presence is
-        // the whole question for those.
+    if gated_row(program).is_none() {
+        // Not a harness this suite gates — `git`, and anything else a caller probes for. Presence
+        // is the whole question for those.
         return Command::new(program)
             .arg("--version")
             .output()
             .is_ok_and(|out| out.status.success());
     }
-    // Only stdout is parsed, because that is where all four measurably print it; stderr is carried
-    // into the diagnosis so a harness that *moved* its version there fails with the evidence in
-    // hand, rather than being read out of a stream this has never checked.
-    match process_shim().gate(program) {
-        Ok(()) => true,
-        Err(GateFailure::Absent) => false,
-        Err(GateFailure::Refused(diagnosis)) => panic!("{diagnosis}"),
-        Err(GateFailure::Unadmitted { found, diagnosis }) => match gate_mode() {
-            GateMode::Strict => panic!(
-                "{diagnosis}\nTo run the suite against {program} {found} anyway, with a warning \
-                 instead of this failure, set {GATE_VAR}=warn; a run like that is not evidence \
-                 for admitting it."
-            ),
-            GateMode::Warn => {
-                warn_unadmitted_once(program, &found);
-                true
-            }
-        },
+    match gate(program) {
+        Gate::Admitted { .. } => true,
+        Gate::Absent => false,
+        Gate::Refused { diagnosis, .. } => panic!("{diagnosis}"),
     }
 }
 
@@ -1211,105 +536,27 @@ pub fn which(program: &str) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
 }
 
-/// The variable that chooses what [`on_path`] does with an unadmitted harness version.
-///
-/// Unset, empty or `strict`: fail (the default everywhere; see [`on_path`] for why). `warn`: run
-/// it, with a banner on stderr. Any other value is a typo and panics rather than guessing.
-pub const GATE_VAR: &str = "MARION_GATE";
-
-/// What [`on_path`] does with a harness that answered with a version the table does not admit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateMode {
-    /// Fail the test, naming both versions.
-    Strict,
-    /// Drive it, announcing it once per program on the uncaptured stderr.
-    Warn,
-}
-
-/// This process's [`GateMode`], read from [`GATE_VAR`].
-pub fn gate_mode() -> GateMode {
-    // Lossy, so a value that is not UTF-8 reaches the parse as a typo instead of reading as unset.
-    let value = std::env::var_os(GATE_VAR).map(|v| v.to_string_lossy().into_owned());
-    gate_mode_from(value.as_deref()).unwrap_or_else(|diagnosis| panic!("{diagnosis}"))
-}
-
-/// The parse behind [`gate_mode`], pure so its every branch is testable without `set_var`.
-fn gate_mode_from(value: Option<&str>) -> Result<GateMode, String> {
-    match value {
-        None | Some("" | "strict") => Ok(GateMode::Strict),
-        Some("warn") => Ok(GateMode::Warn),
-        Some(other) => Err(format!(
-            "{GATE_VAR}={other:?} is not a gate mode; use `strict` (the default) or `warn`"
-        )),
-    }
-}
-
-/// **Whether a version a harness reported is one the gate admits for `program`**, read through the
-/// same gate as [`on_path`]: a token of `reported` that starts with an admitted version is admitted
-/// (`2.1.285 (Claude Code)`, `codex-cli 0.159.2`) — a version [`PINNED_HARNESSES`] lists, or the one
-/// [`on_path`] admitted this process on its conformance record — and under `MARION_GATE=warn` an
-/// unadmitted one is announced and let through, as `on_path` lets the binary through. A test that
-/// checks a recorded `harness_version` asks this rather than the table directly, after `on_path`.
+/// **Whether a version a harness reported is one the gate admits for `program`**: a token of
+/// `reported` that starts with a version its row lists, or with the one [`gate`] admitted this
+/// process (`2.1.285 (Claude Code)`, `codex-cli 0.159.2`). A test that checks a recorded
+/// `harness_version` asks this rather than the list directly.
 pub fn reported_version_admitted(program: &str, reported: &str) -> bool {
-    let accepted = PINNED_HARNESSES
-        .iter()
-        .find(|p| p.program == program)
-        .unwrap_or_else(|| panic!("{program:?} is not pinned; see PINNED_HARNESSES"))
-        .accepted;
-    if reported_in(accepted, reported) {
+    let spec = gated_row(program)
+        .unwrap_or_else(|| panic!("{program:?} has no row with verified releases"));
+    if reported_in(spec.verified, reported) {
         return true;
     }
-    if let Some(recorded) = process_shim().recorded_version(program)
-        && reported_in(&[recorded.as_str()], reported)
-    {
-        return true;
-    }
-    match gate_mode() {
-        GateMode::Strict => false,
-        GateMode::Warn => {
-            warn_unadmitted_once(program, reported);
-            true
-        }
+    match gate(program) {
+        Gate::Admitted { version, .. } => reported_in(&[version.as_str()], reported),
+        _ => false,
     }
 }
 
-/// The table half of [`reported_version_admitted`], pure.
+/// The list half of [`reported_version_admitted`], pure.
 fn reported_in(accepted: &[&str], reported: &str) -> bool {
     reported
         .split_whitespace()
         .any(|token| accepted.iter().any(|v| token.starts_with(v)))
-}
-
-/// The banner `MARION_GATE=warn` prints for an unadmitted harness.
-fn unadmitted_warning(program: &str, found: &str, accepted: &[&str]) -> String {
-    format!(
-        "\n!!!! {GATE_VAR}=warn: running an UNADMITTED {program} {found} !!!!\n\
-         PINNED_HARNESSES admits {program} {accepted:?}. These tests drive {found} anyway, so \
-         their results say nothing about the admitted releases. The gate admits it without \
-         {GATE_VAR} once its basic conformance battery passes: \
-         `scripts/conformance.sh --harness {row}`.\n",
-        row = row_name(program),
-    )
-}
-
-/// [`unadmitted_warning`] on the real stderr, once per program per process: `on_path` is asked
-/// many times per suite and one banner per harness is loud enough.
-fn warn_unadmitted_once(program: &str, found: &str) {
-    static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
-    if warned.iter().any(|p| p == program) {
-        return;
-    }
-    warned.push(program.to_string());
-    let accepted = PINNED_HARNESSES
-        .iter()
-        .find(|p| p.program == program)
-        .map_or(&[][..], |p| p.accepted);
-    let _ = writeln!(
-        std::io::stderr(),
-        "{}",
-        unadmitted_warning(program, found, accepted)
-    );
 }
 
 /// The one variable that turns an absent harness into a named skip instead of a failure.
@@ -1390,45 +637,6 @@ pub fn announce_skip(because: &str, what: &str) {
         std::io::stderr(),
         "SKIPPED ({because}, {NO_HARNESSES}=1): a test that {what}"
     );
-}
-
-/// The judgement [`on_path`] makes, as a pure function of what the binary printed.
-///
-/// Split out so the diagnosis can be *tested* — and tested without touching `PATH`. Putting a stub
-/// on `PATH` from a test would mean `set_var` in a process whose other tests are concurrently
-/// resolving `ps`, `git` and `sh`, which is a data race on the environment block: this crate cannot
-/// preach about leak checks that pass by failing to look and then introduce UB to test a message.
-/// The spawn half is covered by every real `on_path("claude")` in the suite; this is the half that
-/// decides, so this is the half with the assertions on it.
-fn check_version(pin: &PinnedHarness, stdout: &str, stderr: &str) -> Result<(), String> {
-    let program = pin.program;
-    let expected = pin.accepted[0];
-    match parse_version(stdout) {
-        Some(found) if pin.accepted.contains(&found) => Ok(()),
-        Some(found) => Err(format!(
-            "`{program} --version` reports {found}, but this suite's conclusions about {program} \
-             were measured on {expected}.\n\
-             Accepted: {accepted:?}.\n\
-             A matrix cell that runs {found} and reports a result attributed to {expected} is the \
-             silent pass this check exists to rule out. Run the basic conformance battery \
-             against it, `scripts/conformance.sh --harness {row}`: when it admits {found}, this \
-             gate admits this exact binary on that record, and the nightly canary adds every \
-             release that passes to the row's verified versions.",
-            accepted = pin.accepted,
-            row = row_name(program),
-        )),
-        None => Err(format!(
-            "`{program} --version` printed nothing this can read a version out of, so the binary \
-             on PATH is unidentified — and an unidentified binary is not a match. This suite \
-             expects {program} {expected}.\n\
-             stdout: {stdout:?}\n\
-             stderr: {stderr:?}\n\
-             (A shell stub named for a harness is a real shape in this repo — see \
-             `launch_only_root.rs` — which is why this is a failure and not a shrug.)",
-            stdout = stdout.trim(),
-            stderr = stderr.trim(),
-        )),
-    }
 }
 
 // --- scratch directories -------------------------------------------------------------------------
@@ -2464,42 +1672,32 @@ mod tests {
         }
     }
 
-    /// The table is the single source, so the pin it hands out must be a real entry — a `program`
-    /// nothing pins is a typo that would otherwise name a version out of thin air.
+    /// The rows are the single source, so the pin they hand out is a real entry, every gated row
+    /// has one, and a program no row gates has none.
     #[test]
-    fn the_pin_comes_from_the_table_and_an_unpinned_program_has_no_pin() {
-        for h in PINNED_HARNESSES {
-            assert!(
-                !h.accepted.is_empty(),
-                "{}: entry zero is the pin, so the list cannot be empty",
-                h.program
-            );
-            assert_eq!(pinned_version(h.program), h.accepted[0]);
-            for v in h.accepted {
-                assert_eq!(
-                    parse_version(v),
-                    Some(*v),
-                    "{}: {v:?} is not a version this could ever match against a real \
-                     `--version`, so the entry could never be satisfied",
-                    h.program
+    fn the_pin_comes_from_the_row_and_an_ungated_program_has_none() {
+        let gated: Vec<&str> = gated_rows().filter_map(|s| s.program).collect();
+        assert!(
+            gated.contains(&"claude") && gated.contains(&"codex"),
+            "{gated:?}"
+        );
+        for spec in gated_rows() {
+            let program = spec.program.unwrap();
+            assert_eq!(pinned_version(program), spec.verified[0]);
+            for v in spec.verified {
+                assert!(
+                    parse_version(&format!("{v}\n")) == Some(v),
+                    "{program}: {v:?} is listed but the gate could never read it"
                 );
             }
         }
+        assert!(gated_row("git").is_none());
         assert!(
-            std::panic::catch_unwind(|| pinned_version("git")).is_err(),
-            "`git` is probed by on_path but not pinned; asking for its pin must not invent one"
+            std::panic::catch_unwind(|| pinned_version("not-a-harness")).is_err(),
+            "an ungated program has no pin to name"
         );
     }
 
-    fn pin(program: &str) -> &'static PinnedHarness {
-        PINNED_HARNESSES
-            .iter()
-            .find(|p| p.program == program)
-            .expect("pinned")
-    }
-
-    /// A reported version is admitted when one of its tokens starts with an admitted version:
-    /// claude's bare `2.1.285 (Claude Code)` and codex's `codex-cli 0.159.2` alike.
     #[test]
     fn a_reported_version_is_matched_per_token_against_the_admitted_list() {
         let accepted = ["2.1.285", "0.159.2"];
@@ -2509,123 +1707,166 @@ mod tests {
         assert!(!reported_in(&accepted, ""));
     }
 
-    /// Strict unless `warn` is asked for by name; anything else is refused rather than guessed.
-    #[test]
-    fn the_gate_mode_is_strict_unless_warn_is_named() {
-        assert_eq!(gate_mode_from(None), Ok(GateMode::Strict));
-        assert_eq!(gate_mode_from(Some("")), Ok(GateMode::Strict));
-        assert_eq!(gate_mode_from(Some("strict")), Ok(GateMode::Strict));
-        assert_eq!(gate_mode_from(Some("warn")), Ok(GateMode::Warn));
-        for typo in ["WARN", "warning", "1", "off", "warn "] {
-            let e = gate_mode_from(Some(typo)).expect_err(typo);
-            assert!(e.contains(GATE_VAR) && e.contains("warn"), "{e}");
+    /// A scratch `bin/<program>` printing `prints`, and the `PATH` that holds only it.
+    fn fake(dir: &Path, program: &str, prints: &str) -> (PathBuf, std::ffi::OsString) {
+        let bin = dir.join("bin").join(program);
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        write_executable(&bin, format!("#!/bin/sh\nprintf '%s\\n' '{prints}'\n"));
+        (
+            bin.canonicalize().unwrap(),
+            dir.join("bin").into_os_string(),
+        )
+    }
+
+    /// This machine's conformance record for `row` at `version`, taken on `binary`.
+    fn record(state: &Path, row: &str, version: &str, binary: &Path, why: &[&str]) {
+        let path = marion_harness::row_file::admission_path(state, row, version);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = serde_json::json!({
+            "admitted": why.is_empty(),
+            "why": why,
+            "binary_sha256": marion_harness::file_sha256(binary).unwrap(),
+        });
+        std::fs::write(path, body.to_string()).unwrap();
+    }
+
+    fn claude() -> &'static HarnessSpec {
+        gated_row("claude").expect("claude is gated")
+    }
+
+    fn refused(g: Gate) -> String {
+        match g {
+            Gate::Refused { diagnosis, .. } => diagnosis,
+            other => panic!("expected a refusal, got {other:?}"),
         }
     }
 
-    /// The warn banner names the program, the version it is about to run, what is admitted, and
-    /// the ritual that would admit it.
+    /// A listed release passes, read through the row's own probe (the no-self-update variable
+    /// reaches it: the fake prints a listed version only when it is set).
     #[test]
-    fn the_unadmitted_warning_names_both_versions_and_the_admission_ritual() {
-        let w = unadmitted_warning("claude", "2.1.999", &["2.1.220", "2.1.280"]);
-        for needle in [
-            "claude 2.1.999",
-            "\"2.1.280\"",
-            "UNADMITTED",
-            "scripts/conformance.sh --harness claude-code",
-            GATE_VAR,
-        ] {
-            assert!(w.contains(needle), "missing {needle:?} in {w}");
-        }
-    }
-
-    /// **The failure a wrong version produces, asserted rather than assumed** — because a check
-    /// whose message does not name both versions leaves the reader with a red suite and no idea
-    /// which upgrade caused it.
-    #[test]
-    fn a_program_reporting_an_unpinned_version_fails_naming_both_versions() {
-        let e = check_version(pin("cline"), "0.99.0\n", "")
-            .expect_err("a cline that is not the pinned one must not pass the gate");
-        assert!(e.contains("cline"), "names the program: {e}");
-        assert!(e.contains("0.99.0"), "names what was actually found: {e}");
-        assert!(
-            e.contains(pinned_version("cline")),
-            "names the expected version, from the table: {e}"
+    fn a_listed_release_passes_and_is_probed_with_the_rows_no_self_update_switch() {
+        let dir = scratch("gate-listed");
+        let pinned = claude().verified[0];
+        let bin = dir.join("bin/claude");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        write_executable(
+            &bin,
+            format!(
+                "#!/bin/sh\nif [ \"$DISABLE_AUTOUPDATER\" = 1 ]; then echo '{pinned} (Claude Code)'; \
+                 else echo '99.9.9 (Claude Code)'; fi\n"
+            ),
         );
+        let g = gate_at(
+            "claude",
+            claude(),
+            dir.join("bin").as_os_str(),
+            &dir.join("state"),
+        );
+        assert_eq!(
+            g,
+            Gate::Admitted {
+                version: pinned.into(),
+                listed: true
+            }
+        );
+    }
+
+    /// **The release the row does not list yet, admitted on its basic tests**: a record for this
+    /// exact binary at this version admits it.
+    #[test]
+    fn a_newer_release_its_conformance_record_admits_passes() {
+        let dir = scratch("gate-recorded");
+        let (bin, path) = fake(&dir, "claude", "99.0.0 (Claude Code)");
+        record(&dir.join("state"), "claude-code", "99.0.0", &bin, &[]);
+        assert_eq!(
+            gate_at("claude", claude(), &path, &dir.join("state")),
+            Gate::Admitted {
+                version: "99.0.0".into(),
+                listed: false
+            }
+        );
+    }
+
+    /// A newer release whose basics failed, one never probed, one whose record was taken on
+    /// another binary, and one older than the pin are each refused, naming the program, the
+    /// version and why — with the command that would probe it where probing could help.
+    #[test]
+    fn an_unlisted_release_without_an_admitting_record_is_refused_naming_why() {
+        let dir = scratch("gate-refused");
+        let state = dir.join("state");
+        let (bin, path) = fake(&dir, "claude", "99.0.0 (Claude Code)");
+        let e = refused(gate_at("claude", claude(), &path, &state));
+        assert!(e.contains("reports 99.0.0"), "{e}");
+        assert!(e.contains("never ran against claude-code 99.0.0"), "{e}");
+        assert!(
+            e.contains("scripts/conformance.sh --harness claude-code"),
+            "{e}"
+        );
+
+        record(
+            &state,
+            "claude-code",
+            "99.0.0",
+            &bin,
+            &["P-approval PASS -> FAIL"],
+        );
+        let e = refused(gate_at("claude", claude(), &path, &state));
+        assert!(
+            e.contains("did NOT admit claude-code 99.0.0: P-approval PASS -> FAIL"),
+            "{e}"
+        );
+
+        let other = scratch("gate-other-binary");
+        let (elsewhere, _) = fake(&other, "claude", "99.0.0 (Claude Code) elsewhere");
+        record(&state, "claude-code", "99.0.0", &elsewhere, &[]);
+        let e = refused(gate_at("claude", claude(), &path, &state));
+        assert!(e.contains("is for another binary"), "{e}");
+
+        let old = scratch("gate-older");
+        let (bin, path) = fake(&old, "claude", "0.0.1 (Claude Code)");
+        record(&old.join("state"), "claude-code", "0.0.1", &bin, &[]);
+        let e = refused(gate_at("claude", claude(), &path, &old.join("state")));
+        assert!(e.contains("older than"), "{e}");
     }
 
     /// **The stub case the old exit-status gate could not tell from the real thing**: exits 0,
     /// prints something, is not a harness. `launch_only_root.rs` puts a shell stub named `codex` on
-    /// `PATH`, so this is not a hypothetical collision.
+    /// `PATH`, so this is not a hypothetical collision; and an absent binary is absent.
     #[test]
-    fn a_stub_that_exits_cleanly_without_a_version_fails_rather_than_passing() {
-        let e = check_version(pin("codex"), "codex stub\n", "").expect_err(
-            "`codex --version` exiting 0 is what the OLD gate accepted; a stub satisfies it",
-        );
-        assert!(e.contains("codex"), "{e}");
-        assert!(
-            e.contains("codex stub"),
-            "the diagnosis carries what was actually printed: {e}"
-        );
-        assert!(
-            e.contains(pinned_version("codex")),
-            "and the version that was expected: {e}"
+    fn a_stub_without_a_version_is_refused_and_a_missing_binary_is_absent() {
+        let dir = scratch("gate-stub");
+        let codex = gated_row("codex").unwrap();
+        let (_, path) = fake(&dir, "codex", "codex stub");
+        match gate_at("codex", codex, &path, &dir.join("state")) {
+            Gate::Refused {
+                found: None,
+                diagnosis,
+            } => {
+                assert!(diagnosis.contains("codex stub"), "{diagnosis}");
+                assert!(diagnosis.contains(codex.verified[0]), "{diagnosis}");
+            }
+            other => panic!("a stub is not a harness: {other:?}"),
+        }
+        assert_eq!(
+            gate_at(
+                "codex",
+                codex,
+                dir.join("empty").as_os_str(),
+                &dir.join("state")
+            ),
+            Gate::Absent
         );
     }
 
-    /// **The near-miss, which is the case that actually occurred.** The pin says 2.1.220 and the
-    /// installed CLI is 2.1.222 — two versions differing in one digit, sharing the prefix `2.1.22`.
-    /// A gate that compared with `starts_with`, or that parsed only `major.minor`, would call these
-    /// equal and hand back a pass; the whole point is that `"tools":[]` on turn one is a property of
-    /// a *build*, not of a minor series. So this asserts both halves: 2.1.222 is a distinct token
-    /// from 2.1.220, and a table listing only 2.1.220 rejects it by name.
+    /// **The near-miss, which is the case that actually occurred.** 2.1.222 is a distinct token
+    /// from 2.1.220: a gate that compared prefixes would call them equal.
     #[test]
     fn a_patch_bump_is_not_a_match_for_the_version_it_differs_from_by_one_digit() {
         assert_eq!(parse_version("2.1.222 (Claude Code)\n"), Some("2.1.222"));
         assert_ne!(
             parse_version("2.1.222 (Claude Code)\n"),
             parse_version("2.1.220 (Claude Code)\n"),
-            "2.1.222 and 2.1.220 must not collapse to the same parsed version"
         );
-        let only_the_pin = PinnedHarness {
-            program: "claude",
-            accepted: &["2.1.220"],
-            store: ReleaseStore::ClaudeVersions,
-            probe_env: &[],
-            probe_args: &[],
-            probe_document: None,
-        };
-        let e = check_version(&only_the_pin, "2.1.222 (Claude Code)\n", "")
-            .expect_err("a table that lists only 2.1.220 must not accept 2.1.222");
-        assert!(e.contains("2.1.222"), "names what is installed: {e}");
-        assert!(e.contains("2.1.220"), "names what was measured: {e}");
-    }
-
-    /// A version on the wrong *stream* is still not a match — and the diagnosis carries the stream
-    /// it was actually on, so the next reader can see what changed rather than guessing.
-    #[test]
-    fn a_version_printed_only_on_stderr_is_reported_with_the_evidence() {
-        let e = check_version(pin("claude"), "", "2.1.220 (Claude Code)\n")
-            .expect_err("stdout is where all four measurably print it");
-        assert!(
-            e.contains("2.1.220 (Claude Code)"),
-            "stderr is in the diagnosis: {e}"
-        );
-    }
-
-    /// Every accepted entry must actually be accepted. This is the check that would have caught an
-    /// entry added with a stray space or a `v` prefix — an unsatisfiable pin fails every run on a
-    /// correct machine, which looks exactly like a real regression.
-    #[test]
-    fn every_accepted_version_is_one_the_gate_accepts() {
-        for h in PINNED_HARNESSES {
-            for v in h.accepted {
-                assert!(
-                    check_version(h, &format!("{v}\n"), "").is_ok(),
-                    "{}: {v:?} is listed as accepted but the gate rejects it",
-                    h.program
-                );
-            }
-        }
     }
 
     #[test]

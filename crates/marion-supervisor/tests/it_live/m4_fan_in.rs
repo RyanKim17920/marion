@@ -37,7 +37,7 @@
 //! ```
 //!
 //! It needs real `codex` and `claude` on `PATH` at the versions
-//! [`marion_testsupport::PINNED_HARNESSES`] lists, and it does **not** skip when they are missing:
+//! the gate ([`marion_testsupport::on_path`]) admits, and it does **not** skip when they are missing:
 //! it fails naming the binary, on `cross_product`'s reasoning.
 
 use std::path::Path;
@@ -153,14 +153,12 @@ fn root() -> NodeScript {
 
 /// Every version of `program` this suite admits — the pin and everything re-measured green since.
 ///
-/// Read out of [`marion_testsupport::PINNED_HARNESSES`] rather than restated, so a version admitted
-/// there is admitted here and nowhere is there a second table to keep in step.
+/// Read out of the row's `verified` list rather than restated, so a version listed there is listed
+/// here and nowhere is there a second table to keep in step.
 fn accepted(program: &str) -> &'static [&'static str] {
-    marion_testsupport::PINNED_HARNESSES
-        .iter()
-        .find(|p| p.program == program)
-        .unwrap_or_else(|| panic!("{program:?} is not pinned; see PINNED_HARNESSES"))
-        .accepted
+    marion_testsupport::gated_row(program)
+        .unwrap_or_else(|| panic!("{program:?} has no gated row"))
+        .verified
 }
 
 // ---- reading the evidence back ------------------------------------------------------------------

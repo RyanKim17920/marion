@@ -14,7 +14,7 @@
 //! cargo test -p marion-supervisor --test it_live node_tmpdir::
 //! ```
 //!
-//! Needs a real `opencode` on `PATH` at the version `marion_testsupport::PINNED_HARNESSES` lists,
+//! Needs a real `opencode` on `PATH` at a release the gate (`marion_testsupport::on_path`) admits,
 //! for `harness_matrix.rs`'s reason; nothing here logs in or reaches a real provider.
 
 use std::path::{Path, PathBuf};

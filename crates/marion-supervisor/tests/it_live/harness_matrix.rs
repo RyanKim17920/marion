@@ -33,7 +33,7 @@
 //!
 //! It needs real `claude`, `codex`, `opencode` and `copilot` (and each other row's binary for its
 //! cell) on `PATH`, **at the versions
-//! [`marion_testsupport::PINNED_HARNESSES`] lists** — that table is the source of truth, and the
+//! the gate ([`marion_testsupport::on_path`]) admits** — each row's `verified` list is the source of truth, and the
 //! gate refuses a binary of the right name at an unrecognised version rather than reporting a
 //! matrix result attributed to a build that never ran.
 //! Like `cross_product` and `timeout_kill` it is **not** `#[ignore]`d and it does **not** skip

@@ -718,7 +718,7 @@ fn assert_committed_recording_still_matches(fx: &Fixture, cap: &Capture, stdout_
 /// **The answer marion's bridge used to give an allowed root `report`, and no longer gives.**
 ///
 /// It is still in `can-use-tool-allow.stdout.jsonl` because that file is a *recording* of a real
-/// 2.1.220 — the version [`marion_testsupport::PINNED_HARNESSES`] pins and the one every prose claim
+/// 2.1.220 — the version [`marion_testsupport::pinned_version`] names and the one every prose claim
 /// in `tests/fixtures/s9/README.md` is attributed to — and re-recording it on the `claude` that
 /// happens to be on PATH would rebase the whole capture, CLI version included, off that pin. That is
 /// a measurement decision, not a side effect of a bridge fix.
