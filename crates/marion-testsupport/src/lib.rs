@@ -98,6 +98,7 @@ pub fn until_within(budget: Duration, step: Duration, mut cond: impl FnMut() -> 
 
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
+    fn killpg(pgrp: i32, sig: i32) -> i32;
 }
 
 /// `SIGKILL`. Not `SIGTERM`: a test cleaning up after a leak has already established that the
@@ -395,32 +396,61 @@ pub fn gate(program: &str) -> Gate {
 /// well under ten seconds on a cold disk; a binary still silent at this ceiling is hung, not slow.
 const VERSION_BUDGET: Duration = Duration::from_secs(30);
 
-/// `command`'s output, or `None` if it has not exited within `budget`, in which case it is killed.
-/// The wait blocks on a channel the reaping thread answers, so nothing re-asks on a timer.
+/// `command`'s output, or `None` if it has not exited within `budget`, in which case its whole
+/// process group is killed.
+///
+/// **The probe leads its own group, and the group is what is killed.** An npm-installed harness is
+/// a node wrapper that starts the native binary as its child; killing only the wrapper would leave
+/// that binary running, reparented to pid 1.
+///
+/// **The child stays on this thread, unreaped until after the kill.** A helper thread only drains
+/// the pipes and reports when both reach EOF; nothing waits on the leader before `killpg`, so its
+/// pid (and with it the group id) cannot have been freed and reused by an unrelated process. The
+/// wait blocks on the drain's channel, so nothing re-asks on a timer.
 fn output_within(
     command: &mut Command,
     budget: Duration,
 ) -> Option<std::io::Result<std::process::Output>> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    let child = match command
+    let mut child = match command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
     {
         Ok(child) => child,
         Err(e) => return Some(Err(e)),
     };
-    let pid = child.id() as i32;
+    let mut stdout = child.stdout.take().expect("stdout is piped above");
+    let mut stderr = child.stderr.take().expect("stderr is piped above");
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        // Both pipes at once: a probe that fills stderr while stdout is being read to EOF would
+        // otherwise block on its write and look hung.
+        let err = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            stderr.read_to_end(&mut buf).map(|_| buf)
+        });
+        let mut out = Vec::new();
+        let out = stdout.read_to_end(&mut out).map(|_| out);
+        let err = err.join().unwrap_or_else(|_| Ok(Vec::new()));
+        let _ = tx.send(out.and_then(|out| err.map(|err| (out, err))));
     });
     match rx.recv_timeout(budget) {
-        Ok(out) => Some(out),
+        Ok(drained) => Some(drained.and_then(|(stdout, stderr)| {
+            child.wait().map(|status| std::process::Output {
+                status,
+                stdout,
+                stderr,
+            })
+        })),
         Err(_) => {
-            // Unreaped until the thread's wait returns, so the pid is still this child's.
-            kill_hard(pid);
+            // SAFETY: plain libc call. The leader is unreaped, so its pid is still this group's id.
+            let _ = unsafe { killpg(child.id() as i32, SIGKILL) };
+            let _ = child.wait();
             None
         }
     }
@@ -1949,6 +1979,36 @@ mod tests {
             .expect("echo answers")
             .expect("echo runs");
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1.2.3");
+    }
+
+    /// **A hung probe's descendants die with it.** The shape is an npm wrapper's: the leader starts
+    /// the real work as a child and waits on it. Killing only the leader would leave the child to
+    /// finish (and touch the marker); killing the group does not. The second script's leader has
+    /// already exited, leaving a child that holds its stdout open, which is the same leak with the
+    /// leader a zombie when the budget runs out.
+    #[test]
+    fn a_hung_probe_is_killed_with_its_whole_process_group() {
+        for (name, tail) in [("waits", "wait"), ("exits", "exit 0")] {
+            let dir = scratch(&format!("gate-hang-group-{name}"));
+            let marker = dir.join("descendant-finished");
+            let hang = dir.join("hang");
+            write_executable(
+                &hang,
+                format!(
+                    "#!/bin/sh\n(sleep 1; touch '{}') &\n{tail}\n",
+                    marker.display()
+                ),
+            );
+            assert!(
+                output_within(&mut Command::new(&hang), Duration::from_millis(200)).is_none(),
+                "{name}: the descendant holds the pipe open past the budget"
+            );
+            std::thread::sleep(Duration::from_millis(1500));
+            assert!(
+                !marker.exists(),
+                "{name}: the probe's descendant was killed with it, not orphaned"
+            );
+        }
     }
 
     /// **The stub case the old exit-status gate could not tell from the real thing**: exits 0,
