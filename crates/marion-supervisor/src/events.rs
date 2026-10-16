@@ -498,6 +498,33 @@ pub fn rotated_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// How much of a file's end [`EventWriter::open_path`] reads for its next ordinal: two of the
+/// largest lines a writer emits, so the last whole event is inside it even when the line after it
+/// is torn.
+const SEQ_TAIL_BYTES: u64 = 2 * (marion_core::event::MAX_EVENT_BYTES as u64 + 1);
+
+/// **The whole lines in the last `limit` bytes of `file`**: from the first line boundary inside the
+/// window, or from the start where the window reaches it, so a reader after the end of a stream
+/// never parses a fragment of the event before it. Shared by the writer's ordinal seed and the
+/// activity peek, which both want the end of a file that may hold 64 MiB.
+pub(crate) fn tail_lines(file: &mut File, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(limit);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if start > 0 {
+        match bytes.iter().position(|b| *b == b'\n') {
+            Some(nl) => {
+                bytes.drain(..=nl);
+            }
+            None => bytes.clear(),
+        }
+    }
+    Ok(bytes)
+}
+
 /// An open `events.jsonl` for one node, with the next ordinal it will use.
 pub struct EventWriter {
     path: PathBuf,
@@ -526,12 +553,14 @@ impl EventWriter {
     /// **`agent_seq` is seeded from the file's own tail, not from 0.** A resume opens this file
     /// again, and a writer that restarted the sequence would put two events with one ordinal in one
     /// file — §7.3.3's seam is stated in ordinals, so that is not a cosmetic duplicate but an
-    /// ambiguous read point. Reading the file on open costs one pass over a file this process is
-    /// about to append to anyway.
+    /// ambiguous read point. Only the end of the file is read ([`SEQ_TAIL_BYTES`]): the next
+    /// ordinal is the last whole event's, and parsing up to 64 MiB to learn one number cost up to a
+    /// second per open.
     ///
     /// A file that cannot be *parsed* still yields a next ordinal: the fold stops at the intact
-    /// prefix and the writer continues past it. Refusing to open would mean a node could not record
-    /// what it is doing now because of a line written before it started.
+    /// prefix and the writer continues past it. Where nothing in the tail parses, the whole file is
+    /// read as it always was. Refusing to open would mean a node could not record what it is doing
+    /// now because of a line written before it started.
     pub fn open_path(path: &Path, agent_id: &AgentId) -> Result<Self, EventError> {
         if let Some(dir) = path.parent() {
             crate::private_fs::create_dir_all(dir)?;
@@ -539,10 +568,18 @@ impl EventWriter {
         // The fresh file after a rotation may hold nothing yet; the ordinals then run on from
         // the rotated one.
         let next_in = |p: &Path| -> Result<Option<u64>, EventError> {
-            match std::fs::read(p) {
-                Ok(bytes) => Ok(marion_core::event::read(&bytes).0.next_seq()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(e.into()),
+            let mut file = match File::open(p) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            let tail = tail_lines(&mut file, SEQ_TAIL_BYTES)?;
+            match marion_core::event::read(&tail).0.next_seq() {
+                Some(seq) => Ok(Some(seq)),
+                None if file.metadata()?.len() > SEQ_TAIL_BYTES => {
+                    Ok(marion_core::event::read(&std::fs::read(p)?).0.next_seq())
+                }
+                None => Ok(None),
             }
         };
         let seq = match next_in(path)? {
@@ -1234,6 +1271,40 @@ mod tests {
             vec![0, 1]
         );
         assert!(log.gaps.is_empty());
+    }
+
+    /// **The seed is read off the tail of a file too long to parse whole**, and a tail with nothing
+    /// in it that parses falls back to the whole file rather than to 0.
+    #[test]
+    fn agent_seq_of_a_long_file_comes_from_its_tail_and_an_unreadable_tail_reads_it_whole() {
+        let dir = scratch("events-resume-long");
+        let path = dir.join("events.jsonl");
+        let mut w = EventWriter::open_path(&path, &node()).unwrap();
+        let pad = "x".repeat(300);
+        let mut n = 0u64;
+        while std::fs::metadata(&path).unwrap().len() <= 2 * SEQ_TAIL_BYTES {
+            w.append(frame(&format!("{pad}-{n}"))).unwrap();
+            n += 1;
+        }
+        drop(w);
+        assert_eq!(
+            EventWriter::open_path(&path, &node()).unwrap().next_seq(),
+            n
+        );
+
+        let mut garbage = "{".repeat(SEQ_TAIL_BYTES as usize + 10);
+        garbage.push('\n');
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(garbage.as_bytes())
+            .unwrap();
+        assert_eq!(
+            EventWriter::open_path(&path, &node()).unwrap().next_seq(),
+            n,
+            "the intact prefix's ordinal, as a whole-file read gives"
+        );
     }
 
     /// **NC — the one-writer invariant is checked, not assumed.**
