@@ -132,10 +132,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 s.foreground(c, "git log");
             }
             Handoff::Merge(branch) => {
-                let mut c = std::process::Command::new("git");
-                c.arg("-C")
-                    .arg(&s.repo)
-                    .args(["merge", "--no-ff", "--", &branch]);
+                let c = git_in(&s.repo, &Effect::Merge(branch.clone()));
                 s.foreground(c, "git merge");
                 if s.home.notice.is_none() {
                     s.home.notice = Some(format!("merged {branch}"));
@@ -1050,13 +1047,13 @@ fn cancelled_line(short: &str, nodes: &[marion_core::proto::result::CancelledNod
 
 /// The branch checked out at `dir`, read once when the screen opens; `None` outside git.
 fn current_branch(dir: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let out = crate::gitcmd::command(
+        &crate::gitcmd::Tree::Operator(dir),
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    .ok()?
+    .output()
+    .ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -1139,15 +1136,15 @@ fn harnesses_of(rows: &[doctor::Row]) -> Vec<Harness> {
 /// carry a `.gitattributes` naming a diff driver, so the patch is shown raw: no textconv program
 /// and no external diff runs over the child's content.
 fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
+    git_in(repo, &Effect::Diff(branch.to_string()))
+}
+
+/// `git -C <repo>` with exactly the command line `effect` shows the operator ([`Effect::argv`]),
+/// so what the box says and what runs cannot drift apart.
+fn git_in(repo: &Path, effect: &Effect) -> std::process::Command {
+    let argv = effect.argv().unwrap_or_default();
     let mut c = std::process::Command::new("git");
-    c.arg("-C").arg(repo).args([
-        "log",
-        "-p",
-        "--stat",
-        "--no-textconv",
-        "--no-ext-diff",
-        &format!("HEAD..{branch}"),
-    ]);
+    c.arg("-C").arg(repo).args(argv.iter().skip(1));
     c
 }
 
@@ -1166,6 +1163,18 @@ mod tests {
         assert!(args.contains(&"--no-textconv".to_string()), "{args:?}");
         assert!(args.contains(&"--no-ext-diff".to_string()), "{args:?}");
         assert_eq!(args.last().map(String::as_str), Some("HEAD..marion/t-1"));
+    }
+
+    /// **The merge that runs is the line the box showed**, `--` before the branch included, so a
+    /// branch named like a flag is merged as a branch.
+    #[test]
+    fn the_merge_runs_the_line_the_box_shows() {
+        let c = git_in(Path::new("/r"), &Effect::Merge("-x".into()));
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["-C", "/r", "merge", "--no-ff", "--", "-x"]);
     }
 
     #[test]

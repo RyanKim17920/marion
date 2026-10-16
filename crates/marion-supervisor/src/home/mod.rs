@@ -157,7 +157,16 @@ impl Effect {
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
                 v(&["cd", &dir.to_string_lossy(), "&&", &shell])
             }
-            Effect::Diff(branch) => v(&["git", "log", "-p", "--stat", &format!("HEAD..{branch}")]),
+            // As `branch_log` runs it: raw, so no diff driver a branch names runs over its content.
+            Effect::Diff(branch) => v(&[
+                "git",
+                "log",
+                "-p",
+                "--stat",
+                "--no-textconv",
+                "--no-ext-diff",
+                &format!("HEAD..{branch}"),
+            ]),
             Effect::Copy(text) => vec![text.clone()],
             // `--` so a branch name cannot be read as a flag.
             Effect::Merge(branch) => v(&["git", "merge", "--no-ff", "--", branch]),
