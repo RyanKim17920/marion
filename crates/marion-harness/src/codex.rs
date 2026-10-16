@@ -333,7 +333,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             // on an operator's own login (the live TUI run, 2026-10-16), `› 1. Open restricted` /
             // `2. Quit`, which a paste's Enter would open restricted. Both end on `2. Quit` over
             // `enter continue · esc quit`; held on that, the last option and the footer, because
-            // the heading alone is words a session can draw.
+            // the heading alone is words a session can draw. The restricted screen's one answer is
+            // the `Decline` above, which wins by order; this needle holds every other variant,
+            // the `Trust this folder?` one included wherever marion may not answer it.
             BootDialog {
                 needle: "2. Quit enter continue · esc quit",
                 action: "answer codex's folder access dialog in {repo} once (run `codex` there); worktrees inherit it",

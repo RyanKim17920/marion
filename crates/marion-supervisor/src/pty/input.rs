@@ -989,6 +989,38 @@ mod tests {
     /// **Every row's needle is on the screen it was measured on** (`tests/fixtures/
     /// s37-boot-dialogs/`), and every measured screen shows some row's dialog — the row data and
     /// the recordings cannot drift apart silently.
+    /// **codex's restricted-open screen has exactly one answer**: on its measured first screen
+    /// the row's `Decline` wins over the held `2. Quit …` footer needle that also matches it.
+    #[test]
+    fn codexs_restricted_open_screen_is_answered_by_its_decline_alone() {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/s37-boot-dialogs/codex-0.163.0-restricted.raw"),
+        )
+        .unwrap();
+        let dialogs = marion_harness::adapter::harness_spec(marion_core::harness::Harness::Codex)
+            .boot_dialogs
+            .dialogs;
+        let shows = |watched: &'static [BootDialog]| {
+            let mut scan = ModeScan::default();
+            scan.watch(watched, &[], None);
+            scan.feed(&bytes, Instant::now());
+            scan.showing()
+        };
+        let matching: Vec<_> = dialogs
+            .iter()
+            .filter(|d| shows(std::slice::from_ref(*d)).is_some())
+            .map(|d| d.answer)
+            .collect();
+        assert_eq!(
+            matching,
+            [DialogAnswer::Decline(b"\r"), DialogAnswer::Hold],
+            "the Decline and the held footer both match it, in that order"
+        );
+        let shown = shows(dialogs).expect("a dialog");
+        assert_eq!(shown.answer, DialogAnswer::Decline(b"\r"), "{shown:?}");
+    }
+
     #[test]
     fn every_rows_boot_dialog_is_found_on_its_measured_first_screen() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
