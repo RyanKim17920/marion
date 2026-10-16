@@ -1581,6 +1581,9 @@ pub enum Refusal {
     NoKeyRecipe(KeyHeader),
     /// The launch's model begins with `-`, so the harness would read it as a flag of its own.
     FlagLikeModel,
+    /// The launch's prompt begins with `-`, and the row does not place it straight after a `--`
+    /// that ends its harness's options, so the harness would read it as a flag of its own.
+    FlagLikePrompt,
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -1708,6 +1711,23 @@ fn apply_recipe(env: &mut Vec<(String, String)>, recipe: &WireRecipe) {
     }
 }
 
+/// **Whether `prompt` must ride behind a leading space**: it begins with `-`, so a parser would
+/// read it as an option, and `argv` does not place it straight after a `--` that ends them — the
+/// row carries it as a flag's value, or its parser has no `--` (pi), or the row does not say. The
+/// space is no option to any parser, and a model reads past it.
+fn prompt_needs_a_space(argv: &[Arg], prompt: &str) -> bool {
+    let is_prompt = |a: &Arg| {
+        matches!(
+            a,
+            Arg::Pos(Field::Prompt) | Arg::PosIfNonEmpty(Field::Prompt)
+        )
+    };
+    prompt.starts_with('-')
+        && !argv
+            .windows(2)
+            .any(|w| w[0] == Arg::Lit("--") && is_prompt(&w[1]))
+}
+
 /// argv + env for one shape of one row, or the [`Refusal`] the row states.
 pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation, Refusal> {
     let argv = match shape {
@@ -1727,6 +1747,17 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     if f.model.as_deref().is_some_and(|m| m.starts_with('-')) {
         return Err(Refusal::FlagLikeModel);
     }
+    let guarded;
+    let f = match prompt_needs_a_space(argv, &f.prompt) {
+        true => {
+            guarded = Fields {
+                prompt: format!(" {}", f.prompt),
+                ..f.clone()
+            };
+            &guarded
+        }
+        false => f,
+    };
     // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
     // (claude 2.1.268), and appended it would swallow the positional prompt the pane seeds.
     let mut args: Vec<String> = match shape {
@@ -2438,6 +2469,80 @@ mod tests {
             claude.quiet_stderr("Reading additional input from stdin..."),
             "Reading additional input from stdin..."
         );
+    }
+
+    /// **A prompt that begins with `-` reaches the harness as the prompt, never as a flag**: after
+    /// `--` where the row's parser ends its options there (codex, claude, opencode, measured on
+    /// their binaries), and refused otherwise — a parser with no `--` (pi 0.80.2 files `--` as an
+    /// unknown flag), a row that does not say, or a prompt carried as a flag's value.
+    #[test]
+    fn a_prompt_beginning_with_a_dash_is_never_a_flag() {
+        let claude = crate::adapter::harness_spec(Harness::ClaudeCode);
+        let with = |p: &str| Fields {
+            prompt: p.into(),
+            ..Fields::default()
+        };
+        let argv = |row: &HarnessSpec, shape, p: &str| render(row, shape, &with(p)).map(|i| i.args);
+        for (row, shape) in [
+            (&crate::codex::EXEC, Shape::Headless),
+            (crate::adapter::harness_spec(Harness::Codex), Shape::Pane),
+            (
+                crate::adapter::harness_spec(Harness::OpenCode),
+                Shape::Headless,
+            ),
+            (claude, Shape::Pane),
+        ] {
+            let got = argv(row, shape, "--dangerously-skip-permissions").unwrap();
+            assert_eq!(
+                got[got.len() - 2..],
+                ["--", "--dangerously-skip-permissions"],
+                "{:?} {shape:?}",
+                row.harness
+            );
+        }
+        let unguarded = HarnessSpec {
+            argv: &[Arg::Lit("-x"), Arg::Pos(Field::Prompt)],
+            ..*claude
+        };
+        let flagged = HarnessSpec {
+            argv: &[Arg::Flag("-p", Field::Prompt)],
+            ..*claude
+        };
+        // `--` elsewhere on the line ends nothing for the prompt: it must sit straight before it.
+        let early = HarnessSpec {
+            argv: &[Arg::Lit("--"), Arg::Lit("-x"), Arg::Pos(Field::Prompt)],
+            ..*claude
+        };
+        for (row, shape) in [
+            (&unguarded, Shape::Headless),
+            (&crate::pi::LAUNCH_ONLY, Shape::Headless),
+            (&flagged, Shape::Headless),
+            (&early, Shape::Headless),
+        ] {
+            for p in ["-p", "--yolo", "- a list", "-"] {
+                assert_eq!(
+                    argv(row, shape, p),
+                    Err(Refusal::FlagLikePrompt),
+                    "{:?} {p:?}",
+                    row.argv
+                );
+            }
+        }
+        // Only a leading dash reads as an option: a dash inside the prompt, or after a space, is text.
+        assert_eq!(
+            argv(&flagged, Shape::Headless, "fix it").unwrap(),
+            ["-p", "fix it"]
+        );
+        assert_eq!(
+            argv(&unguarded, Shape::Headless, " -p").unwrap(),
+            ["-x", " -p"]
+        );
+        assert_eq!(
+            argv(&unguarded, Shape::Headless, "use --x").unwrap(),
+            ["-x", "use --x"]
+        );
+        // An empty prompt is no option either: it renders as the row renders one.
+        assert!(argv(&crate::pi::LAUNCH_ONLY, Shape::Headless, "").is_ok());
     }
 
     /// **A model that would read as a flag is refused, not rendered**: `--model -x` hands the

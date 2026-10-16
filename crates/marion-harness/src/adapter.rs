@@ -1221,6 +1221,12 @@ fn render_row(
                    own rather than as the model"
                 .into(),
         },
+        spec::Refusal::FlagLikePrompt => HarnessError::Unspellable {
+            harness: row.harness,
+            what: "the prompt begins with `-`, and this harness's command line has no `--` to \
+                   end its options before it, so it would read the prompt as a flag of its own"
+                .into(),
+        },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
             what: "this harness has no measured way to name a session to resume on this shape's \
@@ -2324,6 +2330,7 @@ mod tests {
                     // The row's update policy on codex's own override channel.
                     "-c",
                     "check_for_update_on_startup=false",
+                    "--",
                     "do the task",
                 ]
                 .map(String::from)

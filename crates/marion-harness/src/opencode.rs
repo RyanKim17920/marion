@@ -125,7 +125,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // provider block and argv can never name different providers.
         Arg::Flag("-m", Field::Model),
         // Positional (variadic). stdin works identically, but a LaunchOnly surface gives the child
-        // no stdin.
+        // no stdin. After `--`, so a prompt beginning with `-` is the message: yargs ends options
+        // there (1.19.3, `opencode run -- --x` takes `--x` as the message; without it, usage).
+        Arg::Lit("--"),
         Arg::Pos(Field::Prompt),
     ],
     pane: None,

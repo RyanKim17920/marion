@@ -79,6 +79,7 @@ args:
   {"disableAllHooks":true}
   --model
   haiku
+  --
 env:
   CLAUDE_CONFIG_DIR=/state/x/config/claude-config
   ANTHROPIC_BASE_URL=http://127.0.0.1:8099
@@ -152,6 +153,7 @@ args:
   {"disableAllHooks":true}
   --model
   haiku
+  --
 env:
   DISABLE_AUTOUPDATER=1
 
@@ -235,6 +237,7 @@ args:
   {"disableAllHooks":true}
   --model
   vendor/model-1
+  --
 env:
   CLAUDE_CONFIG_DIR=/state/x/config/claude-config
   ANTHROPIC_BASE_URL=https://provider.example
@@ -321,6 +324,7 @@ args:
   {"disableAllHooks":true}
   --model
   haiku
+  --
 env:
   CLAUDE_CONFIG_DIR=/state/x/config/claude-config
   ANTHROPIC_BASE_URL=http://127.0.0.1:8099
@@ -403,6 +407,7 @@ args:
   {"disableAllHooks":true}
   --model
   haiku
+  --
 env:
   CLAUDE_CONFIG_DIR=/state/x/config/claude-config
   ANTHROPIC_BASE_URL=http://127.0.0.1:8099
@@ -485,6 +490,7 @@ args:
   {"disableAllHooks":true}
   --model
   haiku
+  --
 env:
   CLAUDE_CONFIG_DIR=/state/x/config/claude-config
   ANTHROPIC_BASE_URL=http://127.0.0.1:8099
@@ -567,6 +573,7 @@ args:
   {"disableAllHooks":true}
   --model
   haiku
+  --
 env:
   CLAUDE_CONFIG_DIR=/state/x/config/claude-config
   ANTHROPIC_BASE_URL=http://127.0.0.1:8099
@@ -649,6 +656,7 @@ args:
   {"disableAllHooks":true}
   --model
   haiku
+  --
 env:
   CLAUDE_CONFIG_DIR=/state/x/config/claude-config
   ANTHROPIC_BASE_URL=http://127.0.0.1:8099
@@ -726,5 +734,6 @@ args:
   haiku
   --resume
   session-1
+  --
 env:
   DISABLE_AUTOUPDATER=1

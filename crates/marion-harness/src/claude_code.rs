@@ -158,6 +158,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Lit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
+        // `--` so a prompt beginning with `-` is the prompt: commander ends options there
+        // (2.1.301, `claude -p -- --x` reads `--x` as the prompt; without it, `unknown option`).
+        Arg::Lit("--"),
         Arg::PosIfNonEmpty(Field::Prompt),
     ]),
     // NOT `CLAUDE_CONFIG_DIR`: isolating it breaks OAuth, because the Keychain entry is keyed to

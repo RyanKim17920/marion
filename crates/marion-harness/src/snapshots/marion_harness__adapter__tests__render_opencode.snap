@@ -19,6 +19,7 @@ args:
   marion-019f-root
   -m
   canned/canned-1
+  --
   do the task
 env:
   HOME=/state/x/config
@@ -99,6 +100,7 @@ args:
   marion-019f-root
   -m
   anthropic/claude-sonnet-4-5
+  --
   do the task
 env:
   OPENCODE_DISABLE_MODELS_FETCH=1
@@ -126,6 +128,7 @@ args:
   marion-019f-root
   -m
   marion/vendor/model-1
+  --
   do the task
 env:
   HOME=/state/x/config
@@ -206,6 +209,7 @@ args:
   marion-019f-root
   -m
   canned/canned-1
+  --
   do the task
 env:
   HOME=/state/x/config
@@ -287,6 +291,7 @@ args:
   marion-019f-root
   -m
   canned/canned-1
+  --
   do the task
 env:
   HOME=/state/x/config
@@ -368,6 +373,7 @@ args:
   marion-019f-root
   -m
   canned/canned-1
+  --
   do the task
 env:
   HOME=/state/x/config
@@ -449,6 +455,7 @@ args:
   marion-019f-root
   -m
   canned/canned-1
+  --
   do the task
 env:
   HOME=/state/x/config
@@ -530,6 +537,7 @@ args:
   marion-019f-root
   -m
   canned/canned-1
+  --
   do the task
 env:
   HOME=/state/x/config
@@ -612,6 +620,7 @@ args:
   marion-019f-root
   -m
   anthropic/claude-sonnet-4-5
+  --
   do the task
 env:
   OPENCODE_DISABLE_MODELS_FETCH=1

@@ -109,6 +109,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // the agent uses as its working root"*, which is what its sandbox is scoped to, and leaving
         // it to the process cwd would make the workspace a fact about who launched marion.
         Arg::Flag("-C", Field::Cwd),
+        // `--`, as `EXEC_ARGV` says: the same clap parser.
+        Arg::Lit("--"),
         Arg::PosIfNonEmpty(Field::Prompt),
     ]),
     // `$CODEX_HOME`: the node's own agent dir where marion owns the config surface, and under
@@ -477,6 +479,9 @@ const EXEC_ARGV: &[Arg] = &[
     // unset.
     Arg::Flag("--output-schema", Field::OutputSchema),
     Arg::Flag("--output-last-message", Field::OutputLastMessage),
+    // `--` so a prompt beginning with `-` is the prompt: clap ends options there (0.160.1,
+    // `codex exec -- --x` reads `--x` as the prompt; without it, `unexpected argument`).
+    Arg::Lit("--"),
     Arg::Pos(Field::Prompt),
 ];
 
@@ -1527,6 +1532,7 @@ mod tests {
                 // The row's update policy, on the `-c` channel both helps list.
                 "-c",
                 "check_for_update_on_startup=false",
+                "--",
                 "do the task",
             ]
         );
@@ -1541,6 +1547,7 @@ mod tests {
                 "--skip-git-repo-check",
                 "-c",
                 "check_for_update_on_startup=false",
+                "--",
                 "do the task"
             ],
             "a fresh launch is the same row without the subcommand"
@@ -1650,7 +1657,8 @@ mod tests {
             "an empty prompt compiled an empty positional: {:?}",
             bare.args
         );
-        assert_eq!(bare.args.last().map(String::as_str), Some("/tmp/wt"));
+        // The `--` that keeps a dash-led prompt a prompt stays, ending nothing: clap takes it bare.
+        assert_eq!(bare.args[bare.args.len() - 2..], ["/tmp/wt", "--"]);
     }
 
     /// The workspace is stated on argv as well as being the process cwd: `-C` is what codex scopes
