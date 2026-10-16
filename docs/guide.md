@@ -127,6 +127,12 @@ generation is per harness; see [Harness detail](#harness-detail).
   Exit 0 prints the queued message's id; exit 1 prints the supervisor's refusal (an ended node
   points at `marion resume`).
 
+A message for a pane is typed in as a paste, and never while the pane shows a dialog or an
+approval prompt its harness's row names (codex's `Would you like to run the following command?`,
+claude's `Do you want to proceed?`): typed there, its Enter would answer it. The message waits
+until a key dismisses the prompt, however long that is, and the agent shows as needing you in
+Watch while the prompt is up, message or none. marion never answers an approval prompt.
+
 ## marion as an MCP server
 
 `marion mcp` serves marion's tools over stdio for any MCP client: `spawn`, `wait`, `status`,

@@ -91,6 +91,8 @@ pub(crate) struct ModeScan {
     seen: u64,
     /// Bit `i`: `asks[i]` was drawn since anyone last typed — latched as [`Self::seen`] is.
     asked: u64,
+    /// What [`Self::showing`] or [`Self::asking`] answers changed since [`Self::take_changed`].
+    changed: bool,
     /// Visible text arrived since the last look for needles.
     fresh: bool,
     boot_over: bool,
@@ -153,6 +155,11 @@ impl ModeScan {
             .map(|(_, d)| d)
     }
 
+    /// Whether [`Self::showing`] or [`Self::asking`] changed since the last call.
+    pub(crate) fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+
     /// Latch every watched needle the text kept since the last look now holds.
     fn look(&mut self) {
         self.fresh = false;
@@ -167,6 +174,7 @@ impl ModeScan {
         let from = self.scanned.saturating_sub(longest.saturating_sub(1));
         let hay = &self.screen[from.min(self.screen.len())..];
         let latch = |watched: &[BootDialog], bits: &mut u64| {
+            let before = *bits;
             for (i, d) in watched.iter().enumerate() {
                 let needle = d.needle.as_bytes();
                 if *bits & (1 << i) == 0
@@ -176,14 +184,17 @@ impl ModeScan {
                     *bits |= 1 << i;
                 }
             }
+            *bits != before
         };
-        latch(self.dialogs, &mut self.seen);
-        latch(self.asks, &mut self.asked);
+        let seen = latch(self.dialogs, &mut self.seen);
+        let asked = latch(self.asks, &mut self.asked);
+        self.changed |= seen || asked;
         self.scanned = self.screen.len();
     }
 
     /// Nothing is on the screen any more as far as the latches know.
     fn forget_latches(&mut self) {
+        self.changed |= self.seen != 0 || self.asked != 0;
         self.seen = 0;
         self.asked = 0;
     }
@@ -208,6 +219,7 @@ impl ModeScan {
     pub(crate) fn boot_over(&mut self) {
         self.boot_over = true;
         self.dialogs = &[];
+        self.changed |= self.seen != 0;
         self.seen = 0;
         if self.asks.is_empty() {
             self.screen = Vec::new();
@@ -803,9 +815,11 @@ mod tests {
             scan.feed(&screen[..at], Instant::now());
             scan.feed(&screen[at..], Instant::now());
             assert_eq!(scan.asking(), Some(&ASK), "split at {at}");
+            assert!(scan.take_changed() && !scan.take_changed());
             assert_eq!(scan.showing(), None, "boot dialogs end with boot");
             scan.operator_typed();
             assert_eq!(scan.asking(), None, "a key dismisses it");
+            assert!(scan.take_changed());
         }
         let mut scan = ModeScan::default();
         scan.watch(&[], std::slice::from_ref(&ASK));

@@ -2280,3 +2280,114 @@ fn the_refusal_quotes_stderr_only_when_there_is_some() {
         .to_string();
     assert!(!without.contains("stderr:"), "{without}");
 }
+
+/// **A pane on an approval prompt needs its operator, and says so when the prompt is drawn** —
+/// with no message queued behind it, and long before the wait's lost-wake backstop. The pane is
+/// codex's own measured ask screen (`tests/fixtures/pane-asks/`); the launcher's check reads it
+/// as `Blocked(Permission)` naming the prompt.
+#[test]
+fn a_pane_showing_an_approval_prompt_needs_its_operator_at_once() {
+    use marion_core::node::{BlockReason, NodeState};
+    let dir = marion_testsupport::scratch("root-pane-ask-attention");
+    let screen = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/pane-asks/codex-0.160.1-approval.raw");
+    let id = AgentId("root-pane-ask-attention".into());
+    let host = Arc::new(
+        crate::pty::PtyHost::start(
+            id.clone(),
+            crate::pty::PtyMaster::open(PANE_SIZE).expect("open pty"),
+            &dir.join("pty.cast"),
+            PANE_SIZE,
+            PANE_TERM,
+            std::time::Instant::now(),
+        )
+        .expect("start pane host"),
+    );
+    let row = marion_harness::adapter::harness_spec(marion_core::harness::Harness::Codex);
+    host.watch_dialogs(row.boot_dialogs.dialogs, row.boot_dialogs.asks);
+    // Past boot: the recording opens on codex's folder trust, which a booted pane has answered.
+    host.boot_over();
+    let witness = marion_harness::ExecutionSurfaces::opaque()
+        .display_plane()
+        .expect("opaque execution owns a pty");
+    // Quiet first, so the wait is already asleep when the prompt is drawn.
+    let mut command = SysCommand::new("/bin/sh");
+    command.args([
+        "-c",
+        &format!("sleep 0.3; cat '{}'; sleep 30", screen.display()),
+    ]);
+    host.adopt(
+        crate::pty::spawn_pty(
+            witness,
+            &mut command,
+            host.master(),
+            crate::pty::StdinPlan::TerminalSlave,
+            None,
+        )
+        .expect("spawn the pane"),
+    );
+    let started = std::time::Instant::now();
+    let mut seen = None;
+    let waited = wait_for_the_pane_to_end(&host, Some(StdDuration::from_secs(20)), &mut || {
+        let now = needs_operator("codex", host.dialog_hold(), &host.input_state(), "/repo");
+        let blocked = matches!(now.0, NodeState::Blocked(_));
+        seen = Some(now);
+        blocked
+    });
+    let elapsed = started.elapsed();
+    let _ = host.shutdown_with_timeout_outcome(true);
+    assert!(matches!(waited, Ok(false)), "{waited:?}");
+    let (state, reason) = seen.expect("looked at least once");
+    assert_eq!(state, NodeState::Blocked(BlockReason::Permission));
+    let reason = reason.expect("the action that unblocks it");
+    assert!(
+        reason.contains("Would you like to run the following command?"),
+        "{reason}"
+    );
+    assert!(
+        elapsed < StdDuration::from_secs(10),
+        "seen when drawn, not at the backstop: {elapsed:?}"
+    );
+}
+
+/// **What the launcher reads off a pane's screen**: a boot dialog first — the paste driver's held
+/// one, or the screen's own with no message behind it — then an ask, else running.
+#[test]
+fn a_panes_screen_reads_as_blocked_on_its_dialog_or_ask_else_running() {
+    use marion_core::node::{BlockReason, NodeState};
+    use marion_harness::spec::{BootDialog, DialogAnswer};
+    const TRUST: BootDialog = BootDialog {
+        needle: "Folder access",
+        action: "trust {repo} once",
+        answer: DialogAnswer::Hold,
+        note: "test",
+    };
+    const ASK: BootDialog = BootDialog {
+        needle: "Do you want to proceed?",
+        action: "answer it in its pane",
+        answer: DialogAnswer::Hold,
+        note: "test",
+    };
+    let screen = |boot_dialog, ask| crate::pty::InputState {
+        bracketed_paste: true,
+        last_operator_input: None,
+        composer_empty: true,
+        screen_drawn: true,
+        titled: true,
+        last_output: None,
+        boot_dialog,
+        ask,
+    };
+    let clear = crate::pty::DialogHold::Clear;
+    let read = |hold, s: &crate::pty::InputState| needs_operator("codex", hold, s, "/r");
+    assert_eq!(read(clear, &screen(None, None)), (NodeState::Running, None));
+    let (state, reason) = read(clear, &screen(Some(&TRUST), Some(&ASK)));
+    assert_eq!(state, NodeState::Blocked(BlockReason::BootDialog));
+    assert!(reason.unwrap().contains("trust /r once"));
+    let (state, reason) = read(crate::pty::DialogHold::Held(&TRUST), &screen(None, None));
+    assert_eq!(state, NodeState::Blocked(BlockReason::BootDialog));
+    assert!(reason.unwrap().contains("Folder access"));
+    let (state, reason) = read(clear, &screen(None, Some(&ASK)));
+    assert_eq!(state, NodeState::Blocked(BlockReason::Permission));
+    assert!(reason.unwrap().contains("answer it in its pane"));
+}

@@ -1485,6 +1485,9 @@ struct Shared {
     /// The terminal modes read off the node's output that decide how marion may type into it
     /// (`input.rs`). Written only by the reader thread, before [`Self::bytes`] publishes the chunk.
     modes: Mutex<input::ModeScan>,
+    /// Rung whenever the dialog or ask the screen shows changes, or the paste driver's
+    /// [`DialogHold`] does: what a pane's launcher waits on to raise and lower its attention item.
+    dialogs_changed: Arc<crate::wake::Signal>,
     pane_streams: Mutex<PaneStreams>,
     pane_clock: Mutex<Arc<dyn Fn() -> Instant + Send + Sync>>,
     #[cfg(test)]
@@ -2050,9 +2053,17 @@ struct ResizeQueue {
 }
 
 impl Shared {
-    /// `f` over the terminal's modes.
+    /// `f` over the terminal's modes, ringing [`Self::dialogs_changed`] after it where what the
+    /// screen shows changed.
     fn with_modes<R>(&self, f: impl FnOnce(&mut input::ModeScan) -> R) -> R {
-        f(&mut self.modes.lock().unwrap_or_else(|e| e.into_inner()))
+        let mut modes = self.modes.lock().unwrap_or_else(|e| e.into_inner());
+        let out = f(&mut modes);
+        let changed = modes.take_changed();
+        drop(modes);
+        if changed {
+            self.dialogs_changed.notify();
+        }
+        out
     }
 
     fn set_size(&self, master: &PtyMaster, size: WinSize) -> io::Result<()> {
@@ -2705,6 +2716,7 @@ impl PtyHost {
             splice_error: Mutex::new(None),
             splice_disabled: AtomicBool::new(false),
             modes: Mutex::new(input::ModeScan::default()),
+            dialogs_changed: crate::wake::Signal::new(),
             pane_streams: Mutex::new(PaneStreams {
                 generation: 1,
                 valid: true,
@@ -3521,6 +3533,12 @@ impl PtyHost {
         self.shared.with_modes(input::ModeScan::boot_over);
     }
 
+    /// What a pane's launcher waits on for the dialog and ask state to change
+    /// ([`Self::dialog_hold`], [`input::InputState::ask`]).
+    pub fn dialogs_changed(&self) -> &Arc<crate::wake::Signal> {
+        &self.shared.dialogs_changed
+    }
+
     /// **The child runs in a workspace marion created**, so its answerable boot dialogs are marion's
     /// to answer ([`marion_harness::spec::DialogAnswer::Keys`]). Called by the launcher before the
     /// host is published; never by default, because an operator's own directory is the operator's
@@ -3535,7 +3553,13 @@ impl PtyHost {
 
     /// The paste driver says what its first message waits on ([`DialogHold`]).
     pub fn set_dialog_hold(&self, hold: DialogHold) {
-        *self.dialog_hold.lock().unwrap_or_else(|e| e.into_inner()) = hold;
+        let was = std::mem::replace(
+            &mut *self.dialog_hold.lock().unwrap_or_else(|e| e.into_inner()),
+            hold,
+        );
+        if was != hold {
+            self.shared.dialogs_changed.notify();
+        }
     }
 
     pub fn dialog_hold(&self) -> DialogHold {

@@ -2737,14 +2737,28 @@ pub(crate) fn wait_for_the_pane_to_end(
     let deadline = bound.map(|bound| std::time::Instant::now() + bound);
     // Armed before the first look, so an exit between the look and the wait still wakes it.
     let exit = host.child_pid().map(crate::wake::ProcExit::new);
+    // And a change in what the screen shows (a dialog, an ask), so `end` sees it when it happens.
+    let dialogs = crate::wake::Pipe::new().ok().map(std::sync::Arc::new);
+    if let Some(pipe) = &dialogs {
+        host.dialogs_changed().attach(pipe);
+    }
     loop {
+        if let Some(pipe) = &dialogs {
+            pipe.drain();
+        }
         if host.poll_exited_unreaped()? || end() {
             return Ok(false);
         }
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Ok(true);
         }
-        crate::wake::wait_until(&[exit.as_ref().and_then(|e| e.fd())], deadline);
+        crate::wake::wait_until(
+            &[
+                exit.as_ref().and_then(|e| e.fd()),
+                dialogs.as_ref().map(|p| p.fd()),
+            ],
+            deadline,
+        );
     }
 }
 
@@ -2915,12 +2929,15 @@ fn launch_terminal(
     // worktree claude and codex key trust on the main repository, so answering there would trust
     // the operator's repository for good. Before `opened`, so the paste driver that publication
     // starts reads it.
-    let remembers = marion_harness::adapter::harness_spec(node.harness)
-        .boot_dialogs
-        .remembers;
-    if inv.cwd.starts_with(node.agent_dir.worktree()) && remembers.marion_may_answer(node.auth) {
+    let dialogs = marion_harness::adapter::harness_spec(node.harness).boot_dialogs;
+    if inv.cwd.starts_with(node.agent_dir.worktree())
+        && dialogs.remembers.marion_may_answer(node.auth)
+    {
         host.license_boot_dialog_answers();
     }
+    // Read for whether the node needs its operator, message or none: a pane started on its task
+    // can sit on a dialog with nothing queued for it.
+    host.watch_dialogs(dialogs.dialogs, dialogs.asks);
     // **After the process exists, never before.** See this function's doc, point 3.
     if let Some(owner) = pane {
         owner.opened(&node.agent_id, std::sync::Arc::clone(&host));
@@ -2931,31 +2948,28 @@ fn launch_terminal(
     // leave it there — answering a later `node/attach` with a pane onto a master that is about to
     // close, which is precisely what `forget_pane` exists to prevent. So the wait's failure is
     // *carried* past the un-advertisement rather than thrown through it.
-    // A boot dialog marion may not answer holds the pane's first message: raise the node's
-    // attention item while it waits, lower it once dismissed, and end the node past the grace.
+    // **The node needs its operator while its screen shows one of its row's dialogs or asks**:
+    // raise its attention item while one is up, lower it once dismissed — whether or not a
+    // message waits behind it — and end the node where a boot dialog held its first message past
+    // the grace.
     let repository = repository_of(&inv.cwd);
     let program = marion_harness::adapter::harness_spec(node.harness)
         .program
         .unwrap_or(node.harness.as_str());
-    let mut shown = crate::pty::DialogHold::Clear;
+    let mut shown = (marion_core::node::NodeState::Running, None);
     let mut ended = None;
     let mut end = || {
-        let now = host.dialog_hold();
+        let hold = host.dialog_hold();
+        if let crate::pty::DialogHold::Expired(d) = hold {
+            ended = Some(dialog_expired(program, d, &repository, bound.as_secs()));
+            return true;
+        }
+        let now = needs_operator(program, hold, &host.input_state(), &repository);
         if now == shown {
             return false;
         }
-        shown = now;
-        let (state, reason) = match now {
-            crate::pty::DialogHold::Held(d) => (
-                marion_core::node::NodeState::Blocked(marion_core::node::BlockReason::BootDialog),
-                Some(dialog_held(program, d, &repository)),
-            ),
-            crate::pty::DialogHold::Clear => (marion_core::node::NodeState::Running, None),
-            crate::pty::DialogHold::Expired(d) => {
-                ended = Some(dialog_expired(program, d, &repository, bound.as_secs()));
-                return true;
-            }
-        };
+        shown = now.clone();
+        let (state, reason) = now;
         crate::journal::record(
             &node.project,
             RecordKind::StateChanged(marion_core::journal::StateChanged {
@@ -3014,6 +3028,37 @@ fn repository_of(cwd: &std::path::Path) -> String {
 }
 
 /// The held node's attention item: the harness, the repository and the one action.
+/// **What a pane's screen says of whether it needs its operator**: blocked on the boot dialog its
+/// paste driver holds a message on, or on one the screen shows; else on an ask (an approval
+/// prompt) the screen shows; else running. The reason is the one action that unblocks it.
+fn needs_operator(
+    program: &str,
+    hold: crate::pty::DialogHold,
+    screen: &crate::pty::InputState,
+    repo: &str,
+) -> (marion_core::node::NodeState, Option<String>) {
+    use marion_core::node::{BlockReason, NodeState};
+    let boot = match hold {
+        crate::pty::DialogHold::Held(d) => Some(d),
+        _ => screen.boot_dialog,
+    };
+    match (boot, screen.ask) {
+        (Some(d), _) => (
+            NodeState::Blocked(BlockReason::BootDialog),
+            Some(dialog_held(program, d, repo)),
+        ),
+        (None, Some(a)) => (
+            NodeState::Blocked(BlockReason::Permission),
+            Some(format!(
+                "{program} is asking (`{}`), which marion never answers: {}",
+                a.needle,
+                a.action_for(repo)
+            )),
+        ),
+        (None, None) => (NodeState::Running, None),
+    }
+}
+
 fn dialog_held(program: &str, d: &marion_harness::spec::BootDialog, repo: &str) -> String {
     format!(
         "{program} is waiting on its boot dialog (`{}`), which marion does not answer: {}",
