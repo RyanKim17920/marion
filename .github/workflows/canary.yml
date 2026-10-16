@@ -41,10 +41,10 @@
 # exist on the registry and be NPM_COOLDOWN_DAYS old, each Homebrew release must be its formula's
 # stable version, and a program from neither is refused; the list script refuses a harness with no
 # row, a version not newer than the row's newest (no downgrade) and a program named twice; and
-# only the row files the script names may change. It downloads nothing and runs only perl,
-# rustfmt, npm view, brew info and gh. Even so, what it lists is a version string a person never
-# read: CI on the pull request runs with no harness binaries and checks only that the edit builds,
-# so the real gate is the checks above, not the branch's rules. The listed version reaches only
+# only the row files the script names may change. It installs nothing and runs only perl,
+# rustfmt, npm view, curl and jq (formulae.brew.sh's metadata) and gh. Even so, what it lists is a
+# version string a person never read: CI on the pull request runs with no harness binaries and
+# checks only that the edit builds, so the real gate is the checks above, not the branch's rules. The listed version reaches only
 # the test gate and doctor's note — the shipped marion never refuses on it, and no test installs
 # it.
 # `admit` holds contents and pull-requests write and CANARY_TOKEN, `report` issues: write;
@@ -269,10 +269,11 @@ jobs:
           # each release is checked from here against where `run` installed it from. An npm
           # release must exist and its publish be NPM_COOLDOWN_DAYS old; a younger one waits for
           # a later night. Homebrew states no publish time per version, so a formula's release
-          # must be the one its stable version names. A program in neither map is refused: there
-          # is nothing to check it against, so it is never listed.
+          # must be the one its stable version names, read fresh from formulae.brew.sh: the
+          # runner image's own formula cache predates any release made after the image was built.
+          # A release that does not match waits, and only that harness does. A program in neither
+          # map is refused: there is nothing to check it against, so it is never listed.
           cutoff=$(date -u -d "-$NPM_COOLDOWN_DAYS days" +%s)
-          brew=$(command -v brew || echo /home/linuxbrew/.linuxbrew/bin/brew)
           ready=""
           # shellcheck disable=SC2086
           set -- $PAIRS
@@ -292,11 +293,12 @@ jobs:
                 continue
               fi
             elif [ -n "$formula" ]; then
-              stable=$(HOMEBREW_NO_AUTO_UPDATE=1 "$brew" info --json=v2 "$formula" \
-                | jq -r '.formulae[0].versions.stable // empty')
+              # Only version characters reach the log: the value is Homebrew's, not this repo's.
+              stable=$(curl -fsS --max-time 30 "https://formulae.brew.sh/api/formula/$formula.json" \
+                | jq -r '.versions.stable // empty' | tr -cd '0-9A-Za-z._+-' || true)
               if [ "$stable" != "$v" ]; then
-                echo "::error::$formula's stable release is ${stable:-unknown}, not $v"
-                exit 1
+                echo "::notice::$h $v: $formula's stable release is ${stable:-unreadable}, not $v; not yet"
+                continue
               fi
             else
               echo "::error::$h is installed from neither npm nor Homebrew, so $v cannot be checked"
