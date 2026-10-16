@@ -317,13 +317,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             // 0.160.1 heads both of its folder screens `Folder access`: the `Trust this folder?`
             // above (conformance P-tui, `tests/fixtures/s37-boot-dialogs/codex-0.160.1.raw`), and,
             // on an operator's own login (the live TUI run, 2026-10-16), `› 1. Open restricted` /
-            // `2. Quit`, which a paste's Enter would open restricted. Held, as the heading of
-            // every variant.
+            // `2. Quit`, which a paste's Enter would open restricted. Both end on `2. Quit` over
+            // `enter continue · esc quit`; held on that, the last option and the footer, because
+            // the heading alone is words a session can draw.
             BootDialog {
-                needle: "Folder access",
+                needle: "2. Quit enter continue · esc quit",
                 action: "answer codex's folder access dialog in {repo} once (run `codex` there); worktrees inherit it",
                 answer: DialogAnswer::Hold,
-                note: "0.160.1 folder screens' heading, selection not read",
+                note: "0.160.1 folder screens' last option and footer, selection not read",
             },
         ],
         // Conformance P-tui with a scripted escalated `exec_command` under `approval_policy =
