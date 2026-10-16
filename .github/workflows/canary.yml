@@ -18,10 +18,10 @@
 #      that drives it, naming the harness, the version and the probes. MARION_CI_NO_HARNESSES stays
 #      unset: a missing harness is a failure here, not a skip. The `--ignored` suites
 #      (restart_resume, acp_child) spend real tokens and stay out;
-#   5. `admit` adds every admitted release to its row's `verified` list
-#      (`scripts/admit-harness.sh`) in one pull request that merges itself once the
-#      default branch's rules pass, whatever the matrix said: the basic tests are the bar for
-#      listing, and a red matrix still reaches the issue;
+#   5. after a wholly green run, `admit` adds every admitted release to its row's `verified` list
+#      (`scripts/admit-harness.sh`) in one pull request — each npm release only once its publish
+#      is NPM_COOLDOWN_DAYS old and only if newer than the row's newest — set to auto-merge where
+#      the default branch has required status checks, and otherwise left open for a person;
 #   6. on red anywhere, opens or updates one issue labelled `harness-canary` with each release's
 #      conformance verdict, the failing tests, their first panic lines and every harness version.
 #
@@ -33,14 +33,17 @@
 # Trust split. Steps 1-4 execute code this repository does not control: the newest release of eight
 # third-party packages, straight from npm and Homebrew, plus whatever their install scripts run. So
 # they run in `run`, which holds a read-only token and keeps no credential in the checkout or its
-# environment; what leaves it is an artifact of plain files and two job outputs. `admit` takes one
-# output alone, the admitted `<harness> <version>` pairs, matched against a strict pattern (lower
-# case names, dotted digits) and refused by the script unless each names a pinned program; it
-# downloads nothing, runs only perl and rustfmt from its own checkout of the default branch, and
-# refuses a change outside the harness row files. Its result is a pull request held to the default
-# branch's rules (CONTRIBUTING.md's ruleset requires CI), never a push. So the most a compromised
-# `run` can do is list a version string that did not pass: a test-gate entry and doctor's note,
-# which the shipped marion never refuses on, in a pull request that names the run it came from.
+# environment; what leaves it is an artifact of plain files and two job outputs. Treat the
+# `admitted` output as chosen by an attacker: an install script can rewrite the checkout or the
+# job's environment before harness_drift prints it. `admit` therefore checks it from its own
+# checkout of the default branch: a strict `<harness> <version>` pattern; each npm release must
+# exist on the registry and be NPM_COOLDOWN_DAYS old; the list script refuses a harness with no
+# row, a version not newer than the row's newest (no downgrade) and a program named twice; and
+# only the row files the script names may change. It downloads nothing and runs only perl,
+# rustfmt, npm view and gh. Even so, what it lists is a version string a person never read: CI on
+# the pull request runs with no harness binaries and checks only that the edit builds, so the
+# real gate is the checks above, not the branch's rules. The listed version reaches only the test
+# gate and doctor's note — the shipped marion never refuses on it, and no test installs it.
 # `admit` holds contents and pull-requests write and CANARY_TOKEN, `report` issues: write;
 # neither runs anything installed.
 
@@ -61,6 +64,15 @@ concurrency:
 env:
   CARGO_TERM_COLOR: never
   RUST_BACKTRACE: 1
+  # `<program>=<npm package>` for every harness installed from npm: what `run` installs, and what
+  # `admit` asks the registry about before it lists a release.
+  NPM_HARNESSES: >-
+    claude=@anthropic-ai/claude-code codex=@openai/codex opencode=opencode-ai
+    copilot=@github/copilot cline=cline qwen=@qwen-code/qwen-code
+    pi=@earendil-works/pi-coding-agent
+  # A release is listed only once its npm publish is this many days old: most hijacked npm
+  # releases are caught and pulled inside that window.
+  NPM_COOLDOWN_DAYS: 7
 
 defaults:
   run:
@@ -101,14 +113,9 @@ jobs:
 
       - name: Install the newest release of every harness
         run: |
+          # shellcheck disable=SC2046
           npm install -g --no-fund --no-audit \
-            @anthropic-ai/claude-code@latest \
-            @openai/codex@latest \
-            opencode-ai@latest \
-            @github/copilot@latest \
-            cline@latest \
-            @qwen-code/qwen-code@latest \
-            @earendil-works/pi-coding-agent@latest
+            $(for e in $NPM_HARNESSES; do printf '%s@latest ' "${e#*=}"; done)
           brew install block-goose-cli
 
       - name: Harness versions
@@ -222,10 +229,9 @@ jobs:
   # `admit-harness.sh` (perl and rustfmt, no build) from its own checkout.
   admit:
     needs: run
-    # The matrix may be red for a reason that is not the release (another harness's cell, a
-    # bound); a release its basic tests admitted is listed regardless, and the red still reaches
-    # the issue through `report`.
-    if: ${{ !cancelled() && needs.run.outputs.admitted != '' }}
+    # Only after a wholly green run: a release that trips any test is not listed, whatever its
+    # battery said, and the red reaches the issue through `report`.
+    if: ${{ needs.run.result == 'success' && needs.run.outputs.admitted != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -250,17 +256,53 @@ jobs:
             echo "::error::admitted pairs from the run job are not <harness> <version> pairs"
             exit 1
           fi
-          # Word splitting of $PAIRS is the point: it is `<harness> <version> ...`.
+          # The run job's output is chosen by whatever ran there, install scripts included, so
+          # each npm release is checked against the registry from here: it must exist, and its
+          # publish must be NPM_COOLDOWN_DAYS old. A younger one waits for a later night.
+          cutoff=$(date -u -d "-$NPM_COOLDOWN_DAYS days" +%s)
+          ready=""
           # shellcheck disable=SC2086
-          scripts/admit-harness.sh $PAIRS
-          if [ -n "$(git status --porcelain -- . ':(exclude)crates/marion-harness/src/*.rs')" ]; then
-            echo "::error::listing touched files other than the harness rows"
+          set -- $PAIRS
+          while [ $# -ge 2 ]; do
+            h=$1 v=$2; shift 2
+            pkg=""
+            for e in $NPM_HARNESSES; do [ "${e%%=*}" = "$h" ] && pkg=${e#*=}; done
+            if [ -n "$pkg" ]; then
+              published=$(npm view "$pkg" time --json | jq -r --arg v "$v" '.[$v] // empty')
+              if [ -z "$published" ]; then
+                echo "::error::$pkg has no published $v"
+                exit 1
+              fi
+              if [ "$(date -u -d "$published" +%s)" -gt "$cutoff" ]; then
+                echo "$h $v: published $published, inside the ${NPM_COOLDOWN_DAYS}-day cooldown; not yet"
+                continue
+              fi
+            fi
+            ready="$ready${ready:+ }$h $v"
+          done
+          if [ -z "$ready" ]; then
+            echo "nothing is past its cooldown"
+            exit 0
+          fi
+          # Word splitting of $ready is the point: it is `<harness> <version> ...`. The script
+          # refuses a version not newer than the row's, and a program named twice.
+          # shellcheck disable=SC2086
+          scripts/admit-harness.sh $ready | tee "$RUNNER_TEMP/listed.txt"
+          rows=$(sed -n 's/^admit-harness: .* listed in //p' "$RUNNER_TEMP/listed.txt" | sort -u)
+          if [ "$(git diff --name-only | sort -u)" != "$rows" ]; then
+            echo "::error::listing touched files other than the rows it named"
             exit 1
           fi
-          echo "pairs=$PAIRS" >> "$GITHUB_OUTPUT"
+          {
+            echo "pairs=$ready"
+            echo "rows<<EOF"
+            echo "$rows"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Open or update the admission pull request
         id: pr
+        if: steps.list.outputs.pairs != ''
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
         with:
           # A pull request opened with the default token does not start ci.yml, so one whose
@@ -269,7 +311,7 @@ jobs:
           token: ${{ secrets.CANARY_TOKEN || github.token }}
           branch: canary/admit-harnesses
           delete-branch: true
-          add-paths: crates/marion-harness/src/*.rs
+          add-paths: ${{ steps.list.outputs.rows }}
           commit-message: |
             test: admit ${{ steps.list.outputs.pairs }} to the verified harness releases
 
@@ -281,20 +323,29 @@ jobs:
           body: |
             The nightly canary's conformance battery admitted these releases: every probe their
             newest verified release passed in the committed matrix passed again on the exact binary
-            installed. This adds them to their rows' `verified` lists and merges itself once the
-            default branch's rules pass.
+            installed, each npm release is past its publish cooldown, and the whole canary run was
+            green. This adds them to their rows' `verified` lists. CI on this pull request only
+            checks that the edit builds; it does not drive the harnesses.
 
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-      # Auto-merge where the branch has rules to wait on; where it has none, GitHub refuses
-      # auto-merge on a pull request that is already mergeable, and it is merged at once.
+      # Auto-merge only where the default branch has required status checks to wait on. With none,
+      # the pull request is left open for a person: merging at once would bypass every check.
       - name: Merge it once the rules pass
         if: steps.pr.outputs.pull-request-number != ''
         env:
           GH_TOKEN: ${{ secrets.CANARY_TOKEN || github.token }}
           GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
           NUMBER: ${{ steps.pr.outputs.pull-request-number }}
-        run: gh pr merge "$NUMBER" --squash --auto || gh pr merge "$NUMBER" --squash
+        run: |
+          checks=$(gh api "repos/$GH_REPO/rules/branches/$BRANCH" \
+            --jq '[.[] | select(.type == "required_status_checks")] | length')
+          if [ "${checks:-0}" -gt 0 ]; then
+            gh pr merge "$NUMBER" --squash --auto
+          else
+            echo "::notice::$BRANCH has no required status checks; pull request $NUMBER is left for a person to merge"
+          fi
 
   # Opens or comments on the canary issue from the artifact when either job above failed. Runs
   # nothing from `run`.
