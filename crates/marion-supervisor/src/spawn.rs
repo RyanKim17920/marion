@@ -47,8 +47,8 @@ pub enum SpawnError {
     /// exists.
     #[error(
         "spawn refused: this node would run under a token budget, and {harness}'s stream reports \
-         no token counts marion can read, so the budget could never be enforced. Spawn it without \
-         a budget — outside any budgeted tree — or on a harness that reports its usage."
+         no token counts marion can read, so the budget could never be enforced. Spawn it outside \
+         any budgeted tree, or on a harness that reports token usage."
     )]
     BudgetUnenforceable {
         harness: marion_core::harness::Harness,
@@ -160,13 +160,11 @@ pub enum SpawnError {
     /// `allow_concurrent_writes: true` is the caller's way past it, per §5.4, and is the only thing
     /// that suppresses this check.
     #[error(
-        "spawn refused (§6.6): {cwd} already has a live write-capable node in it — agent {holder} — \
-         and at most one node with write tools may share a cwd. Nothing was started. Two agents \
-         writing one tree is lost-update, and worse than two people doing it: each harness keeps \
-         its own checkpoint state, so a checkpoint restore in one child silently reverts the \
-         other's work. Wait for {holder} to finish, or pass `isolation: \"worktree\"` to give this \
-         child its own tree, or pass `allow_concurrent_writes: true` to take that risk \
-         deliberately.",
+        "spawn refused: agent {holder} is already writing in {cwd}, and only one node with write \
+         tools may work in a directory at a time (a checkpoint restore in one would revert the \
+         other's edits). Nothing was started. Wait for {holder} to finish, pass `isolation: \
+         \"worktree\"` to give this child its own tree, or pass `allow_concurrent_writes: true` \
+         to accept the risk.",
         cwd = cwd.display(),
         holder = holder.0
     )]
@@ -213,12 +211,9 @@ pub enum SpawnError {
     /// `worktree`, `shared-cwd` and absence are **not** refused: all three now name something marion
     /// does.
     #[error(
-        "spawn refused: `isolation: {0:?}` is not a workspace marion can build. `\"worktree\"` gives \
-         the child its own git worktree branched off HEAD, and `\"shared-cwd\"` runs it in the \
-         caller's own directory (§6.6) — those two are implemented. `\"remote\"` is declared in the \
-         schema and has no transport, no host and no code path anywhere; design §1 puts remote \
-         hosting out of scope. Serving it by running on this machine would be a request to run \
-         elsewhere answered by running here, which is worse than this refusal."
+        "spawn refused: `isolation: {0:?}` is not supported. Use `\"worktree\"` (its own git \
+         worktree off HEAD) or `\"shared-cwd\"` (the caller's directory). marion does not run \
+         agents on remote hosts."
     )]
     IsolationUnimplemented(String),
     /// **`isolation: "worktree"` where there is no repository to add a worktree to.**
@@ -240,13 +235,10 @@ pub enum SpawnError {
     /// Guessing either — silently downgrading to `shared-cwd`, or running `git init` on someone's
     /// directory — is a side effect nobody asked for.
     #[error(
-        "spawn refused: `isolation: \"worktree\"` needs a git repository to add a worktree to, and \
-         {cwd} is not in one — `git -C {cwd} rev-parse --git-common-dir` reports no repository. \
-         Nothing was started. Either run `git init` in {cwd} (the child then gets its own worktree \
-         branched off HEAD, and §6.7's diff, changed_paths and scope check all work), or pass \
-         `isolation: \"shared-cwd\"` to run the child directly in that directory — with no \
-         repository there is no diff route, so its contract will honestly record \
-         `scope_enforced: false` (§6.7).",
+        "spawn refused: `isolation: \"worktree\"` needs a git repository, and {cwd} is not in one \
+         (`git -C {cwd} rev-parse --git-common-dir` finds none). Nothing was started. Run `git \
+         init` in {cwd}, or pass `isolation: \"shared-cwd\"` to run the child in that directory \
+         without scope checks (its contract will say `scope_enforced: false`).",
         cwd = cwd.display()
     )]
     NotAGitRepo { cwd: PathBuf },
@@ -254,8 +246,8 @@ pub enum SpawnError {
     /// `node/resume` checked it. Refused here too, so the second life never starts a process into a
     /// directory that is not there.
     #[error(
-        "resume refused: the node ran in {path}, and that tree no longer exists — a reap or a \
-         cleanup removed it. A harness resumes a session only from the tree that created it, so \
+        "resume refused: the node ran in {path}, and that directory no longer exists (a cleanup \
+         removed it). A harness resumes a session only from the tree that created it, so \
          nothing was started.",
         path = path.display()
     )]
@@ -358,9 +350,9 @@ pub enum SpawnError {
     /// block one caller — and, because the bridge dispatches frames on one thread, every caller
     /// behind it. A `spawn { background: true }` plus `wait` is the way to ask again.
     #[error(
-        "the child outlived the {0} s marion will hold a synchronous `spawn` for — its own wall \
-         clock plus a grace for everything around the run. It is still running and its contract \
-         will still be written; nothing was cancelled."
+        "the child is still running after {0} s, the longest a blocking `spawn` waits (its \
+         timeout plus a grace). It keeps running and its contract will still be written; use \
+         `background: true` and `wait` to collect it."
     )]
     OutlivedTheWait(u64),
     /// The proposed child's first durable fact could not be confirmed, so no side effect was taken

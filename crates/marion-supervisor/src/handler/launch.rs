@@ -2697,10 +2697,9 @@ impl RegistryHandle {
             return Err(RpcError::refused(
                 "agent_id",
                 format!(
-                    "`{}` ran in {}, and that tree no longer exists — a reap or a cleanup removed \
-                     it. Its session id outlived its workspace; handing the id back from anywhere \
-                     else would start a fresh run wearing a resumed node's name, so marion refuses \
-                     by name instead.",
+                    "`{}` ran in {}, and that directory no longer exists (a cleanup removed it). \
+                     A harness resumes a session only from the directory that created it, so \
+                     nothing was started.",
                     node.agent_id.0,
                     workspace.path().display(),
                 ),
