@@ -365,6 +365,10 @@ pub enum Gate {
 
 /// **The gate for `program`**, decided once per process: `on_path` is asked many times a suite, and
 /// a harness's `--version` is a process start each time.
+///
+/// The decision is keyed on the program alone, with `PATH` read at the first call: a test that
+/// changes `PATH` process-wide afterwards still gets the first answer. No test does; one that
+/// needs another binary under the same name passes its own `PATH` to [`gate_at`].
 pub fn gate(program: &str) -> Gate {
     static DECIDED: std::sync::Mutex<Vec<(String, Gate)>> = std::sync::Mutex::new(Vec::new());
     let mut decided = DECIDED.lock().unwrap_or_else(|e| e.into_inner());
@@ -387,6 +391,41 @@ pub fn gate(program: &str) -> Gate {
     g
 }
 
+/// How long the gate waits on a harness's `--version`. The slowest measured is copilot's node start,
+/// well under ten seconds on a cold disk; a binary still silent at this ceiling is hung, not slow.
+const VERSION_BUDGET: Duration = Duration::from_secs(30);
+
+/// `command`'s output, or `None` if it has not exited within `budget`, in which case it is killed.
+/// The wait blocks on a channel the reaping thread answers, so nothing re-asks on a timer.
+fn output_within(
+    command: &mut Command,
+    budget: Duration,
+) -> Option<std::io::Result<std::process::Output>> {
+    use std::process::Stdio;
+    let child = match command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return Some(Err(e)),
+    };
+    let pid = child.id() as i32;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(budget) {
+        Ok(out) => Some(out),
+        Err(_) => {
+            // Unreaped until the thread's wait returns, so the pid is still this child's.
+            kill_hard(pid);
+            None
+        }
+    }
+}
+
 /// [`gate`]'s decision, with `PATH` and the state directory the conformance records live under
 /// passed in, so every branch is testable against a scratch tree.
 ///
@@ -406,9 +445,20 @@ pub fn gate_at(program: &str, spec: &HarnessSpec, path: &OsStr, state: &Path) ->
             };
         }
     };
-    let out = match probe.command.output() {
-        Ok(out) if out.status.success() => out,
-        _ => return Gate::Absent,
+    let out = match output_within(&mut probe.command, VERSION_BUDGET) {
+        Some(Ok(out)) if out.status.success() => out,
+        Some(_) => return Gate::Absent,
+        None => {
+            return Gate::Refused {
+                found: None,
+                diagnosis: format!(
+                    "`{program} --version` did not answer within {}s, so the binary on PATH \
+                     ({}) is unidentified and was killed",
+                    VERSION_BUDGET.as_secs(),
+                    binary.display()
+                ),
+            };
+        }
     };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let Some(found) = parse_version(&stdout) else {
@@ -1869,6 +1919,36 @@ mod tests {
         record(&old.join("state"), "claude-code", "0.0.1", &bin, &[]);
         let e = refused(gate_at("claude", claude(), &path, &old.join("state")));
         assert!(e.contains("older than"), "{e}");
+    }
+
+    /// **A `--version` that never answers is cut off at the budget** and killed, rather than
+    /// hanging the suite; one that answers is read as before.
+    #[test]
+    fn a_version_probe_that_hangs_is_cut_off_and_killed() {
+        let dir = scratch("gate-hang");
+        let marker = dir.join("still-running");
+        let hang = dir.join("hang");
+        write_executable(
+            &hang,
+            format!("#!/bin/sh\nsleep 1; touch '{}'\n", marker.display()),
+        );
+        let started = Instant::now();
+        assert!(output_within(&mut Command::new(&hang), Duration::from_millis(100)).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !marker.exists(),
+            "the hung probe was killed, not left to finish"
+        );
+
+        let out = output_within(Command::new("echo").arg("1.2.3"), Duration::from_secs(10))
+            .expect("echo answers")
+            .expect("echo runs");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1.2.3");
     }
 
     /// **The stub case the old exit-status gate could not tell from the real thing**: exits 0,
