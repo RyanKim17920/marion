@@ -1130,6 +1130,8 @@ impl AbortVerbDto {
 pub struct BootDialogsDto {
     #[serde(default)]
     pub dialogs: Vec<BootDialogDto>,
+    #[serde(default)]
+    pub asks: Vec<BootDialogDto>,
     pub remembers: RemembersDto,
     pub note: String,
 }
@@ -1141,6 +1143,20 @@ pub struct BootDialogDto {
     pub action: String,
     pub answer: DialogAnswerDto,
     pub note: String,
+}
+
+impl BootDialogDto {
+    fn dialog(self) -> BootDialog {
+        BootDialog {
+            needle: leak(self.needle),
+            action: leak(self.action),
+            answer: match self.answer {
+                DialogAnswerDto::Keys(k) => DialogAnswer::Keys(leak(k).as_bytes()),
+                DialogAnswerDto::Hold => DialogAnswer::Hold,
+            },
+            note: leak(self.note),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1489,15 +1505,14 @@ impl RowDto {
                     self.boot_dialogs
                         .dialogs
                         .into_iter()
-                        .map(|d| BootDialog {
-                            needle: leak(d.needle),
-                            action: leak(d.action),
-                            answer: match d.answer {
-                                DialogAnswerDto::Keys(k) => DialogAnswer::Keys(leak(k).as_bytes()),
-                                DialogAnswerDto::Hold => DialogAnswer::Hold,
-                            },
-                            note: leak(d.note),
-                        })
+                        .map(BootDialogDto::dialog)
+                        .collect(),
+                ),
+                asks: leak_all(
+                    self.boot_dialogs
+                        .asks
+                        .into_iter()
+                        .map(BootDialogDto::dialog)
                         .collect(),
                 ),
                 remembers: match self.boot_dialogs.remembers {

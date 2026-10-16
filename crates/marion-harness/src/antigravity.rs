@@ -101,6 +101,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        asks: &[],
         remembers: Remembers::Nothing,
         note: "agy's first screen was not measured for dialogs, and its native lane ships disabled",
     },

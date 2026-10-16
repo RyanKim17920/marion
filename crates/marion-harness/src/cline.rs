@@ -226,6 +226,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        asks: &[],
         remembers: Remembers::Nothing,
         note: "cline is not installed; its first screen was not measured",
     },

@@ -200,6 +200,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        asks: &[],
         remembers: Remembers::Nothing,
         note: "S37 0.80.2, fresh directory, --no-extensions: the first screen is the composer. \
                An operator's own extension may draw a `Press any key to continue` splash; that \

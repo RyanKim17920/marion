@@ -319,6 +319,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        asks: &[],
         remembers: Remembers::Nothing,
         note: "S37 1.18.32, fresh directory, the operator's login: the first screen is the \
                composer, no dialog",

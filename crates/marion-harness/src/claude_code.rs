@@ -382,6 +382,26 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // An overlaying launch runs on its own `CLAUDE_CONFIG_DIR` (`CONFIG_SUBDIR`, seeded past
         // onboarding), so there the answer lands in marion's scratch; a live node's is the
         // operator's `~/.claude.json`, which marion never answers into.
+        // Conformance P-tui with a scripted `Bash` call in `--permission-mode default`, 2.1.301
+        // (`tests/fixtures/pane-asks/claude-code-2.1.301-permission.raw`): the permission
+        // dialog `Do you want to proceed?` over `❯ 1. Yes` / `2. Yes, and always allow …` /
+        // `4. No`, then `Esc to cancel · Tab to amend`. Enter takes the selection, `1. Yes`, so a
+        // paste's submit would run the command. Two needles, either one enough, because claude
+        // redraws only the cells that changed and a word over the same letters loses them.
+        asks: &[
+            BootDialog {
+                needle: "Do you want to proceed?",
+                action: "answer claude's permission prompt in its pane",
+                answer: DialogAnswer::Hold,
+                note: "2.1.301 permission dialog for a Bash call, default `❯ 1. Yes`",
+            },
+            BootDialog {
+                needle: "Esc to cancel · Tab to amend",
+                action: "answer claude's permission prompt in its pane",
+                answer: DialogAnswer::Hold,
+                note: "2.1.301 permission dialog footer",
+            },
+        ],
         remembers: Remembers::CannedHome,
         note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
                onboarding done: folder trust, then (pane shape, claude.ai login) the development \

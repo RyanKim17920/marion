@@ -312,6 +312,25 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 note: "the same dialog with a selection S37 did not measure",
             },
         ],
+        // Conformance P-tui with a scripted escalated `exec_command` under `approval_policy =
+        // "on-request"`, 0.160.1 (`tests/fixtures/pane-asks/codex-0.160.1-approval.raw`),
+        // the screen the live pane steer approved: `Would you like to run the following command?`
+        // over `› 1. Yes, proceed (y)`, then `Press enter to confirm or esc to cancel`. Enter
+        // approves, so a paste's submit runs the command.
+        asks: &[
+            BootDialog {
+                needle: "Would you like to run the following command?",
+                action: "answer codex's approval prompt in its pane",
+                answer: DialogAnswer::Hold,
+                note: "0.160.1 command approval, default `› 1. Yes, proceed (y)`",
+            },
+            BootDialog {
+                needle: "Press enter to confirm or esc to cancel",
+                action: "answer codex's approval prompt in its pane",
+                answer: DialogAnswer::Hold,
+                note: "0.160.1 command approval footer",
+            },
+        ],
         remembers: Remembers::CannedHome,
         note: "S37 0.155.1, fresh CODEX_HOME and directory: directory trust is the only dialog \
                before the composer",

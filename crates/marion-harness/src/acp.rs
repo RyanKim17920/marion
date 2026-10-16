@@ -189,6 +189,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        asks: &[],
         remembers: Remembers::Nothing,
         note: "ACP has no interactive shape",
     },

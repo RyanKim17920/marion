@@ -274,6 +274,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 note: "the same dialog with a selection S37 did not measure",
             },
         ],
+        asks: &[],
         remembers: Remembers::Nothing,
         note: "S37 1.0.83, fresh directory, the operator's login under COPILOT_AUTO_UPDATE=false: \
                folder trust is the only dialog before the composer",

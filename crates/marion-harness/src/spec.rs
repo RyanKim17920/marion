@@ -638,6 +638,12 @@ pub enum IdleSignal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootDialogs {
     pub dialogs: &'static [BootDialog],
+    /// **Asks the TUI raises mid-session** — an approval or permission prompt — recognised the
+    /// same way, on the screen at any time, not only before the composer. A paste typed into one
+    /// answers it: codex 0.160.1's `› 1. Yes, proceed` takes the paste's Enter as approval. So
+    /// every paste waits while one is up, for as long as it is up, and marion never answers one:
+    /// each is [`DialogAnswer::Hold`], and the node needs its operator meanwhile.
+    pub asks: &'static [BootDialog],
     /// Where the TUI keeps an answer marion gives with a dialog's [`DialogAnswer::Keys`].
     pub remembers: Remembers,
     pub note: &'static str,

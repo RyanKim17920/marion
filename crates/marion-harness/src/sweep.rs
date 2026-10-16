@@ -124,7 +124,7 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
             "boot dialogs without the measurement behind them".into(),
         );
     }
-    for d in dialogs.dialogs {
+    for d in dialogs.dialogs.iter().chain(dialogs.asks) {
         let normal = d.needle.split_whitespace().collect::<Vec<_>>().join(" ");
         if d.needle.is_empty() || d.needle != normal {
             fault(
@@ -142,6 +142,15 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
             fault(
                 "boot_dialogs",
                 format!("{:?} answers with nothing", d.needle),
+            );
+        }
+    }
+    // An ask is the operator's: a paste waits on it, and marion never types its keys.
+    for d in dialogs.asks {
+        if d.answer != DialogAnswer::Hold {
+            fault(
+                "boot_dialogs",
+                format!("ask {:?} is answered; an ask is only ever held", d.needle),
             );
         }
     }
