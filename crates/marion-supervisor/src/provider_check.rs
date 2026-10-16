@@ -129,19 +129,47 @@ fn models_request(wire: Wire, base: &str, header: KeyHeader, key: &str) -> (Stri
     }
 }
 
-/// Run curl for `url` with `headers` on its stdin; the status and body, or curl's own words.
+/// The arguments one probe passes curl. **`-q` first**, so no `.curlrc` (the operator's, or one
+/// under `$CURL_HOME`) adds an option — a `--proxy`, an `--output`, a `--config` — to a request
+/// carrying their key; and **`--` before the URL**, so a base URL from a provider row is only
+/// ever a URL, never an option.
+fn curl_args(url: &str) -> [&str; 10] {
+    [
+        "-q",
+        "-sS",
+        "-m",
+        PROBE_SECS,
+        "-H",
+        "@-",
+        "-w",
+        "\n%{http_code}",
+        "--",
+        url,
+    ]
+}
+
+/// `curl` on the absolute directories of `PATH`, first match: a relative entry (`.`, `bin`) names
+/// whatever directory marion was started in — a repository, as often as not — and a `curl` there
+/// would be handed the key on its stdin.
+fn curl_program() -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join("curl"))
+        .find(|p| {
+            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+        .ok_or_else(|| "cannot run curl: none on the absolute directories of PATH".to_string())
+}
+
+/// Run curl for `url` with `headers` on its stdin; the status and body, or curl's own words. From
+/// `/`, so nothing in the directory marion was started in is curl's to read.
 fn curl_get(url: &str, headers: &str) -> Result<(u16, String), String> {
-    let mut child = Command::new("curl")
-        .args([
-            "-sS",
-            "-m",
-            PROBE_SECS,
-            "-H",
-            "@-",
-            "-w",
-            "\n%{http_code}",
-            url,
-        ])
+    let mut child = Command::new(curl_program()?)
+        .args(curl_args(url))
+        .current_dir("/")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -412,6 +440,15 @@ pub fn report(model: Option<&str>) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **No `.curlrc` reaches a probe and a URL is never an option**: `-q` is curl's first
+    /// argument (it is honoured only there) and `--` sits right before the URL.
+    #[test]
+    fn a_probe_reads_no_curlrc_and_takes_its_url_only_as_a_url() {
+        let args = curl_args("-K/tmp/evil");
+        assert_eq!(args[0], "-q");
+        assert_eq!(&args[args.len() - 2..], ["--", "-K/tmp/evil"]);
+    }
 
     fn argv(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
