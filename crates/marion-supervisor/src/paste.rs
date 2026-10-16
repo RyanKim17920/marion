@@ -178,6 +178,14 @@ impl PasteParams {
         })
     }
 
+    /// What ends the node's boot where no paste does: the mark and settle a first paste waits for.
+    pub fn boot(&self) -> crate::pty::BootMark {
+        crate::pty::BootMark {
+            mark: self.boot_mark,
+            settle: self.settle,
+        }
+    }
+
     /// **A row's paste, whole**: its interactive delivery, if that is a paste, with the dialogs
     /// its TUI shows at boot.
     pub fn for_row(row: &HarnessSpec) -> Option<PasteParams> {
@@ -544,7 +552,11 @@ impl Worker {
         // Each boot dialog is answered once: one that is back after marion's keys is held.
         let mut answered: Vec<&'static str> = Vec::new();
         if let Some(host) = self.host.upgrade() {
-            host.watch_dialogs(self.params.dialogs, self.params.asks);
+            host.watch_dialogs(
+                self.params.dialogs,
+                self.params.asks,
+                Some(self.params.boot()),
+            );
         }
         let mut next_look: Option<Instant> = None;
         while self.await_work(next_look.take()) {

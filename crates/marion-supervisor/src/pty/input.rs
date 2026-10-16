@@ -19,9 +19,9 @@
 //! this terminal, and whether what they typed has been submitted. A paste landing in the middle of
 //! a half-typed line would be submitted *with* it — the operator's words and marion's as one turn.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use marion_harness::spec::{Ask, BootDialog};
+use marion_harness::spec::{Ask, BootDialog, BootSignal};
 
 /// Longest parameter list kept for one private-mode CSI. Real mode sets are a handful of short
 /// numbers; anything longer is not one marion needs to read, and a bound keeps a hostile stream
@@ -73,6 +73,16 @@ impl Grid {
         asks.iter()
             .find(|a| self.words.contains(a.header) && self.words.contains(a.footer))
     }
+}
+
+/// **When a node's boot is over without a paste**: the row's boot mark under bracketed paste, no
+/// boot dialog on the screen, then `settle` of quiet — the moment a first paste would be typed
+/// (`crate::paste::gate`). Past it the boot dialogs are not looked for: a heading drawn later is
+/// the session's text, not a dialog in front of the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootMark {
+    pub mark: BootSignal,
+    pub settle: Duration,
 }
 
 /// Most screen text kept for recognising a boot dialog. The longest measured first screen with a
@@ -142,6 +152,8 @@ pub(crate) struct ModeScan {
     changed: bool,
     /// Visible text arrived since the last look for needles.
     fresh: bool,
+    /// What ends boot where no paste does ([`Self::settle_boot`]); `None` for a row with none.
+    boot: Option<BootMark>,
     boot_over: bool,
 }
 
@@ -188,10 +200,16 @@ impl ModeScan {
 
     /// Recognise `dialogs` before the first paste and `asks` at any time, on the screen from now
     /// on — over what was drawn already, too.
-    pub(crate) fn watch(&mut self, dialogs: &'static [BootDialog], asks: &'static [Ask]) {
+    pub(crate) fn watch(
+        &mut self,
+        dialogs: &'static [BootDialog],
+        asks: &'static [Ask],
+        boot: Option<BootMark>,
+    ) {
         // One bit per dialog; a row lists two or three.
         if !self.boot_over {
             self.dialogs = &dialogs[..dialogs.len().min(64)];
+            self.boot = boot;
         }
         self.asks = asks;
         if asks.is_empty() {
@@ -228,6 +246,35 @@ impl ModeScan {
         let ask = grid.showing(self.asks);
         self.changed |= ask != self.ask;
         self.ask = ask;
+    }
+
+    /// The row's boot mark is on the screen.
+    fn marked(&self, mark: BootSignal) -> bool {
+        match mark {
+            BootSignal::FirstDraw => self.drawn,
+            BootSignal::WindowTitle => self.titled && self.drawn,
+        }
+    }
+
+    /// **When boot will be over, as the screen stands**: the last output plus the row's settle,
+    /// once its mark is up and no boot dialog is showing. `None` while either is missing, and
+    /// once boot is over.
+    pub(crate) fn boot_due(&self) -> Option<Instant> {
+        let boot = self.boot.filter(|_| !self.boot_over)?;
+        if !self.marked(boot.mark) || self.showing().is_some() {
+            return None;
+        }
+        Some(self.last_output? + boot.settle)
+    }
+
+    /// End boot if it is due by `now` ([`Self::boot_due`]); otherwise when it will be.
+    pub(crate) fn settle_boot(&mut self, now: Instant) -> Option<Instant> {
+        let due = self.boot_due()?;
+        if now < due {
+            return Some(due);
+        }
+        self.boot_over();
+        None
     }
 
     /// Whether [`Self::showing`] or [`Self::asking`] changed since the last call.
@@ -331,9 +378,12 @@ impl ModeScan {
         if !chunk.is_empty() {
             self.last_output = Some(now);
         }
+        let due = self.boot_due().is_some();
         for &b in chunk {
             self.step(b);
         }
+        // Boot coming due is news to whoever waits for it ([`Self::take_changed`]).
+        self.changed |= !due && self.boot_due().is_some();
         if self.fresh && !self.dialogs.is_empty() {
             self.look();
         }
@@ -747,7 +797,7 @@ mod tests {
 
     fn watching(chunks: &[&[u8]]) -> ModeScan {
         let mut scan = ModeScan::default();
-        scan.watch(std::slice::from_ref(&HELD), &[]);
+        scan.watch(std::slice::from_ref(&HELD), &[], None);
         for c in chunks {
             scan.feed(c, Instant::now());
         }
@@ -831,7 +881,7 @@ mod tests {
         assert!(!screens.is_empty());
         let shows = |dialogs: &'static [BootDialog], bytes: &[u8]| {
             let mut scan = ModeScan::default();
-            scan.watch(dialogs, &[]);
+            scan.watch(dialogs, &[], None);
             scan.feed(bytes, Instant::now());
             scan.showing()
         };
@@ -877,7 +927,11 @@ mod tests {
     /// A scan of a 24 by 80 terminal watching [`ASK`], booted.
     fn asked() -> ModeScan {
         let mut scan = ModeScan::new(24, 80);
-        scan.watch(std::slice::from_ref(&HELD), std::slice::from_ref(&ASK));
+        scan.watch(
+            std::slice::from_ref(&HELD),
+            std::slice::from_ref(&ASK),
+            None,
+        );
         scan.boot_over();
         scan.feed(b"\x1b[?2004h\x1b[2J\x1b[H> composer", Instant::now());
         scan
@@ -974,7 +1028,7 @@ mod tests {
         );
         assert_eq!(scan.asking(), Some(&ASK));
         let mut none = ModeScan::new(24, 80);
-        none.watch(&[], &[]);
+        none.watch(&[], &[], None);
         none.feed(PROMPT, Instant::now());
         assert_eq!(none.asking(), None, "a row with no asks keeps no grid");
         assert!(none.grid.is_none());
@@ -994,7 +1048,7 @@ mod tests {
         assert!(!screens.is_empty());
         let asks_on = |asks: &'static [Ask], bytes: &[u8]| {
             let mut scan = ModeScan::new(40, 120);
-            scan.watch(&[], asks);
+            scan.watch(&[], asks, None);
             // In reads of a pty's size, as the host sees them.
             for chunk in bytes.chunks(1024) {
                 scan.feed(chunk, Instant::now());
@@ -1017,6 +1071,68 @@ mod tests {
         for ((name, _), m) in screens.iter().zip(matched) {
             assert!(m, "{name} shows no row's ask");
         }
+    }
+
+    /// **Boot ends on the row's mark and settle, with no paste**, and a folder dialog drawn
+    /// after it is the session's text. Before it, codex's folder heading alone is no dialog
+    /// either: the row holds on the last option and footer.
+    #[test]
+    fn boot_ends_on_the_rows_mark_and_settle_and_a_later_dialog_is_session_text() {
+        let codex = marion_harness::adapter::harness_spec(marion_core::harness::Harness::Codex)
+            .boot_dialogs;
+        let settle = Duration::from_millis(1500);
+        let mark = BootMark {
+            mark: BootSignal::WindowTitle,
+            settle,
+        };
+        let folder: &[u8] =
+            include_bytes!("../../../../tests/fixtures/s37-boot-dialogs/codex-0.160.1.raw");
+        let t0 = Instant::now();
+
+        let mut heading = ModeScan::new(40, 120);
+        heading.watch(codex.dialogs, codex.asks, Some(mark));
+        heading.feed(
+            b"\x1b[?2004h\x1b]0;repo\x07  Folder access is restricted here\r\n",
+            t0,
+        );
+        assert_eq!(heading.showing(), None, "the heading alone");
+
+        let mut scan = ModeScan::new(40, 120);
+        scan.watch(codex.dialogs, codex.asks, Some(mark));
+        scan.feed(folder, t0);
+        assert!(scan.showing().is_some(), "the measured folder screen");
+        assert_eq!(scan.boot_due(), None, "not while a dialog shows");
+        scan.operator_typed();
+        let _ = scan.take_changed();
+        scan.feed(b"\x1b]0;repo\x07\x1b[2J\x1b[H> composer", t0);
+        assert!(scan.take_changed(), "boot coming due is news");
+        assert_eq!(scan.boot_due(), Some(t0 + settle));
+        assert_eq!(
+            scan.settle_boot(t0 + settle - Duration::from_millis(1)),
+            Some(t0 + settle)
+        );
+        assert_eq!(scan.settle_boot(t0 + settle), None);
+        assert_eq!(
+            (scan.boot_due(), scan.screen_len()),
+            (None, 0),
+            "boot is over"
+        );
+        scan.feed(folder, t0 + settle * 2);
+        assert_eq!(
+            scan.showing(),
+            None,
+            "a folder screen after boot is not a dialog"
+        );
+
+        let mut unmarked = ModeScan::new(40, 120);
+        unmarked.watch(codex.dialogs, codex.asks, None);
+        unmarked.feed(b"\x1b[?2004h\x1b]0;repo\x07> composer", t0);
+        assert_eq!(unmarked.settle_boot(t0 + settle * 10), None);
+        unmarked.feed(folder, t0 + settle * 10);
+        assert!(
+            unmarked.showing().is_some(),
+            "a row with no mark watches until its first paste"
+        );
     }
 
     fn titled(chunks: &[&[u8]]) -> bool {

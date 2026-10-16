@@ -116,7 +116,7 @@ use marion_harness::{ControlTransport, PtyWitness};
 use crate::serve::{ConnId, Outbound};
 
 mod input;
-pub use input::InputState;
+pub use input::{BootMark, InputState};
 mod splice;
 /// Production-dark durable binary PTY recording and recovery.
 pub mod stream;
@@ -3523,6 +3523,7 @@ impl PtyHost {
     }
 
     fn input_state_locked(&self, typing: &input::Typing) -> input::InputState {
+        self.settle_boot();
         let modes = self.modes();
         input::InputState {
             bracketed_paste: modes.bracketed_paste(),
@@ -3543,12 +3544,21 @@ impl PtyHost {
     /// Recognise the row's boot dialogs ([`input::InputState::boot_dialog`]) and its
     /// mid-session asks ([`input::InputState::ask`]) on this terminal, over what it has drawn
     /// already.
+    /// Boot ends at `boot`, where the row has one, if no paste ends it first
+    /// ([`input::ModeScan::settle_boot`]).
     pub fn watch_dialogs(
         &self,
         dialogs: &'static [marion_harness::spec::BootDialog],
         asks: &'static [marion_harness::spec::Ask],
+        boot: Option<input::BootMark>,
     ) {
-        self.shared.with_modes(|m| m.watch(dialogs, asks));
+        self.shared.with_modes(|m| m.watch(dialogs, asks, boot));
+    }
+
+    /// End boot if the row's mark and settle say it is over; otherwise when they will, as the
+    /// screen stands — a waiter looks again then ([`input::ModeScan::boot_due`]).
+    pub fn settle_boot(&self) -> Option<Instant> {
+        self.shared.with_modes(|m| m.settle_boot(Instant::now()))
     }
 
     /// The first paste landed: stop reading the screen for boot dialogs.

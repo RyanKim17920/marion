@@ -2777,12 +2777,17 @@ pub(crate) fn wait_for_the_pane_to_end(
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Ok(true);
         }
+        // And the end of the node's boot, which no byte announces: it is due after a quiet.
+        let look = match (deadline, host.settle_boot()) {
+            (Some(d), Some(b)) => Some(d.min(b)),
+            (d, b) => d.or(b),
+        };
         crate::wake::wait_until(
             &[
                 exit.as_ref().and_then(|e| e.fd()),
                 dialogs.as_ref().map(|p| p.fd()),
             ],
-            deadline,
+            look,
         );
     }
 }
@@ -2963,8 +2968,13 @@ fn launch_terminal(
         config: dialogs.remembers.marion_owns_config(node.auth),
     });
     // Read for whether the node needs its operator, message or none: a pane started on its task
-    // can sit on a dialog with nothing queued for it.
-    host.watch_dialogs(dialogs.dialogs, dialogs.asks);
+    // can sit on a dialog with nothing queued for it. Boot dialogs only until the row's boot mark
+    // and settle, where it has them: a pane nobody steers would otherwise read a heading its
+    // session draws as a dialog for its whole life.
+    let boot =
+        crate::paste::PasteParams::for_row(marion_harness::adapter::harness_spec(node.harness))
+            .map(|p| p.boot());
+    host.watch_dialogs(dialogs.dialogs, dialogs.asks, boot);
     // **After the process exists, never before.** See this function's doc, point 3.
     if let Some(owner) = pane {
         owner.opened(&node.agent_id, std::sync::Arc::clone(&host));

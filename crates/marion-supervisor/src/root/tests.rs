@@ -2364,7 +2364,7 @@ fn a_pane_showing_an_approval_prompt_needs_its_operator_at_once() {
         .expect("start pane host"),
     );
     let row = marion_harness::adapter::harness_spec(marion_core::harness::Harness::Codex);
-    host.watch_dialogs(row.boot_dialogs.dialogs, row.boot_dialogs.asks);
+    host.watch_dialogs(row.boot_dialogs.dialogs, row.boot_dialogs.asks, None);
     // Past boot: the recording opens on codex's folder trust, which a booted pane has answered.
     host.boot_over();
     let witness = marion_harness::ExecutionSurfaces::opaque()
@@ -2408,6 +2408,86 @@ fn a_pane_showing_an_approval_prompt_needs_its_operator_at_once() {
         elapsed < StdDuration::from_secs(10),
         "seen when drawn, not at the backstop: {elapsed:?}"
     );
+}
+
+/// **A pane nobody steers stops watching for boot dialogs once it has booted**: codex sets its
+/// title over its composer and goes quiet, which ends boot with no paste, and its folder screen
+/// drawn a second later — `Folder access` and all — is the session's text: the pane is neither
+/// blocked nor ended for it. The wait wakes for the boot's end itself, since no byte says it.
+#[test]
+fn a_folder_screen_drawn_after_boot_neither_blocks_nor_ends_the_pane() {
+    use marion_core::node::NodeState;
+    let dir = marion_testsupport::scratch("root-pane-folder-after-boot");
+    let booted = dir.join("booted.raw");
+    std::fs::write(
+        &booted,
+        b"\x1b[?2004h\x1b]0;repo\x07\x1b[2J\x1b[H> composer",
+    )
+    .unwrap();
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/s37-boot-dialogs/codex-0.160.1.raw");
+    let size = crate::pty::WinSize::new(120, 40);
+    let host = Arc::new(
+        crate::pty::PtyHost::start(
+            AgentId("root-pane-folder-after-boot".into()),
+            crate::pty::PtyMaster::open(size).expect("open pty"),
+            &dir.join("pty.cast"),
+            size,
+            PANE_TERM,
+            std::time::Instant::now(),
+        )
+        .expect("start pane host"),
+    );
+    let row = marion_harness::adapter::harness_spec(marion_core::harness::Harness::Codex);
+    host.watch_dialogs(
+        row.boot_dialogs.dialogs,
+        row.boot_dialogs.asks,
+        Some(crate::pty::BootMark {
+            mark: marion_harness::spec::BootSignal::WindowTitle,
+            settle: StdDuration::from_millis(200),
+        }),
+    );
+    let witness = marion_harness::ExecutionSurfaces::opaque()
+        .display_plane()
+        .expect("opaque execution owns a pty");
+    let mut command = SysCommand::new("/bin/sh");
+    command.args([
+        "-c",
+        &format!(
+            "cat '{}'; sleep 1; cat '{}'; sleep 30",
+            booted.display(),
+            folder.display()
+        ),
+    ]);
+    host.adopt(
+        crate::pty::spawn_pty(
+            witness,
+            &mut command,
+            host.master(),
+            crate::pty::StdinPlan::TerminalSlave,
+            None,
+        )
+        .expect("spawn the pane"),
+    );
+    let mut states = Vec::new();
+    let waited = wait_for_the_pane_to_end(&host, Some(StdDuration::from_secs(3)), &mut || {
+        states.push(needs_operator("codex", host.dialog_hold(), &host.input_state(), "/r").0);
+        false
+    });
+    let printed = host.bytes_read();
+    let state = host.input_state();
+    let _ = host.shutdown_with_timeout_outcome(true);
+    assert!(matches!(waited, Ok(true)), "ran its bound: {waited:?}");
+    assert!(
+        printed > std::fs::metadata(&folder).unwrap().len(),
+        "the folder screen was drawn"
+    );
+    assert!(
+        states.iter().all(|s| *s == NodeState::Running),
+        "{states:?}"
+    );
+    assert_eq!(state.boot_dialog, None);
+    assert_eq!(host.dialog_hold(), crate::pty::DialogHold::Clear);
 }
 
 /// **What the launcher reads off a pane's screen**: a boot dialog first — the paste driver's held
