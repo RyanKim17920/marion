@@ -2929,6 +2929,49 @@ mod tests {
         );
     }
 
+    /// **`info/attributes` beside a driver in the repository's own config makes marion's git run
+    /// nothing in a child's tree.** git reads that file whatever `GIT_ATTR_SOURCE` and
+    /// `core.attributesFile` say, so a child able to write the common directory could pair it with
+    /// a clean filter in `.git/config`. Measuring and committing are refused by name and the
+    /// filter never runs; with no driver configured, the same file is harmless and allowed.
+    #[test]
+    fn info_attributes_beside_a_repository_driver_runs_nothing_in_a_childs_tree() {
+        let (dir, repo, base) = committed_repo("spawn-info-attributes");
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree");
+        std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
+        std::fs::create_dir_all(repo.join(".git/info")).unwrap();
+        std::fs::write(repo.join(".git/info/attributes"), "* filter=planted\n").unwrap();
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        changed_paths(child, &base).expect("an attribute naming no configured driver is harmless");
+        let (program, marker) = marker_program(&dir, "info-attributes-filter");
+        tgit(
+            &repo,
+            &["config", "filter.planted.clean", &program.to_string_lossy()],
+        );
+        let refused = changed_paths(child, &base).expect_err("refused while both are there");
+        assert!(
+            refused.to_string().contains("filter.planted.clean"),
+            "{refused}"
+        );
+        let _ = diff_text(child, &dir.join("scratch"), &base);
+        let _ = commit_child_work(child, "marion/child", &base, "m");
+        let _ = make_worktree(
+            child,
+            &dir.join("grandchild-wt"),
+            &["marion/g".into()],
+            None,
+        );
+        assert!(
+            !marker.exists(),
+            "marion ran the filter info/attributes chose"
+        );
+    }
+
     /// **A `config.worktree` a child wrote is refused unless it holds only sparse-checkout
     /// settings**: where the operator's repository enables per-worktree config, that file is read
     /// by every git call in the tree.

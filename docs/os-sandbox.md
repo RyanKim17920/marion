@@ -28,7 +28,10 @@
   and applies no attributes from the tree (`GIT_ATTR_SOURCE` = the empty tree,
   `core.attributesFile=/dev/null`): a `.gitattributes` there cannot pick one of the operator's
   filter, diff or merge drivers. A `git-lfs` file therefore reaches a child as its pointer.
-  `GIT_ATTR_SOURCE` needs git 2.40; an older git still reads the tree's attributes.
+  `GIT_ATTR_SOURCE` needs git 2.40; an older git still reads the tree's attributes. The system
+  attributes file is skipped (`GIT_ATTR_NOSYSTEM`). git reads `<common-dir>/info/attributes`
+  whatever these say, so while that file is non-empty and the repository's own config sets a
+  filter, merge or diff driver program, marion runs no git in a child's tree and names both.
 - **How.** `compile` attaches a `SandboxPlan` to the `Invocation`; `Invocation::command` runs the
   process under it: `sandbox-exec -p <profile> -D W0=… <program>` on macOS (paths only as
   parameters), Landlock ABI 2+ in `pre_exec` on Linux. A plan that cannot be prepared refuses the

@@ -25,7 +25,11 @@
 //!   cloned repository's), and naming a driver there chooses which of the operator's filter, diff
 //!   and merge programs marion runs on the child's content. So a `git-lfs` file reaches a child as
 //!   its pointer, and its pointer is what lands. `GIT_ATTR_SOURCE` needs git 2.40; an older git
-//!   ignores it and still reads the tree's attributes, which docs/os-sandbox.md states;
+//!   ignores it and still reads the tree's attributes, which docs/os-sandbox.md states. The system
+//!   attributes file is skipped too (`GIT_ATTR_NOSYSTEM`). `info/attributes` has no switch: git
+//!   reads it whatever the variables say, so where it exists **and** the repository's own
+//!   configuration names a driver program ([`attribute_drivers`]), the call is refused by name —
+//!   a child able to write both would otherwise choose a program marion's git runs unsandboxed;
 //! * for a [`Tree::Operator`] (the operator's own checkout: a root's tree, a `shared-cwd` child's
 //!   directory, the repository a worktree is added to) disables fsmonitor only. **Hooks stay the
 //!   operator's**: `git worktree add` runs their `post-checkout` hook exactly as their own `git`
@@ -99,12 +103,12 @@ fn built(tree: &Tree<'_>, args: &[&str], makes_child_tree: bool) -> Result<Comma
                     "-c",
                     "core.hooksPath=/dev/null",
                 ]);
-            without_tree_attributes(&mut cmd, &pinned.common_dir);
+            without_tree_attributes(&mut cmd, &pinned.common_dir, repo)?;
         }
         Tree::Operator(repo) => {
             cmd.args(["-c", "core.fsmonitor=false"]);
             if makes_child_tree {
-                without_tree_attributes(&mut cmd, &common_dir(repo)?);
+                without_tree_attributes(&mut cmd, &common_dir(repo)?, repo)?;
             }
         }
     }
@@ -117,14 +121,55 @@ fn built(tree: &Tree<'_>, args: &[&str], makes_child_tree: bool) -> Result<Comma
 const EMPTY_TREE_SHA1: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const EMPTY_TREE_SHA256: &str = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
 
-/// No attributes from the tree or the operator's global attributes file. See the module doc.
-fn without_tree_attributes(cmd: &mut Command, common: &CommonDir) {
+/// No attributes from the tree, the operator's global attributes file or the system's, and a
+/// refusal where `info/attributes` could select a driver the repository's own configuration
+/// names. See the module doc.
+fn without_tree_attributes(
+    cmd: &mut Command,
+    common: &CommonDir,
+    repo: &Path,
+) -> Result<(), SpawnError> {
+    refuse_info_attribute_drivers(&common.path, repo)?;
     let empty = match common.object_format.as_str() {
         "sha256" => EMPTY_TREE_SHA256,
         _ => EMPTY_TREE_SHA1,
     };
     cmd.env("GIT_ATTR_SOURCE", empty)
+        .env("GIT_ATTR_NOSYSTEM", "1")
         .args(["-c", "core.attributesFile=/dev/null"]);
+    Ok(())
+}
+
+/// Refuse while `<common>/info/attributes` holds anything and `repo`'s own configuration names a
+/// driver program. Without the file no attribute selects a driver (the others are switched off),
+/// so the common case costs one `stat` and no git process.
+fn refuse_info_attribute_drivers(common: &Path, repo: &Path) -> Result<(), SpawnError> {
+    let file = common.join("info").join("attributes");
+    match std::fs::metadata(&file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Ok(m) if m.len() == 0 => return Ok(()),
+        _ => {}
+    }
+    let refused = |why: String| {
+        SpawnError::Git(
+            "attribute check",
+            format!(
+                "{} exists and {why}; an attribute there would make marion's git run that program \
+                 on a child's tree, so marion runs none there (remove one or the other)",
+                file.display()
+            ),
+        )
+    };
+    match attribute_drivers(repo) {
+        Ok(keys) if keys.is_empty() => Ok(()),
+        Ok(keys) => Err(refused(format!(
+            "this repository's own config sets {}",
+            keys.join(", ")
+        ))),
+        Err(e) => Err(refused(format!(
+            "the repository's config could not be read ({e})"
+        ))),
+    }
 }
 
 /// The refusal for a child tree whose `.git` marion no longer recognises.
@@ -314,6 +359,25 @@ fn common_dir(repo: &Path) -> Result<CommonDir, SpawnError> {
 /// checkout would run its program as the operator. The operator's global and system drivers are
 /// theirs and not listed. `Err` where git could not say.
 pub fn repo_drivers(repo: &Path) -> Result<Vec<String>, String> {
+    local_keys(
+        repo,
+        r"^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$",
+    )
+}
+
+/// [`repo_drivers`] plus each `diff.<name>.textconv` and `.command`: every program an attribute
+/// can select, for the git calls marion makes on a child's tree, which include diffs.
+pub fn attribute_drivers(repo: &Path) -> Result<Vec<String>, String> {
+    local_keys(
+        repo,
+        r"^(filter\..*\.(clean|smudge|process)|merge\..*\.driver|diff\..*\.(textconv|command))$",
+    )
+}
+
+/// **The keys matching `regex` set at `local` or `worktree` scope** (includes followed) in the
+/// operator's checkout `repo`: the configuration a child worktree shares and may have written.
+/// `Err` where git could not say.
+pub fn local_keys(repo: &Path, regex: &str) -> Result<Vec<String>, String> {
     let out = command(
         &Tree::Operator(repo),
         &[
@@ -321,7 +385,7 @@ pub fn repo_drivers(repo: &Path) -> Result<Vec<String>, String> {
             "--show-scope",
             "--includes",
             "--get-regexp",
-            r"^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$",
+            regex,
         ],
     )
     .map_err(|e| e.to_string())?
