@@ -14,6 +14,13 @@
 - **What it cannot change.** What the node may do and hand down (its tree's agent-types table, the
   scope its caller granted, the operator's opt-ins) is kept at `<state>/<project>/authority/<id>.json`,
   outside its agent dir, so rewriting its own agent dir widens nothing.
+- **marion's own git in its tree.** A node may write its worktree's admin dir (git keeps its index
+  there), so marion's git on a child tree reads the common dir from the operator's checkout, never
+  from that dir's `commondir`, refuses a `config.worktree` holding more than sparse-checkout keys,
+  and applies no attributes from the tree (`GIT_ATTR_SOURCE` = the empty tree,
+  `core.attributesFile=/dev/null`): a `.gitattributes` there cannot pick one of the operator's
+  filter, diff or merge drivers. A `git-lfs` file therefore reaches a child as its pointer.
+  `GIT_ATTR_SOURCE` needs git 2.40; an older git still reads the tree's attributes.
 - **How.** `compile` attaches a `SandboxPlan` to the `Invocation`; `Invocation::command` runs the
   process under it: `sandbox-exec -p <profile> -D W0=… <program>` on macOS (paths only as
   parameters), Landlock ABI 2+ in `pre_exec` on Linux. A plan that cannot be prepared refuses the

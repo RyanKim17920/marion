@@ -671,8 +671,9 @@ pub fn make_worktree_at(
         .or(branches.last())
         .expect("at least one branch name")
         .clone();
-    git(
-        repo,
+    // Checked out with no attributes from the tree, as every later git call in it reads it.
+    let mut add = crate::gitcmd::checkout_command(
+        &repo,
         &[
             "worktree",
             "add",
@@ -682,6 +683,15 @@ pub fn make_worktree_at(
             &head,
         ],
     )?;
+    let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut add)?
+        .wait_with_output()?;
+    if !out.status.success() {
+        return Err(SpawnError::Git(
+            "worktree add",
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
     Ok((Oid(head), branch))
 }
 
@@ -2494,6 +2504,159 @@ mod tests {
         let _ = diff_text(child, &wt.with_extension("scratch"), &base);
         let _ = commit_child_work(child, &base, "m");
         assert!(!marker.exists(), "marion ran the child's fsmonitor program");
+    }
+
+    /// A program that leaves `marker` behind when run, for a git config value to name.
+    fn marker_program(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+        let marker = dir.join(format!("{name}-ran"));
+        let program = dir.join(format!("{name}.sh"));
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (program, marker)
+    }
+
+    /// **A child that rewrites its worktree's `commondir` chooses no configuration marion's git
+    /// reads.** The admin dir is the child's to write (git keeps its index there), so the child
+    /// points `commondir` at a repository of its own whose config and `info/attributes` run a
+    /// clean filter on every file. Measuring and committing the tree must run none of it: the
+    /// common directory is the one the operator's checkout names.
+    #[test]
+    fn a_childs_rewritten_commondir_runs_no_program_of_its_choosing() {
+        let (dir, repo, base) = committed_repo("spawn-planted-commondir");
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+            .expect("the child's worktree");
+        std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
+        let evil = dir.join("evil.git");
+        tgit(
+            &dir,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                &repo.to_string_lossy(),
+                &evil.to_string_lossy(),
+            ],
+        );
+        let (program, marker) = marker_program(&dir, "commondir-filter");
+        tgit(
+            &evil,
+            &["config", "filter.planted.clean", &program.to_string_lossy()],
+        );
+        std::fs::create_dir_all(evil.join("info")).unwrap();
+        std::fs::write(evil.join("info/attributes"), "* filter=planted\n").unwrap();
+        // The child's own registration, where git writes its index: it names the common dir.
+        let admin = repo.join(".git/worktrees/child-wt");
+        assert!(admin.join("commondir").exists(), "git keeps commondir here");
+        std::fs::write(admin.join("commondir"), format!("{}\n", evil.display())).unwrap();
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        let changed = changed_paths(child, &base).expect("the tree still measures");
+        assert_eq!(changed, vec![PathBuf::from("keep.txt")]);
+        commit_child_work(child, &base, "m")
+            .expect("the commit succeeds")
+            .expect("and names a tip");
+        assert!(!marker.exists(), "marion ran the child's planted filter");
+        assert!(
+            tgit(
+                &repo,
+                &["rev-parse", "--verify", "-q", "refs/heads/marion/child"]
+            )
+            .len()
+                == 40,
+            "the commit landed in the operator's repository"
+        );
+    }
+
+    /// **A `.gitattributes` in a child's tree chooses none of the operator's drivers.** The
+    /// operator's own config names a clean filter (as a `git-lfs` install does); the child's tree
+    /// asks for it on every file. marion's git there applies no tree attributes, so the operator's
+    /// program never runs over the child's content, and the attribute file itself is just a file.
+    #[test]
+    fn a_childs_gitattributes_runs_none_of_the_operators_drivers() {
+        let (dir, repo, base) = committed_repo("spawn-planted-attributes");
+        let (program, marker) = marker_program(&dir, "operator-filter");
+        tgit(
+            &repo,
+            &[
+                "config",
+                "filter.opdriver.clean",
+                &program.to_string_lossy(),
+            ],
+        );
+        tgit(
+            &repo,
+            &[
+                "config",
+                "filter.opdriver.smudge",
+                &program.to_string_lossy(),
+            ],
+        );
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+            .expect("the child's worktree");
+        std::fs::write(
+            wt.join(".gitattributes"),
+            "* filter=opdriver diff=opdriver\n",
+        )
+        .unwrap();
+        std::fs::write(wt.join("keep.txt"), "the child's edit\n").unwrap();
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        let _ = diff_text(child, &dir.join("scratch"), &base).expect("the diff");
+        commit_child_work(child, &base, "m")
+            .expect("the commit succeeds")
+            .expect("and names a tip");
+        assert!(
+            !marker.exists(),
+            "marion ran a driver the child's attributes chose"
+        );
+        // A grandchild cut from that tree checks it out with the attributes now committed in it.
+        let grandchild = dir.join("grandchild-wt");
+        make_worktree(child, &grandchild, &["marion/grandchild".into()], false)
+            .expect("the grandchild's worktree");
+        assert!(
+            !marker.exists(),
+            "the checkout ran the smudge the attributes chose"
+        );
+    }
+
+    /// **A `config.worktree` a child wrote is refused unless it holds only sparse-checkout
+    /// settings**: where the operator's repository enables per-worktree config, that file is read
+    /// by every git call in the tree.
+    #[test]
+    fn a_childs_config_worktree_with_its_own_settings_is_refused() {
+        let (dir, repo, base) = committed_repo("spawn-planted-worktree-config");
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], false)
+            .expect("the child's worktree");
+        let admin = repo.join(".git/worktrees/child-wt");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        std::fs::write(
+            admin.join("config.worktree"),
+            "[core]\n\tsparseCheckout = false\n",
+        )
+        .unwrap();
+        changed_paths(child, &base).expect("sparse-checkout settings alone are git's own");
+        std::fs::write(
+            admin.join("config.worktree"),
+            "[core]\n\tsparseCheckout = false\n[include]\n\tpath = /elsewhere\n",
+        )
+        .unwrap();
+        let refused = changed_paths(child, &base).expect_err("any other key is refused");
+        assert!(refused.to_string().contains("include.path"), "{refused}");
     }
 
     #[test]
