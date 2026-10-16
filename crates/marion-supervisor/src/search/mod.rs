@@ -15,3 +15,37 @@
 
 pub mod digest;
 pub mod open;
+pub mod rebuild;
+
+use std::collections::BTreeMap;
+
+/// **Runs a search could not read, by why**: counted and named in its footer, never a failure.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Skipped(pub BTreeMap<&'static str, usize>);
+
+impl Skipped {
+    pub fn note(&mut self, why: &'static str) {
+        *self.0.entry(why).or_default() += 1;
+    }
+
+    pub fn total(&self) -> usize {
+        self.0.values().sum()
+    }
+
+    pub fn merge(&mut self, other: Skipped) {
+        for (why, n) in other.0 {
+            *self.0.entry(why).or_default() += n;
+        }
+    }
+
+    /// `skipped 2 runs: 1 not a regular file, 1 larger than search reads`, or `None`.
+    pub fn words(&self) -> Option<String> {
+        let total = self.total();
+        if total == 0 {
+            return None;
+        }
+        let each: Vec<String> = self.0.iter().map(|(why, n)| format!("{n} {why}")).collect();
+        let runs = if total == 1 { "run" } else { "runs" };
+        Some(format!("skipped {total} {runs}: {}", each.join(", ")))
+    }
+}

@@ -354,7 +354,7 @@ impl Run {
 }
 
 /// Now, to the millisecond the line's encoding keeps, so a line reads back as it was built.
-fn now() -> SystemTime {
+pub(crate) fn now() -> SystemTime {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
