@@ -115,45 +115,82 @@ fn without_escapes(text: &str) -> String {
     out
 }
 
-/// **`text` with every occurrence of each of `keys` masked, as a reader sees the text**: matched
-/// on the text without its invisible format characters ([`is_format`]), so a key with a
-/// zero-width joiner inside it — whole on the screen — is found, and the span it covers in `text`,
-/// those characters included, is what is masked. Everything outside a match is kept as it was.
-/// Longest key first, so one that contains another is masked whole.
+/// **Text as a reader sees it, for matching**: without its invisible format characters
+/// ([`is_format`]), each kept character remembering where it stands in the text, so a match found
+/// here masks the span it covers there, the format characters inside it included. A key with a
+/// zero-width joiner inside it reads whole on the screen, and is found whole.
+struct Shown<'a> {
+    text: &'a str,
+    /// What is matched: `text` without its format characters.
+    hay: String,
+    /// For each character of `hay`: where it starts in `hay`, where it starts in `text`, and its
+    /// width.
+    chars: Vec<(usize, usize, usize)>,
+}
+
+impl<'a> Shown<'a> {
+    fn new(text: &'a str) -> Self {
+        let mut hay = String::with_capacity(text.len());
+        let mut chars = Vec::new();
+        for (at, c) in text.char_indices().filter(|&(_, c)| !is_format(c)) {
+            chars.push((hay.len(), at, c.len_utf8()));
+            hay.push(c);
+        }
+        Shown { text, hay, chars }
+    }
+
+    /// The index in [`Self::chars`] of the character starting at `at` in `hay`.
+    fn char_at(&self, at: usize) -> usize {
+        self.chars.partition_point(|&(h, _, _)| h < at)
+    }
+
+    /// Whether a format character stands in `text` just before the character at `at` in `hay`: a
+    /// break between words a reader cannot see, which still ends the word before it.
+    fn hidden_break_before(&self, at: usize) -> bool {
+        let i = self.char_at(at);
+        i > 0 && {
+            let (_, prev, width) = self.chars[i - 1];
+            prev + width != self.chars[i].1
+        }
+    }
+
+    /// `text` with each of `masks` — `(from, len, with)` over `hay`, `len` above zero, in order and
+    /// not overlapping — replaced by `with` over the whole span it covers in `text`.
+    fn masked(&self, masks: &[(usize, usize, &str)]) -> String {
+        let mut out = String::with_capacity(self.text.len());
+        let mut kept = 0;
+        for &(from, len, with) in masks {
+            let (_, start, _) = self.chars[self.char_at(from)];
+            let (_, last, width) = self.chars[self.char_at(from + len) - 1];
+            out.push_str(&self.text[kept..start]);
+            out.push_str(with);
+            kept = last + width;
+        }
+        out.push_str(&self.text[kept..]);
+        out
+    }
+}
+
+/// **`text` with every occurrence of each of `keys` masked**, matched as a reader sees the text
+/// ([`Shown`]). Everything outside a match is kept as it was. Longest key first, so one that
+/// contains another is masked whole.
 fn mask_keys(text: &str, keys: &[Secret]) -> String {
-    // What is matched: every character but a format one, with where it starts in `text`.
-    let shown: Vec<(usize, char)> = text
-        .char_indices()
-        .filter(|&(_, c)| !is_format(c))
-        .collect();
-    let hay: String = shown.iter().map(|&(_, c)| c).collect();
-    // Where each of `shown` starts in `hay`, to find a match's first and last character.
-    let at: Vec<usize> = hay.char_indices().map(|(i, _)| i).collect();
-    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let shown = Shown::new(text);
+    let mut masks: Vec<(usize, usize, &str)> = Vec::new();
     for key in keys {
         let key: String = key.expose().chars().filter(|&c| !is_format(c)).collect();
         if key.len() < MIN_SECRET {
             continue;
         }
-        for (from, found) in hay.match_indices(key.as_str()) {
-            let first = at.partition_point(|&i| i < from);
-            let last = at.partition_point(|&i| i < from + found.len()) - 1;
-            let (start, end) = (shown[first].0, shown[last].0 + shown[last].1.len_utf8());
-            if spans.iter().all(|&(s, e)| end <= s || e <= start) {
-                spans.push((start, end));
+        for (from, found) in shown.hay.match_indices(key.as_str()) {
+            let end = from + found.len();
+            if masks.iter().all(|&(f, l, _)| end <= f || f + l <= from) {
+                masks.push((from, found.len(), MASK));
             }
         }
     }
-    spans.sort_unstable();
-    let mut out = String::with_capacity(text.len());
-    let mut kept = 0;
-    for (start, end) in spans {
-        out.push_str(&text[kept..start]);
-        out.push_str(MASK);
-        kept = end;
-    }
-    out.push_str(&text[kept..]);
-    out
+    masks.sort_unstable();
+    shown.masked(&masks)
 }
 
 /// Environment variable names, upper-cased, whose value is a secret by the name's own say-so.
@@ -214,8 +251,8 @@ impl Scrubber {
 
     /// `text` with every known key, every secret-shaped run and the home directory taken out.
     /// Terminal escape sequences and control characters go first ([`without_escapes`]), and keys
-    /// are matched as a reader sees the rest ([`mask_keys`]): a key with a colour change or a
-    /// zero-width joiner inside it reads whole on the screen, and is masked whole.
+    /// and shapes are matched as a reader sees the rest ([`Shown`]): a key with a colour change or
+    /// a zero-width joiner inside it reads whole on the screen, and is masked whole.
     pub fn clean(&self, text: &str) -> String {
         let mut out = mask_keys(&without_escapes(text), &self.keys);
         out = pem_blocks(&out);
@@ -425,25 +462,25 @@ fn secret_at(s: &[u8]) -> Option<(usize, &'static str)> {
     None
 }
 
-/// Every secret-shaped run in `text` as its replacement. Every shape begins with an ASCII byte, so
-/// a slice at a match is always at a character boundary.
+/// Every secret-shaped run in `text` as its replacement, matched as a reader sees the text
+/// ([`Shown`]), so a shaped key with a joiner inside it is found whole. A format character before
+/// one is still a word boundary. Every shape begins and ends with an ASCII byte, so a match is
+/// always at a character boundary.
 fn shapes(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let (mut i, mut copied) = (0, 0);
+    let shown = Shown::new(text);
+    let bytes = shown.hay.as_bytes();
+    let mut masks = Vec::new();
+    let mut i = 0;
     while i < bytes.len() {
-        let at_boundary = i == 0 || !is_word_byte(bytes[i - 1]);
+        let at_boundary = i == 0 || !is_word_byte(bytes[i - 1]) || shown.hidden_break_before(i);
         if at_boundary && let Some((len, with)) = secret_at(&bytes[i..]) {
-            out.push_str(&text[copied..i]);
-            out.push_str(with);
+            masks.push((i, len, with));
             i += len;
-            copied = i;
             continue;
         }
         i += 1;
     }
-    out.push_str(&text[copied..]);
-    out
+    shown.masked(&masks)
 }
 
 /// `text` with `home` spelled `~` wherever it is a whole path prefix — followed by anything but a
@@ -674,6 +711,48 @@ mod tests {
             "an unended string runs to the end"
         );
         assert_eq!(s.clean("x\x1b]0;t\u{18}y"), "xy", "CAN abandons a sequence");
+    }
+
+    /// **A shaped secret with a joiner or a colour code inside it is masked all the same**, the
+    /// span it covers with it; a joiner before one is still a word boundary, and words around it
+    /// are kept as they were.
+    #[test]
+    fn a_shaped_secret_split_by_invisible_characters_or_escapes_is_masked() {
+        let s = scrubber();
+        for split in [
+            "sk-ant-\u{200d}api03-AAAAbbbbCCCCdddd1234",
+            "sk-ant-api03-AAAA\x1b[31mbbbbCCCC\x1b[0mdddd1234",
+            "ghp_0123456789\u{200b}abcdefghijABCDEFGHIJ",
+            "AKIA\u{2060}IOSFODNN7EXAMPLE",
+            "glpat-abcde\x1b[1m\u{200c}fghij0123456789",
+            "eyJhbGciOiJIUzI1NiJ9.pay\u{200d}load.sig",
+        ] {
+            assert_eq!(
+                s.clean(&format!("got {split} here")),
+                "got *** here",
+                "from {split:?}"
+            );
+        }
+        let hex = "ab".repeat(32);
+        assert_eq!(
+            s.clean(&format!("x {}\u{200d}{} y", &hex[..10], &hex[10..])),
+            "x *** y"
+        );
+        assert_eq!(
+            s.clean("Bearer abc\u{200d}defghijk ok"),
+            "Bearer *** ok",
+            "the credential, not the word"
+        );
+        assert_eq!(
+            s.clean("x\u{200d}sk-ant-api03-AAAAbbbbCCCCdddd1234"),
+            "x\u{200d}***",
+            "a hidden break before it is a boundary, and is kept"
+        );
+        assert_eq!(
+            s.clean("risk\u{200d}-management"),
+            "risk\u{200d}-management",
+            "an ordinary word stays"
+        );
     }
 
     /// **Text that needs its format characters keeps them**: Persian's zero-width non-joiner, an
