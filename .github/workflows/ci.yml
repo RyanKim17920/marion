@@ -69,6 +69,22 @@ jobs:
       # only place `#[cfg(target_os = "linux")]` bodies are compiled at all, so a lint inside one
       # is invisible to `cargo clippy` on macOS and lands here first. That is not a toolchain
       # difference and pinning harder would not have caught it.
+      # The shell this repository runs outside cargo: shellcheck over scripts/ at warning and above
+      # (style and info findings are advice), actionlint over every workflow with the same
+      # shellcheck pass over each run block, and the canary's release-cooldown rule against canned
+      # registry dates. actionlint is a pinned release, checked against its published digest.
+      - name: Shell and workflow checks
+        env:
+          SHELLCHECK_OPTS: --severity=warning
+        run: |
+          shellcheck --severity=warning scripts/*.sh
+          scripts/release-cooldown.test.sh
+          curl -fsSL --max-time 60 -o "$RUNNER_TEMP/actionlint.tgz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tgz" \
+            | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
