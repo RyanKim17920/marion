@@ -34,15 +34,20 @@ impl NodeTmp {
     /// its guard dropped — is adopted rather than refused: it is this node's and nobody else's,
     /// and this guard removes it with everything else.
     pub(crate) fn create(agent_dir: &AgentDir) -> std::io::Result<Self> {
-        Self::at(agent_dir.tmp_dir())
-    }
-
-    /// A private temp dir at `path`, for a launch that is not a node (`marion doctor`'s probes).
-    pub(crate) fn at(path: PathBuf) -> std::io::Result<Self> {
+        let path = agent_dir.tmp_dir();
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&path)?;
+        Ok(Self(path))
+    }
+
+    /// **A fresh private temp dir at `path`**, for a launch that is not a node (`marion doctor`'s
+    /// probes), whose parent is the system temp dir — `/tmp` on Linux, where anyone can make a
+    /// name first. So it is one non-recursive `mkdir`, `0700`, and a name that already exists is
+    /// refused (`AlreadyExists`) rather than adopted: what holds it may be someone else's.
+    pub(crate) fn fresh_at(path: PathBuf) -> std::io::Result<Self> {
+        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
         Ok(Self(path))
     }
 
@@ -68,6 +73,26 @@ mod tests {
     use marion_core::paths::ProjectDir;
 
     use super::NodeTmp;
+
+    /// A probe's temp dir lives where anyone may name things first, so a name already held —
+    /// a directory or a link — is refused, and a fresh one is made `0700`.
+    #[test]
+    fn a_fresh_temp_dir_refuses_a_name_already_taken() {
+        let dir = marion_testsupport::scratch("node-tmp-fresh");
+        let fresh = NodeTmp::fresh_at(dir.join("probe-1")).unwrap();
+        let mode = std::fs::metadata(fresh.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        let taken = dir.join("probe-2");
+        std::fs::create_dir(&taken).unwrap();
+        let e = NodeTmp::fresh_at(taken).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        let linked = dir.join("probe-3");
+        std::os::unix::fs::symlink(fresh.path(), &linked).unwrap();
+        assert!(NodeTmp::fresh_at(linked).is_err());
+    }
 
     #[test]
     fn a_nodes_temp_dir_is_private_and_goes_with_its_contents_on_drop() {

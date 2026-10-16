@@ -1309,9 +1309,20 @@ fn probe_launch(
     let agent = tmp.path().join("agent");
     std::fs::create_dir_all(&agent)
         .map_err(|e| format!("could not create the probe's agent dir: {e}"))?;
+    // **Its own empty working directory, never the system temp dir**: a harness reads its
+    // project's config off its cwd (`.mcp.json`, `.codex/`, `opencode.json`, `AGENTS.md`), and on
+    // Linux `temp_dir()` is `/tmp`, where any local user can leave one for the probe to run.
+    let work = tmp.path().join("work");
+    std::fs::create_dir(&work)
+        .map_err(|e| format!("could not create the probe's working dir: {e}"))?;
     spec.config_dir = agent;
+    spec.cwd = work.clone();
+    let ctx = SpawnCtx {
+        repo: work,
+        ..probe_ctx()
+    };
     let inv = adapter
-        .compile(&spec, &probe_ctx())
+        .compile(&spec, &ctx)
         .map_err(|e| format!("compile: {e}"))?;
     Ok((inv, tmp))
 }
@@ -1344,7 +1355,12 @@ fn sweep_stale_probe_dirs(root: &Path) -> usize {
         let gone = pid != own
             && i32::try_from(pid)
                 .is_ok_and(|p| crate::procid::run_state(p) == crate::procid::RunState::Gone);
-        if gone && e.path().is_dir() && std::fs::remove_dir_all(e.path()).is_ok() {
+        // Only a real directory this user owns: under `/tmp` a name of the prefix can be anyone's.
+        let ours = std::fs::symlink_metadata(e.path()).is_ok_and(|md| {
+            use std::os::unix::fs::MetadataExt;
+            md.is_dir() && md.uid() == crate::socket::own_uid()
+        });
+        if gone && ours && std::fs::remove_dir_all(e.path()).is_ok() {
             removed += 1;
         }
     }
@@ -1357,7 +1373,9 @@ fn sweep_stale_probe_dirs(root: &Path) -> usize {
 fn probe_tmp() -> std::io::Result<NodeTmp> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    NodeTmp::at(std::env::temp_dir().join(format!("{PROBE_TMP_PREFIX}{}-{n}", std::process::id())))
+    NodeTmp::fresh_at(
+        std::env::temp_dir().join(format!("{PROBE_TMP_PREFIX}{}-{n}", std::process::id())),
+    )
 }
 
 impl AcpChild {
@@ -2412,6 +2430,11 @@ mod tests {
         let dir = db.parent().unwrap().to_path_buf();
         assert!(dir.is_dir(), "{} was never made", dir.display());
         assert!(dir.starts_with(tmp.path()), "{}", dir.display());
+        assert!(
+            inv.cwd.starts_with(tmp.path()) && inv.cwd.is_dir(),
+            "the probe runs in its own empty dir, never the shared temp dir: {}",
+            inv.cwd.display()
+        );
         drop(tmp);
         assert!(!dir.exists(), "the probe's dir goes with it");
     }
