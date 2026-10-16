@@ -487,11 +487,9 @@ impl RegistryHandle {
         // the intent, signals, and returns rather than confirming when it cannot observe the death;
         // a later confirmed `session/quit` KillTree then writes the `KillConfirmed` that does
         // observe it.
-        if holding().any(|n| n.reap_intent.is_some() && !n.state.is_exited())
-        {
+        if holding().any(|n| n.reap_intent.is_some() && !n.state.is_exited()) {
             Some(ResidentReason::UnconfirmedReapIntent)
-        } else if holding().any(|n| matches!(n.state, NodeState::Blocked(_)))
-        {
+        } else if holding().any(|n| matches!(n.state, NodeState::Blocked(_))) {
             Some(ResidentReason::BlockedNode)
         } else if holding().any(|n| n.state == NodeState::Spawning) {
             // An intent whose confirmation has not landed. A managed node's `Spawned` is followed

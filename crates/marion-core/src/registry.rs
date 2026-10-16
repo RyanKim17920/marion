@@ -3167,7 +3167,12 @@ mod tests {
                 .iter()
                 .filter(|c| c.parent_id() == Some(&n.agent_id))
                 .collect();
-            assert_eq!(names(r.children(&n.agent_id)), names(scan), "{}", n.agent_id.0);
+            assert_eq!(
+                names(r.children(&n.agent_id)),
+                names(scan),
+                "{}",
+                n.agent_id.0
+            );
         }
         assert!(r.children(&id("nobody")).is_empty());
     }
@@ -3213,6 +3218,10 @@ mod tests {
         fresh.extend(&bytes(&journal[..2]));
         let at = fresh.stamp();
         assert!(fresh.mark_orphaned(&id("root")));
-        assert_eq!(names(fresh.changed_since(at)), ["root"], "a marking is a move");
+        assert_eq!(
+            names(fresh.changed_since(at)),
+            ["root"],
+            "a marking is a move"
+        );
     }
 }

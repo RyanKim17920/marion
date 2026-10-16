@@ -647,10 +647,7 @@ mod tests {
         fn new(tag: &str) -> Journal {
             let dir = marion_testsupport::scratch(tag);
             let path = dir.join("journal.jsonl");
-            Journal {
-                _dir: dir,
-                path,
-            }
+            Journal { _dir: dir, path }
         }
 
         fn write(&mut self, kind: RecordKind) {
