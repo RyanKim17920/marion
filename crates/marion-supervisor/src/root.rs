@@ -3010,6 +3010,7 @@ fn launch_terminal(
             .marion_may_answer(node.auth, node.repo_trusted)
             && inv.cwd.starts_with(node.agent_dir.worktree()),
         config: dialogs.remembers.marion_owns_config(node.auth),
+        decline: true,
     });
     // Read for whether the node needs its operator, message or none: a pane started on its task
     // can sit on a dialog with nothing queued for it. Boot dialogs only until the row's boot mark

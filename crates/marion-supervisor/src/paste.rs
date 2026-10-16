@@ -33,7 +33,9 @@
 //! trust, the child runs in a worktree marion created; for first-run setup, marion owns the
 //! harness config ([`crate::pty::PtyHost::license_boot_dialog_answers`], [`Answers`]) — the
 //! injector types the row's keys alone ([`Gate::Answer`]), once per dialog, and waits for the TUI
-//! to redraw and settle before pasting. Anywhere else, and for a dialog the row holds, it waits
+//! to redraw and settle before pasting. A dialog whose answer only declines and records nothing
+//! ([`marion_harness::spec::DialogAnswer::Decline`]: codex's `Open restricted` for a checkout
+//! marion pinned untrusted) needs no license. Anywhere else, and for a dialog the row holds, it waits
 //! ([`Hold::BootDialog`]) for someone to dismiss it, and past the grace drops the message by name.
 //!
 //! # Asks (2026-10-16, `tests/fixtures/pane-asks/`)
@@ -213,21 +215,31 @@ pub struct Boot {
 
 /// **Which of a row's answerable dialogs marion may answer on this terminal**: folder trust
 /// ([`DialogAnswer::Keys`]) only in a workspace marion created where the answer stays out of the
-/// operator's config; first-run setup ([`DialogAnswer::Setup`]) wherever marion owns the config.
+/// operator's config; first-run setup ([`DialogAnswer::Setup`]) wherever marion owns the config;
+/// a dialog whose answer only declines and records nothing ([`DialogAnswer::Decline`]) on every
+/// terminal, which is why a host starts with [`Answers::DECLINE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Answers {
     pub workspace: bool,
     pub config: bool,
+    pub decline: bool,
 }
 
 impl Answers {
     pub const NONE: Answers = Answers {
         workspace: false,
         config: false,
+        decline: false,
+    };
+    /// What every host may answer before, and whatever, it is licensed for.
+    pub const DECLINE: Answers = Answers {
+        decline: true,
+        ..Answers::NONE
     };
     pub const ALL: Answers = Answers {
         workspace: true,
         config: true,
+        decline: true,
     };
 }
 
@@ -359,6 +371,10 @@ pub fn gate(
                 return Gate::Answer(d);
             }
             DialogAnswer::Setup(_) if b.answer_dialogs.config => {
+                *unready_since = None;
+                return Gate::Answer(d);
+            }
+            DialogAnswer::Decline(_) if b.answer_dialogs.decline => {
                 *unready_since = None;
                 return Gate::Answer(d);
             }

@@ -2806,7 +2806,7 @@ impl PtyHost {
             master,
             shared,
             typing: Mutex::new(input::Typing::default()),
-            answers_boot_dialogs: Mutex::new(crate::paste::Answers::NONE),
+            answers_boot_dialogs: Mutex::new(crate::paste::Answers::DECLINE),
             dialog_hold: Mutex::new(DialogHold::Clear),
             child: Mutex::new(None),
             reader: Mutex::new(reader),

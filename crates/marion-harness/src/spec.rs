@@ -768,6 +768,13 @@ pub enum DialogAnswer {
     /// ([`Remembers::marion_may_answer`]), in any directory — and held on a live login, where the
     /// answer would be written into the operator's own config.
     Setup(&'static [u8]),
+    /// **Keys that take the dialog's restrictive choice and record nothing**: answered on every
+    /// node's terminal, under any auth, in a repository the operator trusted or not, once. For a
+    /// screen that only exists because marion stated less trust than the TUI would assume —
+    /// codex 0.163.0's `Open restricted` for a checkout marion pinned `untrusted` — so the answer
+    /// is the choice marion already made, and the screen says it writes nothing down. A choice
+    /// that trusts, or that the TUI saves, is [`DialogAnswer::Keys`].
+    Decline(&'static [u8]),
     /// Never answered by marion: a login or a consent screen, or a dialog whose answer was not
     /// measured. The paste waits for someone else to dismiss it, and is dropped by name past the
     /// grace.
@@ -778,7 +785,7 @@ impl DialogAnswer {
     /// The keys marion may type, where it answers at all.
     pub const fn keys(self) -> Option<&'static [u8]> {
         match self {
-            DialogAnswer::Keys(k) | DialogAnswer::Setup(k) => Some(k),
+            DialogAnswer::Keys(k) | DialogAnswer::Setup(k) | DialogAnswer::Decline(k) => Some(k),
             DialogAnswer::Hold => None,
         }
     }

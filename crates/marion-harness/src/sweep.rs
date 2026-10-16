@@ -459,6 +459,38 @@ mod tests {
             (
                 HarnessSpec {
                     boot_dialogs: spec::BootDialogs {
+                        dialogs: &[spec::BootDialog {
+                            needle: "› 1. Open restricted 2. Quit",
+                            action: "open {repo} restricted",
+                            answer: spec::DialogAnswer::Decline(b""),
+                            note: "test: a declining answer of no keys",
+                        }],
+                        ..qwen.boot_dialogs
+                    },
+                    ..qwen
+                },
+                "boot_dialogs",
+                "boot_dialogs: \"› 1. Open restricted 2. Quit\" answers with nothing",
+            ),
+            (
+                HarnessSpec {
+                    boot_dialogs: spec::BootDialogs {
+                        dialogs: &[spec::BootDialog {
+                            needle: "› 1. Open restricted 2. Quit",
+                            action: "open {repo} restricted",
+                            answer: spec::DialogAnswer::Decline(b"\r"),
+                            note: "test: a declining answer with no held needle after it",
+                        }],
+                        ..qwen.boot_dialogs
+                    },
+                    ..qwen
+                },
+                "boot_dialogs",
+                "boot_dialogs: an answered dialog needs a held, marker-free needle after it",
+            ),
+            (
+                HarnessSpec {
+                    boot_dialogs: spec::BootDialogs {
                         dialogs: Box::leak(Box::new([
                             spec::BootDialog {
                                 needle: "Pick a theme",

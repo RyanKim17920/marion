@@ -102,14 +102,14 @@ const SETTLE: Duration = Duration::from_millis(1500);
 const BOOT: Option<Boot> = Some(Boot {
     settle: SETTLE,
     mark: BootSignal::FirstDraw,
-    answer_dialogs: Answers::NONE,
+    answer_dialogs: Answers::DECLINE,
 });
 
 /// [`BOOT`], for a row whose boot mark is its window title.
 const WINDOW_TITLE: Option<Boot> = Some(Boot {
     settle: SETTLE,
     mark: BootSignal::WindowTitle,
-    answer_dialogs: Answers::NONE,
+    answer_dialogs: Answers::DECLINE,
 });
 
 /// The measured claude dialog, answerable, and the marker-free fallback the row holds on.
@@ -1163,6 +1163,71 @@ fn a_window_title_row_answers_its_dialog_then_waits_for_the_title_before_pasting
     ));
 }
 
+/// A codex-like restricted-open screen: shown for a checkout marion pinned untrusted, its default
+/// opens without the folder's config and records nothing.
+const CODEX_RESTRICTED: BootDialog = BootDialog {
+    needle: "› 1. Open restricted 2. Quit",
+    action: "answer {repo} once",
+    answer: DialogAnswer::Decline(b"\r"),
+    note: "test: codex-like restricted open, default Open restricted",
+};
+
+/// **A dialog whose answer only declines is answered without the license**, anywhere — it is
+/// the restriction marion already chose — but still once: one back after marion's keys is held.
+#[test]
+fn a_declining_dialog_is_answered_without_the_license_and_only_once() {
+    let now = Instant::now();
+    let p = policy();
+    assert_eq!(
+        gate(&showing(&CODEX_RESTRICTED), now, &p, BOOT, &mut None),
+        Gate::Answer(&CODEX_RESTRICTED),
+        "unlicensed, outside marion's workspace"
+    );
+    let back = licence(
+        Answers::DECLINE,
+        Some(&CODEX_RESTRICTED),
+        &[CODEX_RESTRICTED.needle],
+    );
+    let answered = Some(Boot {
+        settle: SETTLE,
+        mark: BootSignal::FirstDraw,
+        answer_dialogs: back,
+    });
+    assert_eq!(
+        gate(&showing(&CODEX_RESTRICTED), now, &p, answered, &mut None),
+        Gate::Wait(Hold::BootDialog, now + p.recheck),
+        "back after marion's keys: held"
+    );
+}
+
+/// **An unlicensed codex pane in a checkout marion pinned untrusted opens restricted, then takes
+/// the paste** — codex 0.163.0 shows `Open restricted` there, and a held screen would keep every
+/// codex pane in an untrusted repository waiting on its operator.
+#[test]
+fn an_unlicensed_pane_opens_restricted_then_takes_the_paste() {
+    const RESTRICTED_LIKE: &[BootDialog] = &[CODEX_RESTRICTED];
+    let mut bed = Bed::with_row(
+        "paste-dialog-restricted",
+        fast(),
+        TITLED_PASTE,
+        RESTRICTED_LIKE,
+        false,
+    );
+    bed.node_writes(
+        b"\x1b[?2004h\x1b[2J\x1b[H  Folder access\r\n\
+                      \xe2\x80\xba 1. Open restricted\r\n  2. Quit",
+    );
+    let id = bed.steer("after restricted open");
+    assert_eq!(bed.read_slave(1), b"\r", "the row's keys, alone");
+    bed.node_writes(b"\x1b[2J\x1b[H> Ask Codex to do anything\x1b]0;repo\x07");
+    let want = expected_paste("after restricted open");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+}
+
 /// **A dialog marion never answers drops the message by name** past the grace, and the node
 /// receives nothing of it — even in marion's own workspace.
 #[test]
@@ -1442,6 +1507,7 @@ fn a_setup_dialog_is_answered_wherever_marion_owns_the_config() {
         answer_dialogs: Answers {
             workspace: false,
             config: true,
+            decline: true,
         },
     });
     assert_eq!(

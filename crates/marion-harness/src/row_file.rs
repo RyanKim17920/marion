@@ -1421,6 +1421,7 @@ impl BootDialogDto {
             answer: match self.answer {
                 DialogAnswerDto::Keys(k) => DialogAnswer::Keys(leak(k).as_bytes()),
                 DialogAnswerDto::Setup(k) => DialogAnswer::Setup(leak(k).as_bytes()),
+                DialogAnswerDto::Decline(k) => DialogAnswer::Decline(leak(k).as_bytes()),
                 DialogAnswerDto::Hold => DialogAnswer::Hold,
             },
             note: leak(self.note),
@@ -1455,6 +1456,7 @@ impl AskDto {
 pub enum DialogAnswerDto {
     Keys(String),
     Setup(String),
+    Decline(String),
     Hold,
 }
 

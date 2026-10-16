@@ -314,6 +314,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 answer: DialogAnswer::Hold,
                 note: "the same dialog with a selection S37 did not measure",
             },
+            // 0.163.0 (conformance P-tui, 2026-10-16), for a checkout whose trust is stated
+            // `untrusted` — which marion pins wherever the operator has not trusted the repository
+            // in marion — opens on `Folder access`: "Config, hooks, and exec policies from untrusted
+            // folders stay disabled … Opening will not change saved trust.", then
+            // `› 1. Open restricted` / `2. Quit`. Its default is the restriction marion chose and
+            // records nothing, so marion takes it anywhere.
+            BootDialog {
+                needle: "› 1. Open restricted 2. Quit",
+                action: "open {repo} restricted in codex (Enter), or trust it with `marion trust allow --repo`",
+                answer: DialogAnswer::Decline(b"\r"),
+                note: "0.163.0 restricted open of an untrusted checkout, default `1. Open restricted`: CR opens it, nothing saved",
+            },
             // 0.160.1 heads both of its folder screens `Folder access`: the `Trust this folder?`
             // above (conformance P-tui, `tests/fixtures/s37-boot-dialogs/codex-0.160.1.raw`), and,
             // on an operator's own login (the live TUI run, 2026-10-16), `› 1. Open restricted` /
