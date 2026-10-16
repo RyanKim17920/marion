@@ -27,6 +27,7 @@ pub mod registry;
 pub mod review;
 pub mod root_change;
 pub mod scope;
+pub mod search;
 pub mod secret;
 pub mod text;
 pub mod workflow;
