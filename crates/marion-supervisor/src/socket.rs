@@ -1242,23 +1242,30 @@ fn take_lock(path: &Path) -> Result<Option<std::fs::File>, SocketError> {
 ///
 /// What is left in this directory is the real fallback population: projects whose *own* `<state>`
 /// path is too long, which is §2's *"normal case, not an exotic one"* and is per-project.
+///
+/// **The `/tmp` branch creates first and audits after**, whoever made the directory: a check
+/// before the create would leave a window in which anyone could make the name a directory of
+/// theirs, and a recursive create succeeds on an existing directory without a word. So it is one
+/// non-recursive `mkdir` (`/tmp` exists; nothing under it is marion's to make), then an `lstat`
+/// of whatever is there now, audited. Under `<state>` the parents are the operator's own and may
+/// not exist yet, so that branch creates recursively.
 fn ensure_dir(paths: &SocketPaths, uid: u32) -> Result<(), SocketError> {
     let dir = paths.dir();
-    match std::fs::symlink_metadata(dir) {
-        Ok(md) => audit_fallback_dir(paths, &md, uid),
-        Err(e) if e.kind() == ErrorKind::NotFound => std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|e| SocketError::Dir {
-                path: dir.to_path_buf(),
-                source: e,
-            }),
-        Err(e) => Err(SocketError::Dir {
-            path: dir.to_path_buf(),
-            source: e,
-        }),
+    let fault = |source| SocketError::Dir {
+        path: dir.to_path_buf(),
+        source,
+    };
+    let created = std::fs::DirBuilder::new()
+        .recursive(paths.overflow().is_none())
+        .mode(0o700)
+        .create(dir);
+    match created {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(fault(e)),
     }
+    let md = std::fs::symlink_metadata(dir).map_err(fault)?;
+    audit_fallback_dir(paths, &md, uid)
 }
 
 /// **The `/tmp` fallback directory, audited** — whether one that already exists is a private
@@ -2213,6 +2220,56 @@ mod tests {
         // being in the fallback branch at all.
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(acquire(&p).unwrap(), Acquired::Serving(_)));
+    }
+
+    /// **The `/tmp` branch is one `mkdir`, then an audit of whatever is there** — never a
+    /// recursive create, which would also succeed on a name someone else made a directory of —
+    /// so a symlink planted at the name is refused even where it points at a private directory,
+    /// and a missing parent is not created.
+    #[test]
+    fn a_tmp_fallback_name_is_made_once_and_audited_whatever_holds_it() {
+        let dir = ShortDir::new("tmpmake");
+        let fallback = |target: &Path| SocketPaths {
+            state: target.join("state"),
+            canonical_project: PathBuf::from("/p"),
+            socket: target.join("a.sock"),
+            native_bootstrap: target.join("a.native.sock"),
+            lock: target.join("a.lock"),
+            start_lock: target.join("a.start.lock"),
+            identity: target.join("a.identity"),
+            log: target.join("a.log"),
+            dir: target.to_path_buf(),
+            overflow: Some("pretend the state path overflowed".into()),
+        };
+        let fresh = dir.join("marion-fresh");
+        prepare_dir(&fallback(&fresh)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let private = dir.join("private");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&private)
+            .unwrap();
+        let planted = dir.join("marion-planted");
+        std::os::unix::fs::symlink(&private, &planted).unwrap();
+        let e = prepare_dir(&fallback(&planted)).unwrap_err();
+        let SocketError::UnsafeDir { detail, .. } = &e else {
+            panic!("a symlink at the fallback name must be refused: {e}")
+        };
+        assert!(detail.contains("symlink"), "{detail}");
+
+        let orphan = dir.join("missing/marion-orphan");
+        assert!(matches!(
+            prepare_dir(&fallback(&orphan)),
+            Err(SocketError::Dir { .. })
+        ));
+        assert!(
+            !dir.join("missing").exists(),
+            "no parent is made under /tmp"
+        );
     }
 
     /// A fallback directory that does not exist yet is created private, not merely created.

@@ -499,15 +499,14 @@ fn spawn_stage_three(launch: &Launch, ready: bool) -> Result<(), DetachError> {
     // degraded to `/dev/null`, and left the one process nobody is watching unable to report
     // anything. Every stage-3 failure on a *fresh* project was invisible for that reason, which is
     // also why the failures around it were hard to see. Sharing `socket::prepare_dir` rather than
-    // creating the directory here keeps the `/tmp` audit in one place.
-    let _ = crate::socket::prepare_dir(&paths);
+    // creating the directory here keeps the `/tmp` audit in one place. **Fatal**: a directory that
+    // fails the audit is someone else's, and the log below would be opened in it.
+    crate::socket::prepare_dir(&paths)?;
     let log = paths.log().to_path_buf();
     // Best-effort *after* that: a supervisor whose log could not be opened still serves, and stderr
-    // goes to `/dev/null` rather than to a terminal this process is about to stop having.
-    let stderr = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)
+    // goes to `/dev/null` rather than to a terminal this process is about to stop having. Owner-only
+    // and never through a symlink at its name.
+    let stderr = crate::private_fs::open_append_no_follow(&log)
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null());
     let mut command = Command::new(&launch.program);

@@ -328,4 +328,24 @@ mod tests {
             assert_eq!(mode(&p), 0o700, "{}", p.display());
         }
     }
+
+    /// A log opened where others may have written a name first: created and narrowed `0600`,
+    /// and a symlink at its name is refused rather than followed.
+    #[test]
+    fn a_no_follow_append_is_owner_only_and_refuses_a_planted_link() {
+        let dir = scratch("private-fs-no-follow");
+        let log = dir.join("a.log");
+        open_append_no_follow(&log).unwrap();
+        assert_eq!(mode(&log), 0o600);
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+        open_append_no_follow(&log).unwrap();
+        assert_eq!(mode(&log), 0o600, "a wider file is narrowed on open");
+
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"theirs").unwrap();
+        let planted = dir.join("b.log");
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+        assert!(open_append_no_follow(&planted).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"theirs");
+    }
 }
