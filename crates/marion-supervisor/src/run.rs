@@ -1603,9 +1603,8 @@ impl Drop for AbortOnDrop<'_> {
     fn drop(&mut self) {
         if self.armed {
             let reason = self.reason.take().unwrap_or_else(|| {
-                "marion left the spawn path before the child reached a terminal record; the error \
-                 was returned to the caller (§7.2: a node marion decided the fate of is never one \
-                 marion lost)"
+                "marion stopped before the child reached a final state; the error went back to the \
+                 caller"
                     .into()
             });
             crate::journal::record(
@@ -2723,8 +2722,7 @@ pub fn run_spawn_watched(
         &env.project_dir,
         &agent_id,
         &run.denied_permissions,
-        "denied at once: marion has nobody to ask for a permission, so it denies every ask no rule \
-         decides (§9)",
+        "denied: no one is attached to approve it and no rule allows it",
     );
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a

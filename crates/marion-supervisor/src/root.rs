@@ -2085,8 +2085,7 @@ fn journal_the_roots_outcome(
         // (`duplex::decided_permission`). Both are denied the moment they arrive. The per-ask
         // sentence is not lost: it is written to the node itself as the denial's `message`, and a
         // root's transcript is what `marion run` prints.
-        "denied at once: marion has nobody to ask for a permission, so it denies every ask no rule \
-         decides (§9), and one §5.4 decides is denied by that rule",
+        "denied: no one is attached to approve it, or a marion rule denies it",
     );
 }
 

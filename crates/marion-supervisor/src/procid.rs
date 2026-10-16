@@ -790,9 +790,7 @@ pub(crate) fn descends_from(
 fn read_impl(pid: i32) -> Read {
     Read::Unavailable(format!(
         "marion cannot read a process start identity on this platform, so it cannot tell whether \
-         process {pid} is still the one its journal names. Until a platform's read is measured \
-         this is reported as `cannot tell`, which blocks §9's `no untracked live process` rather \
-         than pretending to satisfy it."
+         process {pid} is still the one its journal names; it reports `cannot tell`."
     ))
 }
 

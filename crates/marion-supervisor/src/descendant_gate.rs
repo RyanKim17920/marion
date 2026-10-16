@@ -326,8 +326,7 @@ pub fn gate_or_woken<T>(
         Verdict::Admit => {}
         Verdict::ReportedEarly(live) => {
             gated.note = Some(format!(
-                "reported early under §7.6 descendant gating: {} descendant(s) were live at the \
-                 report ({})",
+                "reported while {} descendant(s) were still running ({})",
                 live.len(),
                 names(&live)
             ));
@@ -346,8 +345,7 @@ pub fn gate_or_woken<T>(
             );
             let remaining = bound.saturating_sub(spawned.elapsed().unwrap_or_default());
             let entered = format!(
-                "held under §7.6 descendant gating: the node stopped without a report while {} \
-                 descendant(s) were live ({})",
+                "held: the node stopped without a report while {} descendant(s) were running ({})",
                 live.len(),
                 names(&live)
             );
@@ -631,7 +629,7 @@ mod tests {
         Gated {
             held_to_timeout: true,
             live_descendants_at_report: vec![id("g")],
-            note: Some("held under §7.6 descendant gating: test".into()),
+            note: Some("held: test".into()),
             ..Gated::default()
         }
         .apply(&mut c);
@@ -641,7 +639,7 @@ mod tests {
         assert!(!comp.reported_early);
         assert_eq!(comp.live_descendants_at_report, vec![id("g")]);
         assert!(
-            comp.exit.description.contains("§7.6 descendant gating"),
+            comp.exit.description.contains("held: test"),
             "{}",
             comp.exit.description
         );

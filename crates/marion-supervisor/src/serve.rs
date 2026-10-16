@@ -1664,8 +1664,8 @@ fn answer_one(
             Response::err(
                 r.id,
                 RpcError::invalid_request(
-                    "this is a response, and the supervisor sends no requests for a client to answer \
-                 (§2). Nothing was done with it.",
+                    "this is a response, and the supervisor sends no requests to answer. Nothing \
+                     was done with it.",
                 ),
             ),
             false,
@@ -1718,10 +1718,8 @@ fn answer_request(
         Err(_) => Response::err(
             rid,
             RpcError::internal(
-                "the supervisor's handler panicked answering this call; the call did not \
-                         complete and nothing about any node changed. The connection is still \
-                         open, because a client that can end the supervisor by sending a request \
-                         is a client that can end the fleet (§5.7).",
+                "the supervisor's handler panicked on this call. Nothing changed, and the \
+                 connection is still open.",
             ),
         ),
     };

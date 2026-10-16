@@ -1021,7 +1021,9 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
         "§4.3: every record is about exactly one node, and this one is about the child"
     );
     assert!(
-        node.denied_permissions[0].reason.contains("nobody to ask"),
+        node.denied_permissions[0]
+            .reason
+            .contains("no one is attached to approve it"),
         "the record must say why marion denied: {}",
         node.denied_permissions[0].reason
     );
