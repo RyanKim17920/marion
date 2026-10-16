@@ -54,20 +54,52 @@ pub fn elapsed(secs: u64) -> String {
 
 /// **A character that can make text read as something other than what it is**: every control
 /// (C0, DEL and C1 — a CR returns the cursor, ESC starts a sequence that erases or recolours what
-/// was printed), the bidi embeddings, overrides and isolates (which reorder what follows), and the
-/// zero-width characters (which hide a break or join between two words). A command a review shows
-/// must be the command that runs; one of these between the two is how they differ.
+/// was printed), and every character that renders as nothing or rearranges what follows: each
+/// Unicode format character (category Cf — the bidi embeddings, overrides and isolates, the
+/// zero-width characters, the soft hyphen, the prepended concatenation marks), the tag characters
+/// (U+E0000–E007F, which mirror ASCII invisibly and which a model reads back as text), the
+/// variation selectors, the combining grapheme joiner, the line and paragraph separators and the
+/// Hangul fillers. A command a review shows must be the command that runs, and an instruction a
+/// model is given must be one the operator could read; one of these between the two is how they
+/// differ.
 pub fn is_deceptive(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{061C}'
+            // Format characters (Cf), Unicode 16.
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
                 | '\u{180E}'
                 | '\u{200B}'..='\u{200F}'
                 | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
+                | '\u{2060}'..='\u{206F}'
                 | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                // Tags, the whole block (the Cf ones and the reserved rest).
+                | '\u{E0000}'..='\u{E007F}'
+                // Variation selectors: Mongolian, the BMP block, the supplement.
+                | '\u{180B}'..='\u{180D}'
+                | '\u{180F}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{E0100}'..='\u{E01EF}'
+                // Combining grapheme joiner; line and paragraph separators.
+                | '\u{034F}'
+                | '\u{2028}'..='\u{2029}'
+                // Hangul fillers, and the Khmer vowels that render as nothing.
+                | '\u{115F}'..='\u{1160}'
+                | '\u{3164}'
+                | '\u{FFA0}'
+                | '\u{17B4}'..='\u{17B5}'
         )
 }
 
@@ -195,6 +227,74 @@ mod tests {
         assert_eq!(visible_lines("a\tb\x1b"), "a\tb\\x1b");
         assert!(matches!(visible("cargo test"), Cow::Borrowed(_)));
         assert!(!is_deceptive('é') && !is_deceptive(' '));
+    }
+
+    /// **Every invisible character is deceptive**: each Unicode format character (Cf), the tag
+    /// characters a model decodes as hidden text, variation selectors, the soft hyphen, the
+    /// combining grapheme joiner, the deprecated format controls, the line and paragraph
+    /// separators and the Hangul fillers. Visible letters, marks and symbols are not.
+    #[test]
+    fn every_invisible_character_is_deceptive() {
+        for c in [
+            '\u{00AD}',
+            '\u{034F}',
+            '\u{0600}',
+            '\u{061C}',
+            '\u{06DD}',
+            '\u{070F}',
+            '\u{0890}',
+            '\u{08E2}',
+            '\u{115F}',
+            '\u{1160}',
+            '\u{17B4}',
+            '\u{180B}',
+            '\u{180E}',
+            '\u{180F}',
+            '\u{200B}',
+            '\u{200D}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{202E}',
+            '\u{2060}',
+            '\u{2065}',
+            '\u{206A}',
+            '\u{206F}',
+            '\u{3164}',
+            '\u{FE00}',
+            '\u{FE0F}',
+            '\u{FEFF}',
+            '\u{FFA0}',
+            '\u{FFF9}',
+            '\u{110BD}',
+            '\u{13430}',
+            '\u{1BCA0}',
+            '\u{1D173}',
+            '\u{E0000}',
+            '\u{E0001}',
+            '\u{E0041}',
+            '\u{E007F}',
+            '\u{E0100}',
+            '\u{E01EF}',
+        ] {
+            assert!(is_deceptive(c), "U+{:04X}", c as u32);
+            assert!(
+                visible(&c.to_string()).starts_with("\\u{"),
+                "U+{:04X}",
+                c as u32
+            );
+        }
+        for c in [
+            'a',
+            'é',
+            '\u{0301}',
+            '✓',
+            '中',
+            '\u{1F600}',
+            '-',
+            '\u{3000}',
+        ] {
+            assert!(!is_deceptive(c), "U+{:04X}", c as u32);
+        }
     }
 
     /// Every key and string of a document is checked, by path, and a key may be let carry what it
