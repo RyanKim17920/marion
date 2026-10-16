@@ -978,11 +978,31 @@ pub fn commit_child_work(
 ///
 /// The reference is only as much the operator's as their `HEAD` is: an operator who checks out a
 /// child's branch (or merges it) makes that child's commits theirs, and its config with them.
-pub fn repo_config_unchanged(wt: Tree<'_>, base: &Oid, common: &Path, paths: &[&str]) -> bool {
+///
+/// `branch` is the branch the root's checkout was on when the root launched
+/// ([`crate::run::SpawnObserver::trust_branch`]): where it still resolves, the reference meets
+/// `base` there instead of at the common `HEAD`, which a root running in the operator's checkout
+/// can write.
+pub fn repo_config_unchanged(
+    wt: Tree<'_>,
+    base: &Oid,
+    common: &Path,
+    branch: Option<&str>,
+    paths: &[&str],
+) -> bool {
     if paths.is_empty() {
         return true;
     }
-    let Ok(reference) = git(Tree::Operator(common), &["merge-base", "HEAD", &base.0]) else {
+    let operator = Tree::Operator(common);
+    let recorded = branch.map(|b| format!("refs/heads/{b}")).filter(|tip| {
+        git(
+            operator,
+            &["rev-parse", "--verify", "-q", &format!("{tip}^{{commit}}")],
+        )
+        .is_ok()
+    });
+    let against = recorded.as_deref().unwrap_or("HEAD");
+    let Ok(reference) = git(operator, &["merge-base", against, &base.0]) else {
         return false;
     };
     let reference = reference.trim();
@@ -2719,12 +2739,12 @@ mod tests {
             wt: &wt,
             repo: &repo,
         };
-        let same = |w: Tree<'_>, b: &Oid| repo_config_unchanged(w, b, &common, &paths);
+        let same = |w: Tree<'_>, b: &Oid| repo_config_unchanged(w, b, &common, None, &paths);
         assert!(
             same(child, &base),
             "a fresh tree holds the operator's config"
         );
-        assert!(repo_config_unchanged(child, &base, &common, &[]));
+        assert!(repo_config_unchanged(child, &base, &common, None, &[]));
         std::fs::write(wt.join(".mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
         assert!(!same(child, &base), "an edit");
         tgit(&wt, &["checkout", "--", ".mcp.json"]);
@@ -2756,6 +2776,43 @@ mod tests {
         );
     }
 
+    /// **The reference is the branch the root's checkout was on at its launch, not the common
+    /// HEAD as it is now**: a root in the operator's checkout can write that HEAD, so one that
+    /// points it at a commit carrying a planted config, and cuts a child from there, does not make
+    /// the config the operator's. With no recorded branch, or one that no longer resolves, the
+    /// common HEAD is the reference as before.
+    #[test]
+    fn the_trust_reference_is_the_roots_recorded_branch_not_a_moved_head() {
+        let (dir, repo, _) = committed_repo("spawn-config-recorded-branch");
+        std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "config"]);
+        tgit(&repo, &["checkout", "-qb", "planted"]);
+        std::fs::write(repo.join(".mcp.json"), "{\"mcpServers\":{\"x\":{}}}\n").unwrap();
+        tgit(&repo, &["commit", "-qam", "planted"]);
+        let common = crate::socket::project_root(&repo);
+        let paths = [".mcp.json"];
+        let wt = dir.join("child-wt");
+        let (base, _) = make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree, cut from the moved HEAD");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        assert!(
+            repo_config_unchanged(child, &base, &common, None, &paths),
+            "against the moved HEAD the planted config looks committed"
+        );
+        assert!(
+            !repo_config_unchanged(child, &base, &common, Some("main"), &paths),
+            "against the branch recorded at the root's launch it is not"
+        );
+        assert!(
+            repo_config_unchanged(child, &base, &common, Some("gone"), &paths),
+            "a recorded branch that no longer resolves falls back to the common HEAD"
+        );
+    }
+
     /// **A config reached through a link, or under another spelling, is never the operator's**:
     /// git's pathspecs stop at an untracked `.claude -> elsewhere/` and at `.CLAUDE/`, but a
     /// harness opening `.claude/settings.json` reads through the one, and on a case-insensitive
@@ -2776,7 +2833,7 @@ mod tests {
             wt: &wt,
             repo: &repo,
         };
-        let same = || repo_config_unchanged(child, &base, &common, &paths);
+        let same = || repo_config_unchanged(child, &base, &common, None, &paths);
         assert!(same(), "a fresh tree holds the operator's config");
 
         let elsewhere = dir.join("elsewhere");

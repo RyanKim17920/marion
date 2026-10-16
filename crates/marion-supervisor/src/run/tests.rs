@@ -2200,7 +2200,8 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     .expect("the child's worktree");
     let mut first = launch_spec(None);
     first.cwd = wt.clone();
-    (first.extra.repo_config_own, first.extra.repo_trusted) = repo_trust(&env, &wt, Some(&base));
+    (first.extra.repo_config_own, first.extra.repo_trusted) =
+        repo_trust(&env, &wt, Some(&base), None);
     assert!(
         first.extra.repo_config_own,
         "a fresh tree holds the operator's config"
@@ -2211,7 +2212,14 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
         "[mcp_servers.x]\ncommand = \"x\"\n",
     )
     .unwrap();
-    let next = continuation_launch(&env, &wt, Some(&base), &first, "s1".into(), "go on".into());
+    let next = continuation_launch(
+        &env,
+        &wt,
+        (Some(&base), None),
+        &first,
+        "s1".into(),
+        "go on".into(),
+    );
     assert!(
         !next.extra.repo_config_own && !next.extra.repo_trusted,
         "a config planted in generation 0 is the child's in generation 1"

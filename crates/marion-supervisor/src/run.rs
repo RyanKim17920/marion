@@ -1715,6 +1715,14 @@ pub trait SpawnObserver: Sync {
     fn recorded_branch(&self, _tree: &Path) -> Option<String> {
         None
     }
+    /// **The branch the root of the node whose tree is `tree` was on when that root launched**:
+    /// the operator's side of a child's repository-config trust
+    /// ([`crate::spawn::repo_config_unchanged`]). Recorded before the root ran, because the root
+    /// can write its checkout's HEAD; `None` for an owner that records none (or a detached root),
+    /// and then the common HEAD is the reference.
+    fn trust_branch(&self, _tree: &Path) -> Option<String> {
+        None
+    }
     /// **§7.6's subtree scan, answered by whoever holds the tree.** The live descendants of
     /// `agent_id` — the whole subtree, in the gating sense `descendant_gate::live_descendants`
     /// states — or `None` for an owner that holds no registry and so cannot see the tree at all.
@@ -1811,13 +1819,15 @@ pub fn tree_of<'a>(env: &'a Env, dir: &'a Path) -> crate::spawn::Tree<'a> {
 /// marion made, the config is the operator's only while it is exactly their commit, and loads only
 /// then. Asked again for every generation of a node, never carried from an earlier one: a child
 /// that planted a config in one generation must not have it load in the next as the operator's.
-fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>) -> (bool, bool) {
+/// `branch` is the root's, recorded at its launch ([`SpawnObserver::trust_branch`]).
+fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>, branch: Option<&str>) -> (bool, bool) {
     let own = match tree_of(env, wt) {
         tree @ crate::spawn::Tree::Child { .. } => base.is_some_and(|b| {
             crate::spawn::repo_config_unchanged(
                 tree,
                 b,
                 &env.project_root,
+                branch,
                 &crate::trust::repo_config_paths(),
             )
         }),
@@ -1832,7 +1842,7 @@ fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>) -> (bool, bool) {
 fn continuation_launch(
     env: &Env,
     wt: &Path,
-    base: Option<&Oid>,
+    (base, branch): (Option<&Oid>, Option<&str>),
     launch: &LaunchSpec,
     resume: String,
     prompt: String,
@@ -1842,7 +1852,7 @@ fn continuation_launch(
         prompt,
         ..launch.clone()
     };
-    (next.extra.repo_config_own, next.extra.repo_trusted) = repo_trust(env, wt, base);
+    (next.extra.repo_config_own, next.extra.repo_trusted) = repo_trust(env, wt, base, branch);
     next
 }
 
@@ -2553,7 +2563,10 @@ pub fn run_spawn_watched(
     // after the last attempt's process has been reaped. See [`crate::node_tmp`].
     let node_tmp = crate::node_tmp::NodeTmp::create(&agent_dir)?;
     let launched_at = Instant::now();
-    let (repo_config_own, repo_trusted) = repo_trust(env, &wt, base.as_ref());
+    // The root's branch at its launch, the trust reference for every generation of this node.
+    let trust_branch = observer.trust_branch(&req.repo);
+    let (repo_config_own, repo_trusted) =
+        repo_trust(env, &wt, base.as_ref(), trust_branch.as_deref());
     // The profile this attempt runs on: an index into `profiles`, 0 for the first.
     let mut at = 0;
     let (launch, inv, mut run, version) = loop {
@@ -2908,7 +2921,7 @@ pub fn run_spawn_watched(
             let next_launch = continuation_launch(
                 env,
                 &wt,
-                base.as_ref(),
+                (base.as_ref(), trust_branch.as_deref()),
                 &launch,
                 resume,
                 crate::inbox::render(&message),

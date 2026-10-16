@@ -294,6 +294,13 @@ impl crate::run::SpawnObserver for NodeOwner {
             .and_then(|n| n.branch.clone())
     }
 
+    fn trust_branch(&self, tree: &std::path::Path) -> Option<String> {
+        lock(&self.handle.nodes)
+            .values()
+            .find(|n| n.repo == tree)
+            .and_then(|n| n.trust_branch.clone())
+    }
+
     fn identified(&self, agent_id: &AgentId) -> Option<Secret> {
         let token = self
             .handle
