@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -68,7 +68,6 @@ impl Proc {
                 marion_supervisor::run::PLACEHOLDER_API_KEY,
             )
             .current_dir(&inv.cwd)
-            .process_group(0)
             .stdin(if piped_stdin {
                 Stdio::piped()
             } else {
@@ -76,6 +75,10 @@ impl Proc {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Leading a session of its own, as every node marion runs does (`kill::lead_own_session`):
+        // its group is what `signal_group` addresses, its session what marion's end of a node
+        // sweeps.
+        marion_supervisor::kill::lead_own_session(&mut cmd);
         let mut child = cmd.spawn()?;
         let pid = child.id() as i32;
         log.w(
@@ -227,7 +230,7 @@ impl Proc {
     pub fn signal_group(&self, sig: i32) {
         self.log
             .note(format!("signal {sig} to process group {}", self.pid));
-        // SAFETY: a negative pid addresses the group this process leads (`process_group(0)`).
+        // SAFETY: a negative pid addresses the group this process leads (a session leader's).
         let _ = unsafe { kill(-self.pid, sig) };
     }
 

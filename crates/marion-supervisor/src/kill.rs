@@ -23,7 +23,7 @@ unsafe extern "C" {
 /// touching marion's own (`signal_targets` refuses marion's group); the session is what still
 /// names a descendant that changed its group and lost its parent ([`session_orphans`]). A node has
 /// no controlling terminal to lose: marion gives a headless node none (§5.2).
-pub(crate) fn lead_own_session(command: &mut Command) -> &mut Command {
+pub fn lead_own_session(command: &mut Command) -> &mut Command {
     use std::os::unix::process::CommandExt;
     // SAFETY: `setsid` is async-signal-safe and touches nothing but the forked child, which has not
     // yet `exec`ed; its failure is reported as the spawn's.
@@ -330,7 +330,7 @@ pub(crate) fn kill_groups(groups: &[i32]) {
 /// with their descendants while their parents live — SIGKILLs what is still running, and repeats
 /// until a round finds nothing, or `bound` passes (`false`). A zombie counts as ended. Refuses
 /// marion's own session, and 0 or 1, returning `false` having signalled nothing.
-pub(crate) fn end_session(sid: i32, bound: Duration) -> bool {
+pub fn end_session(sid: i32, bound: Duration) -> bool {
     // SAFETY: `getsid(0)` reads this process's own session id.
     let own = unsafe { getsid(0) };
     if sid <= 1 || sid == own {
