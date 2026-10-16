@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use marion_core::agent_type::{AgentType, AgentTypes};
+use marion_core::text::visible;
 
 /// The trust store's file name, under `$XDG_DATA_HOME/marion/`.
 pub const STORE_FILE: &str = "trusted.toml";
@@ -641,7 +642,7 @@ pub fn run(
                     out,
                     "{} names no repository command and widens no type; its types need no \
                      trust",
-                    canonical.display()
+                    shown(&canonical)
                 ));
             }
             let sha256 = crate::inbox::sha256_hex(text.as_bytes());
@@ -652,7 +653,7 @@ pub fn run(
             w(writeln!(
                 out,
                 "allowed. Any edit to {} revokes this until you allow it again.",
-                canonical.display()
+                shown(&canonical)
             ))
         }
         [verb, rest @ ..] if verb == "deny" => {
@@ -660,9 +661,9 @@ pub fn run(
             let mut store = Store::edit(store).map_err(err)?;
             if store.deny(&file) {
                 store.save().map_err(err)?;
-                w(writeln!(out, "denied {}", file.display()))
+                w(writeln!(out, "denied {}", shown(&file)))
             } else {
-                w(writeln!(out, "{} was not trusted", file.display()))
+                w(writeln!(out, "{} was not trusted", shown(&file)))
             }
         }
         [verb] if verb == "list" => {
@@ -680,7 +681,7 @@ pub fn run(
                     out,
                     "{state}  {}  {}",
                     &e.sha256[..12.min(e.sha256.len())],
-                    e.path.display()
+                    shown(&e.path)
                 ))?;
             }
             Ok(())
@@ -712,7 +713,7 @@ fn allow_workflow(
     }
     let sha256 = crate::inbox::sha256_hex(text.as_bytes());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
-    w(writeln!(out, "{}  sha256 {sha256}", file.display()))?;
+    w(writeln!(out, "{}  sha256 {sha256}", shown(file)))?;
     for line in crate::workflow_file::describe(&workflow) {
         w(writeln!(out, "  {line}"))?;
     }
@@ -722,7 +723,7 @@ fn allow_workflow(
     w(writeln!(
         out,
         "allowed. Any edit to {} revokes this until you allow it again.",
-        file.display()
+        shown(file)
     ))
 }
 
@@ -745,7 +746,7 @@ fn allow_row(
     let spec = row_file::build_from(file, text, harness).map_err(|e| Some(e.to_string()))?;
     let sha256 = crate::inbox::sha256_hex(text.as_bytes());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
-    w(writeln!(out, "{}  sha256 {sha256}", file.display()))?;
+    w(writeln!(out, "{}  sha256 {sha256}", shown(file)))?;
     for line in row_file::describe(spec) {
         w(writeln!(out, "  {line}"))?;
     }
@@ -755,7 +756,7 @@ fn allow_row(
     w(writeln!(
         out,
         "allowed. Any edit to {} revokes this until you allow it again.",
-        file.display()
+        shown(file)
     ))
 }
 
@@ -766,16 +767,16 @@ fn describe(
     sha256: &str,
     found: &[RepoCommand],
 ) -> std::io::Result<()> {
-    writeln!(out, "{}  sha256 {sha256}", file.display())?;
+    writeln!(out, "{}  sha256 {sha256}", shown(file))?;
     let repo = file.parent().and_then(Path::parent);
     for c in found {
-        writeln!(out, "  agent type {}", c.agent_type)?;
+        writeln!(out, "  agent type {}", visible(&c.agent_type))?;
         for (key, value) in &c.widens {
-            writeln!(out, "    sets:    {key} = {value}")?;
+            writeln!(out, "    sets:    {key} = {}", visible(value))?;
         }
         let Some(argv) = &c.argv else { continue };
-        writeln!(out, "    program: {}", argv[0])?;
-        writeln!(out, "    argv:    {}", argv.join(" "))?;
+        writeln!(out, "    program: {}", visible(&argv[0]))?;
+        writeln!(out, "    argv:    {}", visible(&argv.join(" ")))?;
         writeln!(out, "    env:     (none set by the file)")?;
         // Trust pins this file's bytes, not the files its command then reads.
         for a in argv {
@@ -785,12 +786,18 @@ fn describe(
             {
                 writeln!(
                     out,
-                    "    note:    {a} is inside the repository; trust does not pin its contents"
+                    "    note:    {} is inside the repository; trust does not pin its contents",
+                    visible(a)
                 )?;
             }
         }
     }
     Ok(())
+}
+
+/// `path` as one line a person reads: a control in a directory name reads as its escape.
+fn shown(path: &Path) -> String {
+    visible(&path.display().to_string()).into_owned()
 }
 
 /// The nearest `.marion/agents.toml` at or above `cwd`.
@@ -836,6 +843,41 @@ mod tests {
         let mut out = Vec::new();
         run(&["allow".into()], cwd, store.to_path_buf(), &mut out).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    /// **What `allow` shows spells a control out**: an agent type, a widened value, a program and
+    /// an argument each carrying an escape or a CR read with it visible, so the reviewed command
+    /// is the one that runs.
+    #[test]
+    fn describe_spells_a_control_out() {
+        let found = [RepoCommand {
+            agent_type: "t\x1b[2K".into(),
+            argv: Some(vec!["sh\r".into(), "-c\u{202e}".into()]),
+            widens: vec![("model", "m\x07".into())],
+        }];
+        let mut out = Vec::new();
+        describe(
+            &mut out,
+            Path::new("/r/.marion/a\x1bgents.toml"),
+            "00",
+            &found,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            !out.chars()
+                .any(|c| c != '\n' && marion_core::text::is_deceptive(c)),
+            "{out}"
+        );
+        for spelled in [
+            "/r/.marion/a\\x1bgents.toml",
+            "agent type t\\x1b[2K",
+            "sets:    model = m\\x07",
+            "program: sh\\r",
+            "argv:    sh\\r -c\\u{202e}",
+        ] {
+            assert!(out.contains(spelled), "{spelled} not in\n{out}");
+        }
     }
 
     #[test]

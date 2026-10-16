@@ -587,7 +587,8 @@ pub fn is_repo_row(path: &Path) -> bool {
 
 /// **What a row runs, in lines a person reads before trusting it**: the program and its argv as
 /// the row writes them, the environment it sets, how a headless node is approved and how the
-/// harness is kept from updating itself.
+/// harness is kept from updating itself. Each line [`marion_core::text::visible`], so a control a
+/// value carries reads as its escape rather than acting on the terminal.
 pub fn describe(spec: &HarnessSpec) -> Vec<String> {
     let argv: Vec<String> = spec.argv.iter().map(|a| format!("{a:?}")).collect();
     let env: Vec<&str> = spec.env.iter().map(|e| e.key).collect();
@@ -598,6 +599,9 @@ pub fn describe(spec: &HarnessSpec) -> Vec<String> {
         format!("approval: {:?}", spec.approval),
         format!("updates: {:?}", spec.updates),
     ]
+    .iter()
+    .map(|l| marion_core::text::visible(l).into_owned())
+    .collect()
 }
 
 // ---------------------------------------------------------------------------------- leaking
@@ -1924,6 +1928,25 @@ mod tests {
                 first_difference(&ours, &theirs)
             );
         }
+    }
+
+    /// **A row's review shows a control as its escape**: a program whose `\x1b[2K` would erase
+    /// what precedes it on the terminal reads with the escape spelled out.
+    #[test]
+    fn describe_spells_a_control_out() {
+        let (_dir, path) = file("row-describe-control", "qwen-twin", QWEN_TWIN);
+        let spec = build(&path, Harness::named("qwen-twin").unwrap()).unwrap();
+        let forged = HarnessSpec {
+            program: Some("qwen\r\x1b[2Ksafe"),
+            ..*spec
+        };
+        let lines = describe(&forged);
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.chars().any(marion_core::text::is_deceptive))
+        );
+        assert_eq!(lines[0], "program: qwen\\r\\x1b[2Ksafe");
     }
 
     /// Replace `from` with `to` in the qwen twin, and build the result as `name`.

