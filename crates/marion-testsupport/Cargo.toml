@@ -13,9 +13,12 @@ name = "marion_testsupport"
 path = "src/lib.rs"
 
 [dependencies]
-# For `paths::state_dir`: the shim keeps npm-pinned harnesses under the same state directory the
+# For `paths::state_dir_from`: the gate reads conformance records under the same state directory the
 # shipped `marion` uses, resolved by the same rule rather than a second spelling of it.
 marion-core = { path = "../marion-core" }
+# `getpwuid_r`, for the account's home: a test may rewrite `$HOME`, and the records must not move
+# with it. Already in the lock through std's dependents.
+libc = "0.2"
 # For each pinned harness's verified versions, which are its row's (`HarnessSpec::verified`).
 marion-harness = { path = "../marion-harness" }
 serde_json.workspace = true

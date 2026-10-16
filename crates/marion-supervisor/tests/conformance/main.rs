@@ -75,7 +75,9 @@ fn battery() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_out());
     let scratch = marion_testsupport::scratch("conformance");
-    let state = marion_core::paths::state_dir_from_env(None);
+    // Where the gate will look for the records this writes: the account's state, which a test's
+    // `$HOME` cannot move.
+    let state = marion_testsupport::conformance_state();
     // Read before any row runs: a run into the default `out` rewrites this very file.
     let verified_cells = std::env::var(BASELINE)
         .map(PathBuf::from)

@@ -376,7 +376,7 @@ pub fn gate(program: &str) -> Gate {
             program,
             spec,
             &std::env::var_os("PATH").unwrap_or_default(),
-            &marion_core::paths::state_dir_from_env(None).unwrap_or_default(),
+            &conformance_state().unwrap_or_default(),
         ),
         None => Gate::Refused {
             found: None,
@@ -385,6 +385,60 @@ pub fn gate(program: &str) -> Gate {
     };
     decided.push((program.to_string(), g.clone()));
     g
+}
+
+/// **The state directory this machine's conformance records live under**: where the battery
+/// writes them and where [`gate`] reads them.
+///
+/// marion's own rule ([`marion_core::paths::state_dir_from`]), so `MARION_STATE_DIR` and
+/// `XDG_STATE_HOME` move it as they move every marion process's state, with one difference:
+/// `HOME` is the account's home from the password database, never `$HOME`. A test binary may
+/// rewrite `$HOME` process-wide for the harness it drives (`token_off_argv` does, so codex reads
+/// a scratch config), and the gate decides on its first call, which can come after that rewrite.
+/// Read through `$HOME`, the record is then looked for under the scratch home and a release this
+/// machine admitted is refused.
+pub fn conformance_state() -> Option<PathBuf> {
+    conformance_state_from(|k| std::env::var(k).ok(), account_home())
+}
+
+/// [`conformance_state`] over `var` and an account home passed in, so it is testable. With no
+/// account home (no password entry), `$HOME` is all there is.
+fn conformance_state_from(
+    var: impl Fn(&str) -> Option<String>,
+    account_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let home = account_home.map(|h| h.to_string_lossy().into_owned());
+    marion_core::paths::state_dir_from(None, |k| match k {
+        "HOME" => home.clone().or_else(|| var(k)),
+        _ => var(k),
+    })
+}
+
+/// This process's account's home directory, from the password database rather than `$HOME`.
+fn account_home() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: an all-zero `passwd` is a valid out-parameter; `getpwuid_r` fills it with pointers
+    // into `buf`, which outlives every read of them below.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut found,
+        )
+    };
+    if rc != 0 || found.is_null() || pwd.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: non-null, NUL-terminated, and pointing into `buf`.
+    let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
+    let dir = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
+    (!dir.as_os_str().is_empty()).then_some(dir)
 }
 
 /// [`gate`]'s decision, with `PATH` and the state directory the conformance records live under
@@ -1785,6 +1839,53 @@ mod tests {
                 listed: false
             }
         );
+    }
+
+    /// **A test that rewrote `$HOME` still finds this machine's record**: the state directory is
+    /// the account's, so a scratch `HOME` (`token_off_argv` sets one for codex) cannot move it,
+    /// while `MARION_STATE_DIR`, which moves every marion process's state, still does.
+    #[test]
+    fn a_rewritten_home_does_not_move_the_records_the_gate_reads() {
+        let dir = scratch("gate-home-moved");
+        let account = dir.join("account");
+        let scratch_home = dir.join("scratch-home").display().to_string();
+        let env = |k: &str| (k == "HOME").then(|| scratch_home.clone());
+        let state = conformance_state_from(env, Some(account.clone())).unwrap();
+        assert_eq!(state, account.join(".local/state/marion"));
+
+        let (bin, path) = fake(&dir, "claude", "99.0.0 (Claude Code)");
+        record(&state, "claude-code", "99.0.0", &bin, &[]);
+        assert_eq!(
+            gate_at("claude", claude(), &path, &state),
+            Gate::Admitted {
+                version: "99.0.0".into(),
+                listed: false
+            }
+        );
+        // Read through the scratch HOME, as the gate did, the same record is not found.
+        let moved = conformance_state_from(env, None).unwrap();
+        assert_ne!(moved, state);
+        assert!(matches!(
+            gate_at("claude", claude(), &path, &moved),
+            Gate::Refused { .. }
+        ));
+
+        let explicit = dir.join("explicit").display().to_string();
+        let env = |k: &str| match k {
+            "MARION_STATE_DIR" => Some(explicit.clone()),
+            "HOME" => Some(scratch_home.clone()),
+            _ => None,
+        };
+        assert_eq!(
+            conformance_state_from(env, Some(account)),
+            Some(PathBuf::from(&explicit))
+        );
+    }
+
+    #[test]
+    fn the_account_home_is_read_from_the_password_database() {
+        let home = account_home().expect("this account has a password entry");
+        assert!(home.is_absolute(), "{home:?}");
     }
 
     /// A newer release whose basics failed, one never probed, one whose record was taken on
