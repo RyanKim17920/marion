@@ -261,6 +261,8 @@ jobs:
         id: list
         env:
           PAIRS: ${{ needs.run.outputs.admitted }}
+          # For the release-date lookups: an unauthenticated call shares the runner IP's 60 an hour.
+          GH_TOKEN: ${{ github.token }}
         run: |
           # `<harness> <version>` pairs and nothing else: they reach a commit message and a title,
           # and the script refuses a harness that is not a pinned program.
@@ -275,9 +277,10 @@ jobs:
           # be the one its stable version names, read fresh from formulae.brew.sh (the runner
           # image's own formula cache predates any release made after the image was built), and
           # its upstream GitHub release `v<version>` must be COOLDOWN_DAYS old. A release that
-          # does not match, or whose date is unknown, waits, and only that harness does. A program
-          # in neither map is refused: there is nothing to check it against, so it is never listed.
-          cutoff=$(date -u -d "-$COOLDOWN_DAYS days" +%s)
+          # does not match, or whose date is unknown, waits, and only that harness does; an unknown
+          # date is a warning, since it can mean the tag scheme changed and the wait will not end.
+          # scripts/release-cooldown.sh judges each date. A program in neither map is refused:
+          # there is nothing to check it against, so it is never listed.
           ready=""
           # shellcheck disable=SC2086
           set -- $PAIRS
@@ -294,10 +297,6 @@ jobs:
                 echo "::error::$pkg has no published $v"
                 exit 1
               fi
-              if [ "$(date -u -d "$published" +%s)" -gt "$cutoff" ]; then
-                echo "$h $v: published $published, inside the ${COOLDOWN_DAYS}-day cooldown; not yet"
-                continue
-              fi
             elif [ -n "$formula" ]; then
               # Only version characters reach the log: the value is Homebrew's, not this repo's.
               stable=$(curl -fsS --max-time 30 "https://formulae.brew.sh/api/formula/$formula.json" \
@@ -306,24 +305,20 @@ jobs:
                 echo "::notice::$h $v: $formula's stable release is ${stable:-unreadable}, not $v; not yet"
                 continue
               fi
-              # Only date characters reach `date` and the log.
-              published=$(curl -fsSL --max-time 30 \
-                "https://api.github.com/repos/$repo/releases/tags/v$v" \
-                | jq -r '.published_at // empty' | tr -cd '0-9TZ:-' || true)
-              when=""
-              [ -n "$published" ] && when=$(date -u -d "$published" +%s 2>/dev/null || true)
-              if [ -z "$when" ]; then
-                echo "::notice::$h $v: $repo's release v$v has no readable publish date; not yet"
-                continue
-              fi
-              if [ "$when" -gt "$cutoff" ]; then
-                echo "$h $v: released $published, inside the ${COOLDOWN_DAYS}-day cooldown; not yet"
-                continue
-              fi
+              published=$(timeout 30 gh api "repos/$repo/releases/tags/v$v" \
+                --jq '.published_at // empty' 2>/dev/null || true)
             else
               echo "::error::$h is installed from neither npm nor Homebrew, so $v cannot be checked"
               exit 1
             fi
+            verdict=0
+            said=$(scripts/release-cooldown.sh "$COOLDOWN_DAYS" "$published") || verdict=$?
+            case "$verdict" in
+              0) ;;
+              1) echo "$h $v: $said; not yet"; continue ;;
+              *) echo "::warning::$h $v: ${pkg:-$repo} gives no readable publish date for $v; not yet"
+                 continue ;;
+            esac
             ready="$ready${ready:+ }$h $v"
           done
           if [ -z "$ready" ]; then
