@@ -73,14 +73,14 @@ pub const BOOT: Boot = Boot::Measured {
 /// independently driving the `~/.claude`, `~/.agents` and `~/.opencode` lookups. Relocating any of
 /// them hides the login a live node is meant to present, so the five relocations are `Canned` —
 /// and so are `OPENCODE_DISABLE_PROJECT_CONFIG` and `--pure`, because a project config and the
-/// operator's plugins can each carry the provider and its credential. The rest of the
-/// `OPENCODE_DISABLE_*` set and `OPENCODE_DB` are kept under both modes because they
-/// were never the isolation — and two of them matter *more* live, not less:
-/// `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` sever a route no `XDG_*`
-/// var ever closed (`~/.claude/CLAUDE.md` and `~/.claude/skills/**` are found via `HOME`, and
-/// under live that `HOME` is the operator's real one). The rest suppress work a spawned node has
-/// no business doing: a boot models.dev fetch plus a 60-minute in-process loop, an LSP toolchain
-/// download, an auto-updater that pipes an install script into `bash`, and session sharing.
+/// operator's plugins can each carry the provider and its credential. So are
+/// `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS`: they sever a route no
+/// `XDG_*` var ever closed (`~/.claude/CLAUDE.md` and `~/.claude/skills/**`, found via `HOME`),
+/// which a canned node must not take and an own-login node takes as the operator's `opencode`
+/// does. The rest of the `OPENCODE_DISABLE_*` set and `OPENCODE_DB` are kept under both modes:
+/// they suppress work a spawned node has no business doing — a boot models.dev fetch plus a
+/// 60-minute in-process loop, an LSP toolchain download, an auto-updater that pipes an install
+/// script into `bash`, and session sharing.
 ///
 /// **`OPENCODE_DB` names a file under the node's own directory, never `:memory:`** ([`SESSION_DB`]):
 /// it keeps the session store off the operator's `~/.local/share/opencode` under both modes, and it
@@ -149,15 +149,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Under("state"),
             when: When::Overlay,
         },
+        // `~/.claude/CLAUDE.md` and `~/.claude/skills/**`, found through `HOME`. Canned only: a
+        // node on the operator's own login loads them as their `opencode` does.
         Env {
             key: "OPENCODE_DISABLE_CLAUDE_CODE",
             val: Val::Lit("1"),
-            when: When::Always,
+            when: When::Overlay,
         },
         Env {
             key: "OPENCODE_DISABLE_EXTERNAL_SKILLS",
             val: Val::Lit("1"),
-            when: When::Always,
+            when: When::Overlay,
         },
         // Canned only: a project `opencode.json` / `.opencode/` can hold the provider block, its
         // key reference and an auth plugin, which a live node runs on as the operator set them up.
@@ -1051,11 +1053,11 @@ mod tests {
         }
     }
 
-    /// The cross-harness contamination sever. Without these two an opencode child reads
-    /// `~/.claude/CLAUDE.md` and `~/.claude/skills/**/SKILL.md` — a *different* harness's user
-    /// config — and no `XDG_*` var prevents it (`tests/fixtures/s13/`).
+    /// The cross-harness contamination sever, on a canned node. Without these two an opencode
+    /// child reads `~/.claude/CLAUDE.md` and `~/.claude/skills/**/SKILL.md` — a *different*
+    /// harness's user config — and no `XDG_*` var prevents it (`tests/fixtures/s13/`).
     #[test]
-    fn the_claude_code_adoption_is_severed() {
+    fn the_claude_code_adoption_is_severed_on_a_canned_node() {
         let inv = compile_run(&spec());
         for k in [
             "OPENCODE_DISABLE_CLAUDE_CODE",
@@ -1319,15 +1321,22 @@ mod tests {
         );
     }
 
-    /// The hygiene set is **kept**, and the two contamination severs matter *more* live, not less:
-    /// under `--live` the `HOME` an unsevered child reads `~/.claude/CLAUDE.md` and
-    /// `~/.claude/skills/**` from is the operator's real one (`tests/fixtures/s13/`).
+    /// The hygiene set is **kept** live, and the contamination severs are not: a node on the
+    /// operator's own login reads `~/.claude/CLAUDE.md` and `~/.claude/skills/**` as their own
+    /// `opencode` does (`tests/fixtures/s13/`).
     #[test]
-    fn a_live_node_still_severs_the_claude_code_adoption_and_the_rest_of_the_hygiene() {
+    fn a_live_node_keeps_the_hygiene_and_the_operators_claude_code_adoption() {
         let inv = compile_run(&live_spec());
+        for k in [
+            "OPENCODE_DISABLE_CLAUDE_CODE",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+        ] {
+            assert!(
+                !inv.env.iter().any(|(n, _)| n == k),
+                "{k}: a live node reads what the operator's opencode reads"
+            );
+        }
         for (k, v) in [
-            ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
-            ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
             ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
             ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
             ("OPENCODE_DISABLE_AUTOUPDATE", "1"),

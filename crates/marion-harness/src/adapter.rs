@@ -4978,6 +4978,9 @@ mod tests {
             "XDG_DATA_HOME",
             "XDG_CACHE_HOME",
             "XDG_STATE_HOME",
+            // The operator's `~/.claude/CLAUDE.md` and skills, which their own `opencode` reads.
+            "OPENCODE_DISABLE_CLAUDE_CODE",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS",
         ] {
             assert!(
                 !inv.env.iter().any(|(n, _)| n == k),
@@ -4985,18 +4988,11 @@ mod tests {
                 inv.env
             );
         }
-        // The two that matter MORE live, not less: under `--live` the `HOME` an unsevered child
-        // would read `~/.claude/CLAUDE.md` and `~/.claude/skills/**` from is the operator's real one.
-        for k in [
-            "OPENCODE_DISABLE_CLAUDE_CODE",
-            "OPENCODE_DISABLE_EXTERNAL_SKILLS",
-            "OPENCODE_DB",
-        ] {
-            assert!(
-                inv.env.iter().any(|(n, _)| n == k),
-                "{k} survives live mode"
-            );
-        }
+        // The node's own session store, for its resume.
+        assert!(
+            inv.env.iter().any(|(n, _)| n == "OPENCODE_DB"),
+            "OPENCODE_DB survives live mode"
+        );
     }
 
     /// **A live opencode node loads the operator's plugins and project config**, because both can
@@ -6894,13 +6890,19 @@ mod tests {
                 .collect();
             for (k, v) in [
                 ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
-                ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
-                ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
                 ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
                 ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
                 ("OPENCODE_DISABLE_SHARE", "1"),
             ] {
                 assert_eq!(env.get(k).copied(), Some(v), "{mode}: {k} in {env:?}");
+            }
+            // The operator's `~/.claude` adoption: severed on a canned node only.
+            for k in [
+                "OPENCODE_DISABLE_CLAUDE_CODE",
+                "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+            ] {
+                let want = (mode == "canned").then_some("1");
+                assert_eq!(env.get(k).copied(), want, "{mode}: {k} in {env:?}");
             }
             assert_eq!(
                 env.get("PWD").copied(),
