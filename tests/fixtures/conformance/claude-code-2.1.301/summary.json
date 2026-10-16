@@ -1,10 +1,10 @@
 {
   "result": {
-    "fixtures": "claude-code-2.1.286",
+    "fixtures": "claude-code-2.1.301",
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 934affe2-e7cf-4614-934b-af9daf81c40d ; activity mcp__marion__report",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session a6be17bb-3f52-4410-be5e-e6cbd970a832 ; activity mcp__marion__report",
         "status": "PASS"
       },
       "P-approval": {
@@ -14,7 +14,7 @@
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: still running after 45.3 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 45.5 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 45.4 s, 7 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
+        "observed": "401: still running after 45.4 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 45.4 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 45.4 s, 7 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
         "status": "PASS"
       },
       "P-interrupt": {
@@ -39,7 +39,7 @@
       },
       "P-resume": {
         "expected": "the row's resume spelling continues the killed session with its history",
-        "observed": "second life ended; its request carries the first life's prompt: true; session 08f64076-23ab-434f-9cfa-281fdefd326e -> 08f64076-23ab-434f-9cfa-281fdefd326e; resume refusal: none",
+        "observed": "second life ended; its request carries the first life's prompt: true; session fbd21be0-80f6-4f65-a5f4-ac40ae21fc48 -> fbd21be0-80f6-4f65-a5f4-ac40ae21fc48; resume refusal: none",
         "status": "PASS"
       },
       "P-tools": {
@@ -54,11 +54,11 @@
       },
       "P-version": {
         "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-        "observed": "2.1.286 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried",
+        "observed": "2.1.301 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried",
         "status": "PASS"
       }
     },
-    "version": "2.1.286"
+    "version": "2.1.301"
   },
   "row": "claude-code"
 }
