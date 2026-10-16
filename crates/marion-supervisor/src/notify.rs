@@ -245,10 +245,18 @@ pub enum Backend {
 
 impl Backend {
     /// Resolved once: the override, else the platform's notifier where it exists, else the
-    /// terminal.
+    /// terminal. `record:` only in a build with debug assertions — the tests' builds — see
+    /// [`Backend::resolve_with`].
     pub fn resolve(env: Option<&str>) -> Backend {
+        Self::resolve_with(env, cfg!(debug_assertions))
+    }
+
+    /// [`Backend::resolve`], saying whether the tests' `record:<path>` fake is honoured. A
+    /// release build ignores it: the variable is the environment's, which a repository can set,
+    /// and the fake appends to (and narrows the mode of) whatever file it names.
+    fn resolve_with(env: Option<&str>, record: bool) -> Backend {
         match env.map(str::trim) {
-            Some(v) if v.starts_with("record:") => {
+            Some(v) if record && v.starts_with("record:") => {
                 return Backend::Record(PathBuf::from(&v["record:".len()..]));
             }
             Some("terminal") => return Backend::Terminal,
@@ -903,6 +911,21 @@ mod tests {
         );
         assert_eq!(Backend::resolve(Some("terminal")), Backend::Terminal);
         assert_eq!(Backend::resolve(Some("off")), Backend::Off);
+    }
+
+    /// **A release build never takes the tests' fake from the environment**: `record:<path>`
+    /// resolves as if unset, to the platform's own notifier.
+    #[test]
+    fn a_release_build_ignores_the_record_backend() {
+        let fake = Some("record:/tmp/elsewhere.jsonl");
+        assert_eq!(
+            Backend::resolve_with(fake, false),
+            Backend::resolve_with(None, false)
+        );
+        assert!(matches!(
+            Backend::resolve_with(fake, true),
+            Backend::Record(_)
+        ));
     }
 
     /// The osascript notice passes its text as arguments to a fixed script, so no text can become
