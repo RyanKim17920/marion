@@ -636,15 +636,18 @@ impl RegistryHandle {
         // ahead of the replay it comes after. Read and sent a chunk at a time, paced, on this
         // connection's own thread and under no lock: a long run's history is up to two 64 MiB
         // files and more events than the outbound queue holds.
-        let replayed =
-            opening.replay(|chunk| deliver_events(out, id, &chunk, Outbound::notify_paced));
+        let mut sent = 0;
+        let replayed = opening.replay(|chunk| {
+            sent += chunk.len();
+            deliver_events(out, id, &chunk, Outbound::notify_paced)
+        });
         let (reader, live) = match replayed {
             Ok(read) => read,
             Err(e) => {
                 if let Some(host) = reserved_host {
                     self.rollback_pane_attach(id, out.conn(), &host);
                 }
-                return Err(attach_io_failure(id, &events_path, &e));
+                return Err(replay_failure(id, &events_path, &e, sent));
             }
         };
         let mode = attach_mode(state, reap_state, reader.read_point());
@@ -1280,4 +1283,23 @@ fn attach_io_failure(
         id.0,
         path.display()
     ))
+}
+
+/// [`attach_io_failure`] for a read that failed once the replay had begun. Events already sent
+/// cannot be unsent, so the refusal names them for a client to drop.
+fn replay_failure(
+    id: &AgentId,
+    path: &std::path::Path,
+    error: &crate::events::EventError,
+    sent: usize,
+) -> RpcError {
+    let mut e = attach_io_failure(id, path, error);
+    if sent > 0 {
+        let events = if sent == 1 { "event" } else { "events" };
+        e.message.push_str(&format!(
+            " The {sent} {events} sent before the failure are an incomplete prefix of the \
+             replay, not the node's history: discard them and attach again."
+        ));
+    }
+    e
 }

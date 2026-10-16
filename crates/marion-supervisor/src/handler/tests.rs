@@ -5887,6 +5887,37 @@ fn node_attach_replays_a_history_longer_than_the_outbound_queue() {
     assert_eq!(got.mode.replay_point().records, n as u64);
 }
 
+/// **A replay that fails partway answers with an error that says so.** The replay streams before
+/// the answer, so a read that fails after the rotated half has gone out cannot unsend it; the
+/// refusal names how many events were sent and that they are an incomplete prefix to discard.
+///
+/// The current file is a directory here: it opens, and its first read fails, after the rotated
+/// half's events were delivered.
+#[test]
+fn node_attach_that_fails_partway_through_its_replay_says_what_was_already_sent() {
+    let w = Wired::new("handler-attach-partial");
+    let stream = events_of(&w.fx, "root");
+    say(&stream, "root", &["older-1", "older-2"]);
+    std::fs::rename(&stream, crate::events::rotated_path(&stream)).unwrap();
+    std::fs::create_dir(&stream).unwrap();
+
+    let mut c = w.dial();
+    let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+    let (replay, outcome) = attach(&mut c, &mut r, "root", 1);
+    assert_eq!(
+        heard(&replay),
+        vec![(0, "older-1".into()), (1, "older-2".into())]
+    );
+    let e = refusal(outcome);
+    assert!(
+        e.message.contains("2 events")
+            && e.message.contains("incomplete")
+            && e.message.contains("discard"),
+        "{}",
+        e.message
+    );
+}
+
 /// **An attachment is woken by its file, not read on a timer.** While a client follows a node
 /// the handler asks for no deadline at all, and a second writer's append to the node's
 /// `events.jsonl` is what wakes the accept loop — through the same `changes` signal its wake
