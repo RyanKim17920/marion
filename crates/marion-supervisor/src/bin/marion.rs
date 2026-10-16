@@ -1049,9 +1049,8 @@ fn is_loopback_url(url: &str) -> bool {
 /// 2. **Any other endpoint** — a proxy or a gateway — is refused because *marion does not implement
 ///    it*. This is the §12 accept-and-ignore shape, and until this refusal landed marion was the
 ///    one producing it: `root::compile` copied the URL into `LaunchSpec.base_url` and **every
-///    adapter then dropped it** under [`Auth::Inherited`] (claude's `(None, None)` arm, gemini's
-///    `GOOGLE_GEMINI_BASE_URL` push gated on `Canned`, codex's and opencode's `config_files` early
-///    returns). So an operator pointed marion at a corporate gateway, got no error, and the node
+///    adapter then dropped it** under [`Auth::Inherited`] (claude's `(None, None)` arm, codex's
+///    and opencode's `config_files` early returns). So an operator pointed marion at a corporate gateway, got no error, and the node
 ///    reached the vendor directly with a real credential — traffic leaving the perimeter the
 ///    gateway existed to hold, logged nowhere they could see. `tests/it_canned/auth_mode.rs` pins
 ///    each adapter's drop, which is now defence in depth behind this gate.
@@ -1066,11 +1065,6 @@ fn is_loopback_url(url: &str) -> bool {
 /// **`--canned` is untouched.** Endpoint, environment, then marion's own provider — that is the
 /// whole test suite's launch path, and it is the half a careless refusal breaks.
 ///
-/// By default the answer is **no endpoint at all**: each harness resolves the vendor it is already
-/// logged in to, which is the whole premise — marion overlays nothing rather than pointing the node
-/// somewhere. `$MARION_BASE_URL` is ignored there for that reason; it names marion's canned server,
-/// and inheriting it silently is precisely the accident case 1 refuses loudly.
-///
 /// [`Auth::Inherited`]: marion_harness::Auth::Inherited
 fn resolve_base_url(
     canned: bool,
@@ -1079,21 +1073,16 @@ fn resolve_base_url(
 ) -> Result<Option<String>, String> {
     match (canned, explicit) {
         (false, Some(u)) if is_loopback_url(&u) => Err(format!(
-            "a loopback --base-url ({u}) without --canned is refused: marion runs the node \
-             against the vendor the operator is logged in to, so it presents a real credential, \
-             and a loopback endpoint is marion's canned provider or some other local process — \
-             the combination sends a real credential to a fake server. Drop --base-url to let the \
-             harness reach its own vendor, or pass --canned to run against the canned endpoint."
+            "a loopback --base-url ({u}) without --canned is refused: on your own login the node \
+             presents a real credential, and a loopback address is marion's canned provider or \
+             another local process, so this would send a real credential to a fake server. Drop \
+             --base-url, or add --canned to run against the canned endpoint."
         )),
         (false, Some(u)) => Err(format!(
-            "--base-url ({u}) without --canned is not implemented — marion accepts no endpoint for \
-             a node that presents the operator's own login. Every adapter drops it in that mode \
-             (claude emits no ANTHROPIC_BASE_URL, gemini no GOOGLE_GEMINI_BASE_URL, codex no \
-             model_providers entry, opencode no provider block), so the run would have reached the \
-             vendor directly while looking like it honoured the gateway. Drop --base-url to let \
-             the harness reach its own vendor, or pass --canned to run against marion's canned \
-             endpoint. Pointing a real credential through a proxy is a reasonable thing to want; \
-             marion will not pretend to do it until it does."
+            "--base-url ({u}) without --canned is not implemented: on your own login every \
+             harness talks to its own vendor and ignores a base URL, so the run would have \
+             reached the vendor directly instead of {u}. Drop --base-url, or add --canned to run \
+             against marion's canned endpoint."
         )),
         (false, None) => Ok(None),
         (true, explicit) => Ok(Some(
@@ -1910,7 +1899,7 @@ fn render_control_request(frame: &Value, out: &mut dyn Write) -> io::Result<()> 
             out,
             "PERMIT",
             &format!(
-                "{} — nobody is attached to answer it; it will be denied when its wait runs out",
+                "{}: no one is attached to answer, so it will be denied when the wait runs out",
                 frame["request"]["tool_name"]
                     .as_str()
                     .unwrap_or("(unnamed tool)")
@@ -1921,7 +1910,7 @@ fn render_control_request(frame: &Value, out: &mut dyn Write) -> io::Result<()> 
         out,
         "control",
         &format!(
-            "{} — marion does not implement it and is answering with an error",
+            "{}: not supported; marion answered with an error",
             frame["request"]["subtype"]
                 .as_str()
                 .unwrap_or("(no subtype)")
@@ -5065,8 +5054,8 @@ mod tests {
     /// This assertion used to be its own inverse: the endpoint was returned, on the reasoning that
     /// a proxy is a legitimate thing to point a real credential at. That reasoning is still sound
     /// as a *feature* and wrong as a *description* — no adapter ever passed the endpoint on. Under
-    /// `Auth::Inherited` claude compiles `(None, None)`, gemini gates its `GOOGLE_GEMINI_BASE_URL`
-    /// push on `Canned`, and codex and opencode return from `config_files` before reading it. So
+    /// `Auth::Inherited` claude compiles `(None, None)`, and codex and opencode return from
+    /// `config_files` before reading it. So
     /// the operator got a run that reached the vendor directly and looked like it had honoured the
     /// gateway, which is the §12 accept-and-ignore shape with marion on the wrong side of it.
     ///
