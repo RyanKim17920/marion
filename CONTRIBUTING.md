@@ -16,12 +16,9 @@ cargo test --workspace          # everything
 cargo test --workspace --lib    # unit tests only, no integration binaries
 ```
 
-**Always through cargo, never a raw test binary.** `.cargo/config.toml` sets
-`runner = "scripts/cargo-runner.sh"`, so every binary cargo executes starts with an empty
-per-process directory first on `PATH`, named by `MARION_HARNESS_SHIM`. `marion-testsupport`
-fills that directory with one symlink per pinned harness. A test invoked outside the runner
-spawns whatever an auto-update left first on `PATH`, and its conclusions are then about a
-release nobody measured.
+A test drives the harness first on `PATH`, and the gate (`marion_testsupport::on_path`) checks
+that it is a release its row lists or one this machine's conformance battery admitted — see
+"When a pinned harness drifts".
 
 Suites that drive a real `claude`/`codex`/… skip loudly when the binary is absent. The
 `--ignored` suites (`restart_resume`, `acp_child`) cost real tokens and stay opt-in.
@@ -70,8 +67,8 @@ names nodes too.
 ## When a pinned harness drifts
 
 The version gate is `marion_testsupport::on_path`, reading each row's `verified` list
-(`PINNED_HARNESSES` points at it). Every harness updates itself, so a release the list does not
-name is also admitted when it passes the **basic tests**: the conformance battery, $0 against
+(`HarnessSpec::verified`) — the only list. Every harness updates itself, so a release the list
+does not name is also admitted when it passes the **basic tests**: the conformance battery, $0 against
 marion's canned provider, judged against the cells the newest verified release scored in the
 committed matrix. One command, once per release:
 
@@ -87,8 +84,8 @@ gated test naming the harness, the version and why; `marion doctor` says the sam
 `.github/workflows/canary.yml` does this every night on a macOS runner and needs no hand: it
 installs the newest release of every harness (npm, and Homebrew for goose; no logins), runs the
 battery on each unlisted one, runs the whole suite strict, and opens one pull request adding every
-release the battery admitted to its row's `verified` list (`scripts/admit-harness.sh
---list-only`), set to merge itself once `main`'s rules pass. Any red — a regressed conformance
+release the battery admitted to its row's `verified` list (`scripts/admit-harness.sh`),
+set to merge itself once `main`'s rules pass. Any red — a regressed conformance
 cell, a failing test — opens (or comments on) an issue labelled `harness-canary` naming the cells,
 the failing tests and every installed version. Live cells — real model calls through a vendor
 login — are outside it and stay manual.
@@ -99,24 +96,10 @@ request opened with the default token does not start `ci.yml`, so under the rule
 wait forever; adding a secret `CANARY_TOKEN` (a fine-grained token with Contents and Pull requests
 write on this repository) makes CI run and the merge happen.
 
-The hand ritual is still there for an admission that should carry more evidence than the battery
-— the observation comment beside the entry and the MILESTONES paragraph:
-
-```sh
-scripts/admit-harness.sh claude 2.1.263
-scripts/admit-harness.sh opencode 1.18.30 goose 1.50.0   # two at once when both drifted
-```
-
-It adds each version to its row's `verified` list (entry zero — the pin — is never touched), runs
-the table's own tests, every gated suite that names the harness and the battery, and on all green
-writes the dated observation comment and prints the MILESTONES paragraph and commit message. On
-any red it restores every file exactly and exits non-zero. It does not commit; read the diff
-first.
-
-To run the suites against a release neither listed nor admitted — to see whether it works at all
-— set `MARION_GATE=warn`. The gate then prints a banner naming the release instead of failing, and
-does not fetch pinned npm releases. A green run under it is evidence about nothing; the battery
-and `admit-harness.sh` always run strict.
+To list a release by hand — after reading why the battery held it back, say a P-approval failure
+naming a moved ask key — `scripts/admit-harness.sh claude 2.1.301` adds it to its row's
+`verified` list (it builds and runs nothing); re-run the battery for that row into the committed
+fixtures so its transcripts become the bar the next release is held to.
 
 ## The commit gate
 
@@ -195,7 +178,7 @@ unchanged. A milestone doc that trails the code by even one commit has already l
 | `marion-provider` | The canned model provider (`marion-canned`). Replays scripted responses across four wire formats, dispatching on request shape. |
 | `marion-supervisor` | The supervisor and both binaries: PTY host, registry, socket, spawn path, ACP driver, doctor, native relay, home screen. |
 | `marion-term` | A VT screen model for the display plane: a streaming grid with a ratatui adapter. |
-| `marion-testsupport` | Shared test helpers, the pinned-version table, the harness shim, and the three-axis checks. |
+| `marion-testsupport` | Shared test helpers, the version gate, and the three-axis checks. |
 | `marion-tui` | The attach pane, the tree view and the home screen's widgets. |
 
 `MILESTONES.md` owns *what* and *why*; `docs/specs/2026-07-31-marion-design.md` owns *how*;
@@ -385,7 +368,7 @@ measured against the current tree:
   whole process groups and mask signals per thread. The Windows shape is a Job Object per node
   and `GenerateConsoleCtrlEvent`/`TerminateJobObject`.
 - **Around the edges:** hand-declared `tcgetattr`/`tcsetattr` raw mode in `marion-tui`, `flock`
-  on the journal, `/tmp`-style paths in `scripts/cargo-runner.sh`, and every test fixture that
+  on the journal, `/tmp`-style scratch paths, and every test fixture that
   opens a pty.
 
 Rough effort: several weeks of focused work before `marion run` and `marion attach` pass on

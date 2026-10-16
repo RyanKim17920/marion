@@ -12,8 +12,7 @@
 # for a row whose version is unchanged, the matrix and its directory keep every other probe's last
 # cell and transcript, so a single probe can be refreshed in the committed fixtures.
 #
-# Callers: scripts/admit-harness.sh runs it for the admitted programs against the committed matrix,
-# and the nightly canary (.github/workflows/canary.yml) on every unlisted release. Every row's
+# Callers: the nightly canary (.github/workflows/canary.yml) on every unlisted release. Every row's
 # verdict is also recorded for the exact binary under <state>/conformance/<row>-<version>.json;
 # the test gate admits a release newer than its row's `verified` list on that record.
 set -u
