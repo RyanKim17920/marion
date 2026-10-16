@@ -516,12 +516,12 @@ pub fn child_ended_text(agent_type: &str, root: bool, task_id: &str, body: &str)
 }
 
 /// **A descendant's end, told to its nearest live ancestor** because the node that backgrounded it
-/// had already ended. The ancestor holds no handle for it, so the text points at `list`.
+/// had already ended. The ancestor holds no handle for it, so the text points at `status` with no id.
 pub fn relayed_end_text(agent_type: &str, parent: &str, task_id: &str, body: &str) -> String {
     format!(
         "The {agent_type} node that {} backgrounded as task_id {task_id:?} has ended. {} had \
-         already ended, so marion tells you, its nearest live ancestor; `list` shows the node.\n\n\
-         {body}",
+         already ended, so marion tells you, its nearest live ancestor; `status` with no id \
+         shows the node.\n\n{body}",
         crate::node_label::short_id(parent),
         crate::node_label::short_id(parent),
     )

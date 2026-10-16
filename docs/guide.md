@@ -119,9 +119,9 @@ boundary, never mid-sentence. Whether that is a fold into the running turn, a pa
 generation is per harness; see [Harness detail](#harness-detail).
 
 - **A parent** steers with its `steer` tool, addressed by an `id`: the `task_id` its `spawn`
-  handle carries, or an agent id from `list` (the only way to name a grandchild). A node may steer
-  any node below it; its parent, siblings and itself are refused with one sentence. `wait` and
-  `status` reach only its direct children. Before steering, a parent's `status` on a running
+  handle carries, or an agent id from `status` with no id (the only way to name a grandchild). A
+  node may steer any node below it; its parent, siblings and itself are refused with one
+  sentence. `wait` and `status` reach only its direct children. Before steering, a parent's `status` on a running
   child shows its last few tool calls and the last line it wrote.
 - **The operator** presses `s` on a node in Watch, or runs `marion steer <id> <text…>`.
   Exit 0 prints the queued message's id; exit 1 prints the supervisor's refusal (an ended node
@@ -135,9 +135,9 @@ Watch while the prompt is up, message or none. marion never answers an approval 
 
 ## marion as an MCP server
 
-`marion mcp` serves marion's tools over stdio for any MCP client: `spawn`, `wait`, `status`,
-`list`, `steer`, `cancel`, `workflow`, and `report` (which answers only inside a child marion
-started, so this client is not offered it). `workflow` runs one of the project's workflows that may
+`marion mcp` serves marion's tools over stdio for any MCP client: `spawn`, `wait`, `status`
+(with no id, every child and what it is doing), `steer`, `cancel`, `workflow`, and `report`
+(which answers only inside a child marion started, so this client is not offered it). `workflow` runs one of the project's workflows that may
 run as it stands (see Workflows below), and only this, the operator's own client, is offered it:
 an agent marion started is refused, since a run's steps are top-level agents it could not start
 above itself. Its `spawn` goes over the same socket `marion run` uses, so the result shows up in `marion

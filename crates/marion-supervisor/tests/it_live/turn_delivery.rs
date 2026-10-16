@@ -255,8 +255,8 @@ fn a_steer_into_a_running_headless_claude_node_is_read_in_the_next_request_of_th
             marker: STEER_ROOT.into(),
             call_prefix: STEER_PREFIX.into(),
             turns: vec![
-                ScriptedCall::new("mcp__marion__list", json!({})),
-                ScriptedCall::new("mcp__marion__list", json!({})),
+                ScriptedCall::new("mcp__marion__status", json!({})),
+                ScriptedCall::new("mcp__marion__status", json!({})),
             ],
             final_text: "Listed twice. Done.".into(),
         }],
@@ -432,8 +432,8 @@ fn a_steer_into_a_running_acp_opencode_node_is_read_in_the_next_request_of_the_s
             marker: OC_STEER_ROOT.into(),
             call_prefix: OC_STEER_PREFIX.into(),
             turns: vec![
-                ScriptedCall::new("marion_list", json!({})),
-                ScriptedCall::new("marion_list", json!({})),
+                ScriptedCall::new("marion_status", json!({})),
+                ScriptedCall::new("marion_status", json!({})),
             ],
             final_text: "Listed twice. Done.".into(),
         }],

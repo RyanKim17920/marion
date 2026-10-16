@@ -589,13 +589,11 @@ fn tools_list_names_are_bare_and_in_the_pinned_order() {
     // refused by name if a node calls it anyway.
     assert_eq!(
         names,
-        vec![
-            "spawn", "wait", "status", "list", "steer", "cancel", "report"
-        ],
+        vec!["spawn", "wait", "status", "steer", "cancel", "report"],
         "the order is pinned because it is what the model reads first"
     );
 
-    // `steer`'s schema on the wire: one message, addressed by a handle or by an id `list` shows.
+    // `steer`'s schema on the wire: one message, addressed by a handle or by an id `status` lists.
     let steer = &v["result"]["tools"]
         .as_array()
         .unwrap()

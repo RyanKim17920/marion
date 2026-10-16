@@ -273,8 +273,8 @@ fn a_steer_into_a_running_pi_child_is_read_in_the_next_request_of_the_same_turn(
                 marker: STEER_CHILD.into(),
                 call_prefix: STEER_PREFIX.into(),
                 turns: vec![
-                    ScriptedCall::new("mcp__marion__list", json!({})),
-                    ScriptedCall::new("mcp__marion__list", json!({})),
+                    ScriptedCall::new("mcp__marion__status", json!({})),
+                    ScriptedCall::new("mcp__marion__status", json!({})),
                 ],
                 final_text: "Listed twice. Done.".into(),
             },

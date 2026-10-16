@@ -75,7 +75,7 @@ const TOP_LEVEL_REPORT: &str = "marion: `report` is a node's return path and thi
 /// | which supervisor | derived from the declaration marion wrote (`MARION_REPO`) | resolved by the entry point from `--repo`, the same way `marion run` resolves it |
 /// | nothing listening | **refuse** | **start one** — see [`Principal::ensure_supervisor`] |
 /// | `report` | §5.4's rule, on this node's depth | refused: an MCP client is not a node and has no contract |
-/// | `list` | this node's own subtree, filtered | this project's whole tree, which is what peer credentials on this socket authorize |
+/// | `status` with no id (§5.4's `list`) | this node's own subtree, filtered | this project's whole tree, which is what peer credentials on this socket authorize |
 pub enum Principal {
     /// **A per-child bridge**: `marion-supervisor mcp`, named in the `--mcp-config` marion writes
     /// into one node's declaration, holding the `AgentId` and capability token marion minted for
@@ -286,6 +286,8 @@ fn handle_tool_call(
         "spawn" => tool_spawn(who, bg, id, args).unwrap_or_else(|refused| refused),
         "wait" => tool_wait(who, bg, id, args).unwrap_or_else(|refused| refused),
         "status" => tool_status(who, bg, id, args).unwrap_or_else(|refused| refused),
+        // No longer declared: `status` with no id is the same answer. Still served, so a prompt
+        // or a client that learnt the old name is not refused for using it.
         "list" => tool_list(who, id).unwrap_or_else(|refused| refused),
         "steer" => tool_steer(who, bg, id, args).unwrap_or_else(|refused| refused),
         "cancel" => tool_cancel(who, bg, id, args).unwrap_or_else(|refused| refused),
@@ -929,17 +931,8 @@ fn tool_status(
     let task_id = match address(bg, args).map_err(|e| bridge::tool_result(id, &e, true))? {
         Some(Address::Task(t)) => t,
         Some(Address::Agent(a)) => return Err(bridge::status_unknown(id, &a.0)),
-        None => {
-            return Err(bridge::tool_result(
-                id,
-                "marion: `status` needs an `id`: the task_id from the handle a `background: true` \
-                 spawn returned, or the child's agent id. Refusing rather than guessing which of \
-                 your children you meant — a state reported about the wrong child is worse than \
-                 no answer, because nothing in it would look wrong. Call `list` to see every \
-                 child of yours and its state.",
-                true,
-            ));
-        }
+        // No address: every child of the caller's, which is what `list` answered.
+        None => return tool_list(who, id),
     };
     let task_id = task_id.as_str();
     let Some((agent_id, _)) = bg.node_of(task_id) else {
@@ -1050,13 +1043,13 @@ fn node_address(
                 format!(
                     "marion: this bridge has no record of task_id {task_id:?}; it knows only the \
                  handles its own `spawn` calls returned, in this process. Pass the child's \
-                 agent id from `list` as `id` instead. {nothing}."
+                 agent id from `status` with no id as `id` instead. {nothing}."
                 )
             }),
         Some(Address::Agent(agent_id)) => Ok(agent_id),
         None => Err(format!(
             "marion: `{verb}` needs an `id`: the task_id from a `spawn` handle, or an agent id \
-             that `list` shows. {nothing}."
+             that `status` with no id lists. {nothing}."
         )),
     }
 }
@@ -2349,14 +2342,14 @@ mod tests {
         assert!(blank.contains("`message`"), "{blank}");
         let nobody = call(serde_json::json!({"message": "use v2"}));
         assert!(
-            nobody.contains("`id`") && nobody.contains("`list`"),
+            nobody.contains("`id`") && nobody.contains("`status` with no id"),
             "{nobody}"
         );
         let both = call(serde_json::json!({"task_id": "t", "agent_id": "a", "message": "use v2"}));
         assert!(both.contains("one of"), "{both}");
         let unknown = call(serde_json::json!({"task_id": "task-never-started", "message": "hi"}));
         assert!(
-            unknown.contains("task-never-started") && unknown.contains("`list`"),
+            unknown.contains("task-never-started") && unknown.contains("`status` with no id"),
             "{unknown}"
         );
     }

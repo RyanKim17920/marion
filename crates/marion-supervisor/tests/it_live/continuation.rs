@@ -948,7 +948,7 @@ fn a_steer_into_a_running_opencode_node_is_its_second_generation() {
                     NodeScript {
                         marker: OC_MARKER.into(),
                         call_prefix: OC_CALL_PREFIX.into(),
-                        turns: vec![ScriptedCall::new("marion_list", json!({}))],
+                        turns: vec![ScriptedCall::new("marion_status", json!({}))],
                         final_text: "Listed the tree.".into(),
                     },
                 ],

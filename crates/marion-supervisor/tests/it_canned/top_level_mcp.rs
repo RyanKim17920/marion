@@ -494,11 +494,11 @@ fn the_top_level_server_starts_a_supervisor_when_a_spawn_needs_one_and_not_befor
     s.call("tools/list", json!({}));
     // A read verb, which must report rather than create. Its answer is a refusal — there is nothing
     // to read — and that refusal is the correct one.
-    let listed = s.tool("list", json!({}));
+    let listed = s.tool("status", json!({}));
     assert_eq!(
         listed["result"]["isError"],
         json!(true),
-        "a `list` with no supervisor says so: {listed}"
+        "a `status` of every child with no supervisor says so: {listed}"
     );
 
     let deadline = Instant::now() + QUIET_SAMPLE;

@@ -116,7 +116,7 @@ pub use marion_harness::mcp_bridge::{
 ///
 /// The same five a child below its bound is granted (`agent_type::child_verbs`), so the root's
 /// delegation grant and a child's are one list.
-pub const ROOT_VERBS: [&str; 6] = marion_core::agent_type::DELEGATION_VERBS;
+pub const ROOT_VERBS: [&str; 5] = marion_core::agent_type::DELEGATION_VERBS;
 
 /// §3.1's **availability** axis for a root — *"the agent type's `tools:` list"*, exactly as
 /// `run::run_spawn` gives a child, **and the gate the grant is conditional on.**

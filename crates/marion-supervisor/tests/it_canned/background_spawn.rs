@@ -1887,7 +1887,7 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     // a root, and listing it invited live roots to call it — `bridge::tools_list_result`).
     assert_eq!(
         names,
-        vec!["spawn", "wait", "status", "list", "steer", "cancel"],
+        vec!["spawn", "wait", "status", "steer", "cancel"],
         "the declared surface of a root, over a real handshake"
     );
     // Stated as a number as well as a list, because `ntools` is what the harness logs and what a
@@ -1895,7 +1895,7 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     // declarations gets wrong while keeping every name.
     assert_eq!(
         names.len(),
-        6,
+        5,
         "§9's ntools, as a real client would count it"
     );
 
@@ -2033,7 +2033,8 @@ fn list_shows_this_callers_children_and_not_the_node_doing_the_asking() {
     let fx = fixture("bg-list");
     let mut bridge = fx.bridge();
 
-    let empty = bridge.tool("list", json!({}));
+    // §5.4's `list` is `status` with no id; the old name is still served, with the same answer.
+    let empty = bridge.tool("status", json!({}));
     assert!(
         !is_error(&empty),
         "a caller that has delegated nothing gets an answer, not an error: {empty}"
@@ -2048,9 +2049,14 @@ fn list_shows_this_callers_children_and_not_the_node_doing_the_asking() {
     let second = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
     assert_ne!(first, second, "two spawns, two handles");
 
-    let listed = bridge.tool("list", json!({}));
+    let listed = bridge.tool("status", json!({}));
     let text = text_of(&listed);
     assert!(!is_error(&listed), "list resolves: {text}");
+    assert_eq!(
+        text_of(&bridge.tool("list", json!({}))),
+        text,
+        "the undeclared old name answers the same"
+    );
     assert!(
         text.contains("2 child agents"),
         "both children appear, counted: {text}"
@@ -2325,8 +2331,8 @@ fn a_parent_steers_its_child_by_handle_or_by_the_id_list_shows() {
         "{text}"
     );
 
-    let listed = text_of(&bridge.tool("list", json!({})));
-    assert!(listed.contains(&child.0), "`list` shows the id: {listed}");
+    let listed = text_of(&bridge.tool("status", json!({})));
+    assert!(listed.contains(&child.0), "`status` lists the id: {listed}");
     let by_id = bridge.tool("steer", json!({"agent_id": &child.0, "message": "and v3"}));
     assert!(!is_error(&by_id), "{by_id}");
     assert!(

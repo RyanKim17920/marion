@@ -608,7 +608,7 @@ fn the_root_allowlist_is_every_verb_an_m1_root_can_reach() {
     // `cancel` because it may stop them, on the same authority.
     assert_eq!(
         ROOT_VERBS.to_vec(),
-        vec!["spawn", "status", "wait", "list", "steer", "cancel"]
+        vec!["spawn", "status", "wait", "steer", "cancel"]
     );
     assert!(
         !ROOT_VERBS.contains(&"report"),
@@ -626,7 +626,6 @@ fn the_root_allowlist_is_every_verb_an_m1_root_can_reach() {
             "mcp__marion__spawn",
             "mcp__marion__status",
             "mcp__marion__wait",
-            "mcp__marion__list",
             "mcp__marion__steer",
             "mcp__marion__cancel"
         ]
@@ -754,7 +753,7 @@ fn a_root_over_a_recorded_repository_compiles_the_grant_its_agent_type_declares(
     );
     assert_eq!(
         allowed,
-        "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,mcp__marion__steer,mcp__marion__cancel,Read,Write,Edit,Bash",
+        "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__steer,mcp__marion__cancel,Read,Write,Edit,Bash",
         "permission must carry the same grant beside marion's own verbs, or the tool exists \
          and every call to it is refused (§11 items 22 and 24)"
     );

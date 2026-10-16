@@ -1130,7 +1130,7 @@ pub enum SpawnGateError {
 /// marion's verbs for delegating and following what was delegated: create a child, then observe,
 /// collect, steer and cancel it. A root is granted all of them; a child is granted them while it
 /// may still create a child of its own ([`child_verbs`]).
-pub const DELEGATION_VERBS: [&str; 6] = ["spawn", "status", "wait", "list", "steer", "cancel"];
+pub const DELEGATION_VERBS: [&str; 5] = ["spawn", "status", "wait", "steer", "cancel"];
 
 /// A child's return path, and the one verb every child is granted.
 pub const REPORT_VERB: &str = "report";
@@ -1606,7 +1606,10 @@ mod tests {
             }
         }
         assert_eq!(child_verbs(&t, t.max_depth), [REPORT_VERB]);
-        assert_eq!(child_verbs(&t, t.max_depth - 1).len(), 7);
+        assert_eq!(
+            child_verbs(&t, t.max_depth - 1).len(),
+            1 + DELEGATION_VERBS.len()
+        );
     }
 
     #[test]

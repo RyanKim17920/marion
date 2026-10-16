@@ -502,43 +502,22 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             // registry the supervisor wrote itself, and nothing here caches it. A `status` that
             // answered from the row this bridge stored at spawn would report `Spawning` forever —
             // an answer that is wrong precisely when it is asked for.
+            //
+            // **Without an `id` it is §5.4's `list` — "discovery"**, which used to be a tool of its
+            // own with no parameters; one verb with an optional address costs every context one
+            // schema fewer. The answer is filtered to the caller's own subtree (`mcp::tool_list`),
+            // because the only method of §2's fifteen that enumerates nodes, `tree/subscribe`,
+            // answers with every node in the project. A caller with no children is told so in
+            // words, not handed an empty array whose absence it must interpret.
             "name": "status",
             "description": "Check what a child is doing now, without blocking: its state and, \
                             while it runs, its last few tool calls and its last line of output \
-                            where marion reads the child's harness stream. Works after the child has ended and after `wait` collected it. To get \
+                            where marion reads the child's harness stream. Works after the child has ended and after `wait` collected it. \
+                            Without an `id`, lists every child of yours and what each is doing. To get \
                             the result, call `wait`.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"id": {"type": "string", "description": ID_DESCRIPTION}},
-                "required": ["id"]
-            }
-        },
-        {
-            // **§5.4's `list` — "discovery"** — and the last of the allowlist's four verbs to stop
-            // being inert.
-            //
-            // **It takes no parameters and it is filtered, which is the load-bearing half.** The
-            // only one of §2's fifteen methods that enumerates nodes is `tree/subscribe`, and it
-            // answers with *every node in the project* — other roots, unrelated subtrees, the whole
-            // fleet. Handing that to a child node would be wider than §5.4 authorizes by a long
-            // way, so `main::handle_tool_call` keeps only this caller's own subtree. §5.4's set
-            // also includes the parent and `allow_peers` siblings; the parent is included, and
-            // `allow_peers` is not built at all, so no sibling appears and the answer does not
-            // pretend one might.
-            //
-            // **A caller with no children gets an empty list and is told so in words**, rather than
-            // an empty array it has to interpret. §7.6's rule about handles applies to lists too: a
-            // result a model must reason about the absence of is a result that gets misread.
-            "name": "list",
-            "description": "List the child agents you have spawned and what each is doing now. \
-                            Takes no arguments. Answers from marion's supervisor, so it reflects \
-                            the current state of every child of yours marion still knows, \
-                            running or finished. Use it when you have lost track of what you \
-                            delegated; use `wait` to collect a specific child's result.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "required": []
+                "properties": {"id": {"type": "string", "description": ID_DESCRIPTION}}
             }
         },
         {
@@ -546,14 +525,14 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             // strict ancestor, token first (`handler/steer.rs`) — so this schema grants nothing:
             // an `agent_id` outside the caller's subtree is refused there, verbatim. `agent_id` is
             // accepted beside `task_id` because a grandchild has no handle in this process, and
-            // `list` already shows its id.
+            // `status` with no id already shows its id.
             //
             // The description states *when* generically, because the answer is per row
             // (`TurnDelivery`) and a model cannot read the row: never "now", never "read".
             "name": "steer",
             "description": "Queue a message for a running agent below you (a child, or a \
-                            grandchild by the id `list` shows), which it will see at its next \
-                            turn boundary. Where the \
+                            grandchild by the id `status` with no id shows), which it will see at \
+                            its next turn boundary. Where the \
                             child's harness folds a message into work in progress, that boundary \
                             is its next tool round, mid-task; otherwise it is the child's next \
                             turn or resume. The reply says the message was queued, not that the \
@@ -576,7 +555,7 @@ fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value
             // `wait`) is still the answer, marked cancelled.
             "name": "cancel",
             "description": "Stop a running agent below you (a child, or a grandchild by the id \
-                            `list` shows) and everything it spawned. Each is asked to end its turn the way its \
+                            `status` with no id shows) and everything it spawned. Each is asked to end its turn the way its \
                             harness allows, and killed only if it does not within its grace; \
                             the work each committed is kept on its branch. The reply says how \
                             many agents ended and how many had to be killed; `wait` on the task_id still returns the child's \
@@ -1630,7 +1609,8 @@ pub fn wait_still_running(id: &Value, task_id: &str, agent_type: &str, waited_se
     )
 }
 
-/// **How a node's state is said to a model**, in one place, so `status` and `list` cannot describe
+/// **How a node's state is said to a model**, in one place, so `status` of one child and of all of
+/// them cannot describe
 /// the same node in two ways.
 ///
 /// [`marion_core::proto::model::NodeSummary`] is the whole of what §2 carries about a node, and its
@@ -1709,12 +1689,13 @@ pub fn status_unknown(id: &Value, task_id: &str) -> Value {
         id,
         task_id,
         "reading the state of",
-        "Nothing was read and nothing was changed; `list` shows every child of yours this \
-         supervisor can still see.",
+        "Nothing was read and nothing was changed; `status` with no id lists every child of \
+         yours this supervisor can still see.",
     )
 }
 
-/// **`list`'s answer** — the caller's own subtree, already filtered by the caller.
+/// **`status` with no id** — §5.4's `list`: the caller's own subtree, already filtered by the
+/// caller.
 ///
 /// The empty case is a sentence and not an empty array, deliberately. A model handed `[]` has to
 /// infer what the absence means, and the two readings — *"you delegated nothing"* and *"marion lost
@@ -2165,19 +2146,19 @@ mod tests {
             .map(|x| x["name"].as_str().unwrap())
             .collect();
         // `wait` joined the list when `spawn` started handing out handles: §5.4 makes the
-        // handle's holder's ability to resolve it a requirement, not an ergonomic. `status` and
-        // `list` joined it when they were implemented, which is what made the last two entries of
-        // `root::ROOT_VERBS` stop being inert.
+        // handle's holder's ability to resolve it a requirement, not an ergonomic. `status`
+        // joined it when it was implemented, and took §5.4's `list` in as its no-id form, which
+        // is what made the last entries of `root::ROOT_VERBS` stop being inert.
         //
         // **The order is pinned, and it is the order a caller meets them in** — delegate, then
-        // block on one child, then poll one child, then survey them all, then return your own
+        // block on one child, then poll one child or survey them all, then return your own
         // result. It is not the allowlist's order and does not have to be; the allowlist is a set.
         // `steer` sits after the survey: a caller looks at its children, then redirects one.
         // `workflow` is the operator's: on the whole surface, and withheld from a node's list.
         assert_eq!(
             names,
             vec![
-                "spawn", "wait", "status", "list", "steer", "cancel", "workflow", "report"
+                "spawn", "wait", "status", "steer", "cancel", "workflow", "report"
             ]
         );
         let s = t.to_string();
@@ -2188,7 +2169,7 @@ mod tests {
     }
 
     /// **`steer` takes a message and one address**: the `task_id` a handle carries, or an
-    /// `agent_id` `list` showed — the only way to name a grandchild, whose handle this caller never
+    /// `agent_id` `status` listed — the only way to name a grandchild, whose handle this caller never
     /// held. Its description says when the child reads the message, generically and truthfully:
     /// the next tool round where a harness folds one in, the next turn or resume otherwise, and a
     /// refusal where a harness has no measured way at all.
@@ -2210,7 +2191,7 @@ mod tests {
         let desc = steer["description"].as_str().unwrap();
         for needle in [
             "queue",
-            "`list`",
+            "`status` with no id",
             "tool round",
             "next turn",
             "resume",
@@ -3159,7 +3140,10 @@ mod tests {
         assert!(
             unknown[0].contains("waiting on it") && unknown[0].contains("should have been found")
         );
-        assert!(unknown[1].contains("reading the state of it") && unknown[1].contains("`list`"));
+        assert!(
+            unknown[1].contains("reading the state of it")
+                && unknown[1].contains("`status` with no id")
+        );
         for t in handles.iter().chain(&running).chain(&unknown) {
             let words: Vec<&str> = t.split_whitespace().collect();
             for pair in words.windows(2) {
