@@ -85,6 +85,14 @@ pub enum TrustError {
     )]
     UntrustedWorkflow { file: PathBuf, edited: bool },
     #[error(
+        "{file} sets `[race] losers = \"prune\"`, which deletes the losing seats' branches and \
+         worktrees, and it {why}. marion grants what a repository asks for only after you have \
+         reviewed it; read the file, then run: marion trust allow {quoted}",
+        why = if *edited { "has changed since you allowed it" } else { "is not one you have allowed" },
+        quoted = marion_core::text::shell_quote(&file.display().to_string()),
+    )]
+    UntrustedRace { file: PathBuf, edited: bool },
+    #[error(
         "the harness row {file} {why}; it names a program marion would start, so marion loads a \
          repository's row only after you have reviewed it. Read it (`marion harness check {quoted}` \
          says what it runs), then run: marion trust allow {quoted}",
@@ -276,6 +284,48 @@ pub fn require_workflow_in(store: PathBuf, file: &Path, text: &str) -> Result<()
     match store.verdict(&file, &crate::inbox::sha256_hex(text.as_bytes())) {
         Verdict::Trusted => Ok(()),
         verdict => Err(TrustError::UntrustedWorkflow {
+            file,
+            edited: verdict == Verdict::Edited,
+        }),
+    }
+}
+
+/// The keys a repository's agents file sets for the whole tree that only the operator may grant,
+/// each with its value as the file spells it: a `[race]` whose `losers = "prune"` deletes the
+/// losing seats' branches and worktrees.
+pub fn file_widening(types: &AgentTypes) -> Vec<(&'static str, String)> {
+    let mut w = Vec::new();
+    if types.race().losers == Some(marion_core::race::Losers::Prune) {
+        w.push(("losers", toml_string("prune")));
+    }
+    w
+}
+
+/// **The gate on a repository's `[race]`**: a race run on the policy of `file`, whose bytes were
+/// `text`, may prune its losers only where the operator trusted exactly these bytes. A file that
+/// asks for nothing ([`file_widening`]) needs nothing.
+pub fn require_race(file: &Path, text: &str, types: &AgentTypes) -> Result<(), TrustError> {
+    if file_widening(types).is_empty() {
+        return Ok(());
+    }
+    require_race_in(store_path().ok_or(TrustError::NoStore)?, file, text, types)
+}
+
+/// [`require_race`] against the store at `store`.
+pub fn require_race_in(
+    store: PathBuf,
+    file: &Path,
+    text: &str,
+    types: &AgentTypes,
+) -> Result<(), TrustError> {
+    if file_widening(types).is_empty() {
+        return Ok(());
+    }
+    let store = Store::open(store)?;
+    let file = canonical(file)?;
+    match store.verdict(&file, &crate::inbox::sha256_hex(text.as_bytes())) {
+        Verdict::Trusted => Ok(()),
+        verdict => Err(TrustError::UntrustedRace {
             file,
             edited: verdict == Verdict::Edited,
         }),
@@ -652,7 +702,8 @@ pub fn run(
             let types = crate::run::agent_types_text(canonical.clone(), &text)
                 .map_err(|e| Some(e.to_string()))?;
             let found = commands(&types);
-            if found.is_empty() {
+            let tree_wide = file_widening(&types);
+            if found.is_empty() && tree_wide.is_empty() {
                 return w(out_to!(
                     out,
                     "{} names no repository command and widens no type; its types need no \
@@ -661,7 +712,7 @@ pub fn run(
                 ));
             }
             let sha256 = crate::inbox::sha256_hex(text.as_bytes());
-            w(describe(out, &canonical, &sha256, &found))?;
+            w(describe(out, &canonical, &sha256, &found, &tree_wide))?;
             let mut store = Store::edit(store).map_err(err)?;
             store.allow(canonical.clone(), sha256);
             store.save().map_err(err)?;
@@ -781,8 +832,15 @@ fn describe(
     file: &Path,
     sha256: &str,
     found: &[RepoCommand],
+    tree_wide: &[(&'static str, String)],
 ) -> std::io::Result<()> {
     out_to!(out, "{}  sha256 {sha256}", shown(file))?;
+    if !tree_wide.is_empty() {
+        out_to!(out, "  [race]")?;
+        for (key, value) in tree_wide {
+            out_to!(out, "    sets:    {key} = {}", visible(value))?;
+        }
+    }
     let repo = file.parent().and_then(Path::parent);
     for c in found {
         out_to!(out, "  agent type {}", visible(&c.agent_type))?;
@@ -860,6 +918,36 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    /// **A repository's `[race]` that prunes needs the file trusted**: pruning deletes the losing
+    /// seats' branches and worktrees, so it waits on the operator like a command does, `allow`
+    /// shows it, and an edit revokes it; a race that keeps its losers needs nothing.
+    #[test]
+    fn a_race_that_prunes_its_losers_needs_the_file_trusted() {
+        let text = "[race]\nlosers = \"prune\"\n";
+        let (tree, file, store) = repo("race-prune", text);
+        let types = AgentTypes::parse(text).unwrap();
+        let e = require_race_in(store.clone(), &file, text, &types).expect_err("untrusted");
+        assert!(
+            matches!(e, TrustError::UntrustedRace { edited: false, .. }),
+            "{e}"
+        );
+        assert!(e.to_string().contains("marion trust allow"), "{e}");
+        let shown = allow(&tree, &store);
+        assert!(shown.contains("sets:    losers = \"prune\""), "{shown}");
+        require_race_in(store.clone(), &file, text, &types).unwrap();
+        let edited = format!("{text}# later\n");
+        let e = require_race_in(store, &file, &edited, &AgentTypes::parse(&edited).unwrap())
+            .expect_err("edited");
+        assert!(
+            matches!(e, TrustError::UntrustedRace { edited: true, .. }),
+            "{e}"
+        );
+
+        let keep = "[race]\nlosers = \"keep\"\n";
+        let (_, file, store) = repo("race-keep", keep);
+        require_race_in(store, &file, keep, &AgentTypes::parse(keep).unwrap()).unwrap();
+    }
+
     /// **What `allow` shows spells a control out**: an agent type, a widened value, a program and
     /// an argument each carrying an escape or a CR read with it visible, so the reviewed command
     /// is the one that runs.
@@ -876,6 +964,7 @@ mod tests {
             Path::new("/r/.marion/a\x1bgents.toml"),
             "00",
             &found,
+            &[],
         )
         .unwrap();
         let out = String::from_utf8(out).unwrap();

@@ -1383,7 +1383,7 @@ impl RegistryHandle {
             Some(c) => self.child_wall_secs(asked, &c.agent_id)?,
             None => asked,
         };
-        let types = crate::run::agent_types(&repo)
+        let (types, file) = crate::run::agent_types_read(&repo)
             .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))?;
         let policy = RacePolicy::try_from(
             p.race
@@ -1392,6 +1392,14 @@ impl RegistryHandle {
                 .over(types.race().clone()),
         )
         .map_err(|e| race_refused("race", e))?;
+        // A repository's `[race]` that prunes deletes branches, so it waits on the operator's
+        // trust; a race whose request names its own `losers` does not run on the file's.
+        if let Some((path, text)) = &file
+            && p.race.as_ref().and_then(|r| r.losers).is_none()
+        {
+            crate::trust::require_race(path, text, &types)
+                .map_err(|e| RpcError::refused("race", e.to_string(), "§6.6"))?;
+        }
         if let Some(c) = candidates
             .iter()
             .find(|c| types.resolve(&c.agent_type).is_none())

@@ -1768,9 +1768,17 @@ pub const AGENT_TYPES_FILE: &str = ".marion/agents.toml";
 /// is [`SpawnError::AgentTypesFile`] naming the path, so a mistyped row refuses every spawn
 /// against that tree rather than silently spawning the built-ins.
 pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
+    agent_types_read(tree).map(|(types, _)| types)
+}
+
+/// [`agent_types`] with the file's path and text it was read from, for a caller that must check
+/// the operator's trust over exactly those bytes.
+pub(crate) fn agent_types_read(
+    tree: &Path,
+) -> Result<(AgentTypes, Option<(PathBuf, String)>), SpawnError> {
     match read_agent_types(tree)? {
-        Some((path, text)) => agent_types_text(path, &text),
-        None => Ok(AgentTypes::builtins_only()),
+        Some((path, text)) => Ok((agent_types_text(path.clone(), &text)?, Some((path, text)))),
+        None => Ok((AgentTypes::builtins_only(), None)),
     }
 }
 
