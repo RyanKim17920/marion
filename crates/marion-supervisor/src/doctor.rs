@@ -1962,14 +1962,7 @@ fn last_verified(h: Harness) -> Option<&'static str> {
         .verified
         .iter()
         .copied()
-        .max_by(|a, b| cmp_versions(a, b))
-}
-
-/// Dotted versions, compared numerically part by part (`1.18.30` > `1.18.4`); a non-numeric part
-/// compares as zero.
-fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
-    parts(a).cmp(&parts(b))
+        .max_by(|a, b| marion_harness::cmp_versions(a, b))
 }
 
 /// The closing verdict: one `ready:` line per harness (its node row; a pane row is the same
@@ -2007,7 +2000,7 @@ pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String 
                 s.push_str(&format!("  {head}: ready: yes"));
                 let newer = version
                     .zip(last_verified(r.report.harness))
-                    .filter(|(v, known)| cmp_versions(v, known).is_gt());
+                    .filter(|(v, known)| marion_harness::cmp_versions(v, known).is_gt());
                 if let Some((_, known)) = newer {
                     s.push_str(&format!(
                         " — unmeasured: newer than the last version marion verified ({known}); \

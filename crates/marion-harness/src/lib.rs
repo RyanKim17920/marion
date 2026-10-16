@@ -76,6 +76,13 @@ pub use surfaces::{
     ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, PtyWitness, TypedKind,
 };
 
+/// Dotted versions, compared numerically part by part (`1.18.30` > `1.18.4`); a non-numeric part
+/// compares as zero.
+pub fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    parts(a).cmp(&parts(b))
+}
+
 /// The lowercase hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
