@@ -83,9 +83,12 @@ gated test naming the harness, the version and why; `marion doctor` says the sam
 
 `.github/workflows/canary.yml` does this every night on a macOS runner and needs no hand: it
 installs the newest release of every harness (npm, and Homebrew for goose; no logins), runs the
-battery on each unlisted one, runs the whole suite strict, and opens one pull request adding every
-release the battery admitted to its row's `verified` list (`scripts/admit-harness.sh`),
-set to merge itself once `main`'s rules pass. Any red — a regressed conformance
+battery on each unlisted one, runs the whole suite strict, and — only after a wholly green run —
+opens one pull request adding every release the battery admitted to its row's `verified` list
+(`scripts/admit-harness.sh`). An npm release is listed only once its publish is seven days old,
+and never at or below a listed version. The pull request auto-merges where `main` has required
+status checks and otherwise waits for a person; CI on it does not drive the harnesses, so those
+checks are the gate, not CI. Any red — a regressed conformance
 cell, a failing test — opens (or comments on) an issue labelled `harness-canary` naming the cells,
 the failing tests and every installed version. Live cells — real model calls through a vendor
 login — are outside it and stay manual.
