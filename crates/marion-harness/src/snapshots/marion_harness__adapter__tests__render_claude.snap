@@ -110,7 +110,7 @@ args:
   --setting-sources
   user
   --settings
-  {"enableAllProjectMcpServers":false}
+  {"enableAllProjectMcpServers":false,"disabledMcpjsonServers":[]}
   --model
   haiku
 env:
@@ -155,7 +155,7 @@ args:
   --setting-sources
   user
   --settings
-  {"enableAllProjectMcpServers":false}
+  {"enableAllProjectMcpServers":false,"disabledMcpjsonServers":[]}
   --model
   haiku
   --
@@ -692,7 +692,7 @@ args:
   --setting-sources
   user
   --settings
-  {"enableAllProjectMcpServers":false}
+  {"enableAllProjectMcpServers":false,"disabledMcpjsonServers":[]}
   --model
   haiku
   --resume
@@ -739,7 +739,7 @@ args:
   --setting-sources
   user
   --settings
-  {"enableAllProjectMcpServers":false}
+  {"enableAllProjectMcpServers":false,"disabledMcpjsonServers":[]}
   --model
   haiku
   --resume

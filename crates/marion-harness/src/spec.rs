@@ -1266,6 +1266,12 @@ pub enum Field {
     Resume,
     /// The profile directory this launch selected, exactly as stored ([`Fields::profile_dir`]).
     ProfileDir,
+    /// **The settings overlay a live node in an untrusted repository carries**: no project MCP
+    /// server approved wholesale, and every server the repository's `.mcp.json` names rejected
+    /// by name ([`Fields::repo_mcp_servers`]) — an approval by name in the operator's own settings
+    /// (`enabledMcpjsonServers`) would otherwise run a cloned repository's server of that name.
+    /// `None` on an overlaying launch and in a trusted repository.
+    UntrustedSettings,
 }
 
 /// One argv element, or the rule for several.
@@ -1460,6 +1466,9 @@ pub struct Fields {
     pub repo_trusted: bool,
     /// The tree's repository config is the operator's own: what [`Arg::Disowned`] reads.
     pub repo_config_own: bool,
+    /// The server names the tree's `.mcp.json` declares (its `mcpServers` keys), sorted; empty
+    /// where it has none or it does not parse. Read on a live launch only.
+    pub repo_mcp_servers: Vec<String>,
 }
 
 /// **The strings a declaration or a credential can travel in print their shape, never their
@@ -1498,6 +1507,7 @@ impl std::fmt::Debug for Fields {
             env_passthrough,
             repo_trusted,
             repo_config_own,
+            repo_mcp_servers,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -1512,6 +1522,7 @@ impl std::fmt::Debug for Fields {
             .field("env_passthrough", env_passthrough)
             .field("repo_trusted", repo_trusted)
             .field("repo_config_own", repo_config_own)
+            .field("repo_mcp_servers", repo_mcp_servers)
             .field("cwd", cwd)
             .field("config_dir", config_dir)
             .field("auth", auth)
@@ -1572,6 +1583,12 @@ impl Fields {
             Field::OutputLastMessage => self.output_last_message.as_ref().and_then(path),
             Field::Resume => self.resume.clone(),
             Field::ProfileDir => self.profile_dir.as_ref().and_then(path),
+            Field::UntrustedSettings => (repo_config_rule(self) == Some(false)).then(|| {
+                format!(
+                    r#"{{"enableAllProjectMcpServers":false,"disabledMcpjsonServers":{}}}"#,
+                    serde_json::Value::from(self.repo_mcp_servers.clone())
+                )
+            }),
             Field::Tools | Field::Allowed | Field::Pairs | Field::AgentArgs => {
                 let items = self.items(field);
                 (!items.is_empty()).then(|| items.join(","))

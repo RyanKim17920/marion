@@ -54,11 +54,15 @@ pub const CONFIG_SEED: (&str, &str) = (
 /// does (owner decision 2026-10-16), and so does the native facade.
 pub const HOOKS_OFF_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
 
-/// The `--settings` overlay a live node in an **untrusted** repository carries beside
-/// `--setting-sources user`: none of the repository's `.mcp.json` servers is approved wholesale,
-/// whatever the operator's own settings say. `--setting-sources user` already drops the
-/// repository's settings, hooks and permissions; the `.mcp.json` approval is a user-layer key.
-pub const UNTRUSTED_REPO_SETTINGS: &str = r#"{"enableAllProjectMcpServers":false}"#;
+/// The `--settings` overlay a live node in an **untrusted** repository with no `.mcp.json`
+/// carries beside `--setting-sources user` ([`crate::spec::Field::UntrustedSettings`]): none of
+/// the repository's `.mcp.json` servers is approved wholesale, whatever the operator's own
+/// settings say. `--setting-sources user` already drops the repository's settings, hooks and
+/// permissions; the `.mcp.json` approvals are user-layer keys. Where the repository names servers,
+/// each is also rejected by name: measured on 2.1.302, `disabledMcpjsonServers` wins over an
+/// `enabledMcpjsonServers` naming the same server (`claude mcp get`: "Rejected").
+pub const UNTRUSTED_REPO_SETTINGS: &str =
+    r#"{"enableAllProjectMcpServers":false,"disabledMcpjsonServers":[]}"#;
 
 /// [`mcp_config_json`] as the bytes `--mcp-config` reads: the live declaration's body.
 pub fn mcp_config_document(b: &BridgeEnv) -> String {
@@ -147,8 +151,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // trusted repository gets every source, as the operator's `claude` there would.
         Arg::Untrusted("--setting-sources"),
         Arg::Untrusted("user"),
-        Arg::Untrusted("--settings"),
-        Arg::Untrusted(UNTRUSTED_REPO_SETTINGS),
+        Arg::Flag("--settings", Field::UntrustedSettings),
         // None of anyone's hooks in a canned or endpoint node; Hook callbacks marion registers in
         // `initialize` still fire. A live node runs the operator's (owner decision 2026-10-16).
         Arg::CannedLit("--settings"),
@@ -173,8 +176,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::CannedLit(""),
         Arg::Untrusted("--setting-sources"),
         Arg::Untrusted("user"),
-        Arg::Untrusted("--settings"),
-        Arg::Untrusted(UNTRUSTED_REPO_SETTINGS),
+        Arg::Flag("--settings", Field::UntrustedSettings),
         Arg::CannedLit("--settings"),
         Arg::CannedLit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),

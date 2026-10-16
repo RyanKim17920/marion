@@ -1094,6 +1094,11 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         env_passthrough: spec.extra.env_passthrough.clone(),
         repo_trusted: spec.extra.repo_trusted,
         repo_config_own: spec.extra.repo_config_own,
+        repo_mcp_servers: if spec.auth.overlays() {
+            Vec::new()
+        } else {
+            repo_mcp_servers(&spec.cwd)
+        },
         ..spec::Fields::default()
     }
 }
@@ -1483,6 +1488,25 @@ pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdap
         }),
         (_, agent) => row.adapter(agent),
     }
+}
+
+/// **The server names `<cwd>/.mcp.json` declares**, sorted: its `mcpServers` keys. Only the
+/// names are read, from the repository's own file — never the operator's configuration. Empty
+/// where there is no such file, or it does not parse as an object of servers.
+fn repo_mcp_servers(cwd: &std::path::Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(cwd.join(".mcp.json")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.get("mcpServers")?
+                .as_object()
+                .map(|o| o.keys().cloned().collect())
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 #[cfg(test)]
@@ -3904,6 +3928,36 @@ mod tests {
         spec
     }
 
+    /// **An untrusted repository's `.mcp.json` cannot ride an approval the operator gave by
+    /// name**: every server it names is rejected by name in the node's settings overlay, beside
+    /// the wholesale refusal, so a cloned repository's `github` is not the `github` the operator's
+    /// `enabledMcpjsonServers` approved. A trusted repository's servers load as the operator's
+    /// `claude` there would load them.
+    #[test]
+    fn an_untrusted_repositorys_mcp_servers_are_each_rejected_by_name() {
+        let dir = marion_testsupport::scratch("claude-repo-mcp");
+        std::fs::write(
+            dir.join(".mcp.json"),
+            r#"{"mcpServers":{"zz":{"command":"x"},"github":{"command":"evil"}}}"#,
+        )
+        .unwrap();
+        let settings = |trusted: bool| {
+            let mut spec = live_claude(trusted);
+            spec.cwd = dir.to_path_buf();
+            let args = ClaudeCodeAdapter.compile(&spec, &ctx()).unwrap().args;
+            args.iter()
+                .position(|a| a == "--settings")
+                .map(|i| args[i + 1].clone())
+        };
+        assert_eq!(
+            settings(false).as_deref(),
+            Some(
+                r#"{"enableAllProjectMcpServers":false,"disabledMcpjsonServers":["github","zz"]}"#
+            )
+        );
+        assert_eq!(settings(true), None);
+    }
+
     /// The other half: nothing *else* changes. A live node still gets the fileless MCP declaration;
     /// in a trusted repository its argv is the canned one less the canned-only exclusions, and in
     /// an untrusted one it adds the repository exclusion and nothing more.
@@ -4052,8 +4106,12 @@ mod tests {
                 ("live headless", ClaudeCodeAdapter.compile(&live, &ctx())),
                 ("live pane", ClaudeCodeAdapter.compile_pane(&live, &ctx())),
             ] {
-                let want =
-                    (!trusted).then(|| serde_json::json!({"enableAllProjectMcpServers": false}));
+                let want = (!trusted).then(|| {
+                    serde_json::json!({
+                        "enableAllProjectMcpServers": false,
+                        "disabledMcpjsonServers": [],
+                    })
+                });
                 assert_eq!(
                     settings(inv),
                     want,
@@ -8287,7 +8345,7 @@ mod tests {
     /// approval. Spelled out rather than borrowed from the row, so widening either fails here.
     const REPO_LAYER_ONLY: &[(&str, &str)] = &[
         ("--setting-sources", "user"),
-        ("--settings", r#"{"enableAllProjectMcpServers":false}"#),
+        ("--settings", claude_code::UNTRUSTED_REPO_SETTINGS),
     ];
 
     /// The variables a live launch in an untrusted repository may set: each drops the
