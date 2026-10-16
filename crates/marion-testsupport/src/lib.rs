@@ -440,14 +440,9 @@ fn output_within(
         let _ = tx.send(out.and_then(|out| err.map(|err| (out, err))));
     });
     let deadline = Instant::now() + budget;
-    let cut_off = |child: &mut std::process::Child| {
-        // SAFETY: plain libc call. The leader is unreaped, so its pid is still this group's id.
-        let _ = unsafe { killpg(child.id() as i32, SIGKILL) };
-        let _ = child.wait();
-        None
-    };
     let Ok(drained) = rx.recv_timeout(budget) else {
-        return cut_off(&mut child);
+        cut_off(&mut child);
+        return None;
     };
     // Pipes at EOF is not an exit: a leader that closed its stdio can still hang. Its exit is
     // waited on under what is left of the same budget, again without reaping it, so a cut-off
@@ -458,19 +453,45 @@ fn output_within(
         exited_unreaped(pid);
         let _ = exited.send(());
     });
-    if on_exit
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .is_err()
-    {
-        return cut_off(&mut child);
-    }
+    let status = leader_exit(
+        &mut child,
+        &on_exit,
+        deadline.saturating_duration_since(Instant::now()),
+    )?;
     Some(drained.and_then(|(stdout, stderr)| {
-        child.wait().map(|status| std::process::Output {
+        status.map(|status| std::process::Output {
             status,
             stdout,
             stderr,
         })
     }))
+}
+
+/// The leader's exit status once `on_exit` says it has exited, within `remaining`; `None` if it
+/// is still running then, in which case its group is killed. At the deadline it is looked at once
+/// more, so a leader exiting just as the budget runs out is read, not reported as a hang.
+fn leader_exit(
+    child: &mut std::process::Child,
+    on_exit: &std::sync::mpsc::Receiver<()>,
+    remaining: Duration,
+) -> Option<std::io::Result<std::process::ExitStatus>> {
+    if on_exit.recv_timeout(remaining).is_ok() {
+        return Some(child.wait());
+    }
+    match child.try_wait() {
+        Ok(Some(status)) => Some(Ok(status)),
+        _ => {
+            cut_off(child);
+            None
+        }
+    }
+}
+
+/// Kills `child`'s whole group and reaps it.
+fn cut_off(child: &mut std::process::Child) {
+    // SAFETY: plain libc call. The leader is unreaped, so its pid is still this group's id.
+    let _ = unsafe { killpg(child.id() as i32, SIGKILL) };
+    let _ = child.wait();
 }
 
 /// Blocks until child `pid` has exited, leaving it unreaped (`waitid` with `WNOWAIT`), so the
@@ -2016,6 +2037,19 @@ mod tests {
             .expect("echo answers")
             .expect("echo runs");
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1.2.3");
+    }
+
+    /// **A leader that has exited by the deadline is read, not cut off**: with no time left and no
+    /// word from the exit waiter, the last look still finds its status.
+    #[test]
+    fn a_leader_exited_at_the_deadline_is_not_a_timeout() {
+        let mut child = Command::new("true").spawn().expect("`true` runs");
+        exited_unreaped(child.id());
+        let (_never, on_exit) = std::sync::mpsc::channel::<()>();
+        let status = leader_exit(&mut child, &on_exit, Duration::ZERO)
+            .expect("an exited leader is not a timeout")
+            .expect("its status is read");
+        assert!(status.success());
     }
 
     /// **A leader that closes its stdio and then hangs is cut off too**: pipes at EOF are not an
