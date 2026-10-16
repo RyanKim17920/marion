@@ -1394,21 +1394,12 @@ fn p_lifecycle(c: &mut Ctx<'_>) -> Outcome {
     // SIGTERM to the harness alone — its own children are its to end.
     unsafe_kill(node.proc.pid, driver::SIGTERM);
     let term_exit = node.proc.wait_exit(Duration::from_secs(20));
+    // Judged on what is left once the node has ended as marion ends one — its session swept before
+    // the leader's reap (`Proc`'s waiter, `kill::end_node`) — and on nothing the probe adds.
     let term_left = settle(&node.proc);
-    // What the harness left, marion's end of the node ends: the session sweep a launch-only or
-    // duplex node gets once its leader is reaped (`run::run_bounded`). Judged after it.
-    let swept = !term_left.is_empty() && {
-        marion_supervisor::kill::end_session(node.proc.pid, Duration::from_secs(5));
-        true
-    };
-    let term_after = if swept {
-        settle(&node.proc)
-    } else {
-        term_left.clone()
-    };
     let idle_ok = idle_exit.is_some_and(|e| e.success());
     let observed = format!(
-        "{}: {}, left {:?}; SIGTERM mid-turn{}: {}, left {:?}{}",
+        "{}: {}, left {:?}; SIGTERM mid-turn{}: {}, left {:?} (each after marion's end of the node)",
         if matches!(c.t.path, LaunchPath::LaunchOnly) {
             "turn end"
         } else {
@@ -1423,17 +1414,10 @@ fn p_lifecycle(c: &mut Ctx<'_>) -> Outcome {
         },
         exit_word(term_exit),
         term_left,
-        if swept {
-            format!(
-                "; the harness's own exit left those, and marion's end of the node (its session sweep) left {term_after:?}"
-            )
-        } else {
-            String::new()
-        },
     );
     Outcome::judged(
         P,
-        idle_ok && idle_left.is_empty() && term_exit.is_some() && term_after.is_empty(),
+        idle_ok && idle_left.is_empty() && term_exit.is_some() && term_left.is_empty(),
         "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives the \
          node",
         observed,

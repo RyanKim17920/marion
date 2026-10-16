@@ -8,7 +8,7 @@
 //!
 //! [`kill_process_tree_and_wait`]: crate::kill::kill_process_tree_and_wait
 
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 unsafe extern "C" {
@@ -321,8 +321,42 @@ pub(crate) fn kill_groups(groups: &[i32]) {
     }
 }
 
-/// **End every process of session `sid` and wait until none is left**, for a caller about to
-/// remove what the session writes into — a probe's private `TMPDIR`, above all.
+/// **End a node: what is left in the session its leader leads, then the leader's reap** — the one
+/// end every node transport takes (launch-only, duplex, rpc, pty) once marion is done with the
+/// leader, whether it exited or is to be ended now.
+///
+/// **The sweep runs before the reap, and that order is the safety.** An unreaped leader keeps its
+/// pid, and so its session id, from being issued again, so every process [`end_session`] finds in
+/// that session is the node's own. Swept after the reap, the id is the kernel's to hand out: a
+/// stranger that took the pid and led a session of its own would be signalled. A leader already
+/// reaped (an earlier `wait`, or not this caller's child) is not swept at all; its status is
+/// returned and nothing is signalled. A leader that led no session of its own has nothing in one:
+/// no process's session id is its pid.
+pub fn end_node(child: &mut Child) -> std::io::Result<ExitStatus> {
+    let leader = child.id() as i32;
+    if is_unreaped_child(leader) {
+        end_session(leader, DRAIN_GRACE);
+    }
+    child.wait()
+}
+
+/// Whether `pid` is this process's own child and not yet reaped — running or a zombie. `waitid`
+/// with `WNOWAIT` reads that without consuming the status; any other process is `ECHILD`.
+fn is_unreaped_child(pid: i32) -> bool {
+    let Some(pid) = rustix::process::Pid::from_raw(pid) else {
+        return false;
+    };
+    rustix::process::waitid(
+        rustix::process::WaitId::Pid(pid),
+        rustix::process::WaitIdOptions::EXITED
+            | rustix::process::WaitIdOptions::NOHANG
+            | rustix::process::WaitIdOptions::NOWAIT,
+    )
+    .is_ok()
+}
+
+/// **End every process of session `sid` and wait until none is left**: [`end_node`]'s sweep, whose
+/// caller holds `sid`'s leader unreaped so the id cannot name a stranger's session.
 ///
 /// [`kill_process_tree`] enumerates once and signals: a process forked after its `ps` snapshot, in
 /// a group of its own, outlives it, and its parent's death leaves it under pid 1 in the same
@@ -330,20 +364,30 @@ pub(crate) fn kill_groups(groups: &[i32]) {
 /// with their descendants while their parents live — SIGKILLs what is still running, and repeats
 /// until a round finds nothing, or `bound` passes (`false`). A zombie counts as ended. Refuses
 /// marion's own session, and 0 or 1, returning `false` having signalled nothing.
-pub fn end_session(sid: i32, bound: Duration) -> bool {
+///
+/// **Each signal is preceded by a fresh look at its target** ([`still_in_session`]): a process that
+/// ended after the `ps` snapshot leaves its pid free, and only one still in the session, or still
+/// below a process that is, is signalled.
+fn end_session(sid: i32, bound: Duration) -> bool {
     // SAFETY: `getsid(0)` reads this process's own session id.
     let own = unsafe { getsid(0) };
     if sid <= 1 || sid == own {
         return false;
     }
+    let session_of = |pid: i32| unsafe { getsid(pid) };
     let deadline = Instant::now() + bound;
     let mut pause = Duration::from_millis(1);
     loop {
         let rows = ps_rows();
+        // SAFETY (in `session_of`): `getsid` reads one process's session id; -1 for one gone.
+        let members: Vec<i32> = rows
+            .iter()
+            .map(|r| r.pid)
+            .filter(|p| session_of(*p) == sid)
+            .collect();
         let mut pids: Vec<i32> = Vec::new();
-        // SAFETY: `getsid` reads one process's session id; -1 for one already gone.
-        for r in rows.iter().filter(|r| unsafe { getsid(r.pid) } == sid) {
-            for p in descendant_pids(&rows, r.pid) {
+        for m in &members {
+            for p in descendant_pids(&rows, *m) {
                 if !pids.contains(&p) {
                     pids.push(p);
                 }
@@ -362,7 +406,9 @@ pub fn end_session(sid: i32, bound: Duration) -> bool {
             return true;
         }
         for pid in live {
-            let _ = unsafe { kill(pid, SIGKILL) };
+            if still_in_session(pid, sid, &members, session_of, crate::procid::lineage) {
+                let _ = unsafe { kill(pid, SIGKILL) };
+            }
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -371,6 +417,22 @@ pub fn end_session(sid: i32, bound: Duration) -> bool {
         std::thread::sleep(pause.min(left));
         pause = (pause * 2).min(OBSERVE_PAUSE_MAX);
     }
+}
+
+/// **Whether `pid`, read now, is still session `sid`'s**: in it, or below one of `members` (the
+/// round's members, for a descendant that led a session of its own). What a pid that changed hands
+/// since the round's `ps` snapshot fails: a stranger is in another session and below none of them.
+/// The walk starts at the parent, so a member's pid now worn by a stranger is not its own proof.
+fn still_in_session(
+    pid: i32,
+    sid: i32,
+    members: &[i32],
+    session_of: impl Fn(i32) -> i32,
+    lineage: impl Fn(i32) -> Option<crate::procid::Lineage>,
+) -> bool {
+    session_of(pid) == sid
+        || lineage(pid)
+            .is_some_and(|l| crate::procid::descends_from(l.ppid, members, &[], &lineage))
 }
 
 /// Apply §6.7's two-step kill and wait until the addressed process is absent or a zombie.
@@ -511,6 +573,113 @@ mod tests {
         assert!(
             observe_dead(orphan, Instant::now() + Duration::from_secs(5)),
             "{orphan} survived its node"
+        );
+    }
+
+    /// **A node's end takes what its leader left in its session, and nothing outside it.** The
+    /// leader exits leaving a child in a group of its own; a stranger leading its own session runs
+    /// beside it. [`end_node`] ends the child, reaps the leader, and the stranger lives.
+    #[test]
+    fn a_nodes_end_takes_its_sessions_leftovers_and_spares_a_stranger() {
+        let dir = marion_testsupport::scratch("kill-end-node");
+        let recorded = dir.join("left.pid");
+        let mut node = Command::new("bash");
+        node.args([
+            "-c",
+            &format!("set -m; sleep 66 & echo $! > {}", recorded.display()),
+        ]);
+        let mut node = lead_own_session(&mut node).spawn().expect("spawn bash");
+        let mut stranger = Command::new("sleep");
+        stranger.arg("67");
+        let mut stranger = lead_own_session(&mut stranger)
+            .spawn()
+            .expect("spawn sleep");
+        let leader = node.id() as i32;
+        let left =
+            || -> Option<i32> { std::fs::read_to_string(&recorded).ok()?.trim().parse().ok() };
+        assert!(marion_testsupport::until(|| left().is_some()));
+        let left = left().unwrap();
+        // The leader has exited and is unreaped: its zombie holds the session id.
+        assert!(marion_testsupport::until(|| matches!(
+            crate::procid::run_state(leader),
+            crate::procid::RunState::Zombie
+        )));
+        let status = end_node(&mut node).expect("reaped");
+        let stranger_ran = crate::procid::run_state(stranger.id() as i32);
+        let _ = stranger.kill();
+        let _ = stranger.wait();
+        assert!(status.success(), "{status:?}");
+        assert!(
+            observe_dead(left, Instant::now() + Duration::from_secs(5)),
+            "{left} survived its node"
+        );
+        assert_eq!(stranger_ran, crate::procid::RunState::Running);
+    }
+
+    /// **A leader already reaped is not swept**: its pid, and so its session id, is the kernel's to
+    /// issue again, and what wears it may be a stranger's session. Nothing is signalled — what it
+    /// left in its session is still running — and the status is the one reaped.
+    #[test]
+    fn a_reaped_leaders_session_is_never_swept() {
+        let dir = marion_testsupport::scratch("kill-end-reaped");
+        let recorded = dir.join("left.pid");
+        let mut node = Command::new("bash");
+        node.args([
+            "-c",
+            &format!("set -m; sleep 68 & echo $! > {}", recorded.display()),
+        ]);
+        let mut node = lead_own_session(&mut node).spawn().expect("spawn bash");
+        let status = node.wait().expect("reaped");
+        let left: i32 = std::fs::read_to_string(&recorded)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let again = end_node(&mut node).expect("the reaped status");
+        let after = crate::procid::run_state(left);
+        marion_testsupport::kill_hard(left);
+        assert_eq!(again, status);
+        assert_eq!(
+            after,
+            crate::procid::RunState::Running,
+            "a reaped session was swept"
+        );
+    }
+
+    /// **The look before each signal refuses a pid that changed hands.** A member whose pid a
+    /// stranger now wears is in another session and below no member; a member still in the session
+    /// and a descendant that led a session of its own below one are the node's.
+    #[test]
+    fn a_pid_that_changed_hands_since_the_snapshot_is_not_signalled() {
+        use crate::procid::Lineage;
+        let sid = 500;
+        let members = [500, 501];
+        // 501 was a member; a stranger in session 900, child of 899, wears the number now.
+        let session_of = |p: i32| match p {
+            500 | 502 => 500,
+            501 => 900,
+            503 => 503,
+            _ => 1,
+        };
+        let lineage = |p: i32| {
+            Some(match p {
+                501 => Lineage {
+                    ppid: 899,
+                    pgid: 900,
+                },
+                899 => Lineage { ppid: 1, pgid: 899 },
+                503 => Lineage {
+                    ppid: 500,
+                    pgid: 503,
+                },
+                _ => Lineage { ppid: 1, pgid: p },
+            })
+        };
+        assert!(!still_in_session(501, sid, &members, session_of, lineage));
+        assert!(still_in_session(502, sid, &members, session_of, lineage));
+        assert!(
+            still_in_session(503, sid, &members, session_of, lineage),
+            "a setsid child of a member"
         );
     }
 

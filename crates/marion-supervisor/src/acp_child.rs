@@ -722,7 +722,7 @@ fn prompt_session(
                 if Instant::now() >= deadline {
                     return Ok(false);
                 }
-                if matches!(agent.child.try_wait(), Ok(Some(_))) {
+                if agent.exited() {
                     return Ok(true);
                 }
                 // Answered while waiting: an agent may still ask marion something between turns.

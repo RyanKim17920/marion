@@ -752,7 +752,8 @@ pub(crate) fn run_bounded_watched(
 /// What [`run_bounded_with`] does once its child is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AfterExit {
-    /// A node ([`run_bounded_watched`]): everything left in its session ends with it.
+    /// A node ([`run_bounded_watched`]): everything left in its session ends with it
+    /// ([`crate::kill::end_node`]).
     EndSession,
     /// A command marion runs for itself ([`run_bounded`]): a verification line, a version probe, a
     /// login status, a session listing. Reaped alone: a daemon it started on purpose (a compiler
@@ -830,34 +831,37 @@ fn run_bounded_with(
     // Event-driven: the wait between looks ends on the child's exit, a forwarded line, or the
     // deadline — never on a timer.
     let exit = crate::wake::ProcExit::new(child.id() as i32);
-    let mut exited = None;
-    let (status, timed_out) = loop {
+    // The child is waited on unreaped until the loop ends, so its pid names it alone while the
+    // kill below, and a node's session sweep, address it.
+    let mut exited = false;
+    let timed_out = loop {
         if let Some(Some(wake)) = &lines_wake {
             wake.drain();
         }
         if deliver_lines() {
             kill_tree(child.id() as i32);
-            break (child.wait()?, false);
+            break false;
         }
-        if let Some(status) = exited {
-            break (status, false);
+        if exited {
+            break false;
         }
         if Instant::now() >= deadline {
             kill_tree(child.id() as i32);
-            break (child.wait()?, true);
+            break true;
         }
         let lines = lines_wake
             .as_ref()
             .map(|wake| wake.as_ref().map(|w| w.fd()));
-        exited = crate::wake::step_child(&mut child, &exit, lines.as_slice(), Some(deadline))?;
+        exited = crate::wake::step_child(&child, &exit, lines.as_slice(), Some(deadline))?;
     };
     // **A node is over, so is everything in its session.** The leader led a session of its own
     // (above), and a child it left behind keeps that session: copilot's npm launcher exits on
-    // SIGTERM and leaves its platform binary running. The session id is the leader's pid, which
-    // `end_session` reads afresh each round rather than by ancestry the reap already broke.
-    if after == AfterExit::EndSession {
-        crate::kill::end_session(child.id() as i32, DRAIN_GRACE);
-    }
+    // SIGTERM and leaves its platform binary running. Swept before the leader's reap
+    // (`end_node`), while its pid still pins the session id.
+    let status = match after {
+        AfterExit::EndSession => crate::kill::end_node(&mut child)?,
+        AfterExit::ReapOnly => child.wait()?,
+    };
     // The child is reaped; anything still holding a write end is an escapee. One deadline for both
     // drains, so the total wait is `DRAIN_GRACE`, not twice it.
     let drain_deadline = Instant::now() + DRAIN_GRACE;

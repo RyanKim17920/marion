@@ -644,6 +644,41 @@ fn poll_exited_unreaped_preserves_the_exact_wait_status() {
     );
 }
 
+/// **What a pane leader left in its session ends with the node**, as on every other transport: the
+/// leader forks a child into a group of its own that ignores HUP, then exits; the teardown
+/// (`kill_and_reap`) sweeps the session before the reap and the child is gone.
+#[test]
+fn a_child_a_pane_leader_left_in_its_session_ends_with_the_node() {
+    let dir = marion_testsupport::scratch("pty-session-orphan");
+    let recorded = dir.join("left.pid");
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let mut child = spawn_pty(
+        witness(),
+        &mut sh(&format!(
+            "set -m; trap '' HUP; (trap '' HUP; exec sleep 69) </dev/null >/dev/null 2>&1 & echo $! > {}",
+            recorded.display()
+        )),
+        &master,
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+    let left = || -> Option<i32> { std::fs::read_to_string(&recorded).ok()?.trim().parse().ok() };
+    assert!(until(|| left().is_some()), "the child recorded itself");
+    let left = left().unwrap();
+    assert!(until(|| child.poll_exited_unreaped().unwrap()));
+    child.kill_and_reap().expect("reaped");
+    let state = crate::procid::run_state(left);
+    marion_testsupport::kill_hard(left);
+    assert!(
+        matches!(
+            state,
+            crate::procid::RunState::Gone | crate::procid::RunState::Zombie
+        ),
+        "{left} survived its node: {state:?}"
+    );
+}
+
 /// A naturally exited pane leader must remain waitable until shutdown has signalled its process
 /// group. The background holder ignores HUP and inherits the slave, so reaping the leader during
 /// the poll strands both the holder and the reader; a non-consuming poll lets shutdown kill the

@@ -559,16 +559,7 @@ impl PtyChild {
         if self.reaped.is_some() {
             return Ok(true);
         }
-        let pid = rustix::process::Pid::from_raw(self.pid)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zero child pid"))?;
-        rustix::process::waitid(
-            rustix::process::WaitId::Pid(pid),
-            rustix::process::WaitIdOptions::EXITED
-                | rustix::process::WaitIdOptions::NOHANG
-                | rustix::process::WaitIdOptions::NOWAIT,
-        )
-        .map(|status| status.is_some())
-        .map_err(Into::into)
+        crate::wake::has_exited(&self.child)
     }
 
     /// **Kill this node's whole tree and reap it. Idempotent, and callable from an unwind.**
@@ -585,7 +576,10 @@ impl PtyChild {
         // tool-call descendants of its own, which reparent to pid 1 the moment the leader dies
         // (S7, §11 item 18) and can then never be found by an ancestry walk.
         crate::kill::kill_process_tree(self.pid);
-        self.wait()
+        // Then what is left in its session, swept before the reap as on every node's end.
+        let status = crate::kill::end_node(&mut self.child)?;
+        self.reaped = Some(status);
+        Ok(status)
     }
 }
 

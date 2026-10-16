@@ -267,15 +267,13 @@ impl<'a, P: Peer> Driver<'a, P> {
 
     /// Block until there is an unread line, an inbox wake, EOF, or `until` — whichever is first —
     /// capped at [`LIVENESS_TICK`]. Once stdout has ended nothing more can be read, so the wait is on
-    /// the server's exit instead ([`crate::wake::wait_bounded`]), never a return at once that would
+    /// the server's exit instead ([`crate::wake::wait_exit`]), never a return at once that would
     /// make its caller's loop spin.
     pub fn wait_event(&mut self, until: Instant) {
         let until = until.min(Instant::now() + LIVENESS_TICK);
         if self.stdout_ended() {
-            crate::wake::wait_bounded(
-                &mut self.child,
-                until.saturating_duration_since(Instant::now()),
-            );
+            // Unreaped: `finish` sweeps the session while the pid still pins its id.
+            crate::wake::wait_exit(&self.child, until.saturating_duration_since(Instant::now()));
             return;
         }
         let mut feed = self.shared.lock();
@@ -335,13 +333,13 @@ impl<'a, P: Peer> Driver<'a, P> {
             if ended {
                 // No answer can arrive. Wait for the process itself, so a caller that reads its
                 // exit next sees it — a server closes stdout a moment before it goes.
-                crate::wake::wait_bounded(
-                    &mut self.child,
+                crate::wake::wait_exit(
+                    &self.child,
                     deadline.saturating_duration_since(Instant::now()),
                 );
                 return None;
             }
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
+            if self.exited() {
                 match gone {
                     Some(t) if t.elapsed() >= DEATH_GRACE => return None,
                     Some(_) => {}
@@ -406,20 +404,21 @@ impl<'a, P: Peer> Driver<'a, P> {
         // in groups no walk from a reaped server reaches.
         let below = crate::kill::groups_below(self.pid);
         self.stdin.take();
-        if matches!(self.child.try_wait(), Ok(None)) {
+        if matches!(crate::wake::has_exited(&self.child), Ok(false)) {
             unsafe { kill(self.pid, SIGINT) };
         }
-        let status = crate::wake::wait_bounded(&mut self.child, INTERRUPT_GRACE);
-        let ended_on = if status.is_some() { SIGINT } else { SIGKILL };
-        if status.is_none() {
+        // Waited on unreaped: the server's pid, and so its session id, stays its own until the
+        // session is swept below.
+        let exited = crate::wake::wait_exit(&self.child, INTERRUPT_GRACE);
+        let ended_on = if exited { SIGINT } else { SIGKILL };
+        if !exited {
             kill_process_tree(self.pid);
-            let _ = self.child.kill();
-            let _ = self.child.wait();
         }
-        // Unconditional, and it is what makes the reader terminate: the server is reaped by here,
-        // but what it started — marion's own MCP bridge, holding both pipes' write ends — is not.
-        // The group survives its leader, so `kill(-pgid)` still addresses them.
-        kill_process_tree(self.pid);
+        // Unconditional, and it is what makes the reader terminate: what the server started —
+        // marion's own MCP bridge, holding both pipes' write ends — outlives it in its session.
+        // Swept, then the server reaped (`end_node`).
+        let reaped = crate::kill::end_node(&mut self.child).ok();
+        let status = reaped.filter(|_| exited);
         crate::kill::kill_groups(&below);
 
         let drain_deadline = Instant::now() + DRAIN_GRACE;
@@ -481,6 +480,12 @@ impl<'a, P: Peer> Driver<'a, P> {
         )
     }
 
+    /// Whether the server's process has exited, read without reaping it: [`Self::finish`] sweeps its
+    /// session while the unreaped pid still pins the session's id.
+    pub fn exited(&self) -> bool {
+        matches!(crate::wake::has_exited(&self.child), Ok(true))
+    }
+
     /// Whether the server's stdout has ended: every line it will ever write has been read.
     pub fn stdout_ended(&self) -> bool {
         self.shared.lock().eof
@@ -509,18 +514,18 @@ impl<P> Drop for Driver<'_, P> {
     fn drop(&mut self) {
         // Before the server is killed, for `finish`'s reason — and only while it runs: a reaped
         // server's pid may already name someone else's process.
-        let running = matches!(self.child.try_wait(), Ok(None));
+        let running = matches!(crate::wake::has_exited(&self.child), Ok(false));
         let below = if running {
             crate::kill::groups_below(self.pid)
         } else {
             Vec::new()
         };
         if running {
-            unsafe { kill(self.pid, SIGKILL) };
-            let _ = self.child.wait();
+            kill_process_tree(self.pid);
         }
-        // The group, for the reason `finish` sweeps it: the server's children hold its pipes.
-        kill_process_tree(self.pid);
+        // The session, for the reason `finish` sweeps it: the server's children hold its pipes.
+        // Nothing is signalled once `finish` has reaped the server.
+        let _ = crate::kill::end_node(&mut self.child);
         crate::kill::kill_groups(&below);
     }
 }
@@ -628,6 +633,56 @@ mod tests {
         Duration::new(t.sec as u64, t.nsec as u32)
     }
 
+    /// **What a server left in its session ends with the node**, as on a launch-only or duplex node:
+    /// the server forks a child into a group of its own that holds no pipe and exits by itself,
+    /// and is seen to exit (unreaped) before [`Driver::finish`] sweeps the session and reaps it.
+    #[test]
+    fn a_child_a_server_left_in_its_session_ends_with_the_node() {
+        let dir = marion_testsupport::scratch("rpc-session-orphan");
+        let pids = dir.join("pids");
+        let fork = dir.join("fork.pl");
+        std::fs::write(
+            &fork,
+            format!(
+                r#"if (fork() == 0) {{
+                       setpgrp(0, 0); close(STDIN); close(STDOUT); close(STDERR);
+                       open(my $f, ">>", "{p}"); print $f "$$\n"; close $f;
+                       sleep 900; exit 0;
+                   }}
+                   for (1..200) {{ last if -s "{p}"; select(undef, undef, undef, 0.01); }}"#,
+                p = pids.display()
+            ),
+        )
+        .unwrap();
+        let script = format!("perl {}", fork.display());
+        let mut d = Driver::spawn(&sh(&script, &dir), &dir, None, Mute).expect("sh");
+        assert!(marion_testsupport::until(|| d.exited()), "the server exits");
+        let _ = d.finish(false);
+        let left: Vec<i32> = std::fs::read_to_string(&pids)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        let alive: Vec<i32> = left
+            .iter()
+            .copied()
+            .filter(|p| {
+                !matches!(
+                    crate::procid::run_state(*p),
+                    crate::procid::RunState::Gone | crate::procid::RunState::Zombie
+                )
+            })
+            .collect();
+        for p in &left {
+            marion_testsupport::kill_hard(*p);
+        }
+        assert_eq!(left.len(), 1, "the child recorded itself");
+        assert!(
+            alive.is_empty(),
+            "left running after the node ended: {alive:?}"
+        );
+    }
+
     /// **A server whose stdout has ended is waited on by its exit, not re-asked in a loop.** EOF
     /// means no answer can arrive, so the wait blocks on the process until it goes or the deadline
     /// passes, and the caller then sees its exit.
@@ -651,7 +706,7 @@ mod tests {
                 spent < Duration::from_millis(150),
                 "{script}: spun for {spent:?} of CPU"
             );
-            assert_eq!(matches!(d.child.try_wait(), Ok(Some(_))), exits, "{script}");
+            assert_eq!(d.exited(), exits, "{script}");
             if exits {
                 assert!(
                     took < Duration::from_millis(1000),

@@ -144,7 +144,10 @@ impl Proc {
         {
             let (io, log) = (Arc::clone(&io), Arc::clone(&log));
             std::thread::spawn(move || {
-                let status = child.wait();
+                // Ended as marion ends a node once its leader exits (`kill::end_node`): what it
+                // left in its session goes with it. P-lifecycle judges what is left after that.
+                while !marion_supervisor::wake::wait_exit(&child, Duration::from_secs(3600)) {}
+                let status = marion_supervisor::kill::end_node(&mut child);
                 if let Ok(s) = &status {
                     log.w(
                         "note",

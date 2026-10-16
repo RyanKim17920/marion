@@ -39,16 +39,26 @@ pub fn wait_bounded(
     child: &mut std::process::Child,
     budget: Duration,
 ) -> Option<std::process::ExitStatus> {
+    if wait_exit(child, budget) {
+        child.wait().ok()
+    } else {
+        None
+    }
+}
+
+/// [`wait_bounded`] **without the reap**: whether the child exited within `budget`, its status left
+/// for the caller's reap — for one that ends the node's session first ([`crate::kill::end_node`]).
+/// A child that can no longer be waited on counts as exited.
+pub fn wait_exit(child: &std::process::Child, budget: Duration) -> bool {
     let deadline = Instant::now() + budget;
     let exit = ProcExit::new(child.id() as i32);
     loop {
         match step_child(child, &exit, &[], Some(deadline)) {
-            Ok(Some(s)) => return Some(s),
-            Ok(None) => {}
-            Err(_) => return None,
+            Ok(true) | Err(_) => return true,
+            Ok(false) => {}
         }
         if Instant::now() >= deadline {
-            return None;
+            return false;
         }
     }
 }
@@ -557,23 +567,42 @@ mod signal_imp {
     }
 }
 
-/// **One step of waiting for a child**: its status if it has exited; otherwise block until it
-/// exits (`exit`), one of `also` is readable, or `deadline` passes, and look once more. Reaps, as
-/// `Child::try_wait` does. A caller loops on it and re-examines its own state between steps — the
-/// step never sleeps on a timer, so the loop is exactly as busy as the child and `also` are.
+/// **One step of waiting for a child**: whether it has exited; otherwise block until it exits
+/// (`exit`), one of `also` is readable, or `deadline` passes, and look once more. **Never reaps**:
+/// the status stays the caller's, whose leader's unreaped pid is what keeps its session's id from
+/// naming a stranger's until the session is swept ([`crate::kill::end_node`]). A caller loops on it
+/// and re-examines its own state between steps — the step never sleeps on a timer, so the loop is
+/// exactly as busy as the child and `also` are.
 pub fn step_child(
-    child: &mut std::process::Child,
+    child: &std::process::Child,
     exit: &ProcExit,
     also: &[Option<BorrowedFd<'_>>],
     deadline: Option<Instant>,
-) -> std::io::Result<Option<std::process::ExitStatus>> {
-    if let Some(status) = child.try_wait()? {
-        return Ok(Some(status));
+) -> std::io::Result<bool> {
+    if has_exited(child)? {
+        return Ok(true);
     }
     let mut fds = vec![exit.fd()];
     fds.extend_from_slice(also);
     wait_until(&fds, deadline);
-    child.try_wait()
+    has_exited(child)
+}
+
+/// Whether `child` has exited, read without consuming its status (`waitid` with `WNOWAIT`). One
+/// already reaped is no longer the caller's to wait on (`ECHILD`) and has exited.
+pub fn has_exited(child: &std::process::Child) -> std::io::Result<bool> {
+    let pid = rustix::process::Pid::from_raw(child.id() as i32)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "zero child pid"))?;
+    match rustix::process::waitid(
+        rustix::process::WaitId::Pid(pid),
+        rustix::process::WaitIdOptions::EXITED
+            | rustix::process::WaitIdOptions::NOHANG
+            | rustix::process::WaitIdOptions::NOWAIT,
+    ) {
+        Ok(status) => Ok(status.is_some()),
+        Err(rustix::io::Errno::CHILD) => Ok(true),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// How often a wait re-checks when one of its sources has no descriptor: a platform with neither

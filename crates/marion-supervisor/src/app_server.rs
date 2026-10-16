@@ -567,9 +567,9 @@ impl Session<'_> {
     }
 }
 
-/// Whether the server's process has exited.
+/// Whether the server's process has exited ([`Driver::exited`]: unreaped).
 fn exited(node: &mut Driver<'_>) -> bool {
-    matches!(node.child.try_wait(), Ok(Some(_)))
+    node.exited()
 }
 
 /// The answer to `id`, taken out of the driver's index so a later request never sees it.

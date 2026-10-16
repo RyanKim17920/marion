@@ -1030,14 +1030,14 @@ fn live_turn(
         cmd.env_remove::<std::ffi::OsString>(k);
     }
     cmd.env(marion_harness::TMPDIR_ENV, tmp.path());
-    // A session of its own, so everything the probe starts is ended with it before `tmp` goes.
+    // A session of its own, so everything the probe starts is ended with it (`kill::end_node`, in
+    // `terminate` or the leak check) before `tmp` goes.
     crate::kill::lead_own_session(&mut cmd);
     let mut child = match crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd) {
         Ok(c) => c,
         Err(e) => return not_spawned(&e),
     };
     let pid = child.id() as i32;
-    let _session = ProbeSession(pid);
     // Drained from the start: a pipe nobody reads blocks the child once it fills, and stderr is
     // where a harness that could not authenticate puts its whole diagnosis.
     let stderr = drain(child.stderr.take());
@@ -1114,7 +1114,10 @@ fn terminate(
     interrupted: bool,
     trailing: &mut Vec<String>,
 ) -> Option<std::process::ExitStatus> {
-    let exit = crate::wake::wait_bounded(child, INTERRUPT_GRACE);
+    // Waited on unreaped, then the session swept and the child reaped: a node's own end.
+    let exit = crate::wake::wait_exit(child, INTERRUPT_GRACE)
+        .then(|| crate::kill::end_node(child).ok())
+        .flatten();
     match &exit {
         Some(s) => trailing.push(format!(
             "termination: exit {}{}",
@@ -1142,7 +1145,7 @@ fn leak_check(child: &mut std::process::Child, pid: i32, exited: bool) -> (bool,
         (true, "leak check: no process outlived the probe".into())
     } else {
         unsafe { kill(pid, SIGKILL) };
-        let _ = child.wait();
+        let _ = crate::kill::end_node(child);
         (
             false,
             format!(
@@ -1236,28 +1239,10 @@ struct AcpChild {
     /// What the driver's shutdown left: the agent's stderr, and whether SIGINT alone ended it.
     /// Taken once, by whichever of [`Self::silence`] and [`Self::finish`] needs it first.
     ended: Option<(String, bool)>,
-    /// The agent's whole session, ended and waited for after the driver's kill and before the
-    /// temp dir goes (fields drop in order).
-    _session: ProbeSession,
-    /// The probe's own `TMPDIR`, removed last.
+    /// The probe's own `TMPDIR`, removed after the driver (fields drop in order), whose end takes
+    /// the agent's whole session with it ([`crate::kill::end_node`]): an ACP agent's descendant
+    /// (an npx/tsx cache writer) never writes into the dir after its removal.
     _tmp: NodeTmp,
-}
-
-/// **A probe's process session, ended and waited for when this drops** ([`crate::kill::end_session`]).
-/// A probe's process leads a session of its own, and everything it starts stays in it unless it
-/// leaves; this is what keeps an ACP agent's descendant (an npx/tsx cache writer) from writing into
-/// the probe's temp dir after the dir is removed. Declared before the [`NodeTmp`] it guards, so it
-/// drops first.
-struct ProbeSession(i32);
-
-/// How long a probe's session is given to be seen ended. SIGKILL has no grace; this is only the
-/// bound on observing it.
-const SESSION_END_BOUND: Duration = Duration::from_secs(5);
-
-impl Drop for ProbeSession {
-    fn drop(&mut self) {
-        let _ = crate::kill::end_session(self.0, SESSION_END_BOUND);
-    }
 }
 
 /// The probe's ACP client, which serves nothing: §8's probe is a contract test of the agent, and a
@@ -1317,12 +1302,11 @@ fn probe_launch(
 const PROBE_TMP_PREFIX: &str = "marion-doctor-tmp-";
 
 /// **Remove the probe temp dirs under `root` whose doctor is gone**: named for a pid that no longer
-/// runs, so no probe of it can still be using one. Before [`probe_session`]'s wait, an agent's
-/// descendant could recreate a dir after its removal, and those stayed behind. A dir of this
-/// process, or of a doctor still running, is left alone; a pid now worn by an unrelated process
-/// keeps its dir, which errs toward leaving one. Answers how many were removed.
-///
-/// [`probe_session`]: ProbeSession
+/// runs, so no probe of it can still be using one. Before a probe's session was ended with it
+/// ([`crate::kill::end_node`]), an agent's descendant could recreate a dir after its removal, and
+/// those stayed behind. A dir of this process, or of a doctor still running, is left alone; a pid
+/// now worn by an unrelated process keeps its dir, which errs toward leaving one. Answers how many
+/// were removed.
 fn sweep_stale_probe_dirs(root: &Path) -> usize {
     let own = std::process::id();
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -1373,7 +1357,6 @@ impl AcpChild {
         };
         let driver = crate::rpc::Driver::spawn(&inv, tmp.path(), None, ProbeClient)?;
         Ok(Self {
-            _session: ProbeSession(driver.pid),
             driver,
             ended: None,
             _tmp: tmp,

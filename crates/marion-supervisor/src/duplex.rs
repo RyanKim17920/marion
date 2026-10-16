@@ -714,12 +714,13 @@ pub fn run_duplex(
     if outcome.stopped.is_some() {
         guard.end_now(&mut child);
     }
-    let status = child.wait()?;
-    // A node leading its own session ends with everything in it, as a launch-only node does
-    // (`run_bounded_with`): a child the harness left behind is not the harness's to keep.
-    if spec.wall_clock.is_some() {
-        crate::kill::end_session(pid, DRAIN_GRACE);
-    }
+    // The leader's exit, observed unreaped.
+    let exit = crate::wake::ProcExit::new(pid);
+    while !crate::wake::step_child(&child, &exit, &[], None)? {}
+    // A node ends with everything in its session, as a launch-only node does (`run_bounded_with`):
+    // a child the harness left behind is not the harness's to keep. A node with no wall clock led
+    // no session of its own, and nothing is in one.
+    let status = crate::kill::end_node(&mut child)?;
     let (stderr, timed_out) = guard.stop(false, &mut child);
     // What the node said after marion's last boundary — a turn it queued itself from a mid-turn
     // write and ran with stdin already closed (see [`FOLD_SETTLE`]). Recorded, never answered: the
@@ -799,7 +800,7 @@ impl RunGuard {
                 kill_process_tree(self.pid);
             }
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = crate::kill::end_node(child);
         }
         self.finished.store(true, Ordering::SeqCst);
         if let Some(h) = self.watchdog {
