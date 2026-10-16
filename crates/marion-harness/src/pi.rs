@@ -210,13 +210,34 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `PI_CODING_AGENT_DIR` — the variable the canned row already relocates (item 3). A profile is
     // an agent dir of its own; existence is the whole probe, and the file is never opened. The
     // login is pi's own `/login`, inside its TUI.
+    //
+    // **A profile is the operator's pi on another account**, so it shares everything pi loads
+    // from the agent dir but the login: the settings; the resources pi discovers there (0.80.2
+    // `dist/core/resource-loader.js`: `extensions/`, `skills/`, `prompts/`, `themes/`, the global
+    // `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`); the packages `settings.json` lists, installed
+    // under `npm/` and `git/` (`package-manager.js`; unlinked, pi installs them afresh into the
+    // profile); the operator's project trust (`trust.json`); and `keybindings.json`. Not
+    // `models.json`: a custom provider there may carry its `apiKey` inline.
     profile: Some(crate::profile::ProfileCarrier {
         env: AGENT_DIR_ENV,
         clear: &[],
         status: crate::profile::Status::FileExists("auth.json"),
         login_hint: "",
         home_default: ".pi/agent",
-        shared: &["settings.json"],
+        shared: &[
+            "settings.json",
+            "extensions",
+            "skills",
+            "prompts",
+            "themes",
+            "AGENTS.md",
+            "SYSTEM.md",
+            "APPEND_SYSTEM.md",
+            "npm",
+            "git",
+            "trust.json",
+            "keybindings.json",
+        ],
         note: "pi 0.80.2 dist/config.js: getAuthPath() = <PI_CODING_AGENT_DIR>/auth.json",
     }),
     client_name: None,
