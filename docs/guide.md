@@ -293,8 +293,8 @@ The step kinds:
   reviewed again, until a round is clean (`clean`) or the last one still blocks (`blocked`).
 - **`land`** (`of = "<step>"`) lands that step's work: `mode = "branch"` (the default) names its
   branch and the command that merges it; `mode = "ff"` fast-forwards your checkout to it, only while
-  the checkout has no uncommitted change and is still on the commit it was on when the run started
-  — never a merge commit, never a force.
+  the checkout has no uncommitted change and is still on the commit it was on when the run
+  started. It never makes a merge commit and never force-updates.
 
 Each step's agents are top-level agents in worktrees of their own, and each step that changes files
 is cut at the commit of the last step before it that did. `{input.X}` is an input you pass;
@@ -331,7 +331,18 @@ and verification command first; any edit revokes it.
 
 ## Sharing a run
 
-`marion export <id>` writes a report of a node and everything under it — the tree, each node's task, steers, a condensed timeline of what it ran, its checks, what it reported, the branch it landed and the tokens it spent — as Markdown for a pull request or issue, or with `-o report.html` as one self-contained page (inline style, no script, a CSP that fetches nothing). Keys behind the tree's endpoint nodes, secret-named environment values, secret-shaped strings (`sk-…`, `ghp_…`, bearer tokens, PEM keys, long hex) and your home directory are scrubbed from every string and again from the rendered file; the root's own prompt is left out unless `--include-prompt`, and `-o` writes the file `0600`. It reads the journal and contracts directly and starts no supervisor. [`examples/run-report.md`](examples/run-report.md) is what it writes for the test fixture (and [`run-report.html`](examples/run-report.html) the page).
+`marion export <id>` writes a report of a node and everything under it as Markdown, for a pull
+request or issue. With `-o report.html` it writes one self-contained page instead (inline style,
+no script, a CSP that fetches nothing). The report includes the tree, each node's task, steers, a
+condensed timeline of what it ran, its checks, what it reported, the branch it landed and the
+tokens it spent.
+
+Keys behind the tree's endpoint nodes, secret-named environment values, secret-shaped strings
+(`sk-…`, `ghp_…`, bearer tokens, PEM keys, long hex) and your home directory are scrubbed from
+every string and again from the rendered file. The root's own prompt is left out unless
+`--include-prompt`, and `-o` writes the file `0600`. Export reads the journal and contracts
+directly and starts no supervisor. [`examples/run-report.md`](examples/run-report.md) is what it
+writes for the test fixture, and [`run-report.html`](examples/run-report.html) is the page.
 
 ## Agent types
 
