@@ -212,7 +212,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // server too; its folder trust is off unless the operator's settings enable it, and neither
     // `QWEN_CODE_SYSTEM_SETTINGS_PATH` nor `QWEN_CODE_SYSTEM_DEFAULTS_PATH` turned it on for
     // `qwen mcp list`), so a live launch in an untrusted repository that has one is refused
-    // ([`Arg::RefuseUntrusted`]).
+    // ([`Arg::RefuseUntrusted`]). Looked for in the node's cwd, as 0.23.0 reads it: its shipped
+    // `loadSettings(workspaceDir = process.cwd())` and `Storage.getQwenDir()` join `.qwen` to the
+    // config's `targetDir: cwd`, never to a git root above it.
     repo_config: &[".qwen"],
     login_env: LoginEnv {
         login: &[

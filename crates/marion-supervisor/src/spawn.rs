@@ -975,6 +975,9 @@ pub fn commit_child_work(
 /// own `HEAD` (the common dir's, which no child writes), so a carried or resumed tree is held to
 /// the operator's commit, not to one a parent made. Each path is read as the harness reads it
 /// ([`config_as_committed`]). Any git failure answers `false`.
+///
+/// The reference is only as much the operator's as their `HEAD` is: an operator who checks out a
+/// child's branch (or merges it) makes that child's commits theirs, and its config with them.
 pub fn repo_config_unchanged(wt: Tree<'_>, base: &Oid, common: &Path, paths: &[&str]) -> bool {
     if paths.is_empty() {
         return true;
