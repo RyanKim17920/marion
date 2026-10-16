@@ -553,17 +553,16 @@ impl Worker {
             if held.is_none() && inboxes.queued(&self.agent) == 0 {
                 continue;
             }
+            // One read of the screen for the licence, the gate and the hold: read apart, a dialog
+            // drawn between them would be licensed as one screen and gated as another.
+            let state = host.input_state();
             let boot = (!booted).then(|| Boot {
                 settle: self.params.settle,
                 mark: self.params.boot_mark,
-                answer_dialogs: licence(
-                    host.answers_boot_dialogs(),
-                    host.input_state().boot_dialog,
-                    &answered,
-                ),
+                answer_dialogs: licence(host.answers_boot_dialogs(), state.boot_dialog, &answered),
             });
             let decision = gate(
-                &host.input_state(),
+                &state,
                 Instant::now(),
                 &self.policy,
                 boot,
@@ -573,7 +572,7 @@ impl Worker {
             // Tell the launcher what the first message waits on, where it is a boot dialog marion
             // does not answer: it raises the node's attention item and, past the grace, ends it.
             // `Expired` is final: the launcher ends the node on it.
-            let showing = host.input_state().boot_dialog;
+            let showing = state.boot_dialog;
             let was = host.dialog_hold();
             host.set_dialog_hold(match (&decision, showing) {
                 _ if matches!(was, DialogHold::Expired(_)) => was,
