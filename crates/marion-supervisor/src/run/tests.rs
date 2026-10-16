@@ -1129,6 +1129,7 @@ fn the_bound_returns_even_when_an_escapee_survives_the_kill_and_holds_the_pipe()
             SysCommand::new("perl").args(["-e", &script]),
             StdDuration::from_millis(300),
             kill_only_the_direct_child,
+            AfterExit::EndSession,
             None,
             None,
         );
@@ -1251,6 +1252,7 @@ fn stdout_lines_reach_the_hook_while_the_child_runs_and_the_capture_stays_whole(
         SysCommand::new("sh").args(["-c", &script]),
         StdDuration::from_secs(30),
         kill_process_tree,
+        AfterExit::EndSession,
         None,
         Some(&on_line),
     )
@@ -3149,14 +3151,10 @@ fn a_large_verification_output_is_persisted_whole_and_capped_only_on_return() {
     assert_eq!(ev.stdout.original_bytes, bytes);
 }
 
-/// **What a node's leader leaves behind in its session ends with the node.** copilot's npm
-/// launcher exits on SIGTERM and leaves its platform binary running (conformance P-lifecycle,
-/// 1.0.89); any harness whose child outlives it is the same leak. Here the leader forks a child into
-/// a group of its own — the session stays the node's — that holds no pipe, then exits at once: the
-/// run is over, and the child must be too.
-#[test]
-fn a_child_its_leader_left_behind_in_the_session_ends_with_the_node() {
-    let dir = scratch("supervisor-session-orphan");
+/// Run a leader that forks a child into a group of its own — the session stays the leader's — that
+/// holds no pipe, then exits at once; the pids of the children still running once the run is over.
+fn left_running_after(after: AfterExit, name: &str) -> Vec<i32> {
+    let dir = scratch(name);
     let pids = dir.join("pids");
     let script = format!(
         r#"my $pid = fork();
@@ -3171,9 +3169,13 @@ fn a_child_its_leader_left_behind_in_the_session_ends_with_the_node() {
            exit 0;"#,
         p = pids.display()
     );
-    let out = run_bounded(
+    let out = run_bounded_with(
         SysCommand::new("perl").args(["-e", &script]),
         StdDuration::from_secs(30),
+        kill_process_tree,
+        after,
+        None,
+        None,
     )
     .expect("the run completes");
     let orphans: Vec<i32> = std::fs::read_to_string(&pids)
@@ -3196,8 +3198,26 @@ fn a_child_its_leader_left_behind_in_the_session_ends_with_the_node() {
     }
     assert_eq!(out.code, Some(0));
     assert_eq!(orphans.len(), 1, "the child recorded itself");
+    alive
+}
+
+/// **What a node's leader leaves behind in its session ends with the node.** copilot's npm
+/// launcher exits on SIGTERM and leaves its platform binary running (conformance P-lifecycle,
+/// 1.0.89); any harness whose child outlives it is the same leak.
+#[test]
+fn a_child_its_leader_left_behind_in_the_session_ends_with_the_node() {
+    let alive = left_running_after(AfterExit::EndSession, "supervisor-session-orphan");
     assert!(
         alive.is_empty(),
         "left running after the node ended: {alive:?}"
     );
+}
+
+/// **A command marion runs for itself keeps what it started on purpose**: a verification line that
+/// starts a compiler cache's server, a version probe, a login status. Only a node's session is
+/// swept ([`run_bounded_watched`]); [`run_bounded`] reaps its child alone.
+#[test]
+fn a_daemon_a_non_node_command_started_outlives_the_command() {
+    let alive = left_running_after(AfterExit::ReapOnly, "supervisor-session-daemon");
+    assert_eq!(alive.len(), 1, "the daemon was ended with the command");
 }

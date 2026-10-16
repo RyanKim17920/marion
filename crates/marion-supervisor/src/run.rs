@@ -584,7 +584,14 @@ pub fn run_bounded(
     command: &mut SysCommand,
     timeout: StdDuration,
 ) -> Result<CommandOutput, SpawnError> {
-    run_bounded_with(command, timeout, kill_process_tree, None, None)
+    run_bounded_with(
+        command,
+        timeout,
+        kill_process_tree,
+        AfterExit::ReapOnly,
+        None,
+        None,
+    )
 }
 
 /// §6.7's default bound for one verification command: killed on expiry with `timed_out: true`.
@@ -736,9 +743,21 @@ pub(crate) fn run_bounded_watched(
         command,
         timeout,
         kill_process_tree,
+        AfterExit::EndSession,
         Some(on_started),
         on_line,
     )
+}
+
+/// What [`run_bounded_with`] does once its child is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterExit {
+    /// A node ([`run_bounded_watched`]): everything left in its session ends with it.
+    EndSession,
+    /// A command marion runs for itself ([`run_bounded`]): a verification line, a version probe, a
+    /// login status, a session listing. Reaped alone: a daemon it started on purpose (a compiler
+    /// cache's server) is the operator's, not a node's leftover.
+    ReapOnly,
 }
 
 /// `run_bounded` with the expiry kill injected, so tests can run the path where the sweep *fails*
@@ -747,6 +766,7 @@ fn run_bounded_with(
     command: &mut SysCommand,
     timeout: StdDuration,
     kill_tree: fn(i32),
+    after: AfterExit,
     on_started: Option<&dyn Fn(i32)>,
     on_line: Option<LineHook<'_>>,
 ) -> Result<CommandOutput, SpawnError> {
@@ -831,11 +851,13 @@ fn run_bounded_with(
             .map(|wake| wake.as_ref().map(|w| w.fd()));
         exited = crate::wake::step_child(&mut child, &exit, lines.as_slice(), Some(deadline))?;
     };
-    // **The node is over, so is everything in its session.** The leader led a session of its own
+    // **A node is over, so is everything in its session.** The leader led a session of its own
     // (above), and a child it left behind keeps that session: copilot's npm launcher exits on
     // SIGTERM and leaves its platform binary running. The session id is the leader's pid, which
     // `end_session` reads afresh each round rather than by ancestry the reap already broke.
-    crate::kill::end_session(child.id() as i32, DRAIN_GRACE);
+    if after == AfterExit::EndSession {
+        crate::kill::end_session(child.id() as i32, DRAIN_GRACE);
+    }
     // The child is reaped; anything still holding a write end is an escapee. One deadline for both
     // drains, so the total wait is `DRAIN_GRACE`, not twice it.
     let drain_deadline = Instant::now() + DRAIN_GRACE;
