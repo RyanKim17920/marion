@@ -2082,6 +2082,11 @@ impl Shared {
         let changed = modes.take_changed();
         drop(modes);
         if changed {
+            // Callers on the write path (`write_operator_keys`, `inject`) still hold `typing`
+            // here. That cannot deadlock today: `notify` takes only the signal's own lock, writes
+            // one byte to a non-blocking pipe and wakes condvar waiters, so it never waits on
+            // `typing` or `modes`, and a woken waiter takes `typing` only after this caller lets
+            // it go.
             self.dialogs_changed.notify();
         }
         out
