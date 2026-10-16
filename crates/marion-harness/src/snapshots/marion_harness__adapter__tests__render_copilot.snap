@@ -68,8 +68,6 @@ args:
   json
   -C
   /wt
-  --disable-builtin-mcps
-  --no-custom-instructions
   --model
   canned-1
   --available-tools=marion-report
@@ -443,8 +441,6 @@ args:
   json
   -C
   /wt
-  --disable-builtin-mcps
-  --no-custom-instructions
   --model
   canned-1
   --resume=session-1
