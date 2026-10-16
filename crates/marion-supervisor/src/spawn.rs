@@ -351,8 +351,9 @@ pub enum SpawnError {
     /// behind it. A `spawn { background: true }` plus `wait` is the way to ask again.
     #[error(
         "the child is still running after {0} s, the longest a blocking `spawn` waits (its \
-         timeout plus a grace). It keeps running and its contract will still be written; use \
-         `background: true` and `wait` to collect it."
+         timeout plus a grace). It keeps running and its contract will still be written; nothing \
+         was cancelled. `list` shows it. For a long task, spawn with `background: true` next \
+         time."
     )]
     OutlivedTheWait(u64),
     /// The proposed child's first durable fact could not be confirmed, so no side effect was taken
