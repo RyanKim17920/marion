@@ -232,6 +232,20 @@ pub enum FailureCause {
 }
 
 impl FailureCause {
+    /// The cause with `f` applied to the line of the harness's it quotes; a budget quotes none.
+    pub fn map_line(self, f: impl FnOnce(&str) -> String) -> Self {
+        match self {
+            FailureCause::UsageLimit { line, resets_at } => FailureCause::UsageLimit {
+                line: f(&line),
+                resets_at,
+            },
+            FailureCause::RateLimit { line } => FailureCause::RateLimit { line: f(&line) },
+            FailureCause::Auth { line } => FailureCause::Auth { line: f(&line) },
+            FailureCause::Outage { line } => FailureCause::Outage { line: f(&line) },
+            budget @ FailureCause::Budget { .. } => budget,
+        }
+    }
+
     /// The cause as a person reads it — `login refused: <the harness's line>` — the one spelling
     /// `marion ls <id>`, a root's exit description and an export all print.
     pub fn words(&self) -> String {

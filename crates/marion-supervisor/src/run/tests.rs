@@ -3251,3 +3251,51 @@ fn a_daemon_a_non_node_command_started_outlives_the_command() {
     let alive = left_running_after(AfterExit::ReapOnly, "supervisor-session-daemon");
     assert_eq!(alive.len(), 1, "the daemon was ended with the command");
 }
+
+/// **A child's cause is kept scrubbed**: the line it quotes reaches the contract — and from it a
+/// parent's spawn result, `node/get` and `marion ls` — with the node's own endpoint key masked
+/// (a key no shape would catch), controls and bidi overrides escaped, and one line long.
+#[test]
+fn a_childs_cause_is_kept_with_its_key_masked_and_its_controls_escaped() {
+    use marion_core::provider::{CredentialId, KeyHeader, Wire};
+    let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
+    let key = "plainvalueKEYwithnoshape42";
+    let endpoint = crate::endpoint::Endpoint {
+        provider: "groq".into(),
+        wire: Wire::OpenAiChat,
+        base_url: "https://api.groq.com/openai/v1".into(),
+        key: Some(crate::credentials::Secret::new(key.to_string())),
+        credential: CredentialId::default_for("groq"),
+        fallbacks: vec![],
+        model: "llama".into(),
+        key_header: KeyHeader::XApiKey,
+        route: crate::endpoint::Route::Native,
+    };
+    let message = format!(
+        "unexpected status 401 Unauthorized: Incorrect API key provided: {key}\\u001b]0;x\\u0007 \\u202etxt"
+    );
+    let run = ChildRun {
+        stdout: format!(r#"{{"method":"error","params":{{"error":{{"message":"{message}"}}}}}}"#),
+        stderr: String::new(),
+        exit: ChildExit {
+            code: Some(1),
+            signal: None,
+            timed_out: false,
+        },
+        capture_truncated: false,
+        denied_permissions: vec![],
+        stopped: None,
+        last_turn_at: 0,
+    };
+    let cause = attempt_cause(adapter.as_ref(), &run, None, Some(&endpoint)).expect("a cause");
+    let words = cause.words();
+    assert!(
+        words.starts_with("login refused: unexpected status 401"),
+        "{words}"
+    );
+    assert!(!words.contains(key), "{words}");
+    assert!(
+        !words.chars().any(|c| c.is_control() || c == '\u{202e}'),
+        "{words:?}"
+    );
+}

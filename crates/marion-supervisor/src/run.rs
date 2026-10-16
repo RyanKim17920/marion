@@ -1271,7 +1271,21 @@ fn attempt_cause(
     endpoint: Option<&crate::endpoint::Endpoint>,
 ) -> Option<marion_core::contract::FailureCause> {
     let said = format!("{}\n{}", run.stderr, stream_failure.unwrap_or_default());
-    adapter.failure_cause(&said, &run.stdout, billing(endpoint))
+    adapter
+        .failure_cause(&said, &run.stdout, billing(endpoint))
+        .map(|c| scrubbed(c, endpoint))
+}
+
+/// **A cause as it may be kept**: the harness's line it quotes made one line safe to journal, to
+/// print and to hand a parent agent (`Scrubber::one_line`), with the node's own endpoint key
+/// masked beside every key shape — a vendor's error can echo the key it refused, and a key with
+/// no known shape is caught only by its value.
+pub(crate) fn scrubbed(
+    cause: marion_core::contract::FailureCause,
+    endpoint: Option<&crate::endpoint::Endpoint>,
+) -> marion_core::contract::FailureCause {
+    let scrub = crate::export::scrub::Scrubber::from_process(endpoint.and_then(|e| e.key.clone()));
+    cause.map_line(|line| scrub.one_line(line))
 }
 
 /// **A child attempt, as the relaunch policy reads it**: the cause it failed on, from the one

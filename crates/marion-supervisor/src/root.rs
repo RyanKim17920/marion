@@ -1690,7 +1690,9 @@ fn root_failure_before_a_turn(
         return None;
     }
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref()).ok()?;
-    adapter.failure_cause(&said, &stdout, crate::run::billing(node.endpoint.as_ref()))
+    adapter
+        .failure_cause(&said, &stdout, crate::run::billing(node.endpoint.as_ref()))
+        .map(|c| crate::run::scrubbed(c, node.endpoint.as_ref()))
 }
 
 /// What a root said about how it ended, as the one classifier reads it: its stderr with its
@@ -1712,7 +1714,9 @@ fn what_the_root_said(o: &RootOutcome) -> (String, String) {
 fn roots_failure_cause(node: &RootNode, o: &RootOutcome) -> Option<FailureCause> {
     let (said, stdout) = what_the_root_said(o);
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref()).ok()?;
-    adapter.failure_cause(&said, &stdout, crate::run::billing(node.endpoint.as_ref()))
+    adapter
+        .failure_cause(&said, &stdout, crate::run::billing(node.endpoint.as_ref()))
+        .map(|c| crate::run::scrubbed(c, node.endpoint.as_ref()))
 }
 
 /// **The same root on its next credential**: the launch from before any endpoint was applied,
