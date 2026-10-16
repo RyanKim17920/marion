@@ -713,6 +713,46 @@ mod tests {
         );
     }
 
+    /// **A hard link from the node's own dirs does not read a sibling's token either.** Seatbelt
+    /// matches the path a read names, so a link the node made in its own agent dir or workspace
+    /// to a sibling's `config/node-token` would be a second name for the file under a path the
+    /// read rule allows; making that link must be refused.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_hard_link_from_its_own_dirs_reads_no_other_nodes_token() {
+        assert!(support().available(), "{}", support().describe());
+        let dir = marion_testsupport::scratch("osb-hardlink");
+        let (spec, mut inv) = node_in(&dir, Auth::Canned);
+        let sibling = dir.join("sibling");
+        std::fs::create_dir_all(sibling.join("config")).unwrap();
+        std::fs::write(sibling.join("config/node-token"), "sibling-secret").unwrap();
+        let s = sibling.display();
+        inv.args = vec![
+            "-c".into(),
+            format!(
+                "ln '{s}/config/node-token' ../agent/linked; cat ../agent/linked; \
+                 ln '{s}/config/node-token' linked; cat linked; \
+                 ln '{s}/config' ../agent/dirlink; cat ../agent/dirlink/node-token; true"
+            ),
+        ];
+        inv.sandbox = Some(
+            SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+        );
+        let tmp = dir.join("agent/tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = inv.command(&tmp).output().expect("the process runs");
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("sibling-secret"),
+            "a hard link read the sibling's token: {out:?}"
+        );
+        assert!(!dir.join("agent/linked").exists(), "{out:?}");
+        assert!(!dir.join("wt/linked").exists(), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Operation not permitted"),
+            "refused by the sandbox, not by chance: {out:?}"
+        );
+    }
+
     /// **Under its plan a process writes its workspace and nothing else**: the write outside is
     /// refused by the kernel and the file never appears.
     #[test]
