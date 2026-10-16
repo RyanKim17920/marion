@@ -264,6 +264,10 @@ pub struct PastePolicy {
     /// How often a held message looks again. The holds end on state marion is not told about (a
     /// key, a mode), so they are re-read — only while a message waits.
     pub recheck: Duration,
+    /// How long a message held on state marion **is** told about — an ask leaving the screen
+    /// rings the host's `dialogs_changed`, which wakes the driver — waits before it looks anyway.
+    /// The safety path, not the mechanism.
+    pub backstop: Duration,
 }
 
 impl PastePolicy {
@@ -272,6 +276,7 @@ impl PastePolicy {
         paste_mode_grace: Duration::from_secs(30),
         dialog_bound: Duration::from_secs(30),
         recheck: Duration::from_millis(100),
+        backstop: Duration::from_secs(30),
     };
 
     /// [`Self::PRODUCTION`] for a node whose wall-clock bound is `bound`: a boot dialog it is held
@@ -335,7 +340,8 @@ pub fn gate(
     // a paste's text is lost and its submit approves (codex 0.160.1's `› 1. Yes, proceed`). The
     // grace's clock is left alone — an ask is not the terminal failing to be pasteable.
     if state.ask.is_some() {
-        return Gate::Wait(Hold::Ask, now + policy.recheck);
+        // The prompt leaving the screen wakes the driver; the look below is the backstop.
+        return Gate::Wait(Hold::Ask, now + policy.backstop);
     }
     if let Some(typed) = state.last_operator_input {
         let quiet_at = typed + policy.operator_quiet;
@@ -432,6 +438,14 @@ pub struct PasteInjector {
     signal: Mutex<Signal>,
     wake: Condvar,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+/// The host's `dialogs_changed` wakes the driver as a queued message does: a held message looks
+/// again the moment what the screen shows changes.
+impl crate::wake::Waker for PasteInjector {
+    fn wake(&self) {
+        DeliveryPort::wake(self);
+    }
 }
 
 impl DeliveryPort for PasteInjector {
@@ -557,6 +571,7 @@ impl Worker {
                 self.params.asks,
                 Some(self.params.boot()),
             );
+            host.dialogs_changed().attach(&self.port);
         }
         let mut next_look: Option<Instant> = None;
         while self.await_work(next_look.take()) {

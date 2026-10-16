@@ -78,6 +78,7 @@ fn policy() -> PastePolicy {
         paste_mode_grace: Duration::from_secs(30),
         dialog_bound: Duration::from_secs(600),
         recheck: Duration::from_millis(100),
+        backstop: Duration::from_secs(30),
     }
 }
 
@@ -714,6 +715,8 @@ fn fast() -> PastePolicy {
         paste_mode_grace: Duration::from_secs(30),
         dialog_bound: Duration::from_secs(30),
         recheck: Duration::from_millis(10),
+        // Past every bed's bound: a hold on an ask that ends does so on the host's wake.
+        backstop: Duration::from_secs(600),
     }
 }
 
@@ -1236,7 +1239,7 @@ fn an_ask_holds_every_paste_and_never_refuses_it() {
         for later in [Duration::ZERO, p.paste_mode_grace, p.dialog_bound * 2] {
             assert_eq!(
                 gate(&asking, now + later, &p, boot, &mut clock),
-                Gate::Wait(Hold::Ask, now + later + p.recheck),
+                Gate::Wait(Hold::Ask, now + later + p.backstop),
                 "boot {boot:?}, {later:?} in"
             );
         }

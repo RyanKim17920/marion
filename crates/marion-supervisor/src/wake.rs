@@ -126,6 +126,18 @@ impl Pipe {
     }
 }
 
+/// What a [`Signal`] wakes on every notify: a [`Pipe`] a poll loop reads, or a thread's own wake
+/// (the paste driver's), so neither has to look on a timer for a change it is told of.
+pub trait Waker: Send + Sync {
+    fn wake(&self);
+}
+
+impl Waker for Pipe {
+    fn wake(&self) {
+        Pipe::wake(self);
+    }
+}
+
 /// A broadcast "something changed", with a generation so a waiter cannot miss a change that
 /// happened between its look and its wait.
 #[derive(Debug, Default)]
@@ -137,7 +149,7 @@ pub struct Signal {
 #[derive(Debug, Default)]
 struct SignalState {
     generation: u64,
-    pipes: Vec<Weak<Pipe>>,
+    wakers: Vec<Weak<dyn Waker>>,
 }
 
 impl Signal {
@@ -146,13 +158,13 @@ impl Signal {
     }
 
     /// Advance the generation, wake every thread in [`Self::wait_past`], and wake every attached
-    /// pipe. Attached pipes whose owner has gone are forgotten here.
+    /// waker. Attached wakers whose owner has gone are forgotten here.
     pub fn notify(&self) {
         let mut state = self.lock();
         state.generation = state.generation.wrapping_add(1);
-        state.pipes.retain(|p| match p.upgrade() {
-            Some(p) => {
-                p.wake();
+        state.wakers.retain(|w| match w.upgrade() {
+            Some(w) => {
+                w.wake();
                 true
             }
             None => false,
@@ -188,9 +200,11 @@ impl Signal {
         state.generation
     }
 
-    /// Wake `pipe` on every future [`Self::notify`], for as long as its owner holds it.
-    pub fn attach(&self, pipe: &Arc<Pipe>) {
-        self.lock().pipes.push(Arc::downgrade(pipe));
+    /// Wake `waker` on every future [`Self::notify`], for as long as its owner holds it.
+    pub fn attach<W: Waker + 'static>(&self, waker: &Arc<W>) {
+        let weak: Weak<W> = Arc::downgrade(waker);
+        let weak: Weak<dyn Waker> = weak;
+        self.lock().wakers.push(weak);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, SignalState> {
