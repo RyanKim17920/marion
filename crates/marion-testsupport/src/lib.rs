@@ -439,19 +439,56 @@ fn output_within(
         let err = err.join().unwrap_or_else(|_| Ok(Vec::new()));
         let _ = tx.send(out.and_then(|out| err.map(|err| (out, err))));
     });
-    match rx.recv_timeout(budget) {
-        Ok(drained) => Some(drained.and_then(|(stdout, stderr)| {
-            child.wait().map(|status| std::process::Output {
-                status,
-                stdout,
-                stderr,
-            })
-        })),
-        Err(_) => {
-            // SAFETY: plain libc call. The leader is unreaped, so its pid is still this group's id.
-            let _ = unsafe { killpg(child.id() as i32, SIGKILL) };
-            let _ = child.wait();
-            None
+    let deadline = Instant::now() + budget;
+    let cut_off = |child: &mut std::process::Child| {
+        // SAFETY: plain libc call. The leader is unreaped, so its pid is still this group's id.
+        let _ = unsafe { killpg(child.id() as i32, SIGKILL) };
+        let _ = child.wait();
+        None
+    };
+    let Ok(drained) = rx.recv_timeout(budget) else {
+        return cut_off(&mut child);
+    };
+    // Pipes at EOF is not an exit: a leader that closed its stdio can still hang. Its exit is
+    // waited on under what is left of the same budget, again without reaping it, so a cut-off
+    // still kills a group whose id is this leader's.
+    let pid = child.id();
+    let (exited, on_exit) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        exited_unreaped(pid);
+        let _ = exited.send(());
+    });
+    if on_exit
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .is_err()
+    {
+        return cut_off(&mut child);
+    }
+    Some(drained.and_then(|(stdout, stderr)| {
+        child.wait().map(|status| std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }))
+}
+
+/// Blocks until child `pid` has exited, leaving it unreaped (`waitid` with `WNOWAIT`), so the
+/// caller still holds its pid. Returns at once for a pid that is no longer this process's child.
+fn exited_unreaped(pid: u32) {
+    loop {
+        // SAFETY: an all-zero `siginfo_t` is a valid out-parameter for `waitid`.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return;
         }
     }
 }
@@ -1979,6 +2016,33 @@ mod tests {
             .expect("echo answers")
             .expect("echo runs");
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1.2.3");
+    }
+
+    /// **A leader that closes its stdio and then hangs is cut off too**: pipes at EOF are not an
+    /// exit, and the wait for the exit is under the same budget.
+    #[test]
+    fn a_probe_that_closes_its_output_then_hangs_is_cut_off() {
+        let dir = scratch("gate-hang-closed");
+        let marker = dir.join("still-running");
+        let hang = dir.join("hang");
+        write_executable(
+            &hang,
+            format!(
+                "#!/bin/sh\necho 1.2.3\nexec >/dev/null 2>&1\nsleep 3; touch '{}'\n",
+                marker.display()
+            ),
+        );
+        // A budget well past a loaded machine's shell start, so the pipes reach EOF inside it and
+        // only the exit wait can run out.
+        let started = Instant::now();
+        assert!(output_within(&mut Command::new(&hang), Duration::from_millis(1500)).is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "{:?}",
+            started.elapsed()
+        );
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(!marker.exists(), "the hung leader was killed");
     }
 
     /// **A hung probe's descendants die with it.** The shape is an npm wrapper's: the leader starts

@@ -18,6 +18,9 @@ marion-core = { path = "../marion-core" }
 # For each pinned harness's verified versions, which are its row's (`HarnessSpec::verified`).
 marion-harness = { path = "../marion-harness" }
 serde_json.workspace = true
+# `waitid(WNOWAIT)`, so a bounded probe waits on its leader's exit without reaping it. Already in
+# the lock.
+libc = "0.2"
 
 [dev-dependencies]
 # The three-axis checks (`tests/three_axis/`) read the workspace's own source as a syntax tree, so

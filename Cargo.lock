@@ -590,6 +590,7 @@ dependencies = [
 name = "marion-testsupport"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "marion-core",
  "marion-harness",
  "proc-macro2",
