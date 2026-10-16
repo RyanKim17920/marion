@@ -160,7 +160,7 @@ and never hides your credentials from the harness.
 - **The node's token never goes on argv.** Each node's bridge token reaches its harness through a
   declaration file or the environment. A lint rejects code that puts a secret on argv, and an
   end-to-end test reads the process table to confirm it.
-- **Stored keys are never printed or logged.** A stored key is never printed or logged; its type redacts `Debug`,
+- **Stored keys are never printed or logged.** A stored key's type redacts `Debug`,
   and credential files are written `0600`. marion creates its state directory `0700`, and the
   supervisor's socket checks each caller's uid.
 - **A node cannot act as you on the supervisor's socket.** Every connection first says who it
