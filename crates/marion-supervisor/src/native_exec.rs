@@ -176,13 +176,17 @@ impl NativeCommandLauncher {
         // The pid is announced by `spawn_pty` itself, between `spawn()` and the first byte — the
         // only instant a durable record can name this process while marion still holds it.
         let on_started = |pid: i32| recorder.spawned(pid);
-        host.adopt(crate::pty::spawn_pty(
-            witness,
-            &mut command,
-            host.master(),
-            crate::pty::StdinPlan::TerminalSlave,
-            Some(&on_started),
-        )?);
+        // The operator's session: quitting it leaves their `nohup` and disowned jobs running.
+        host.adopt(
+            crate::pty::spawn_pty(
+                witness,
+                &mut command,
+                host.master(),
+                crate::pty::StdinPlan::TerminalSlave,
+                Some(&on_started),
+            )?
+            .operators_session(),
+        );
 
         let mut launched = LaunchedNativeCommand {
             pending: Some(PendingNativeCommand {

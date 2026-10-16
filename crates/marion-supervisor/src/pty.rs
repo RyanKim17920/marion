@@ -508,9 +508,20 @@ pub struct PtyChild {
     /// would do for that, but keeping the status means a caller that killed through `Drop`'s path
     /// and one that killed through `shutdown` read the same answer.
     reaped: Option<std::process::ExitStatus>,
+    /// **The session is the operator's**: the native `marion <harness>` session, which they run as
+    /// they would the harness itself. What they left running in it (a `nohup` job, a disowned one)
+    /// outlives the session as it would outside marion; only nodes marion launches are swept.
+    operators_session: bool,
 }
 
 impl PtyChild {
+    /// Leave what this child's session holds alone at its end ([`Self::kill_and_reap`]): it is the
+    /// operator's own native session, not a node marion launched.
+    pub fn operators_session(mut self) -> PtyChild {
+        self.operators_session = true;
+        self
+    }
+
     pub fn pid(&self) -> i32 {
         self.pid
     }
@@ -576,8 +587,13 @@ impl PtyChild {
         // tool-call descendants of its own, which reparent to pid 1 the moment the leader dies
         // (S7, §11 item 18) and can then never be found by an ancestry walk.
         crate::kill::kill_process_tree(self.pid);
-        // Then what is left in its session, swept before the reap as on every node's end.
-        let status = crate::kill::end_node(&mut self.child)?;
+        // Then what is left in its session, swept before the reap as on every node's end — but
+        // never the operator's own.
+        let status = if self.operators_session {
+            self.child.wait()?
+        } else {
+            crate::kill::end_node(&mut self.child)?
+        };
         self.reaped = Some(status);
         Ok(status)
     }
@@ -661,6 +677,7 @@ pub fn spawn_pty(
         handed,
         stdin: stdin_pipe,
         reaped: None,
+        operators_session: false,
     };
 
     // Topology point 7 — before one byte, exactly as `duplex::run_duplex` does it.
