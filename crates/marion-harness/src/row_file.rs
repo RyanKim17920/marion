@@ -425,9 +425,9 @@ impl Admission {
             Admission::NeverRun => {
                 format!("conformance never ran against {name} {version}; {run}")
             }
-            Admission::OtherBinary => format!(
-                "the conformance record for {name} {version} is for another binary; {run}"
-            ),
+            Admission::OtherBinary => {
+                format!("the conformance record for {name} {version} is for another binary; {run}")
+            }
         }
     }
 }
@@ -2029,7 +2029,11 @@ mod tests {
         let record = |admitted: bool, digest: Option<String>| {
             let path = admission_path(&state, "h", "9.9.9");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let why: Vec<&str> = if admitted { vec![] } else { vec!["P-tools FAIL"] };
+            let why: Vec<&str> = if admitted {
+                vec![]
+            } else {
+                vec!["P-tools FAIL"]
+            };
             let body = serde_json::json!({
                 "row": "h", "version": "9.9.9", "admitted": admitted, "why": why,
                 "binary_sha256": digest,
@@ -2070,7 +2074,10 @@ mod tests {
         std::fs::create_dir_all(&link_dir).unwrap();
         std::os::unix::fs::symlink(&bin, link_dir.join("h")).unwrap();
         let path = std::env::join_paths([state.join("empty"), link_dir]).unwrap();
-        assert_eq!(binary_on_path("h", &path), Some(bin.canonicalize().unwrap()));
+        assert_eq!(
+            binary_on_path("h", &path),
+            Some(bin.canonicalize().unwrap())
+        );
         assert_eq!(binary_on_path("absent", &path), None);
     }
 

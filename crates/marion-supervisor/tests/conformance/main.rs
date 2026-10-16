@@ -25,6 +25,11 @@
 //! `MARION_CONFORMANCE_BASELINE` naming a committed `matrix.json`, a cell that was PASS there and is
 //! not now fails the test (admission's diff); every other change is printed.
 //!
+//! **Admission records.** Every row's verdict (`row_file::admits`) is also written to
+//! `<state>/conformance/<row>-<version>.json` with the digest of the binary that answered. That
+//! record is the basic test a release newer than the row's `verified` list is accepted on: the test
+//! gate (`marion_testsupport::on_path`) admits that exact binary on it, and doctor reports it.
+//!
 //! **Rows from files.** The operator's rows (`~/.config/marion/harnesses/`) and every directory in
 //! `MARION_HARNESS_DIRS` (`:`-separated) are loaded first and are rows like any other here. They are
 //! not marion's, so they stay out of the committed matrix: each one's transcripts go to
@@ -138,9 +143,13 @@ fn battery() {
                 .unwrap_or_default(),
             outcomes,
         };
-        if from_file {
-            record_admission(&out, &result, &t);
-        } else {
+        match &state {
+            Some(state) => record_admission(state, &result, &t),
+            None => {
+                eprintln!("conformance: {selector}: no state directory to record its admission in")
+            }
+        }
+        if !from_file {
             results.push((result, dir));
         }
     }
@@ -216,9 +225,12 @@ fn admitted_any() -> bool {
     ADMITTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A row from a file: its probes' verdicts and whether they admit it, beside its transcripts, with
-/// the digest of the row's text, so doctor can tell a result for an earlier edit.
-fn record_admission(out: &Path, r: &report::TargetResult, t: &target::Target) {
+/// **Every row's admission, under the state directory**: its probes' verdicts and whether they
+/// admit it, with the digest of the binary that answered — what the test gate admits a version
+/// newer than the row's `verified` list on, for that binary alone (`row_file::admission_for`) —
+/// and, for a row from a file, the digest of its text, so doctor can tell a result for an earlier
+/// edit.
+fn record_admission(state: &Path, r: &report::TargetResult, t: &target::Target) {
     use marion_harness::row_file;
     let probes: Vec<(String, String)> = r
         .outcomes
@@ -227,6 +239,9 @@ fn record_admission(out: &Path, r: &report::TargetResult, t: &target::Target) {
         .collect();
     let verdict = row_file::admits(t.spec, &probes);
     let h = t.agent_type.harness;
+    let binary = t
+        .program()
+        .and_then(|p| row_file::binary_on_path(&p, &std::env::var_os("PATH").unwrap_or_default()));
     let record = json!({
         "row": r.selector,
         "version": r.version,
@@ -234,13 +249,15 @@ fn record_admission(out: &Path, r: &report::TargetResult, t: &target::Target) {
         "why": verdict.as_ref().err().cloned().unwrap_or_default(),
         "probes": probes.iter().map(|(p, w)| (p.clone(), Value::from(w.clone()))).collect::<serde_json::Map<_, _>>(),
         "sha256": row_file::source(h).map(|s| s.sha256),
+        "binary": binary.as_ref().map(|b| b.display().to_string()),
+        "binary_sha256": binary.as_deref().and_then(|b| marion_harness::file_sha256(b).ok()),
         "transcripts": r.dir,
     });
-    let path = row_file::admission_path(
-        out.parent().expect("<state>/conformance"),
-        h.as_str(),
-        &r.version,
-    );
+    // The matrix's row name, which is the row file's name for a row from a file and keeps two ACP
+    // agents' records apart (`acp-opencode`) for a built-in one.
+    let path = row_file::admission_path(state, &r.selector.replace(':', "-"), &r.version);
+    std::fs::create_dir_all(path.parent().expect("<state>/conformance"))
+        .expect("create the conformance record directory");
     std::fs::write(
         &path,
         serde_json::to_string_pretty(&record).expect("record serialises") + "\n",
