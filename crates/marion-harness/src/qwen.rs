@@ -97,6 +97,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     vendor: None,
     verified: &["0.23.0", "0.24.7"],
     argv: &[
+        // An untrusted repository's `.qwen/` refuses a live launch: see `repo_config`.
+        Arg::RefuseUntrusted,
         // First, as measured (`qwen-resume-turn-2.argv.json`).
         Arg::Resume,
         // `permission_mode: "yolo"`; without it every call costs a classifier request and is
@@ -205,7 +207,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         pretty: true,
     }],
     overlay_documents: &[],
-    repo_config: &[],
+    // `.qwen/settings.json` names MCP servers, hooks and tool-discovery commands. 0.23.0 has no
+    // measured switch that drops the project layer alone (`--safe-mode` drops marion's own MCP
+    // server too; its folder trust is off unless the operator's settings enable it, and neither
+    // `QWEN_CODE_SYSTEM_SETTINGS_PATH` nor `QWEN_CODE_SYSTEM_DEFAULTS_PATH` turned it on for
+    // `qwen mcp list`), so a live launch in an untrusted repository that has one is refused
+    // ([`Arg::RefuseUntrusted`]).
+    repo_config: &[".qwen"],
     login_env: LoginEnv {
         login: &[
             EnvGrant::always("OPENAI_API_KEY"),

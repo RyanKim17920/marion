@@ -1337,6 +1337,12 @@ pub enum Arg {
     /// or planted it. Where the config is theirs, the harness's own project trust decides, as it
     /// would in their own harness (pi's `trust.json`).
     Disowned(&'static str),
+    /// **No token: a refusal.** A live launch in a repository the operator has not trusted, whose
+    /// tree holds any of the row's [`HarnessSpec::repo_config`], is refused
+    /// ([`Refusal::UntrustedRepoConfig`]) — for a harness with no measured switch that keeps its
+    /// project configuration out, where loading it would run the repository's commands as the
+    /// operator. A tree with none of it launches as before.
+    RefuseUntrusted,
     /// A literal token on a **live** launch in a repository the operator **has** trusted: the
     /// switch that loads that configuration where the harness would otherwise stop to ask (pi's
     /// `--approve` in a mode with no one to answer).
@@ -1681,6 +1687,9 @@ pub enum Refusal {
     /// The launch's prompt rides argv and begins with a character the row's parser reads as
     /// something other than text ([`HarnessSpec::prompt_specials`]).
     SpecialPrompt(char),
+    /// A live launch in an untrusted repository whose tree holds configuration this row has no
+    /// switch to keep out ([`Arg::RefuseUntrusted`]).
+    UntrustedRepoConfig,
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -1796,6 +1805,7 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
             Some(true) => vec![s.to_string()],
             _ => Vec::new(),
         },
+        Arg::RefuseUntrusted => Vec::new(),
         Arg::Disowned(s) => match repo_config_rule(f) {
             Some(false) if !f.repo_config_own => vec![s.to_string()],
             _ => Vec::new(),
@@ -1878,6 +1888,15 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     }
     if let Some(why) = prompt_refusal(spec, argv, &f.prompt) {
         return Err(why);
+    }
+    if argv.contains(&Arg::RefuseUntrusted)
+        && repo_config_rule(f) == Some(false)
+        && spec
+            .repo_config
+            .iter()
+            .any(|p| std::fs::symlink_metadata(f.cwd.join(p)).is_ok())
+    {
+        return Err(Refusal::UntrustedRepoConfig);
     }
     // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
     // (claude 2.1.268), and appended it would swallow the positional prompt the pane seeds.

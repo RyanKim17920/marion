@@ -208,7 +208,11 @@ fn security_faults(spec: &HarnessSpec) -> Vec<String> {
             ));
         }
         let lits: Vec<&str> = match arg {
-            Arg::Lit(l) | Arg::CannedLit(l) | Arg::Untrusted(l) | Arg::Trusted(l) => vec![l],
+            Arg::Lit(l)
+            | Arg::CannedLit(l)
+            | Arg::Untrusted(l)
+            | Arg::Disowned(l)
+            | Arg::Trusted(l) => vec![l],
             Arg::Flag(l, _) | Arg::FlagEq(l, _) | Arg::Each(l, _) | Arg::EachEq(l, _) => vec![l],
             Arg::Pair(a, b, _) | Arg::Isolation(a, b) => vec![a, b],
             Arg::Joined(l, _) | Arg::Allowlist(l, _) => vec![l],
@@ -850,6 +854,8 @@ pub enum ArgDto {
     Isolation(String, String),
     CannedLit(String),
     Untrusted(String),
+    Disowned(String),
+    RefuseUntrusted,
     Trusted(String),
 }
 
@@ -871,6 +877,8 @@ impl ArgDto {
             ArgDto::Isolation(a, b) => Arg::Isolation(leak(a), leak(b)),
             ArgDto::CannedLit(l) => Arg::CannedLit(leak(l)),
             ArgDto::Untrusted(l) => Arg::Untrusted(leak(l)),
+            ArgDto::Disowned(l) => Arg::Disowned(leak(l)),
+            ArgDto::RefuseUntrusted => Arg::RefuseUntrusted,
             ArgDto::Trusted(l) => Arg::Trusted(leak(l)),
         }
     }
@@ -2086,7 +2094,7 @@ mod tests {
             lines
                 .iter()
                 .any(|l| l
-                    .starts_with(r#"argv = ["resume", {lit = "--yolo"}, {lit = "--core-tools"}"#)),
+                    .starts_with(r#"argv = ["refuse-untrusted", "resume", {lit = "--yolo"}"#)),
             "{lines:#?}"
         );
     }

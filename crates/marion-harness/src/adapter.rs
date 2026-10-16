@@ -1259,6 +1259,16 @@ fn render_row(
                  something other than text (pi: a file to attach)"
             ),
         },
+        spec::Refusal::UntrustedRepoConfig => HarnessError::Unspellable {
+            harness: row.harness,
+            what: format!(
+                "this repository holds its own config for the harness ({}), which it has no \
+                 switch to keep out of a node on your login and which can run commands; trust \
+                 the repository first (marion trust allow --repo) or run it on a canned or \
+                 endpoint provider",
+                row.repo_config.join(", ")
+            ),
+        },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
             what: "this harness has no measured way to name a session to resume on this shape's \
@@ -3956,6 +3966,39 @@ mod tests {
             )
         );
         assert_eq!(settings(true), None);
+    }
+
+    /// **A live qwen node in an untrusted repository with its own `.qwen/` is refused**, naming
+    /// the trust command: qwen has no measured switch that keeps the project layer out. Trusted,
+    /// or with no `.qwen/` in the tree, or canned, it launches.
+    #[test]
+    fn a_live_qwen_node_refuses_an_untrusted_repositorys_own_qwen_config() {
+        let dir = marion_testsupport::scratch("qwen-repo-config");
+        let launch = |auth: Auth, trusted: bool| {
+            let mut spec = LaunchSpec {
+                auth,
+                cwd: dir.to_path_buf(),
+                ..qwen_spec()
+            };
+            if auth == Auth::Inherited {
+                spec.base_url = None;
+                spec.api_key = None;
+            }
+            spec.extra.repo_trusted = trusted;
+            launch_adapter(Harness::Qwen)
+                .unwrap()
+                .compile(&spec, &ctx())
+        };
+        assert!(launch(Auth::Inherited, false).is_ok(), "no .qwen/ yet");
+        std::fs::create_dir_all(dir.join(".qwen")).unwrap();
+        std::fs::write(dir.join(".qwen/settings.json"), "{}").unwrap();
+        let refused = launch(Auth::Inherited, false).expect_err("refused");
+        assert!(
+            refused.to_string().contains("marion trust allow --repo"),
+            "{refused}"
+        );
+        assert!(launch(Auth::Inherited, true).is_ok());
+        assert!(launch(Auth::Canned, false).is_ok());
     }
 
     /// The other half: nothing *else* changes. A live node still gets the fileless MCP declaration;

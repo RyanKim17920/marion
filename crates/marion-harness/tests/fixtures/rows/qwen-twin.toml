@@ -12,6 +12,7 @@ note = """S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-
            end to end"""
 writes-without-grant = false
 surfaces = "launch-only"
+repo-config = [".qwen"]
 stream = "builtin:qwen"
 spelling = "mcp-double-underscore"
 tools = [
@@ -21,6 +22,7 @@ tools = [
   ["bash", "run_shell_command"],
 ]
 argv = [
+  "refuse-untrusted",
   "resume",
   { lit = "--yolo" },
   { lit = "--core-tools" },
