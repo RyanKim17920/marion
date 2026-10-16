@@ -119,6 +119,22 @@ pub fn task_leaf(task: &str) -> Result<String, Refusal> {
     }
 }
 
+/// **`path` opened to read, a regular file only, never through a link at its last component**,
+/// and without blocking on a FIFO: for the files under `<state>` search reads that are not in an
+/// agent dir (a digest, `project.json`), which a process other than marion could still have
+/// planted before the sandbox ships.
+pub(crate) fn open_regular(path: &Path) -> std::io::Result<File> {
+    let fd = rustix::fs::open(path, LEAF, Mode::empty())?;
+    let stat = rustix::fs::fstat(&fd)?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(std::io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(File::from(fd))
+}
+
 /// At most `cap` bytes of `fd`, which must be a regular file no longer than `cap`.
 pub(crate) fn read_regular(fd: OwnedFd, cap: u64) -> Result<Vec<u8>, Refusal> {
     let stat = rustix::fs::fstat(&fd).map_err(|_| Refusal::Unopenable)?;

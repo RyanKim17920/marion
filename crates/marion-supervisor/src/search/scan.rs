@@ -14,7 +14,6 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use aho_corasick::AhoCorasick;
@@ -286,16 +285,7 @@ fn is_header(line: &[u8]) -> bool {
 
 /// **Scan `path` for `matcher`'s query**, newest line first, stopping once `limit` runs match.
 pub fn scan(path: &Path, matcher: &Matcher, limit: usize) -> io::Result<Scanned> {
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(path)?;
-    if !file.metadata()?.file_type().is_file() {
-        return Err(io::Error::other(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
+    let mut file = super::open::open_regular(path)?;
     let mut lines = Reverse::new(&mut file)?;
     let id_key = memchr::memmem::Finder::new(br#""agent_id":""#);
     let ended_key = memchr::memmem::Finder::new(br#""ended":""#);
@@ -654,6 +644,15 @@ mod tests {
         assert!(s.contains("the limiter now refuses"), "{s}");
         assert!(!s.contains(['\n', '\t']));
         assert_eq!(snippet("short", 0), "short");
+    }
+
+    /// A FIFO where the digest goes is refused at once. Mutation: open it blocking and this hangs.
+    #[test]
+    fn a_fifo_digest_is_refused_without_hanging() {
+        let dir = scratch("scan-fifo");
+        let path = dir.join("runs.jsonl");
+        crate::search::open::tests::mkfifo(&path);
+        assert!(scan(&path, &q("limiter"), 9).is_err());
     }
 
     #[test]

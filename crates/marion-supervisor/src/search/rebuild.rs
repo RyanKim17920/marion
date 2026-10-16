@@ -16,7 +16,6 @@
 
 use std::fs::TryLockError;
 use std::io::{self, Read};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -56,11 +55,7 @@ pub struct Rebuilt {
 
 /// The header of `place`'s digest, when its first line is one this build writes.
 pub fn header(place: &Place) -> Option<Header> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(place.digest())
-        .ok()?;
+    let file = super::open::open_regular(&place.digest()).ok()?;
     let mut first = Vec::new();
     file.take(64 * 1024).read_to_end(&mut first).ok()?;
     let line = first.split(|b| *b == b'\n').next()?;
