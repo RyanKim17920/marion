@@ -149,7 +149,9 @@ fn add(
     let dir = dir
         .map(str::to_string)
         .unwrap_or_else(|| paths.dir_for(harness, name).to_string_lossy().into_owned());
-    std::fs::create_dir_all(&dir)?;
+    // `0700` for every level made here: the operator logs in to it next, and its harness keeps
+    // that login inside. An adopted directory keeps the mode it has.
+    crate::private_fs::create_dir_all(Path::new(&dir))?;
     let shared = match home {
         Some(home) => link_shared(home, carrier, Path::new(&dir))?,
         None => Vec::new(),
@@ -383,6 +385,14 @@ mod tests {
         let out = verb(&paths, &home, &["add", "claude", "work"]).unwrap();
         let dir = paths.dir_for(Harness::ClaudeCode, "work");
         assert!(dir.is_dir());
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700,
+                "the login lands here"
+            );
+        }
         assert!(
             dir.join("settings.json")
                 .symlink_metadata()
