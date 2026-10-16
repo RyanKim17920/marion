@@ -426,7 +426,7 @@ mod tests {
             Some(Ok(Some("m-1".into())))
         );
         assert!(matches!(
-            parse_args(&argv(&["--providers", "--adapter"])),
+            parse_args(&argv(&["--providers", "--try"])),
             Some(Err(_))
         ));
     }

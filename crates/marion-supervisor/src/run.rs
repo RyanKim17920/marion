@@ -2534,7 +2534,7 @@ pub fn run_spawn_watched(
             ),
             // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
             // children through the single ACP adapter*, and until this arm existed the only thing that
-            // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
+            // had ever driven one was `marion doctor --try` — a probe, which has no worktree, no
             // contract, no journal and no bridge, so it could not answer the clause however green it
             // was. That is the sixth "fully tested in isolation and unreachable from any binary" of
             // the day, and this arm is the fix.

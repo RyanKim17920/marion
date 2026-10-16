@@ -572,7 +572,7 @@ pub struct AgentSpawnParams {
 }
 
 /// `doctor/run`. §8's two modes, plus an optional single-harness filter — which *is* performed:
-/// `--adapter` spawns a real process per harness, so probing one instead of four is a difference
+/// `--try` spawns a real process per harness, so probing one instead of four is a difference
 /// the operator can observe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

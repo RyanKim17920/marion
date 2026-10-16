@@ -583,7 +583,7 @@ pub enum ProbeMode {
     /// `--capabilities`: what the harness advertises. The static half of §3.3's two-stage
     /// resolution.
     Capabilities,
-    /// `--adapter`: a micro-contract test against the installed binary — spawn, prompt, assert
+    /// `--try`: a micro-contract test against the installed binary — spawn, prompt, assert
     /// response shape, interrupt, assert clean termination, kill if still alive.
     Adapter,
 }

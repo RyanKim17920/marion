@@ -15,7 +15,7 @@ use marion_supervisor::{err, out};
 
 fn usage() -> ! {
     marion_supervisor::printable::err_text(
-        "usage: marion-supervisor doctor [--adapter] [--harness <name>] …\n\
+        "usage: marion-supervisor doctor [--try] [--harness <name>] …\n\
          \x20      marion-supervisor --version\n\
          \n\
          `marion-supervisor doctor` is the same as `marion doctor`. `mcp` and `serve` are \
@@ -108,7 +108,7 @@ fn main() {
                 {
                     std::process::exit(1);
                 }
-                // A non-zero exit for a failing `--adapter`, so §8's "Run `--adapter` in CI" is a
+                // A non-zero exit for a failing `--try`, so §8's "Run `--adapter` in CI" is a
                 // gate rather than a log. A harness missing under `--capabilities` is not a
                 // failure: nothing being installed is an answer, not an error.
                 if rows.iter().any(|r| r.report.adapter_check == Some(false)) {

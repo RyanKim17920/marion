@@ -942,7 +942,7 @@ pub fn prepare_watched(
     // "this node silently got no bridge".
     // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
     // of a file. The check itself is `McpRoute::verify`, beside the enum whose promise it is
-    // checking, because `marion doctor --adapter` reports the same finding and a second copy here
+    // checking, because `marion doctor --try` reports the same finding and a second copy here
     // is exactly where the two would drift.
     // The post-launch half is compiled here, before the check, for the same reason the files above
     // are written before it: the check must see the values this launch will actually use, not a

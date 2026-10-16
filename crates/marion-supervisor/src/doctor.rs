@@ -3,7 +3,7 @@
 //!
 //! > §8: *"**`marion doctor`** probes each installed harness and produces the static capability
 //! > table (§3.3) […] It has **two modes**, and the second matters more: `--capabilities` asks what
-//! > a harness *advertises*; **`--adapter` runs a micro-contract test** (spawn → prompt → assert
+//! > a harness *advertises*; **`--try` runs a micro-contract test** (spawn → prompt → assert
 //! > response shape → interrupt → assert clean termination → kill *if it is still alive* […])
 //! > against the installed binary. Feature flags drift less than behavior does, and every
 //! > retraction in §12 was a behavioral surprise, not a missing capability."*
@@ -28,7 +28,7 @@
 //! address a turn"* — `permissions` is clipped and `interrupt` survives. Collapsing those two into
 //! one row is exactly the sentence §9's M1 forbids, said about claude-code instead of codex.
 //!
-//! # What `--adapter` actually runs, and what it refuses by name
+//! # What `--try` actually runs, and what it refuses by name
 //!
 //! Each step below reports itself, including the ones that do not run. §8's whole argument for this
 //! mode is that a probe says *why* a harness is unusable — *"a version too old and a binary that
@@ -41,7 +41,7 @@
 //!   most version-fragile mechanism"*. It is not implemented and is not implementable here: §8's
 //!   own L7 row assigns it to a real terminal (*"A pty host can send bytes; only a real terminal
 //!   settles whether a harness's submit handling agrees"*), and this probe has a pipe. Every
-//!   `--adapter` report says so on its own line.
+//!   `--try` report says so on its own line.
 //! * **The live turn on a typed control plane.** claude-code's surfaces are `Typed(StreamJson)`, so
 //!   §6.1 step 8 writes its prompt as a frame *after* a readiness gate rather than into argv. That
 //!   is `duplex`'s protocol, not a probe's, and driving half of it here would test marion's idea of
@@ -49,7 +49,7 @@
 //!
 //! # A live turn costs a model call, and marion may not choose a model
 //!
-//! `--adapter`'s spawn step runs the real binary against the operator's real credential, which is
+//! `--try`'s spawn step runs the real binary against the operator's real credential, which is
 //! what §8 asks for (*"Run `--adapter` in CI"*). Several adapters — opencode and a canned copilot
 //! among them — make an explicit model a MUST at `compile`, and marion has no basis for picking one
 //! (S12 measured a harness rewriting even an explicit `-m`). So those report the spawn step as **not run for want of a
@@ -98,11 +98,11 @@ const SIGKILL: i32 = 9;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub mode: ProbeMode,
-    /// `None` probes every harness in [`Harness::ALL`]. §8's filter *is* performed: `--adapter`
+    /// `None` probes every harness in [`Harness::ALL`]. §8's filter *is* performed: `--try`
     /// spawns a real process per harness, so probing one instead of four is a difference the
     /// operator can observe on their bill.
     pub harness: Option<Harness>,
-    /// The model `--adapter`'s live turn runs against, where the adapter requires one. Never
+    /// The model `--try`'s live turn runs against, where the adapter requires one. Never
     /// defaulted (§6.4).
     pub model: Option<String>,
     /// One more ACP row, for an agent marion has no refinement row for: the agent's own command,
@@ -195,7 +195,7 @@ pub struct Row {
 
 /// The doctor's flags, as a person types them through `marion doctor`. `--capabilities` is still
 /// accepted and not shown: it names the default.
-/// `--adapter` is still read as `--try`, and not shown.
+/// `--adapter`, the old name of `--try`, is still read and not shown.
 pub const USAGE: &str = "usage: marion doctor [--harness <name>] [--try [--model <id>]] \
                          [--acp-command <cmd>]\n\
                          \x20      marion doctor --providers [--model <id>]";
@@ -237,7 +237,7 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
     Ok(Options {
         // The two cost differently by orders of magnitude — one reads a version string, the
         // other spawns an agent and spends a model call — so the default is the one that costs
-        // nothing, and a model call is only ever made when `--adapter` asks for it.
+        // nothing, and a model call is only ever made when `--try` asks for it.
         mode: mode.unwrap_or(ProbeMode::Capabilities),
         harness,
         model,
@@ -422,7 +422,7 @@ fn row_file_notes(
         Err(e) => notes.push(format!("row: WARNING — {path}: {e}")),
     }
     for (strategy, note) in row_file::declared_none(spec) {
-        notes.push(format!("declared none: {strategy} — {note}"));
+        notes.push(format!("declared none: {strategy}: {note}"));
     }
     let name = h.as_str();
     let run = format!("scripts/conformance.sh --harness {name}");
@@ -599,8 +599,8 @@ fn locate_binary(
 ) -> Option<PathBuf> {
     if opts.model.is_none() {
         notes.push(format!(
-            "model: none given, so argv is compiled with the placeholder `{PLACEHOLDER_MODEL}` \
-             for the steps that launch nothing. No process is ever started from it."
+            "model: none given; the steps that launch nothing use the placeholder \
+             `{PLACEHOLDER_MODEL}`"
         ));
     }
     let program = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
@@ -619,11 +619,7 @@ fn locate_binary(
             }
         },
         None => {
-            notes.push(
-                "binary: this adapter refused to compile an invocation at all, so marion cannot \
-                 name the program it would launch"
-                    .into(),
-            );
+            notes.push("binary: unknown; the adapter refused to build a launch command".into());
             None
         }
     }
@@ -705,10 +701,8 @@ fn surface_row(
     capability_notes(agent_probed, handshake, &capabilities, &mut notes);
     if role == SurfaceRole::Pane && adapter_check.is_some() {
         notes.push(
-            "adapter check: NOT RUN on this surface — §8's micro-contract ran against the \
-             `node` row's invocation, and `compile_pane` produces different argv. This \
-             row's capabilities are the same binary at a different key, not a second \
-             contract test."
+            "adapter check: NOT RUN on this surface; the check ran against the node launch, and \
+             the pane launch uses different argv"
                 .into(),
         );
     }
@@ -744,10 +738,10 @@ fn capability_notes(
     if agent_probed {
         notes.push(match handshake {
             Some(hs) => format!(
-                "capabilities: refined by this agent's own `initialize` (§3.3 stage two): loadSession={}, sessionCapabilities={:?}",
+                "capabilities: refined by this agent's own `initialize`: loadSession={}, sessionCapabilities={:?}",
                 hs.load_session, hs.session_capabilities
             ),
-            None => "capabilities: NOT refined — no `initialize` answer, so this row is the protocol's static set with nothing narrowed off it"
+            None => "capabilities: NOT refined — the agent did not answer `initialize`, so this is the protocol's default set"
                 .to_string(),
         });
     }
@@ -764,8 +758,7 @@ fn capability_notes(
         .filter(|f| !capabilities.granted().contains(f))
         .collect();
     notes.push(format!(
-        "not published here: {} — a false is \"marion has not measured it on this \
-         surface\", never \"the harness cannot\"",
+        "not measured on this surface: {} (unmeasured, not known to be missing)",
         unmeasured.join(", ")
     ));
 }
@@ -784,9 +777,8 @@ fn micro_contract(
     // §8 requires it and this probe cannot do it. Named on every report, in the same place a
     // failure would be named, so it can never read as "checked and fine".
     notes.push(
-        "keystroke-injection submit: NOT RUN — §8 requires this check and calls it the most \
-         version-fragile mechanism; it needs a real terminal (§8's L7 row), and this probe has a \
-         pipe. Not implemented, not inferred, not passed."
+        "keystroke-injection submit: NOT RUN — this check needs a real terminal and doctor runs \
+         the harness on a pipe, so it is not checked here"
             .into(),
     );
 
@@ -859,8 +851,8 @@ fn declaration_step(
         Ok(v) => v,
         Err(e) => {
             notes.push(format!(
-                "declaration: REFUSED — this adapter will not put marion's verbs in front of this \
-                 agent: {e}"
+                "declaration: REFUSED — this adapter will not offer marion's tools to this agent: \
+                 {e}"
             ));
             return Declaration::Refused;
         }
@@ -871,16 +863,15 @@ fn declaration_step(
     {
         Ok(_) => {
             notes.push(format!(
-                "declaration: ok — marion's MCP declaration is present on the route this adapter \
-                 states ({:?})",
+                "declaration: ok — the launch command carries marion's MCP server ({:?})",
                 adapter.mcp_route(&spec)
             ));
             Declaration::Checked(true)
         }
         Err(route) => {
             notes.push(format!(
-                "declaration: FAILED — the adapter promised {route} and the compiled launch does \
-                 not carry it; a node launched this way would have no bridge"
+                "declaration: FAILED — the launch command is missing marion's MCP server ({route}), \
+                 so a node started this way would have no marion tools"
             ));
             Declaration::Checked(false)
         }
@@ -935,18 +926,16 @@ fn argv_live_turn_step(
 ) -> Option<bool> {
     if adapter.surfaces().has_typed_control_plane() {
         notes.push(format!(
-            "live turn: NOT RUN — {} runs on a typed control plane, where §6.1 step 8 writes the \
-             prompt as a frame after a readiness gate rather than into argv. Driving that here \
-             would test marion's idea of the handshake, not the handshake.",
+            "live turn: NOT RUN — {} takes its prompt over a protocol after startup, not on the \
+             command line, and doctor does not drive that protocol",
             adapter.harness()
         ));
         return None;
     }
     let Some(spec) = probe_spec_with_prompt(opts.model.clone()) else {
         notes.push(
-            "live turn: NOT RUN — this adapter makes an explicit model a MUST at compile and \
-             marion may not choose one for the operator (§6.4; S12 measured 0.53.0 rewriting even \
-             an explicit `-m`). Pass --model to run it."
+            "live turn: NOT RUN — this harness needs an explicit model and marion will not pick \
+             one for you. Pass --model to run it."
                 .into(),
         );
         return None;
@@ -1146,15 +1135,22 @@ fn leak_check(child: &mut std::process::Child, pid: i32, exited: bool) -> (bool,
     } else {
         unsafe { kill(pid, SIGKILL) };
         let _ = crate::kill::end_node(child);
-        (
-            false,
-            format!(
-                "leak check: FAILED — pid {pid} survived SIGINT and had to be SIGKILLed. §8: a \
-                 binary that hangs on interrupt and a version too old are the same boolean and \
-                 different problems; this is the former."
-            ),
-        )
+        (false, leak_failed(pid))
     }
+}
+
+/// The leak check's failure line, shared by the argv and ACP probes.
+fn leak_failed(pid: i32) -> String {
+    format!("leak check: FAILED — pid {pid} ignored SIGINT and had to be killed with SIGKILL")
+}
+
+/// The response-shape failure for output with no JSON frame in it, shared by the argv and ACP
+/// probes. This is the format drift the check exists to catch.
+fn no_json_frame(bytes: usize) -> String {
+    format!(
+        "response shape: FAILED — {bytes} bytes of stdout and no JSON frame in it. The harness's \
+         output format has probably changed."
+    )
 }
 
 /// §8's *"assert response shape"*, through the adapter's **own** reader.
@@ -1179,14 +1175,7 @@ fn shape_finding(
     }
     let frames = marion_harness::json_frames(stdout).len();
     if frames == 0 {
-        return (
-            false,
-            format!(
-                "response shape: FAILED — {} bytes of stdout and not one JSON frame in it; this \
-                 is the format drift §8 says this mode exists to catch",
-                stdout.len()
-            ),
-        );
+        return (false, no_json_frame(stdout.len()));
     }
     // Through the adapter's own reader, which is the function the supervisor uses to read every
     // child of this harness. A stream this cannot read is one whose contract has drifted, however
@@ -1572,11 +1561,7 @@ fn acp_live_turn(
         leak_line: if clean {
             "leak check: no process outlived the probe".into()
         } else {
-            format!(
-                "leak check: FAILED — pid {pid} survived SIGINT and had to be SIGKILLed. §8: a \
-                 binary that hangs on interrupt and a version too old are the same boolean and \
-                 different problems; this is the former."
-            )
+            leak_failed(pid)
         },
     }
 }
@@ -1684,14 +1669,7 @@ fn acp_prompt_step(agent: &mut AcpChild, sid: &str, trailing: &mut Vec<String>) 
 fn acp_shape_finding(reading: acp::Reading, stdout: &str, timed_out: bool) -> (bool, String) {
     let frames = marion_harness::json_frames(stdout);
     if frames.is_empty() {
-        return (
-            false,
-            format!(
-                "response shape: FAILED — {} bytes and not one JSON frame in them; this is the \
-                 format drift §8 says this mode exists to catch",
-                stdout.len()
-            ),
-        );
+        return (false, no_json_frame(stdout.len()));
     }
     let stop = frames
         .iter()
@@ -1984,7 +1962,7 @@ fn last_verified(h: Harness) -> Option<&'static str> {
 
 /// The closing verdict: one `ready:` line per harness (its node row; a pane row is the same
 /// binary) and one overall. A harness is ready when its binary answered with a version and, under
-/// `--adapter`, its micro-contract passed. A version newer than the row's verified versions is noted
+/// `--try`, its micro-contract passed. A version newer than the row's verified versions is noted
 /// and stays ready: harnesses update themselves, and marion keeps running on them.
 ///
 /// It opens with the machine's own checks (`crate::preflight`); any failed check makes the overall
@@ -2021,7 +1999,7 @@ pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String 
                 if let Some((_, known)) = newer {
                     s.push_str(&format!(
                         " — unmeasured: newer than the last version marion verified ({known}); \
-                         it should work, and anything that does not is worth reporting"
+                         please report anything that breaks"
                     ));
                 }
                 s.push('\n');
@@ -2030,7 +2008,9 @@ pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String 
     }
     if node_rows.iter().all(|r| r.report.adapter_check.is_none()) {
         // `--capabilities` ran no turn: "ready" here is "installed and answering".
-        s.push_str("  (ready = installed and answering; --adapter also runs one live turn each)\n");
+        s.push_str(
+            "  (ready means installed and answering; --try also runs one live turn per harness)\n",
+        );
     }
     let failed_note = match failed {
         0 => String::new(),
@@ -2051,7 +2031,7 @@ pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String 
 
 /// **Why a row's harness is not ready**, or `None` when it is — the one rule [`verdict`] prints
 /// and the home screen's readiness list reads, so the two cannot disagree. Ready is "its binary
-/// answered with a version and, under `--adapter`, its micro-contract passed".
+/// answered with a version and, under `--try`, its micro-contract passed".
 pub fn why_not_ready(r: &Row) -> Option<String> {
     match (&r.report.harness_version, r.report.adapter_check) {
         (_, Some(false)) => Some("adapter check failed".to_string()),
@@ -2397,7 +2377,7 @@ mod tests {
     }
 
     /// Both modes parse, and with neither `doctor` runs the free one: `--capabilities` reads
-    /// version strings and spends nothing, while `--adapter` spends a model call and is only ever
+    /// version strings and spends nothing, while `--try` spends a model call and is only ever
     /// asked for.
     #[test]
     fn both_modes_parse_and_the_free_one_is_the_default() {
@@ -2425,16 +2405,16 @@ mod tests {
 
     #[test]
     fn the_harness_filter_is_parsed_and_an_unknown_one_is_refused_by_name() {
-        let o = parse_args(&["--adapter".into(), "--harness".into(), "codex".into()]).unwrap();
+        let o = parse_args(&["--try".into(), "--harness".into(), "codex".into()]).unwrap();
         assert_eq!(o.harness, Some(Harness::Codex));
-        let e = parse_args(&["--adapter".into(), "--harness".into(), "claude_code".into()])
-            .unwrap_err();
+        let e =
+            parse_args(&["--try".into(), "--harness".into(), "claude_code".into()]).unwrap_err();
         assert!(
             e.contains("claude-code"),
             "the refusal lists the spellings: {e}"
         );
         assert!(
-            parse_args(&["--adapter".into(), "--harness".into()])
+            parse_args(&["--try".into(), "--harness".into()])
                 .unwrap_err()
                 .contains("needs a harness name")
         );
@@ -2444,15 +2424,15 @@ mod tests {
     /// unknown configuration keys as load errors, which is the job §3.1 gives it.
     #[test]
     fn an_unknown_flag_is_an_error_rather_than_an_ignore() {
-        let e = parse_args(&["--adapter".into(), "--caps".into()]).unwrap_err();
+        let e = parse_args(&["--try".into(), "--caps".into()]).unwrap_err();
         assert!(e.contains("--caps"), "the refusal names the flag: {e}");
     }
 
     #[test]
     fn a_model_is_carried_and_never_invented() {
-        assert_eq!(parse_args(&["--adapter".into()]).unwrap().model, None);
+        assert_eq!(parse_args(&["--try".into()]).unwrap().model, None);
         assert_eq!(
-            parse_args(&["--adapter".into(), "--model".into(), "gpt-5".into()])
+            parse_args(&["--try".into(), "--model".into(), "gpt-5".into()])
                 .unwrap()
                 .model,
             Some("gpt-5".into())
@@ -2541,7 +2521,7 @@ mod tests {
                 .ends_with("overall: ready: no (0 of 1 ready)"),
             "{none}"
         );
-        // Under --adapter a failed micro-contract is not ready, whatever the version.
+        // Under --try a failed micro-contract is not ready, whatever the version.
         let failed = verdict(
             &[row(Harness::Codex, Some("0.147.0"), &[], Some(false))],
             &[],
@@ -2571,6 +2551,19 @@ mod tests {
         );
         let same = verdict(&[row(Harness::Codex, Some(newest), &[], None)], &[]);
         assert!(!same.contains("newer than"), "{same}");
+    }
+
+    /// **Operator text cites no design-doc section.** The operator has no §8 to look up, so the
+    /// shared failure lines and the verdict footer say what happened in plain words.
+    #[test]
+    fn the_shared_failure_lines_and_the_footer_cite_no_spec_section() {
+        let footer = verdict(&[row(Harness::Codex, Some("0.147.0"), &[], None)], &[]);
+        assert!(footer.contains("--try also runs one live turn"), "{footer}");
+        for line in [leak_failed(4242), no_json_frame(12), footer] {
+            assert!(!line.contains('§'), "{line}");
+        }
+        assert!(leak_failed(4242).starts_with("leak check: FAILED"));
+        assert!(no_json_frame(12).contains("FAILED"));
     }
 
     /// **A built-in row's newer release carries the conformance verdict on its exact binary**: never
@@ -3287,7 +3280,7 @@ mod tests {
     ///
     /// This caught a real one. `probe_ctx` left `ready_file` as `None`, so claude-code's
     /// `compile` — which requires the §6.1 step 8 readiness marker every real spawn supplies —
-    /// returned `MissingInput`, and `--adapter` printed `declaration: FAILED` and exited non-zero
+    /// returned `MissingInput`, and `--try` printed `declaration: FAILED` and exited non-zero
     /// against a perfectly good `claude`. §8's argument for this mode is that a probe says *why* a
     /// harness is unusable; "marion did not fill in its own spec" is not a fact about the harness,
     /// and as a CI gate it is a false red.
@@ -3348,7 +3341,7 @@ mod tests {
         }
     }
 
-    /// `--adapter` is §8's CI gate, so a PASS must mean the binary passed and not that no step
+    /// `--try` is §8's CI gate, so a PASS must mean the binary passed and not that no step
     /// ran. Every harness installed on this machine reaches a verdict, and no verdict is reached
     /// by way of a step that failed for want of something marion should have supplied.
     #[test]
@@ -3371,7 +3364,7 @@ mod tests {
     }
 
     /// The two names §8 requires and this probe cannot honour must appear as refusals, on every
-    /// `--adapter` report, in the same place a failure would appear.
+    /// `--try` report, in the same place a failure would appear.
     #[test]
     fn the_checks_this_probe_cannot_run_are_named_rather_than_omitted() {
         if !marion_testsupport::harness_available("claude") {
@@ -3389,13 +3382,17 @@ mod tests {
             "§8 requires it; a probe that omits it reads as having passed it:\n{notes}"
         );
         assert!(
+            !notes.contains('§'),
+            "the operator has no design doc to look a section up in:\n{notes}"
+        );
+        assert!(
             notes.contains("live turn: NOT RUN"),
             "claude-code's typed plane writes its prompt after launch; that is `duplex`'s \
              protocol, not a probe's:\n{notes}"
         );
         assert!(
             rows[0].report.adapter_check.is_some(),
-            "--adapter always reaches a verdict, even when steps were skipped"
+            "--try always reaches a verdict, even when steps were skipped"
         );
     }
 
@@ -3432,7 +3429,7 @@ mod tests {
             "{first}"
         );
         assert!(
-            first.contains("declared none: updates — searched `--help`"),
+            first.contains("declared none: updates: searched `--help`"),
             "{first}"
         );
         assert!(

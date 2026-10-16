@@ -59,7 +59,7 @@ impl McpRoute {
     ///
     /// It lives on the route rather than at either call site because there are now two, and they
     /// must not drift: `marion_supervisor::root` refuses a launch on this answer, and `marion
-    /// doctor --adapter` reports it as a finding. An adapter that forgets its declaration is §12's
+    /// doctor --try` reports it as a finding. An adapter that forgets its declaration is §12's
     /// silent-failure family — a node with no bridge, taking a turn with no marion tools, exiting
     /// 0 having called nothing — so the one thing this check must never be is two checks.
     /// `session` is [`HarnessAdapter::session_declaration`]'s answer — the post-launch request the
@@ -1883,7 +1883,7 @@ mod tests {
     }
 
     /// [`McpRoute::verify`]'s four branches, directly. The supervisor's launch path and `marion
-    /// doctor --adapter` both hang off this one answer, so each branch is pinned here rather than
+    /// doctor --try` both hang off this one answer, so each branch is pinned here rather than
     /// only through whichever caller happens to exercise it.
     #[test]
     fn each_declaration_route_is_verified_against_the_thing_it_promised() {

@@ -483,7 +483,8 @@ only; canned runs keep marion's own isolation.
 "Pin" is the oldest version whose evidence is on record, not a ceiling; the test suite admits
 newer versions once they pass the conformance battery (`scripts/conformance.sh`; the nightly
 canary lists every release that does), and `marion doctor` measures whatever is installed at
-runtime, saying whether a newer one passed.
+runtime, saying whether a newer one passed. `marion doctor --try` also runs one small real task
+per harness on your login, which makes a model call.
 
 | harness | admitted | headless shape | resume | a steer reaches it | native lane |
 |---|---|---|---|---|---|

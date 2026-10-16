@@ -1114,7 +1114,7 @@ pub const PI_ACP: Agent = Agent {
 /// [`Agent::tools`] — and not being named is not being refused: see [`Binding`].
 ///
 /// **Not every probed agent is a row.** Factory's `droid` answers `session/new` without a key by
-/// *starting a device pairing* and printing its code (S33), and the doctor's `--adapter` mode opens
+/// *starting a device pairing* and printing its code (S33), and the doctor's `--try` mode opens
 /// a session on every row — so a row would make a routine probe start a login flow. It stays
 /// reachable as the operator's own `acp:droid exec --output-format acp-daemon`.
 pub const AGENTS: [Agent; 14] = [
