@@ -150,7 +150,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     pane: Some(&[
         Arg::Joined("--tools", Field::Tools),
         Arg::Joined("--allowedTools", Field::Allowed),
-        Arg::CannedLit("--strict-mcp-config"),
+        // **Every auth, on a pane**: without it a repository's `.mcp.json` loads, and in one the
+        // operator has not approved the TUI boots on its `New MCP server(s) found` approval — a
+        // dialog no row needle has measured, which the operator's first key would answer into
+        // `~/.claude.json`. A repository marion runs a node in must not start servers of its own.
+        // The cost is the operator's user-scope servers, which a pane goes without.
+        Arg::Lit("--strict-mcp-config"),
         Arg::Flag("--mcp-config", Field::McpConfig),
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
@@ -822,7 +827,8 @@ pub const MCP_SERVERS: McpServers = McpServers {
 /// `CLAUDE_CONFIG_DIR` is already never set (isolating it breaks OAuth — the Keychain entry is
 /// keyed to the real config dir), `--mcp-config` already keeps the MCP declaration fileless
 /// inside marion's own agent dir, and the operator's settings, servers, plugins and hooks are
-/// excluded only by two canned-only switches (`--setting-sources ""`, `--strict-mcp-config`). So
+/// excluded only by two canned-only switches (`--setting-sources ""`, `--strict-mcp-config`; a
+/// pane keeps the second under every auth, so no repository's `.mcp.json` loads there). So
 /// the only thing standing between a logged-in `claude` and marion is the three env vars marion
 /// overlays and those switches, and dropping them is the whole of live mode — which the neutral
 /// fields does for every harness at once.

@@ -3838,11 +3838,12 @@ mod tests {
         );
     }
 
-    /// The other half: nothing *else* changes. A live node still gets the fileless MCP declaration
-    /// and still runs only marion's MCP servers; the one argv difference from canned is the
-    /// settings exclusion, which a live node must not carry (the test below).
+    /// The other half: nothing *else* changes. A live headless node still gets the fileless MCP
+    /// declaration, beside the operator's own servers; the argv differs from canned by the two
+    /// exclusions alone — the settings one, which a live node must not carry (the test below), and
+    /// `--strict-mcp-config`.
     #[test]
-    fn a_live_claude_node_keeps_the_same_argv_as_a_canned_one_but_the_settings_exclusion() {
+    fn a_live_claude_node_keeps_the_same_argv_as_a_canned_one_but_the_two_exclusions() {
         let live = LaunchSpec {
             auth: Auth::Inherited,
             base_url: None,
@@ -3898,12 +3899,17 @@ mod tests {
                 "{shape}: a live node must not drop the operator's settings: {:?}",
                 inv.args
             );
-            assert!(
-                !inv.args.iter().any(|a| a == "--strict-mcp-config"),
-                "{shape}: a live node keeps the operator's MCP servers beside marion's: {:?}",
-                inv.args
-            );
         }
+        assert!(
+            !headless.args.iter().any(|a| a == "--strict-mcp-config"),
+            "headless: a live node keeps the operator's MCP servers beside marion's: {:?}",
+            headless.args
+        );
+        assert!(
+            pane.args.iter().any(|a| a == "--strict-mcp-config"),
+            "pane: no repository's .mcp.json loads, so no server approval boots it: {:?}",
+            pane.args
+        );
         for inv in [
             ClaudeCodeAdapter.compile(&claude_spec(), &ctx()).unwrap(),
             ClaudeCodeAdapter
