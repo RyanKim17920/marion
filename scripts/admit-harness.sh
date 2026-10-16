@@ -2,8 +2,16 @@
 # The harness admission ritual, scripted.
 #
 #   scripts/admit-harness.sh <harness> <version> [<harness> <version> ...]
+#   scripts/admit-harness.sh --list-only <harness> <version> [...]
 #   e.g.  scripts/admit-harness.sh claude 2.1.263
 #         scripts/admit-harness.sh opencode 1.18.30 goose 1.50.0
+#
+# --list-only does step 1 alone — adds each version to its row's `verified` list and formats the
+# row files — and builds and runs nothing. The nightly canary's `admit` job runs it for the releases
+# the conformance battery admitted, from its own checkout: the evidence is that run, named in the
+# commit, so nothing here re-runs it. A release the battery admits already passes the gate on its
+# record without this (`marion_testsupport::on_path`); listing it shares that verdict with every
+# machine.
 #
 # A pinned harness auto-updated and the gate (`marion_testsupport::on_path`) went red: it names the
 # installed version and the table's. The fix is never "widen the set"; it is to re-run everything
@@ -40,10 +48,12 @@ unset MARION_GATE
 export MARION_FULL_MATRIX=1
 
 usage() {
-    echo "usage: $0 <harness> <version> [<harness> <version> ...]" >&2
+    echo "usage: $0 [--list-only] <harness> <version> [<harness> <version> ...]" >&2
     echo "       (harnesses named in PINNED_HARNESSES; dotted versions)" >&2
     exit 2
 }
+list_only=0
+if [ "${1:-}" = --list-only ]; then list_only=1; shift; fi
 [ $# -ge 2 ] && [ $(($# % 2)) -eq 0 ] || usage
 
 here=$(cd "$(dirname "$0")/.." && pwd) || exit 1
@@ -102,6 +112,10 @@ printf '%s' "$pairs" | while read -r h v; do
     echo "admit-harness: $h $v added to its row's verified versions (not yet committed)"
 done || { restore; exit 1; }
 for f in $files; do rustfmt --edition 2024 --config skip_children=true "$f" || { restore; exit 1; }; done
+if [ "$list_only" = 1 ]; then
+    rm -rf "$backups"
+    exit 0
+fi
 
 # --- 2. the suites that drive these harnesses ---------------------------------------------------
 # Named by grep, not by hand: a suite that mentions a harness as a whole word and gates on a real
