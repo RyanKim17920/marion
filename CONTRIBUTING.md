@@ -7,7 +7,7 @@ automatically; do not override the channel. Edition 2024, `resolver = "3"`.
 
 macOS and Linux only. Several suites need a real PTY and Unix domain sockets, and a few of the
 socket tests fail when the checkout path is long enough to exhaust `sun_path` (104 bytes on
-macOS) — that is the environment, not the change.
+macOS). That failure comes from the environment, not from your change.
 
 ## Running tests
 
@@ -17,8 +17,8 @@ cargo test --workspace --lib    # unit tests only, no integration binaries
 ```
 
 A test drives the harness first on `PATH`, and the gate (`marion_testsupport::on_path`) checks
-that it is a release its row lists or one this machine's conformance battery admitted — see
-"When a pinned harness drifts".
+that it is a release its row lists or one this machine's conformance battery admitted (see
+"When a pinned harness drifts").
 
 Suites that drive a real `claude`/`codex`/… skip loudly when the binary is absent. The
 `--ignored` suites (`restart_resume`, `acp_child`) cost real tokens and stay opt-in.
@@ -45,9 +45,9 @@ directory's `main.rs`, and reaches the shared bed as `crate::common`.
 
 ### The `client` feature
 
-`marion-supervisor` builds two binaries from one library. The viewer's half of that library — the
+`marion-supervisor` builds two binaries from one library. The viewer's half of that library (the
 home screen, `marion attach`, the tree, the native facade's keyboard relay, the setup form's
-`agents.toml` editor — is behind its default `client` feature, together with the terminal emulator
+`agents.toml` editor) is behind its default `client` feature, together with the terminal emulator
 (`marion-term`), `marion-tui`, `ratatui` and `similar`. `marion` requires the feature;
 `marion-supervisor` does not use it. So the daemon, and the tests that only drive it, can skip that
 whole stack:
@@ -60,14 +60,14 @@ cargo test -p marion-supervisor --no-default-features --lib --test endpoint_matr
 The test targets that need it say so with `required-features` in the crate's `Cargo.toml`:
 `it_canned`, `it_live` and `conformance` run the `marion` binary or read a pane through the emulator,
 and `l45_tree` snapshots the tree screen. Without `client` they are skipped rather than failed.
-Everything else — the default `cargo build`, `cargo install`, the release — has the feature on.
+Everything else (the default `cargo build`, `cargo install`, the release) has the feature on.
 A node's words (its label, short id, state) live in `node_label`, not `tree`, because the daemon
 names nodes too.
 
 ## When a pinned harness drifts
 
 The version gate is `marion_testsupport::on_path`, reading each row's `verified` list
-(`HarnessSpec::verified`) — the only list. Every harness updates itself, so a release the list
+(`HarnessSpec::verified`), the only list. Every harness updates itself, so a release the list
 does not name is also admitted when it passes the **basic tests**: the conformance battery, $0 against
 marion's canned provider, judged against the cells the newest verified release scored in the
 committed matrix. One command, once per release:
@@ -78,20 +78,20 @@ scripts/conformance.sh --harness claude-code      # the row's name; or --harness
 
 It records the verdict for that exact binary under marion's state directory
 (`<state>/conformance/<row>-<version>.json`), and from then on the gate drives it. A release
-whose basics fail — or that was never probed, or whose record is another binary's — fails every
+whose basics fail, or that was never probed, or whose record is another binary's, fails every
 gated test naming the harness, the version and why; `marion doctor` says the same on its row.
 
 `.github/workflows/canary.yml` does this every night on a macOS runner and needs no hand: it
 installs the newest release of every harness (npm, and Homebrew for goose; no logins), runs the
-battery on each unlisted one, runs the whole suite strict, and — only after a wholly green run —
+battery on each unlisted one, runs the whole suite strict, and, only after a wholly green run,
 opens one pull request adding every release the battery admitted to its row's `verified` list
 (`scripts/admit-harness.sh`). An npm release is listed only once its publish is seven days old,
 and never at or below a listed version. The pull request auto-merges where `main` has required
 status checks and otherwise waits for a person; CI on it does not drive the harnesses, so those
-checks are the gate, not CI. Any red — a regressed conformance
-cell, a failing test — opens (or comments on) an issue labelled `harness-canary` naming the cells,
-the failing tests and every installed version. Live cells — real model calls through a vendor
-login — are outside it and stay manual.
+checks are the gate, not CI. Any red result (a regressed conformance
+cell, a failing test) opens (or comments on) an issue labelled `harness-canary` naming the cells,
+the failing tests and every installed version. Live cells (real model calls through a vendor
+login) are outside it and stay manual.
 
 For the canary's pull request, the owner once enables Settings → Actions → General → "Allow GitHub
 Actions to create and approve pull requests" and Settings → General → "Allow auto-merge". A pull
@@ -99,14 +99,14 @@ request opened with the default token does not start `ci.yml`, so under the rule
 wait forever; adding a secret `CANARY_TOKEN` (a fine-grained token with Contents and Pull requests
 write on this repository) makes CI run and the merge happen.
 
-To list a release by hand — after reading why the battery held it back, say a P-approval failure
-naming a moved ask key — `scripts/admit-harness.sh claude 2.1.301` adds it to its row's
+To list a release by hand (after reading why the battery held it back, say a P-approval failure
+naming a moved ask key), `scripts/admit-harness.sh claude 2.1.301` adds it to its row's
 `verified` list (it builds and runs nothing); re-run the battery for that row into the committed
 fixtures so its transcripts become the bar the next release is held to.
 
 ## The commit gate
 
-L4.5 — the snapshot layer — gates *commits*, not pushes. Install it once per clone:
+L4.5, the snapshot layer, gates *commits*, not pushes. Install it once per clone:
 
 ```sh
 git config core.hooksPath .githooks
@@ -134,17 +134,17 @@ Every change is judged on three axes before it lands, and `scripts/three-axis.sh
 part a syntax tree can answer. It runs `cargo test -p marion-testsupport --test three_axis`,
 which parses every shipped source file and fails on:
 
-- **Generality** — branching on *which* harness outside the row files
+- **Generality**: branching on *which* harness outside the row files
   (`crates/marion-harness/src/<harness>.rs` and the `Harness` enum's own file): a `Harness::X`
   pattern or comparison, a harness-name string in a conditional, a baked-in agent-type name like
   `"codex-impl"`, a vendor env var (`ANTHROPIC_*`), a harness-named strategy variant, or a
   harness's `impl` living outside its row. Do instead: put the behaviour on the row as data, or
   in an enumerated strategy every row states, with a sweep test over `Harness::ALL`.
-- **Efficiency** — timer-driven waiting in shipped code: `sleep` in a loop, `try_wait`/
+- **Efficiency**: timer-driven waiting in shipped code: `sleep` in a loop, `try_wait`/
   `try_recv` or a fixed-period `recv_timeout`/`wait_timeout` in a loop, a fixed read timeout, a
   `yield_now` spin, a `*_POLL`/`*_TICK` constant. Do instead: wait on the event (poll(2)/kqueue,
   a condvar, a blocking `recv()`, a pipe), and measure wakeups before and after.
-- **Security** — a secret in a `Debug` derive or `Display` impl, a formatting/logging macro,
+- **Security**: a secret in a `Debug` derive or `Display` impl, a formatting/logging macro,
   argv, or a credential-bearing file written without `mode(0o600)`; and any test that spells a
   login or device flow. Do instead: a secret type with a redacting `Debug`, env instead of argv,
   `OpenOptionsExt::mode(0o600)`, and a BLOCKED report naming the login command for the user.
@@ -156,21 +156,21 @@ skill, plugin or MCP server installed on your machine in a committed capture fai
 
 Known findings live in `checks/{generality,efficiency,security}.allow` as `path:item  reason`.
 The lists are a ratchet: a new finding fails the check, and so does an entry nothing matches any
-more — a fix deletes its line in the same commit. Add an entry only with a reason a reviewer can
+more, so a fix deletes its line in the same commit. Add an entry only with a reason a reviewer can
 check (a bounded deadline, a verified false positive, or the tracked wave that removes it).
 
 ## Commits
 
-Format is `type: description` — `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`.
-Explain the *why*, not just the *what*.
+Format is `type: description`, with type one of `feat`, `fix`, `refactor`, `test`, `docs`,
+`chore`. Say why the change is needed, not only what it does.
 
 **Micro-commits.** One independently testable behaviour or invariant per commit. Unrelated
 cleanup gets its own commit; feature work, review fixes and cleanup are never squashed together.
 
 **`MILESTONES.md` is the ledger, and it moves in the same commit.** Any change that affects a
 milestone marker, a verified harness fact, a pinned version, or the "Where it actually stands"
-section updates `MILESTONES.md` in that same commit — or states in the message why the marker is
-unchanged. A milestone doc that trails the code by even one commit has already lied once.
+section updates `MILESTONES.md` in that same commit, or the commit message says why the marker is
+unchanged.
 
 ## Where things are
 
@@ -188,7 +188,7 @@ unchanged. A milestone doc that trails the code by even one commit has already l
 where they disagree, that split decides. `docs/guide.md` is the user-facing reference behind the
 README, and `docs/README.md` indexes the rest. `spikes/` holds the
 throwaway probe scripts that produced the measurements, and `tests/fixtures/` holds their
-recorded output — `tests/fixtures/REVIEW.md` is the redaction ledger for that corpus, and any
+recorded output; `tests/fixtures/REVIEW.md` is the redaction ledger for that corpus, and any
 new fixture goes through it before it is committed.
 
 `marion`'s commands are the rows of `VERBS` in
@@ -378,9 +378,9 @@ Rough effort: several weeks of focused work before `marion run` and `marion atta
 Windows, most of it in the pty and socket layers and their tests, and more before the native
 facade does. The lanes whose harnesses are themselves Unix-only gain nothing.
 
-Suggested approach, if it is ever wanted: first turn `pty` and `socket` into seams — one trait
+Suggested approach, if it is ever wanted: first turn `pty` and `socket` into seams (one trait
 each for "spawn a child on a terminal, read, write, resize, wait" and "listen, accept, identify
-the peer, pass a terminal" — with today's POSIX code as the only implementation and no behaviour
+the peer, pass a terminal"), with today's POSIX code as the only implementation and no behaviour
 change. Then add ConPTY and named-pipe implementations behind them, a Job Object behind `kill`,
 and a Windows runner in `ci.yml`. The native facade's descriptor-passing capability would need
 its own design on Windows rather than a translation.
