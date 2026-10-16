@@ -397,7 +397,15 @@ A cloned repository can carry configuration for the harnesses themselves: `.clau
 runs at startup), `.pi/` extensions, `.codex/config.toml`. A node on your own login loads none of
 it until you trust the repository: `marion trust allow --repo [<dir>]` (default: the current
 directory) records the repository's git directory, which covers every worktree of it, and
-`marion trust deny --repo [<dir>]` forgets it; `marion trust list` shows each trusted repository.
+`marion trust deny --repo [<dir>]` declines it; `marion trust list` shows each repository you
+decided about.
+
+When `marion` or `marion run` starts at your terminal, on your own login, in a repository that
+holds any of that config and that you have not decided about, it asks once: `this repository has
+its own harness config (.mcp.json, .codex/config.toml). … Trust it? [y/N]`. `y` trusts it; anything
+else declines it, and either answer is recorded, so it is not asked again. Run without a terminal,
+or as `marion mcp`, marion asks nothing and prints one line naming `marion trust allow --repo`.
+Which paths count is each harness row's `repo_config`.
 
 | harness | untrusted repository | trusted repository |
 |---|---|---|

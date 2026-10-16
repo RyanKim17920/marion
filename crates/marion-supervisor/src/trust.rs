@@ -35,7 +35,10 @@
 //! the user-level [`ACP_ALLOW_FILE`].
 //!
 //! **Never a prompt.** A spawn arrives over MCP from a model, which cannot consent on the
-//! operator's behalf; the refusal names the one command the operator runs instead.
+//! operator's behalf; the refusal names the one command the operator runs instead. The one
+//! question marion asks is the operator's own, at their terminal, before a run starts: whether to
+//! trust a repository that holds harness configuration of its own ([`offer_repo_trust`]), asked
+//! once and recorded either way.
 //!
 //! [`require_model_named`]: crate::trust::require_model_named
 //! [`ACP_ALLOW_FILE`]: crate::trust::ACP_ALLOW_FILE
@@ -508,11 +511,15 @@ struct StoreFile {
     repos: Vec<RepoEntry>,
 }
 
-/// A repository the operator trusted: its canonical git directory.
+/// A repository the operator decided about: its canonical git directory, trusted unless they
+/// `declined` it. A declined repository is untrusted, as an unrecorded one is, but is not asked
+/// about again ([`offer_repo_trust`]).
 #[derive(serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct RepoEntry {
     path: PathBuf,
+    #[serde(default)]
+    declined: bool,
 }
 
 #[derive(serde::Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -597,6 +604,11 @@ impl Store {
 
     /// Whether the repository whose canonical git directory is `root` is trusted.
     pub fn repo_trusted(&self, root: &Path) -> bool {
+        self.repos.iter().any(|r| r.path == root && !r.declined)
+    }
+
+    /// Whether the operator has said either way about the repository at `root`.
+    pub fn repo_decided(&self, root: &Path) -> bool {
         self.repos.iter().any(|r| r.path == root)
     }
 
@@ -605,15 +617,23 @@ impl Store {
         if self.repo_trusted(&root) {
             return false;
         }
-        self.repos.push(RepoEntry { path: root });
+        self.repos.retain(|r| r.path != root);
+        self.repos.push(RepoEntry {
+            path: root,
+            declined: false,
+        });
         true
     }
 
-    /// Forget the repository at `root`; whether it was trusted.
+    /// Record that the operator declined the repository at `root`; whether it was trusted.
     fn deny_repo(&mut self, root: &Path) -> bool {
-        let before = self.repos.len();
+        let was = self.repo_trusted(root);
         self.repos.retain(|r| r.path != root);
-        self.repos.len() != before
+        self.repos.push(RepoEntry {
+            path: root.to_path_buf(),
+            declined: true,
+        });
+        was
     }
 
     fn save(&self) -> Result<(), TrustError> {
@@ -626,10 +646,13 @@ impl Store {
                 quote(&e.sha256)
             )
         });
-        let repos = self
-            .repos
-            .iter()
-            .map(|r| format!("[[repo]]\npath = {}\n\n", quote(&r.path.to_string_lossy())));
+        let repos = self.repos.iter().map(|r| {
+            format!(
+                "[[repo]]\npath = {}\n{}\n",
+                quote(&r.path.to_string_lossy()),
+                if r.declined { "declined = true\n" } else { "" }
+            )
+        });
         let body: String = files.chain(repos).collect();
         crate::private_fs::write_atomic(&self.path, body.as_bytes())
             .map_err(|e| TrustError::Io(format!("{}: {e}", self.path.display())))
@@ -677,6 +700,112 @@ pub fn repo_trusted(project_root: &Path) -> bool {
 /// [`repo_trusted`] over an explicit store.
 pub fn repo_trusted_in(store: PathBuf, project_root: &Path) -> bool {
     Store::open(store).is_ok_and(|s| s.repo_trusted(project_root))
+}
+
+/// Every path a harness row reads as a repository's own configuration
+/// ([`marion_harness::spec::HarnessSpec::repo_config`]), each once, in row order.
+pub fn repo_config_paths() -> Vec<&'static str> {
+    let mut paths: Vec<&'static str> = Vec::new();
+    for h in marion_harness::adapter::every() {
+        for p in marion_harness::adapter::harness_spec(h).repo_config {
+            if !paths.contains(p) {
+                paths.push(p);
+            }
+        }
+    }
+    paths
+}
+
+/// **The harness configuration `checkout` holds of its own**: those of [`repo_config_paths`]
+/// present there, as a file, a directory or a link. Only the repository is looked at — never the
+/// operator's own configuration under their home.
+pub fn repo_config_present(checkout: &Path) -> Vec<&'static str> {
+    repo_config_paths()
+        .into_iter()
+        .filter(|p| std::fs::symlink_metadata(checkout.join(p)).is_ok())
+        .collect()
+}
+
+/// How marion may raise a repository's trust with whoever is running it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asking {
+    /// An operator at a terminal: asked once, `[y/N]`, and the answer recorded either way.
+    Prompt,
+    /// Headless, an MCP server, or anything a node runs: never asked; one line says how to trust.
+    Note,
+}
+
+/// **Offer the operator trust in the repository at `checkout`** (git directory `project_root`)
+/// where it holds harness configuration of its own and they have not decided about it yet. Under
+/// [`Asking::Prompt`] the question is put once on `out` and answered from `input`: `y` or `yes`
+/// trusts it, anything else declines, and either answer is recorded, so it is never asked again.
+/// Under [`Asking::Note`] one line says what is held back and the command that trusts it. A
+/// store that cannot be read or written says so in one line and decides nothing.
+pub fn offer_repo_trust(
+    checkout: &Path,
+    project_root: &Path,
+    asking: Asking,
+    input: &mut dyn std::io::BufRead,
+    out: &mut dyn std::io::Write,
+) {
+    let Some(store) = store_path() else {
+        return;
+    };
+    offer_repo_trust_in(store, checkout, project_root, asking, input, out);
+}
+
+/// [`offer_repo_trust`] over an explicit store.
+pub fn offer_repo_trust_in(
+    store: PathBuf,
+    checkout: &Path,
+    project_root: &Path,
+    asking: Asking,
+    input: &mut dyn std::io::BufRead,
+    out: &mut dyn std::io::Write,
+) {
+    let decided = Store::open(store.clone()).map(|s| s.repo_decided(project_root));
+    if !matches!(decided, Ok(false)) {
+        return;
+    }
+    let present = repo_config_present(checkout);
+    if present.is_empty() {
+        return;
+    }
+    let list = present.join(", ");
+    if asking == Asking::Note {
+        let _ = writeln!(
+            out,
+            "marion: this repository has its own harness config ({list}), which nodes on your \
+             login do not load until you trust it: marion trust allow --repo"
+        );
+        return;
+    }
+    let _ = write!(
+        out,
+        "marion: this repository has its own harness config ({list}). Nodes on your own login \
+         load it only once you trust the repository. Trust it? [y/N] "
+    );
+    let _ = out.flush();
+    let mut answer = String::new();
+    let yes = input.read_line(&mut answer).is_ok()
+        && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+    let recorded = Store::edit(store).and_then(|mut s| {
+        if yes {
+            s.allow_repo(project_root.to_path_buf());
+        } else {
+            s.deny_repo(project_root);
+        }
+        s.save()
+    });
+    let _ = match (recorded, yes) {
+        (Err(e), _) => writeln!(out, "marion: your answer was not recorded: {e}"),
+        (Ok(()), true) => writeln!(out, "marion: trusted. Undo with: marion trust deny --repo"),
+        (Ok(()), false) => writeln!(
+            out,
+            "marion: not trusted, and marion will not ask again. To trust it later: marion \
+             trust allow --repo"
+        ),
+    };
 }
 
 /// `file`'s canonical path; for a file that no longer exists, its directory's canonical path and
@@ -763,21 +892,27 @@ pub fn run(
             store.save().map_err(err)?;
             w(writeln!(
                 out,
-                "{} {}: nodes on your own login there now load its harness config (.claude, \
-                 .mcp.json, opencode.json, .opencode, .pi, .codex) and marion answers its \
-                 harnesses' folder-trust dialogs. Undo with: marion trust deny --repo",
+                "{} {}: nodes on your own login there now load its harness config ({}) and \
+                 marion answers its harnesses' folder-trust dialogs. Undo with: marion trust \
+                 deny --repo",
                 if added { "trusted" } else { "already trusted" },
-                root.display()
+                root.display(),
+                repo_config_paths().join(", ")
             ))
         }
         [verb, flag, rest @ ..] if verb == "deny" && flag == "--repo" => {
             let root = repo_arg(rest)?;
             let mut store = Store::edit(store).map_err(err)?;
-            if store.deny_repo(&root) {
-                store.save().map_err(err)?;
+            let was = store.deny_repo(&root);
+            store.save().map_err(err)?;
+            if was {
                 w(writeln!(out, "denied {}", root.display()))
             } else {
-                w(writeln!(out, "{} was not trusted", root.display()))
+                w(writeln!(
+                    out,
+                    "{} was not trusted, and stays so; marion will not ask about it",
+                    root.display()
+                ))
             }
         }
         [verb, rest @ ..] if verb == "allow" => {
@@ -827,7 +962,8 @@ pub fn run(
         [verb] if verb == "list" => {
             let store = Store::open(store).map_err(err)?;
             for r in &store.repos {
-                w(writeln!(out, "repo     {}", r.path.display()))?;
+                let state = if r.declined { "declined" } else { "repo    " };
+                w(writeln!(out, "{state} {}", r.path.display()))?;
             }
             if store.files.is_empty() {
                 return w(out_to!(out, "no trusted files"));
@@ -1464,6 +1600,81 @@ mod tests {
         assert!(
             !repo_trusted_in(store, &crate::socket::project_root(&other)),
             "an unrecorded directory is untrusted"
+        );
+    }
+
+    /// **An operator at a terminal is asked once about a repository with harness config of its
+    /// own**, and either answer is recorded: `y` trusts it, anything else declines it, and a
+    /// decided repository is not asked about again. Headless, it is one line naming the command
+    /// and nothing is recorded. A repository with no harness config is not mentioned at all.
+    #[test]
+    fn a_repository_with_its_own_harness_config_is_asked_about_once() {
+        let offer = |store: &PathBuf, checkout: &Path, asking: Asking, answer: &str| {
+            let mut out = Vec::new();
+            offer_repo_trust_in(
+                store.clone(),
+                checkout,
+                checkout,
+                asking,
+                &mut answer.as_bytes(),
+                &mut out,
+            );
+            String::from_utf8(out).unwrap()
+        };
+        let (bare, _file, store) = repo("repo-offer-bare", CUSTOM);
+        assert_eq!(
+            offer(&store, &bare, Asking::Prompt, "y\n"),
+            "",
+            "nothing of its own"
+        );
+        assert!(!Store::open(store.clone()).unwrap().repo_decided(&bare));
+
+        let (yes, _file, store) = repo("repo-offer-yes", CUSTOM);
+        std::fs::write(yes.join(".mcp.json"), "{}").unwrap();
+        std::fs::create_dir_all(yes.join(".codex")).unwrap();
+        std::fs::write(yes.join(".codex/config.toml"), "").unwrap();
+        let note = offer(&store, &yes, Asking::Note, "y\n");
+        assert_eq!(note.lines().count(), 1, "{note}");
+        assert!(
+            note.contains(".mcp.json") && note.contains("marion trust allow --repo"),
+            "{note}"
+        );
+        assert!(
+            !Store::open(store.clone()).unwrap().repo_decided(&yes),
+            "a note decides nothing"
+        );
+        let asked = offer(&store, &yes, Asking::Prompt, "Y\n");
+        assert!(
+            asked.contains("[y/N]") && asked.contains(".mcp.json, .codex/config.toml"),
+            "{asked}"
+        );
+        assert!(repo_trusted_in(store.clone(), &yes));
+        assert_eq!(offer(&store, &yes, Asking::Prompt, "n\n"), "", "asked once");
+
+        let (no, _file, store) = repo("repo-offer-no", CUSTOM);
+        std::fs::create_dir_all(no.join(".pi")).unwrap();
+        let declined = offer(&store, &no, Asking::Prompt, "\n");
+        assert!(declined.contains("not trusted"), "{declined}");
+        assert!(!repo_trusted_in(store.clone(), &no), "Enter is No");
+        assert_eq!(
+            offer(&store, &no, Asking::Prompt, "y\n"),
+            "",
+            "declined is decided"
+        );
+        let mut out = Vec::new();
+        run(&["list".into()], &no, store.clone(), &mut out).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("declined "));
+        let mut out = Vec::new();
+        run(
+            &["allow".into(), "--repo".into()],
+            &no,
+            store.clone(),
+            &mut out,
+        )
+        .unwrap();
+        assert!(
+            repo_trusted_in(store, &crate::socket::project_root(&no)),
+            "a declined repository can still be trusted by hand"
         );
     }
 

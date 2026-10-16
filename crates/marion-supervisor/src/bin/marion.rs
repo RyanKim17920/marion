@@ -470,7 +470,31 @@ fn home_main() -> ExitCode {
     let Some((repo, state)) = resolve_project(&Place::default()) else {
         return ExitCode::FAILURE;
     };
+    offer_repo_trust(&repo, marion_harness::Auth::Inherited);
     home_on(repo, state)
+}
+
+/// **Ask about the repository's own harness config, where a run on the operator's login would
+/// hold it back** ([`marion_supervisor::trust::offer_repo_trust`]): a question at a terminal, one
+/// line anywhere else. An overlaying launch (canned, endpoint) loads none of a repository's
+/// config whatever its trust, so it asks nothing. A run from inside a node never gets here: the
+/// supervisor refuses the operator's hello from a node's process tree before a run is made.
+fn offer_repo_trust(repo: &Path, auth: marion_harness::Auth) {
+    if auth.overlays() {
+        return;
+    }
+    let asking = if io::stdin().is_terminal() && io::stderr().is_terminal() {
+        marion_supervisor::trust::Asking::Prompt
+    } else {
+        marion_supervisor::trust::Asking::Note
+    };
+    marion_supervisor::trust::offer_repo_trust(
+        repo,
+        &socket::project_root(repo),
+        asking,
+        &mut io::stdin().lock(),
+        &mut io::stderr(),
+    );
 }
 
 fn home_on(repo: PathBuf, state: PathBuf) -> ExitCode {
@@ -1456,6 +1480,16 @@ fn run_mcp(args: McpArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // An MCP server is never the place for a question: its stdin is the client's protocol.
+    if !args.backend.auth().overlays() {
+        marion_supervisor::trust::offer_repo_trust(
+            &repo,
+            &socket::project_root(&repo),
+            marion_supervisor::trust::Asking::Note,
+            &mut io::empty(),
+            &mut io::stderr(),
+        );
+    }
     let program = supervisor_binary();
     // §2's key — the git common dir — for the socket and for §4.3's tree both, which is the pairing
     // the run path documents at length. One `project_root`, spent twice.
@@ -3069,6 +3103,9 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
         base_url: base_url.clone(),
     };
     let mut supervisor = connect_run_supervisor(&sock, &launch)?;
+    // After the supervisor took this client's operator hello, before the root it launches reads
+    // the repository's trust.
+    offer_repo_trust(&repo, auth);
 
     // The bound the node will run under, resolved with the **same** function the supervisor
     // resolves it with. Not sent as a number and not binding here: the wire carries `--timeout`
