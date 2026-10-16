@@ -1139,12 +1139,21 @@ fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
     git_in(repo, &Effect::Diff(branch.to_string()))
 }
 
-/// `git -C <repo>` with exactly the command line `effect` shows the operator ([`Effect::argv`]),
-/// so what the box says and what runs cannot drift apart.
+/// **The command line `effect` shows the operator ([`Effect::argv`]), run in `repo` with the
+/// terminal**, so what the box says and what runs cannot drift apart. Through
+/// [`crate::gitcmd::command`] as the operator's checkout, and with no pager and no hooks on top:
+/// the repository's configuration is shared with every worktree a child wrote in, so a
+/// `core.pager` or `core.hooksPath` there may be one a child planted, and this runs as the
+/// operator, outside any sandbox. The operator's own hooks do not run on a merge made here.
 fn git_in(repo: &Path, effect: &Effect) -> std::process::Command {
     let argv = effect.argv().unwrap_or_default();
-    let mut c = std::process::Command::new("git");
-    c.arg("-C").arg(repo).args(argv.iter().skip(1));
+    let mut args = vec!["--no-pager", "-c", "core.hooksPath=/dev/null"];
+    args.extend(argv.iter().skip(1).map(String::as_str));
+    let mut c = crate::gitcmd::command(&crate::gitcmd::Tree::Operator(repo), &args)
+        .expect("an operator checkout is never refused");
+    c.stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
     c
 }
 
@@ -1163,6 +1172,7 @@ mod tests {
         assert!(args.contains(&"--no-textconv".to_string()), "{args:?}");
         assert!(args.contains(&"--no-ext-diff".to_string()), "{args:?}");
         assert_eq!(args.last().map(String::as_str), Some("HEAD..marion/t-1"));
+        assert!(args.contains(&"--no-pager".to_string()), "{args:?}");
     }
 
     /// **The merge that runs is the line the box showed**, `--` before the branch included, so a
@@ -1174,7 +1184,27 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args, ["-C", "/r", "merge", "--no-ff", "--", "-x"]);
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "core.fsmonitor=false",
+                "--no-pager",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "merge",
+                "--no-ff",
+                "--",
+                "-x"
+            ]
+        );
+        assert_eq!(c.get_current_dir(), Some(Path::new("/r")));
+        for redirect in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] {
+            assert!(
+                c.get_envs().any(|(k, v)| k == redirect && v.is_none()),
+                "{redirect} is cleared"
+            );
+        }
     }
 
     #[test]
