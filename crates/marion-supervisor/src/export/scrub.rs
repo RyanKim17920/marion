@@ -12,9 +12,9 @@
 //!
 //! * **Keys marion knows**: the credential behind every endpoint node in the tree, and the value of
 //!   every environment variable whose name says it is a secret (`*_API_KEY`, `*_TOKEN`,
-//!   `*_SECRET`, `*PASSWORD`, …). Matched exactly, by [`crate::endpoint::redact`] — the rule every
-//!   other redaction in marion uses, so a key shorter than eight characters is left alone here as
-//!   it is everywhere else.
+//!   `*_SECRET`, `*PASSWORD`, …). Matched by value as [`crate::endpoint::redact`] matches — the
+//!   rule every other redaction in marion uses, so a key shorter than eight characters is left
+//!   alone here as it is everywhere else — but past escapes and invisible characters inside it.
 //! * **Keys marion does not know, by their shape**: `sk-…`, `ghp_…`/`github_pat_…`, Slack's
 //!   `xox?-…`, AWS's `AKIA…`, GitLab's `glpat-…`, a JWT, a `Bearer` credential, a run of 64 or
 //!   more hex digits, and a PEM
@@ -64,12 +64,12 @@ fn is_line_separator(c: char) -> bool {
     matches!(c, '\u{2028}' | '\u{2029}')
 }
 
-/// **`text` as it reads on a screen, with nothing in it that drives one**: every terminal escape
-/// sequence taken out whole (CSI, a control string — OSC, DCS, APC, PM, SOS — to its terminator,
-/// any other `ESC` sequence, and their 8-bit forms), every other control character but the line
-/// feed and the tab, and every invisible format character ([`is_format`]). What is left is what a
-/// reader sees, so a key matched by value is matched where the screen shows it whole.
-fn plain(text: &str) -> String {
+/// **`text` with nothing in it that drives a terminal**: every escape sequence taken out whole
+/// (CSI, a control string — OSC, DCS, APC, PM, SOS — to its terminator, any other `ESC`
+/// sequence, and their 8-bit forms), and every other control character but the line feed and the
+/// tab. Format characters stay: Persian's zero-width non-joiner, an emoji's joiner and a bidi mark
+/// are part of the text.
+fn without_escapes(text: &str) -> String {
     #[derive(Clone, Copy, PartialEq)]
     enum In {
         Text,
@@ -105,13 +105,54 @@ fn plain(text: &str) -> String {
                 out.push(c);
                 In::Text
             }
-            (In::Text, c) if c.is_control() || is_format(c) => In::Text,
+            (In::Text, c) if c.is_control() => In::Text,
             (In::Text, c) => {
                 out.push(c);
                 In::Text
             }
         };
     }
+    out
+}
+
+/// **`text` with every occurrence of each of `keys` masked, as a reader sees the text**: matched
+/// on the text without its invisible format characters ([`is_format`]), so a key with a
+/// zero-width joiner inside it — whole on the screen — is found, and the span it covers in `text`,
+/// those characters included, is what is masked. Everything outside a match is kept as it was.
+/// Longest key first, so one that contains another is masked whole.
+fn mask_keys(text: &str, keys: &[Secret]) -> String {
+    // What is matched: every character but a format one, with where it starts in `text`.
+    let shown: Vec<(usize, char)> = text
+        .char_indices()
+        .filter(|&(_, c)| !is_format(c))
+        .collect();
+    let hay: String = shown.iter().map(|&(_, c)| c).collect();
+    // Where each of `shown` starts in `hay`, to find a match's first and last character.
+    let at: Vec<usize> = hay.char_indices().map(|(i, _)| i).collect();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for key in keys {
+        let key: String = key.expose().chars().filter(|&c| !is_format(c)).collect();
+        if key.len() < MIN_SECRET {
+            continue;
+        }
+        for (from, found) in hay.match_indices(key.as_str()) {
+            let first = at.partition_point(|&i| i < from);
+            let last = at.partition_point(|&i| i < from + found.len()) - 1;
+            let (start, end) = (shown[first].0, shown[last].0 + shown[last].1.len_utf8());
+            if spans.iter().all(|&(s, e)| end <= s || e <= start) {
+                spans.push((start, end));
+            }
+        }
+    }
+    spans.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut kept = 0;
+    for (start, end) in spans {
+        out.push_str(&text[kept..start]);
+        out.push_str(MASK);
+        kept = end;
+    }
+    out.push_str(&text[kept..]);
     out
 }
 
@@ -172,14 +213,11 @@ impl Scrubber {
     }
 
     /// `text` with every known key, every secret-shaped run and the home directory taken out.
-    /// Terminal escape sequences, control characters and invisible format characters go first
-    /// ([`plain`]): a key with a colour change or a zero-width space inside it reads whole on the
-    /// screen, and is matched whole.
+    /// Terminal escape sequences and control characters go first ([`without_escapes`]), and keys
+    /// are matched as a reader sees the rest ([`mask_keys`]): a key with a colour change or a
+    /// zero-width joiner inside it reads whole on the screen, and is masked whole.
     pub fn clean(&self, text: &str) -> String {
-        let mut out = plain(text);
-        for k in &self.keys {
-            out = crate::endpoint::redact(&out, k.expose());
-        }
+        let mut out = mask_keys(&without_escapes(text), &self.keys);
         out = pem_blocks(&out);
         out = shapes(&out);
         match &self.home {
@@ -189,14 +227,15 @@ impl Scrubber {
     }
 
     /// **`text` as one line safe to journal and print to a terminal**: [`Self::clean`]ed (a
-    /// vendor's error can echo the key it refused, and escapes and invisible characters are gone
-    /// with it), every line break written as its escape (`\n`, `\t`, `\u{2028}`) so the line
-    /// stays one, and capped at [`LINE_CAP`] characters with `…` where it was cut.
+    /// vendor's error can echo the key it refused, and escapes are gone with it), every line break
+    /// and invisible format character written as its escape (`\n`, `\u{2028}`, `\u{202e}`) so
+    /// the line stays one and a reader sees what was hidden in it — a bidi override is evidence
+    /// of tampering — and capped at [`LINE_CAP`] characters with `…` where it was cut.
     pub fn one_line(&self, text: &str) -> String {
         let mut out = String::new();
         let mut kept = 0;
         for c in self.clean(text).chars() {
-            let piece: String = if c.is_control() || is_line_separator(c) {
+            let piece: String = if c.is_control() || is_format(c) || is_line_separator(c) {
                 c.escape_default().collect()
             } else {
                 c.to_string()
@@ -576,7 +615,12 @@ mod tests {
         assert!(long.ends_with('…'));
         assert_eq!(s.one_line("rate limit: 429"), "rate limit: 429");
         let bidi = s.one_line("ok \u{202e}txt.exe\u{200b}\u{2066}x\u{feff}");
-        assert_eq!(bidi, "ok txt.exex", "nothing left to reorder the line");
+        assert_eq!(bidi, "ok \\u{202e}txt.exe\\u{200b}\\u{2066}x\\u{feff}");
+        assert_eq!(
+            s.one_line("401 envkey-\u{200d}abcdefghijkl\u{200f}"),
+            "401 ***\\u{200f}",
+            "a key split by a joiner masked, a mark after it escaped"
+        );
         assert_eq!(
             s.one_line("one\u{2028}two\u{2029}three"),
             "one\\u{2028}two\\u{2029}three",
@@ -595,9 +639,9 @@ mod tests {
     }
 
     /// **A key with an escape sequence, a control or an invisible character inside it is masked
-    /// all the same**: each is taken out before keys are matched by value, so the key the screen
-    /// would show whole is found whole. Every kind of sequence goes, to its end, and text after it
-    /// stays.
+    /// all the same**: escapes and controls are taken out, and keys are matched past invisible
+    /// characters, so the key the screen would show whole is found whole, and masked with what is
+    /// inside it. Every kind of sequence goes, to its end, and text after it stays.
     #[test]
     fn a_key_split_by_escapes_or_invisible_characters_is_still_masked() {
         let s = scrubber();
@@ -612,7 +656,9 @@ mod tests {
             "envkey-\u{8}abcdefghijkl",
             "envkey-\rabcdefghijkl",
             "envkey-\u{200b}abcdefghijkl",
+            "envkey-\u{200d}abcdefghijkl",
             "envkey-\u{ad}abcdef\u{2060}ghijkl",
+            "envkey-abcdef\x1b[1m\u{200c}ghijkl",
         ] {
             let clean = s.clean(&format!("key: {split} done"));
             assert_eq!(clean, "key: *** done", "from {split:?}");
@@ -628,6 +674,22 @@ mod tests {
             "an unended string runs to the end"
         );
         assert_eq!(s.clean("x\x1b]0;t\u{18}y"), "xy", "CAN abandons a sequence");
+    }
+
+    /// **Text that needs its format characters keeps them**: Persian's zero-width non-joiner, an
+    /// emoji ZWJ sequence and a right-to-left mark pass through a report unchanged.
+    #[test]
+    fn joiners_and_bidi_marks_in_ordinary_text_are_kept() {
+        let s = scrubber();
+        for text in [
+            "\u{645}\u{6cc}\u{200c}\u{62e}\u{648}\u{627}\u{647}\u{645}",
+            "pair \u{1f469}\u{200d}\u{1f4bb} done",
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "\u{5e9}\u{5dc}\u{5d5}\u{5dd}\u{200f} (1)",
+            "\u{915}\u{94d}\u{200d}\u{937}",
+        ] {
+            assert_eq!(s.clean(text), text);
+        }
     }
 
     #[test]
