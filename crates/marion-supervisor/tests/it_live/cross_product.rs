@@ -1182,9 +1182,20 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
     );
     // The root reads `bridge::contract_view` of the record: the quiet completion defaults left
     // out, every other field the record's own.
-    let returned: serde_json::Value = serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
+    let mut returned: serde_json::Value = serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
         panic!("{cell}: the root's tool result does not carry a contract document: {e}\n{result_text}")
     });
+    // The view names the persisted file, and that file is the record compared against below.
+    let file = returned
+        .as_object_mut()
+        .and_then(|o| o.remove(marion_supervisor::bridge::CONTRACT_FILE_KEY))
+        .unwrap_or_else(|| panic!("{cell}: the result names its contract file:\n{result_text}"));
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(file.as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(
+        on_disk, ev.persisted[0],
+        "{cell}: the named file is the persisted contract"
+    );
     assert_eq!(
         returned["task_id"],
         serde_json::json!(contract.task_id.0),

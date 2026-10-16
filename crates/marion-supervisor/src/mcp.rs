@@ -241,7 +241,10 @@ fn outcome_text(
     delivered: Result<courier::Delivered, SpawnError>,
 ) -> Option<(String, bool)> {
     Some(match delivered {
-        Ok(courier::Delivered::Contract(c)) => bridge::spawn_text(agent_type, Ok(*c)),
+        Ok(courier::Delivered::Contract(c)) => {
+            let record = project.agent(agent_id).contract(&c.task_id);
+            bridge::spawn_text_of(agent_type, &Ok(*c), Some(&record))
+        }
         // §9's root, ending. See [`bridge::root_result`] for why this is not `spawn_result`'s
         // fourth shape.
         Ok(courier::Delivered::Ended { status, exit }) => bridge::root_text(
@@ -3246,6 +3249,34 @@ mod tests {
             std::path::Path::new("/state"),
             std::path::Path::new("/repo"),
         )
+    }
+
+    /// **A delivered contract names its file**, where the courier reads it from, so a parent
+    /// whose context lost the result can read the whole record back.
+    #[test]
+    fn a_delivered_contract_names_the_file_it_was_read_from() {
+        let contract = bridge::contract_that_ran(crate::spawn::ChildOutcome {
+            narrative: Some("did the work".into()),
+            exit_code: Some(0),
+            ..Default::default()
+        });
+        let agent = AgentId("a-1".into());
+        let want = project().agent(&agent).contract(&contract.task_id);
+        let task = contract.task_id.clone();
+        let (text, _) = outcome_text(
+            "codex-impl",
+            &project(),
+            &agent,
+            Ok(courier::Delivered::Contract(Box::new(contract))),
+        )
+        .unwrap();
+        let view: serde_json::Value =
+            serde_json::from_str(bridge::fenced_contract(&text).unwrap()).unwrap();
+        assert_eq!(view["task_id"], serde_json::json!(task.0));
+        assert_eq!(
+            view[bridge::CONTRACT_FILE_KEY],
+            serde_json::json!(want.to_string_lossy())
+        );
     }
 
     /// **A backgrounded child's end is pushed as one well-formed notification** — one line, no

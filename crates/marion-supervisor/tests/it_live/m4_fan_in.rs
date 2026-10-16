@@ -581,10 +581,14 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
             !text.contains("<persisted-output>"),
             "the tool result was replaced by a stub, so the contract never reached the model:\n{text}"
         );
-        let returned: serde_json::Value = serde_json::from_str(contract_json(&text))
+        let mut returned: serde_json::Value = serde_json::from_str(contract_json(&text))
             .unwrap_or_else(|e| {
                 panic!("turn {i}'s tool result does not carry a contract document: {e}\n{text}")
             });
+        let file = returned
+            .as_object_mut()
+            .and_then(|o| o.remove(marion_supervisor::bridge::CONTRACT_FILE_KEY))
+            .unwrap_or_else(|| panic!("turn {i}'s result names its contract file:\n{text}"));
         let persisted_json = contracts
             .iter()
             .map(|(_, v)| (*v).clone())
@@ -597,8 +601,16 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
             });
         assert_eq!(
             normalize_for_cap_rules(returned),
-            normalize_for_cap_rules(marion_supervisor::bridge::trim_contract(persisted_json)),
+            normalize_for_cap_rules(marion_supervisor::bridge::trim_contract(
+                persisted_json.clone()
+            )),
             "the tool result must be the persisted contract, modulo what the cap rules shorten"
+        );
+        let on_disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file.as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(
+            on_disk, persisted_json,
+            "turn {i}: the named file is the persisted contract"
         );
     }
     // Two *different* contracts, not one delivered twice.
