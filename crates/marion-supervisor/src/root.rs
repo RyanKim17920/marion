@@ -2932,10 +2932,10 @@ fn launch_terminal(
     // First-run setup is harness UI state in its config, so where marion owns that config it is
     // marion's to answer in any directory.
     let dialogs = marion_harness::adapter::harness_spec(node.harness).boot_dialogs;
-    let config = dialogs.remembers.marion_may_answer(node.auth);
     host.license_boot_dialog_answers(crate::paste::Answers {
-        workspace: config && inv.cwd.starts_with(node.agent_dir.worktree()),
-        config,
+        workspace: dialogs.remembers.marion_may_answer(node.auth)
+            && inv.cwd.starts_with(node.agent_dir.worktree()),
+        config: dialogs.remembers.marion_owns_config(node.auth),
     });
     // Read for whether the node needs its operator, message or none: a pane started on its task
     // can sit on a dialog with nothing queued for it.

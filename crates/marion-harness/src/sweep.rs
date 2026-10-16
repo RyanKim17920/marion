@@ -12,8 +12,8 @@ use std::fmt;
 use marion_core::agent_type;
 
 use crate::spec::{
-    self, AbortVerb, Arg, Boot, DialogAnswer, HarnessSpec, McpRoute, NodeShape, Push, Spelling,
-    Surfaces, TurnDelivery, UpdatePolicy, Val,
+    self, AbortVerb, Arg, Boot, DialogAnswer, HarnessSpec, McpRoute, NodeShape, Push, Remembers,
+    Spelling, Surfaces, TurnDelivery, UpdatePolicy, Val,
 };
 use crate::surfaces::TypedKind;
 
@@ -163,6 +163,23 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
         fault(
             "boot_dialogs",
             "an answered dialog needs a held, marker-free needle after it".into(),
+        );
+    }
+    // First-run setup is kept in the harness config, so a row answering it says that config is the
+    // one an overlay relocates: kept nowhere past the session, it would not be setup.
+    if dialogs.remembers == Remembers::Nothing
+        && let Some(d) = dialogs
+            .dialogs
+            .iter()
+            .find(|d| matches!(d.answer, DialogAnswer::Setup(_)))
+    {
+        fault(
+            "boot_dialogs",
+            format!(
+                "{:?} is first-run setup, kept in the harness config, but the row says it \
+                 remembers nothing",
+                d.needle
+            ),
         );
     }
     if unstated(row.approval.note()) {
@@ -430,6 +447,33 @@ mod tests {
                 },
                 "spelling",
                 "spelling: a spelling per agent needs a row whose program arrives per launch",
+            ),
+            (
+                HarnessSpec {
+                    boot_dialogs: spec::BootDialogs {
+                        dialogs: Box::leak(Box::new([
+                            spec::BootDialog {
+                                needle: "Pick a theme",
+                                action: "run qwen once and pick a theme",
+                                answer: DialogAnswer::Setup(b"\r"),
+                                note: "measured",
+                            },
+                            spec::BootDialog {
+                                needle: "theme",
+                                action: "run qwen once and pick a theme",
+                                answer: DialogAnswer::Hold,
+                                note: "measured",
+                            },
+                        ])),
+                        asks: &[],
+                        remembers: Remembers::Nothing,
+                        note: "measured",
+                    },
+                    ..qwen
+                },
+                "boot_dialogs",
+                "boot_dialogs: \"Pick a theme\" is first-run setup, kept in the harness config, \
+                 but the row says it remembers nothing",
             ),
         ];
         for (row, key, golden) in cases {

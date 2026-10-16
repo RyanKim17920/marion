@@ -8894,8 +8894,8 @@ mod tests {
     /// under live auth, where the home is the operator's. A row that answers nothing claims
     /// nothing.
     ///
-    /// Mutation: return `true` for `CannedHome` regardless of auth, or drop claude's
-    /// `CLAUDE_CONFIG_DIR` overlay row. Each fails.
+    /// Mutation: return `true` for `CannedHome` regardless of auth, own the config under
+    /// `Nothing`, or drop claude's `CLAUDE_CONFIG_DIR` overlay row. Each fails.
     #[test]
     fn marion_answers_a_boot_dialog_only_where_the_answer_stays_out_of_operator_config() {
         use crate::spec::Remembers;
@@ -8911,6 +8911,14 @@ mod tests {
                 assert_eq!(remembers, Remembers::Nothing, "{h}: answers no dialog");
             }
             for auth in [Auth::Canned, Auth::Endpoint, Auth::Inherited] {
+                // First-run setup lands in the harness config: marion's only where an overlay
+                // relocated it, never on a live login, whatever the row remembers.
+                assert_eq!(
+                    remembers.marion_owns_config(auth),
+                    remembers == Remembers::CannedHome && auth.overlays(),
+                    "{h} {auth:?}"
+                );
+                assert!(!remembers.marion_owns_config(Auth::Inherited), "{h}");
                 let may = remembers.marion_may_answer(auth);
                 match remembers {
                     Remembers::Nothing => assert!(may, "{h} {auth:?}"),

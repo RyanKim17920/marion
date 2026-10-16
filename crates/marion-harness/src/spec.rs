@@ -656,7 +656,9 @@ pub struct BootDialogs {
 /// ([`Self::marion_may_answer`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Remembers {
-    /// Nowhere past the session, or marion answers none of the row's dialogs.
+    /// Nowhere past the session, or marion answers none of the row's dialogs. Never beside a
+    /// first-run setup answer ([`DialogAnswer::Setup`]), which the TUI keeps in its config: the row
+    /// validator refuses the pair.
     Nothing,
     /// Under the harness home an overlaying launch (canned or endpoint) relocates onto marion's
     /// config dir (codex's `CODEX_HOME`, claude's `CLAUDE_CONFIG_DIR`): the answer lands in
@@ -677,6 +679,15 @@ impl Remembers {
             Remembers::Nothing => true,
             Remembers::CannedHome => auth.overlays(),
         }
+    }
+}
+
+impl Remembers {
+    /// **Whether the harness config a first-run setup answer ([`DialogAnswer::Setup`]) lands in is
+    /// marion's, under `auth`**: a home the overlay moved onto marion's directory. Never on a live
+    /// login, whatever the row says it remembers — the config is then the operator's own.
+    pub fn marion_owns_config(&self, auth: Auth) -> bool {
+        matches!(self, Remembers::CannedHome) && auth.overlays()
     }
 }
 
