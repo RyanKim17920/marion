@@ -311,6 +311,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 answer: DialogAnswer::Hold,
                 note: "the same dialog with a selection S37 did not measure",
             },
+            // 0.160.1 heads both of its folder screens `Folder access`: the `Trust this folder?`
+            // above (conformance P-tui, `tests/fixtures/s37-boot-dialogs/codex-0.160.1.raw`), and,
+            // on an operator's own login (the live TUI run, 2026-10-16), `› 1. Open restricted` /
+            // `2. Quit`, which a paste's Enter would open restricted. Held, as the heading of
+            // every variant.
+            BootDialog {
+                needle: "Folder access",
+                action: "answer codex's folder access dialog in {repo} once (run `codex` there); worktrees inherit it",
+                answer: DialogAnswer::Hold,
+                note: "0.160.1 folder screens' heading, selection not read",
+            },
         ],
         // Conformance P-tui with a scripted escalated `exec_command` under `approval_policy =
         // "on-request"`, 0.160.1 (`tests/fixtures/pane-asks/codex-0.160.1-approval.raw`),
