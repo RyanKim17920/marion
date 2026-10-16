@@ -33,10 +33,25 @@ pub fn err_text(text: &str) {
     let _ = show(&mut std::io::stderr(), &format!("{text}\n"));
 }
 
-/// `text` as **one** line and its newline, every control in it spelled but a tab
-/// ([`visible_line`]): a value that carries a line break cannot add a row the CLI did not write.
+/// What starts each further row of a [`line`] whose text carries a line break: indented and
+/// barred, so a value's own rows read as the continuation they are and never as a line the CLI
+/// wrote (`marion: …` cannot start a row).
+pub const CONTINUATION: &str = "\n    | ";
+
+/// `text` as **one** entry and its newline, every control in it spelled but a tab
+/// ([`visible_line`]), and each line break in it a [`CONTINUATION`]: a value that carries a line
+/// break (a git error, a child's narrative) stays readable but cannot add a row the CLI did not
+/// write.
 pub fn line(text: &str) -> String {
-    format!("{}\n", visible_line(text))
+    let mut out = String::with_capacity(text.len() + 1);
+    for (i, row) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push_str(CONTINUATION);
+        }
+        out.push_str(&visible_line(row));
+    }
+    out.push('\n');
+    out
 }
 
 /// `println!` as one [`line`] to stdout. A closed stdout is not an error the caller can act on.
@@ -146,9 +161,10 @@ mod tests {
         );
     }
 
-    /// **A CLI print is one line, whatever its values carry**: an ESC, a CR, a bidi override or a
-    /// line break in a value reads as its escape, so a value cannot add a row of its own; a tab
-    /// stays, and text the CLI composes over several lines goes through [`show`], which keeps them.
+    /// **A CLI print is one entry, whatever its values carry**: an ESC, a CR or a bidi override in
+    /// a value reads as its escape and a line break in it as a [`CONTINUATION`], so a value cannot
+    /// add a row of its own; a tab stays, and text the CLI composes over several lines goes
+    /// through [`show`], which keeps them.
     #[test]
     fn a_cli_print_is_one_line_with_every_control_spelled() {
         let mut buf = Vec::new();
@@ -157,7 +173,7 @@ mod tests {
         crate::out_to!(&mut buf).unwrap();
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "a\\x1b[2Kb\\rc\\u{202e}d\\nmarion: trusted\t|e\n\n"
+            "a\\x1b[2Kb\\rc\\u{202e}d\n    | marion: trusted\t|e\n\n"
         );
         let mut buf = Vec::new();
         show(&mut buf, "usage: one\n       two\x1b\n").unwrap();

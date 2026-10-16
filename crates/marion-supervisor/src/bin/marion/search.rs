@@ -524,7 +524,11 @@ mod tests {
             NOW,
         );
         let shown = marion_supervisor::printable::line(&line);
-        assert_eq!(shown.matches('\n').count(), 1, "{shown}");
+        // The prompt's line break is a barred continuation, never a row of its own.
+        let bar = marion_supervisor::printable::CONTINUATION.trim_start_matches('\n');
+        let rows: Vec<&str> = shown.trim_end_matches('\n').split('\n').collect();
+        assert_eq!(rows.len(), 2, "{shown}");
+        assert!(rows[1..].iter().all(|r| r.starts_with(bar)), "{shown}");
         assert!(!shown.contains(['\r', '\u{202e}', '\u{200b}']), "{shown}");
         assert!(shown.contains("\\u{202e}"), "{shown}");
     }
