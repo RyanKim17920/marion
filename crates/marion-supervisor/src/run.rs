@@ -1806,6 +1806,46 @@ pub fn tree_of<'a>(env: &'a Env, dir: &'a Path) -> crate::spawn::Tree<'a> {
     tree_in(&env.project_dir, &env.project_root, dir)
 }
 
+/// **Whether the repository's own harness config in `wt` is the operator's, and whether it
+/// loads**: `(own, trusted)`. Trust is by place, and a child writes its own tree: in a worktree
+/// marion made, the config is the operator's only while it is exactly their commit, and loads only
+/// then. Asked again for every generation of a node, never carried from an earlier one: a child
+/// that planted a config in one generation must not have it load in the next as the operator's.
+fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>) -> (bool, bool) {
+    let own = match tree_of(env, wt) {
+        tree @ crate::spawn::Tree::Child { .. } => base.is_some_and(|b| {
+            crate::spawn::repo_config_unchanged(
+                tree,
+                b,
+                &env.project_root,
+                &crate::trust::repo_config_paths(),
+            )
+        }),
+        crate::spawn::Tree::Operator(_) => true,
+    };
+    (own, own && crate::trust::repo_trusted(&env.project_root))
+}
+
+/// A continuation generation's launch: `launch` resumed under `resume` with `prompt` — the
+/// row's resume grammar, compiled and declared as the first generation was — with its
+/// [`repo_trust`] asked again of the tree as it is now.
+fn continuation_launch(
+    env: &Env,
+    wt: &Path,
+    base: Option<&Oid>,
+    launch: &LaunchSpec,
+    resume: String,
+    prompt: String,
+) -> LaunchSpec {
+    let mut next = LaunchSpec {
+        resume: Some(resume),
+        prompt,
+        ..launch.clone()
+    };
+    (next.extra.repo_config_own, next.extra.repo_trusted) = repo_trust(env, wt, base);
+    next
+}
+
 /// [`tree_of`] from its two parts: the project's state directory and the operator's repository.
 pub fn tree_in<'a>(
     project: &ProjectDir,
@@ -2513,21 +2553,7 @@ pub fn run_spawn_watched(
     // after the last attempt's process has been reaped. See [`crate::node_tmp`].
     let node_tmp = crate::node_tmp::NodeTmp::create(&agent_dir)?;
     let launched_at = Instant::now();
-    // Trust is by place, and a child writes its own tree: in a worktree marion made, the
-    // repository's own harness config is the operator's only while it is exactly their commit,
-    // and loads only then.
-    let repo_config_own = match tree_of(env, &wt) {
-        tree @ crate::spawn::Tree::Child { .. } => base.as_ref().is_some_and(|b| {
-            crate::spawn::repo_config_unchanged(
-                tree,
-                b,
-                &env.project_root,
-                &crate::trust::repo_config_paths(),
-            )
-        }),
-        crate::spawn::Tree::Operator(_) => true,
-    };
-    let repo_trusted = repo_config_own && crate::trust::repo_trusted(&env.project_root);
+    let (repo_config_own, repo_trusted) = repo_trust(env, &wt, base.as_ref());
     // The profile this attempt runs on: an index into `profiles`, 0 for the first.
     let mut at = 0;
     let (launch, inv, mut run, version) = loop {
@@ -2879,11 +2905,14 @@ pub fn run_spawn_watched(
             let via = format!("continuation:gen{generation}");
             // The same launch, resumed: `node/resume`'s spelling (the row's resume grammar), with the
             // message as the prompt, compiled and declared exactly as the first generation was.
-            let next_launch = LaunchSpec {
-                resume: Some(resume),
-                prompt: crate::inbox::render(&message),
-                ..launch.clone()
-            };
+            let next_launch = continuation_launch(
+                env,
+                &wt,
+                base.as_ref(),
+                &launch,
+                resume,
+                crate::inbox::render(&message),
+            );
             let next_inv = match declare_and_compile(adapter.as_ref(), &next_launch, &ctx) {
                 Ok(inv) => inv,
                 Err(e) => {

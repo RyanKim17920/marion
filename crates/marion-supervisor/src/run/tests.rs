@@ -2169,6 +2169,57 @@ fn launch_ctx() -> SpawnCtx {
     }
 }
 
+/// **A continuation generation asks the tree's trust again**: a child that plants a repository
+/// config in its first generation does not have it load as the operator's in the next.
+///
+/// Mutation: carry generation 0's `repo_config_own` into [`continuation_launch`] and the
+/// second assertion fails.
+#[test]
+fn a_continuation_asks_its_trees_repo_config_trust_again() {
+    let root = scratch("supervisor-continuation-trust");
+    let repo = fixture_repo(&root);
+    let state = root.join("state");
+    let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
+    let env = Env {
+        os_sandbox: true,
+        project_dir: project.clone(),
+        state: state.clone(),
+        project_root: crate::socket::project_root(&repo),
+        bridge: PathBuf::from("/bin/marion-supervisor"),
+        base_url: None,
+        auth: Auth::Inherited,
+    };
+    std::fs::create_dir_all(project.agents_dir()).unwrap();
+    let wt = project.agents_dir().join("n-continued");
+    let (base, _) = crate::spawn::make_worktree(
+        crate::spawn::Tree::Operator(&repo),
+        &wt,
+        &["marion/n-continued".into()],
+        None,
+    )
+    .expect("the child's worktree");
+    let mut first = launch_spec(None);
+    first.cwd = wt.clone();
+    (first.extra.repo_config_own, first.extra.repo_trusted) = repo_trust(&env, &wt, Some(&base));
+    assert!(
+        first.extra.repo_config_own,
+        "a fresh tree holds the operator's config"
+    );
+    std::fs::create_dir_all(wt.join(".codex")).unwrap();
+    std::fs::write(
+        wt.join(".codex/config.toml"),
+        "[mcp_servers.x]\ncommand = \"x\"\n",
+    )
+    .unwrap();
+    let next = continuation_launch(&env, &wt, Some(&base), &first, "s1".into(), "go on".into());
+    assert!(
+        !next.extra.repo_config_own && !next.extra.repo_trusted,
+        "a config planted in generation 0 is the child's in generation 1"
+    );
+    assert_eq!(next.resume.as_deref(), Some("s1"));
+    assert_eq!(next.prompt, "go on");
+}
+
 fn launch_spec(model: Option<String>) -> LaunchSpec {
     LaunchSpec {
         cwd: "/wt".into(),
