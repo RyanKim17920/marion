@@ -20,8 +20,9 @@
 #      (restart_resume, acp_child) spend real tokens and stay out;
 #   5. after a wholly green run, `admit` adds every admitted release to its row's `verified` list
 #      (`scripts/admit-harness.sh`) in one pull request — each npm release only once its publish
-#      is NPM_COOLDOWN_DAYS old and only if newer than the row's newest — set to auto-merge where
-#      the default branch has required status checks, and otherwise left open for a person;
+#      is NPM_COOLDOWN_DAYS old, each Homebrew one only as its formula's stable version, and only
+#      if newer than the row's newest — set to auto-merge where the default branch has required
+#      status checks, and otherwise left open for a person;
 #   6. on red anywhere, opens or updates one issue labelled `harness-canary` with each release's
 #      conformance verdict, the failing tests, their first panic lines and every harness version.
 #
@@ -37,13 +38,15 @@
 # `admitted` output as chosen by an attacker: an install script can rewrite the checkout or the
 # job's environment before harness_drift prints it. `admit` therefore checks it from its own
 # checkout of the default branch: a strict `<harness> <version>` pattern; each npm release must
-# exist on the registry and be NPM_COOLDOWN_DAYS old; the list script refuses a harness with no
+# exist on the registry and be NPM_COOLDOWN_DAYS old, each Homebrew release must be its formula's
+# stable version, and a program from neither is refused; the list script refuses a harness with no
 # row, a version not newer than the row's newest (no downgrade) and a program named twice; and
 # only the row files the script names may change. It downloads nothing and runs only perl,
-# rustfmt, npm view and gh. Even so, what it lists is a version string a person never read: CI on
-# the pull request runs with no harness binaries and checks only that the edit builds, so the
-# real gate is the checks above, not the branch's rules. The listed version reaches only the test
-# gate and doctor's note — the shipped marion never refuses on it, and no test installs it.
+# rustfmt, npm view, brew info and gh. Even so, what it lists is a version string a person never
+# read: CI on the pull request runs with no harness binaries and checks only that the edit builds,
+# so the real gate is the checks above, not the branch's rules. The listed version reaches only
+# the test gate and doctor's note — the shipped marion never refuses on it, and no test installs
+# it.
 # `admit` holds contents and pull-requests write and CANARY_TOKEN, `report` issues: write;
 # neither runs anything installed.
 
@@ -73,6 +76,11 @@ env:
   # A release is listed only once its npm publish is this many days old: most hijacked npm
   # releases are caught and pulled inside that window.
   NPM_COOLDOWN_DAYS: 7
+  # `<program>=<Homebrew formula>` for every harness installed from Homebrew: what `run` installs,
+  # and what `admit` asks Homebrew about before it lists a release. A program in neither map is
+  # never listed.
+  BREW_HARNESSES: >-
+    goose=block-goose-cli
 
 defaults:
   run:
@@ -116,7 +124,8 @@ jobs:
           # shellcheck disable=SC2046
           npm install -g --no-fund --no-audit \
             $(for e in $NPM_HARNESSES; do printf '%s@latest ' "${e#*=}"; done)
-          brew install block-goose-cli
+          # shellcheck disable=SC2046
+          brew install $(for e in $BREW_HARNESSES; do printf '%s ' "${e#*=}"; done)
 
       - name: Harness versions
         id: drift
@@ -257,16 +266,21 @@ jobs:
             exit 1
           fi
           # The run job's output is chosen by whatever ran there, install scripts included, so
-          # each npm release is checked against the registry from here: it must exist, and its
-          # publish must be NPM_COOLDOWN_DAYS old. A younger one waits for a later night.
+          # each release is checked from here against where `run` installed it from. An npm
+          # release must exist and its publish be NPM_COOLDOWN_DAYS old; a younger one waits for
+          # a later night. Homebrew states no publish time per version, so a formula's release
+          # must be the one its stable version names. A program in neither map is refused: there
+          # is nothing to check it against, so it is never listed.
           cutoff=$(date -u -d "-$NPM_COOLDOWN_DAYS days" +%s)
+          brew=$(command -v brew || echo /home/linuxbrew/.linuxbrew/bin/brew)
           ready=""
           # shellcheck disable=SC2086
           set -- $PAIRS
           while [ $# -ge 2 ]; do
             h=$1 v=$2; shift 2
-            pkg=""
+            pkg="" formula=""
             for e in $NPM_HARNESSES; do [ "${e%%=*}" = "$h" ] && pkg=${e#*=}; done
+            for e in $BREW_HARNESSES; do [ "${e%%=*}" = "$h" ] && formula=${e#*=}; done
             if [ -n "$pkg" ]; then
               published=$(npm view "$pkg" time --json | jq -r --arg v "$v" '.[$v] // empty')
               if [ -z "$published" ]; then
@@ -277,6 +291,16 @@ jobs:
                 echo "$h $v: published $published, inside the ${NPM_COOLDOWN_DAYS}-day cooldown; not yet"
                 continue
               fi
+            elif [ -n "$formula" ]; then
+              stable=$(HOMEBREW_NO_AUTO_UPDATE=1 "$brew" info --json=v2 "$formula" \
+                | jq -r '.formulae[0].versions.stable // empty')
+              if [ "$stable" != "$v" ]; then
+                echo "::error::$formula's stable release is ${stable:-unknown}, not $v"
+                exit 1
+              fi
+            else
+              echo "::error::$h is installed from neither npm nor Homebrew, so $v cannot be checked"
+              exit 1
             fi
             ready="$ready${ready:+ }$h $v"
           done
@@ -323,9 +347,10 @@ jobs:
           body: |
             The nightly canary's conformance battery admitted these releases: every probe their
             newest verified release passed in the committed matrix passed again on the exact binary
-            installed, each npm release is past its publish cooldown, and the whole canary run was
-            green. This adds them to their rows' `verified` lists. CI on this pull request only
-            checks that the edit builds; it does not drive the harnesses.
+            installed, each npm release is past its publish cooldown, each Homebrew release is its
+            formula's stable version, and the whole canary run was green. This adds them to their
+            rows' `verified` lists. CI on this pull request only checks that the edit builds; it
+            does not drive the harnesses.
 
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
