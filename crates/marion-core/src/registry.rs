@@ -661,6 +661,8 @@ pub struct Replay {
     /// The parent each node is filed under in `children`, by node index. Kept beside the
     /// derived [`ReplayedNode::parent_id`] so a fold can tell whether the edge moved.
     filed: Vec<Option<AgentId>>,
+    /// Which nodes moved, and when. See [`Replay::changed_since`].
+    changes: Changes,
     /// Records accepted. Not lines in the file — the two differ exactly by [`Replay::truncation`].
     pub records: usize,
     /// Where **this** `extend` stopped, or `None` if it consumed everything offered. Recomputed per
@@ -687,6 +689,49 @@ pub struct Replay {
     races: Vec<ReplayedRace>,
     /// Workflow runs in first-mention order. See [`Replay::workflows`].
     workflows: Vec<ReplayedWorkflow>,
+}
+
+/// **Which nodes a fold touched, in touch order**, so a reader that has seen the tree up to some
+/// stamp walks only the nodes that moved since, rather than every node the journal ever recorded.
+///
+/// `log` holds one `(stamp, node index)` per touch, and an entry is current iff its stamp is the
+/// node's `last`. Once the log outgrows twice the node count it is cut back to its current entries,
+/// so it stays O(nodes) and a touch costs O(1) amortized. Compaction depends only on the sequence
+/// of touches, so two readings of the same bytes hold the same log however the bytes arrived.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Changes {
+    stamp: u64,
+    last: Vec<u64>,
+    log: Vec<(u64, usize)>,
+}
+
+impl Changes {
+    fn touch(&mut self, i: usize) {
+        self.stamp += 1;
+        if self.last.len() <= i {
+            self.last.resize(i + 1, 0);
+        }
+        self.last[i] = self.stamp;
+        self.log.push((self.stamp, i));
+        if self.log.len() > 2 * self.last.len() + 64 {
+            let last = &self.last;
+            self.log.retain(|(at, i)| last[*i] == *at);
+        }
+    }
+
+    /// Node indices touched after `stamp`, ascending, each once.
+    fn since(&self, stamp: u64) -> Vec<usize> {
+        let mut out: Vec<usize> = self
+            .log
+            .iter()
+            .rev()
+            .take_while(|(at, _)| *at > stamp)
+            .filter(|(at, i)| self.last[*i] == *at)
+            .map(|(_, i)| *i)
+            .collect();
+        out.sort_unstable();
+        out
+    }
 }
 
 /// **A step node's run, as a view heads it**: the run's name, how many steps it has, the node's own
@@ -769,6 +814,25 @@ impl Replay {
         self.index.get(&id.0).map(|i| &self.nodes[*i])
     }
 
+    /// **A number that moves whenever any node does**: each record folded into a node, each
+    /// verdict a group record writes onto one, and each restart marking. Pass it back to
+    /// [`Self::changed_since`] to learn what moved after it.
+    pub fn stamp(&self) -> u64 {
+        self.changes.stamp
+    }
+
+    /// **The nodes that moved after `stamp`**, in first-mention order — the same order
+    /// [`Self::nodes`] answers in, so a reader that used to walk every node and skip the unchanged
+    /// ones sees the same sequence. `0` is every node. A reader that tells clients about changes
+    /// walks this rather than the tree, so an append costs the nodes it touched, not the journal.
+    pub fn changed_since(&self, stamp: u64) -> Vec<&ReplayedNode> {
+        self.changes
+            .since(stamp)
+            .into_iter()
+            .map(|i| &self.nodes[i])
+            .collect()
+    }
+
     /// Every race the journal mentions, in first-mention order.
     pub fn races(&self) -> &[ReplayedRace] {
         &self.races
@@ -812,8 +876,9 @@ impl Replay {
             RecordKind::WorkflowStepDecided(d) => {
                 self.workflow_mut(&d.wf_id).decided.push(d.clone());
                 for id in &d.nodes {
-                    if let Some(i) = self.index.get(&id.0) {
-                        self.nodes[*i].workflow_verdict = Some(d.verdict);
+                    if let Some(&i) = self.index.get(&id.0) {
+                        self.nodes[i].workflow_verdict = Some(d.verdict);
+                        self.changes.touch(i);
                     }
                 }
             }
@@ -822,8 +887,9 @@ impl Replay {
                 wf.closed = Some(c.outcome);
                 let ids: Vec<AgentId> = wf.nodes.iter().map(|(_, a)| a.clone()).collect();
                 for id in ids {
-                    if let Some(i) = self.index.get(&id.0) {
-                        self.nodes[*i].workflow_closed = Some(c.outcome);
+                    if let Some(&i) = self.index.get(&id.0) {
+                        self.nodes[i].workflow_closed = Some(c.outcome);
+                        self.changes.touch(i);
                     }
                 }
             }
@@ -869,8 +935,9 @@ impl Replay {
                 let seats = race.seats.clone();
                 for (seat, verdict) in &d.verdicts {
                     for (_, id) in seats.iter().filter(|(s, _)| s == seat) {
-                        if let Some(i) = self.index.get(&id.0) {
-                            self.nodes[*i].race_verdict = Some(*verdict);
+                        if let Some(&i) = self.index.get(&id.0) {
+                            self.nodes[i].race_verdict = Some(*verdict);
+                            self.changes.touch(i);
                         }
                     }
                 }
@@ -936,8 +1003,9 @@ impl Replay {
     /// fresh replay of the same bytes.
     pub fn mark_orphaned(&mut self, id: &AgentId) -> bool {
         match self.index.get(&id.0) {
-            Some(i) if self.nodes[*i].is_unresolved() => {
-                self.nodes[*i].reap_state = ReapState::Orphaned;
+            Some(&i) if self.nodes[i].is_unresolved() => {
+                self.nodes[i].reap_state = ReapState::Orphaned;
+                self.changes.touch(i);
                 true
             }
             _ => false,
@@ -1056,6 +1124,7 @@ impl Replay {
             node.state_ts = Some(ts);
         }
         self.file_child(i);
+        self.changes.touch(i);
     }
 
     fn check_seq(&mut self, r: &JournalRecord) {
@@ -3101,5 +3170,49 @@ mod tests {
             assert_eq!(names(r.children(&n.agent_id)), names(scan), "{}", n.agent_id.0);
         }
         assert!(r.children(&id("nobody")).is_empty());
+    }
+
+    /// **`changed_since` names exactly the nodes that moved**, once each and in first-mention
+    /// order, across a log long enough to have been compacted, and counts a restart marking — which
+    /// no record carries — as a move.
+    #[test]
+    fn changed_since_names_the_nodes_moved_after_a_stamp_and_nothing_else() {
+        let names = |v: Vec<&ReplayedNode>| -> Vec<String> {
+            v.into_iter().map(|n| n.agent_id.0.clone()).collect()
+        };
+        let journal = m1_journal();
+        let mut r = replay(&bytes(&journal));
+        assert_eq!(names(r.changed_since(0)), names(r.nodes().iter().collect()));
+        assert!(r.changed_since(r.stamp()).is_empty(), "nothing after now");
+
+        // Many more touches on one node than the tree has nodes: the log compacts underneath.
+        let mut seq = journal.len() as u64;
+        let before = r.stamp();
+        let mut more = Vec::new();
+        for _ in 0..200 {
+            more.push(record(
+                seq,
+                RecordKind::StateChanged(StateChanged {
+                    agent_id: id("child"),
+                    state: NodeState::Running,
+                    reason: None,
+                }),
+            ));
+            seq += 1;
+        }
+        r.extend(&bytes(&more));
+        assert!(r.changes.log.len() <= 2 * r.nodes().len() + 64, "compacted");
+        assert_eq!(names(r.changed_since(before)), ["child"]);
+        assert_eq!(
+            names(r.changed_since(0)),
+            names(r.nodes().iter().collect()),
+            "compaction keeps every node's latest touch"
+        );
+
+        let mut fresh = Replay::default();
+        fresh.extend(&bytes(&journal[..2]));
+        let at = fresh.stamp();
+        assert!(fresh.mark_orphaned(&id("root")));
+        assert_eq!(names(fresh.changed_since(at)), ["root"], "a marking is a move");
     }
 }

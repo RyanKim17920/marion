@@ -329,7 +329,20 @@ pub(super) fn collect(
         g.collects += 1;
     }
     let mut events = Vec::new();
-    for n in r.tree().nodes() {
+    // **Only what can have moved**: the nodes the journal touched since the last walk, and the
+    // runs in progress, whose figure moves with no record. Every other node's `Told` is a function
+    // of records already walked, so re-deriving it is the O(nodes) per append this used to pay.
+    let tree = r.tree();
+    let mut moved = tree.changed_since(g.told_stamp);
+    g.told_stamp = tree.stamp();
+    for id in spending.running() {
+        if let Some(n) = tree.get(&id)
+            && !moved.iter().any(|m| m.agent_id == id)
+        {
+            moved.push(n);
+        }
+    }
+    for n in moved {
         let now = Told {
             state: n.state,
             reap_state: n.reap_state,

@@ -140,6 +140,9 @@ struct Shared {
     /// Whom each connection proved it speaks for — see [`session`].
     principals: HashMap<ConnId, marion_core::proto::result::SessionPrincipal>,
     told: HashMap<AgentId, Told>,
+    /// The tree's [`Replay::stamp`](marion_core::registry::Replay::stamp) `told` is caught up to:
+    /// `collect` walks only the nodes that moved after it.
+    told_stamp: u64,
     unprojectable: usize,
     /// The [`Registry::generation`](crate::registry::Registry::generation) and [`crate::spending::Spending::version`] `collect` last ran
     /// against. See [`RegistryHandle::flush`].
@@ -659,14 +662,14 @@ impl RegistryHandle {
         // **Before the subscriber check**: a notice is for the operator, who may have no client
         // open at all. The notifier returns at once when the journal has not moved.
         if let Some(n) = notifier.as_ref() {
-            let shown = self.live.read(|r| n.observe(r.tree(), r.generation()));
+            let shown = self.live.read(|r| n.observe(r.tree()));
             if !shown.is_empty() && !n.deliver(shown.clone()) {
                 notify_claimer(&mut g, n.ring(), &shown);
             }
         }
-        // **Nobody to tell, or nothing new to tell them: no walk.** `collect` visits every node the
-        // journal has ever recorded, and the accept loop flushes on every pass, so at 100k records
-        // an idle supervisor spent half a core re-deriving an empty diff. With no subscriber the
+        // **Nobody to tell, or nothing new to tell them: no walk.** `collect` visits the nodes moved
+        // since its last walk (it once visited every node the journal had recorded, and at 100k
+        // records an idle supervisor spent half a core re-deriving an empty diff). With no subscriber the
         // diff has no audience, and `subscribe` runs `collect` itself before its snapshot, so the
         // told-set is caught up the moment one arrives. With an unchanged generation the tree is
         // the one already told — the pane set only shapes a *new* node's summary, and a new node

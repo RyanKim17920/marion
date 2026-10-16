@@ -352,8 +352,8 @@ pub struct Notifier {
 
 #[derive(Default)]
 struct Seen {
-    /// The registry generation last observed; `None` before the first observation.
-    generation: Option<u64>,
+    /// The tree's [`Replay::stamp`] last observed; `None` before the first observation.
+    stamp: Option<u64>,
     kinds: HashMap<AgentId, Option<NoticeKind>>,
 }
 
@@ -380,18 +380,30 @@ impl Notifier {
 
     /// **The notices `tree` warrants since the last observation**: each node whose kind changed to
     /// one worth telling, merged into one where there are more than three. Returns at once when
-    /// the generation has not moved; the first call only learns.
-    pub fn observe(&self, tree: &Replay, generation: u64) -> Vec<Shown> {
+    /// the tree has not moved; the first call only learns.
+    ///
+    /// Walks only the nodes that moved since the last observation ([`Replay::changed_since`]), so
+    /// an append costs the nodes it touched rather than every node the journal ever recorded —
+    /// this runs on every flush, whether or not a client is connected.
+    pub fn observe(&self, tree: &Replay) -> Vec<Shown> {
         let mut seen = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let first = seen.generation.is_none();
-        if seen.generation == Some(generation) {
+        let first = seen.stamp.is_none();
+        let stamp = tree.stamp();
+        if seen.stamp == Some(stamp) {
             return Vec::new();
         }
-        seen.generation = Some(generation);
+        let since = seen.stamp.unwrap_or(0);
+        seen.stamp = Some(stamp);
         let mut notices = Vec::new();
-        for node in tree.nodes() {
+        for node in tree.changed_since(since) {
             let kind = kind_of(node);
-            let was = seen.kinds.insert(node.agent_id.clone(), kind);
+            let was = match seen.kinds.get_mut(&node.agent_id) {
+                Some(k) => Some(std::mem::replace(k, kind)),
+                None => {
+                    seen.kinds.insert(node.agent_id.clone(), kind);
+                    None
+                }
+            };
             if first || was == Some(kind) {
                 continue;
             }
@@ -629,7 +641,6 @@ mod tests {
     struct Journal {
         _dir: marion_testsupport::Scratch,
         path: PathBuf,
-        generation: u64,
     }
 
     impl Journal {
@@ -639,13 +650,11 @@ mod tests {
             Journal {
                 _dir: dir,
                 path,
-                generation: 0,
             }
         }
 
         fn write(&mut self, kind: RecordKind) {
             crate::journal::append_at(&self.path, kind).unwrap();
-            self.generation += 1;
         }
 
         fn spawn(&mut self, id: &str, parent: Option<&str>) {
@@ -696,10 +705,7 @@ mod tests {
         }
 
         fn observe(&self, n: &Notifier) -> Vec<Shown> {
-            n.observe(
-                &crate::journal::read_path(&self.path).unwrap(),
-                self.generation,
-            )
+            n.observe(&crate::journal::read_path(&self.path).unwrap())
         }
     }
 

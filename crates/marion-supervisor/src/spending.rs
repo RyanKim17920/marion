@@ -138,6 +138,11 @@ impl Spending {
         self.lock().get(id).cloned()
     }
 
+    /// The nodes with a run in progress: the only ones whose figure can move with no journal record.
+    pub fn running(&self) -> Vec<AgentId> {
+        self.lock().keys().cloned().collect()
+    }
+
     /// [`shown`]'s total for `node`, without copying any turns: what a row carries.
     pub fn shown_total(&self, node: &ReplayedNode) -> Option<u64> {
         let exited = node.state.is_exited();
