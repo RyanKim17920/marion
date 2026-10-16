@@ -1,34 +1,32 @@
 # marion
 
-Any model, any harness, as any subagent. A Claude Code session can delegate to a codex child,
-and codex can delegate to any harness once you allow it. Each child runs in its own git worktree,
-marion checks its work, and the result goes back to the parent as a structured contract, not as
-prose.
+marion lets one coding agent hand work to another. A Claude Code session can start a codex
+child, and codex can start any other harness once you allow it. Each child works in its own git
+worktree, marion runs its checks, and the parent gets back a structured contract with the commit,
+the check output and any write outside its scope.
 
 <!-- DEMO PLACEHOLDER: a new recording of one real delegation (a Claude Code session spawns a
 codex child, the child builds something in its worktree, the result returns and the branch is
 merged) goes here. Do not put a screen tour here. -->
-> **Demo:** a recording of a real delegation is on the way.
 
 ## What it does
 
-- **Delegation by tool call.** A running agent gets marion's MCP tools (`spawn`, `wait`,
-  `status`, `list`, `steer`, `report`), so it hands work to another harness by calling a tool,
-  not by shelling out. The same tools but `report` work from any MCP client (`marion mcp`).
-- **One tree, whatever the vendor.** Every node is journaled and addressable by id. `marion` opens a
-  terminal UI over the whole tree: start a task, watch each node's live tool calls and tokens,
-  steer it, attach to its terminal, take the branch it landed.
-- **Your harness, unchanged.** `marion claude`, `marion codex`, `marion opencode`, `marion pi`, … run
-  the harness's own TUI with your login, flags and keys, with marion's tools connected.
-- **Results you can check.** A child's changes land on its own branch (`marion/433f-add-a-top-n`), committed and
-  never merged for you. Its contract records the commit, its verification output, and any write
-  outside its declared scope.
-- **Rules enforced by marion, not by the prompt.** A node cannot exit while one of its children is running,
-  delegation stops at depth 3 (each agent type's default), a timeout kills the node's whole
-  process tree, a node can steer only nodes below it, and it can `wait` on or check the `status`
-  of only its own direct children.
-- **Survives a crash.** `kill -9` the supervisor, and `marion resume <id>` continues the root under the
-  same id against the same harness session.
+- A running agent gets marion's MCP tools (`spawn`, `wait`, `status`, `list`, `steer`,
+  `report`) and hands work to another harness by calling `spawn`. Any MCP client gets the same
+  tools, minus `report`, from `marion mcp`.
+- Every node is journaled and has an id. `marion` opens a terminal UI over the whole tree: start
+  a task, watch each node's tool calls and tokens, steer it, attach to its terminal, and take the
+  branch it landed.
+- `marion claude`, `marion codex`, `marion opencode`, `marion pi` and the rest run the harness's
+  own TUI with your login, flags and keys, plus marion's tools.
+- A child commits to its own branch (`marion/433f-add-a-top-n`) and marion never merges it for
+  you. Its contract records the commit, the verification output and any write outside its
+  declared scope.
+- marion enforces the limits itself: a node cannot exit while a child is running, delegation
+  stops at depth 3 by default, a timeout kills the node's whole process tree, a node can steer
+  only nodes below it, and it can `wait` on or check `status` of only its direct children.
+- If the supervisor dies (even `kill -9`), `marion resume <id>` continues the root under the same
+  id and the same harness session.
 
 ## Install
 
@@ -65,7 +63,7 @@ prints `overall: ready: yes` or `no`, with the fix for anything broken.
 
 ## Quickstart
 
-**1. A free dry run, with no account and no cost.** marion's canned model server plays a Claude Code
+**1. A dry run with no account and no model cost.** marion's canned model server plays a Claude Code
 root that delegates one edit to a codex child. You need `claude` and `codex` on `PATH`.
 
 ```sh
@@ -74,8 +72,8 @@ marion-canned &
 MARION_CANNED=1 marion run claude --prompt "say hello"
 ```
 
-**2. A real delegation on your own login.** This makes real model calls, which cost real money. Run it
-inside a git repository:
+**2. A real delegation on your own login.** This makes real model calls on your account. Run it inside a
+git repository:
 
 ```sh
 marion run claude --model haiku --prompt "Spawn a codex child to create hello.txt containing hi, then tell me its branch."
@@ -112,7 +110,11 @@ endpoints and where work lands.
 
 ## Sharing a run
 
-`marion export <id|short-id>` writes a report of a node and everything under it — the tree, each node's task, steers, a condensed timeline of what it ran, its checks, what it reported, the branch it landed and the tokens it spent — as Markdown for a pull request or issue, or with `-o report.html` as one self-contained page (inline style, no script, a CSP that fetches nothing). Keys behind the tree's endpoint nodes, secret-named environment values, secret-shaped strings (`sk-…`, `ghp_…`, bearer tokens, PEM keys, long hex) and your home directory are scrubbed from every string and again from the rendered file; the root's own prompt is left out unless `--include-prompt`, and `-o` writes the file `0600`. It reads the journal and contracts directly and starts no supervisor. [`docs/examples/run-report.md`](docs/examples/run-report.md) is what it writes for the test fixture (and [`run-report.html`](docs/examples/run-report.html) the page).
+`marion export <id>` writes a report of a node and its subtree (tasks, steers, a condensed
+timeline, checks, results, landed branches, tokens) as Markdown, or as one self-contained HTML
+page with `-o report.html`. Keys, secret-shaped strings and your home directory are scrubbed, and
+the root's prompt is left out unless `--include-prompt`. See
+[the guide](docs/guide.md#sharing-a-run) and the [example report](docs/examples/run-report.md).
 
 ## Harnesses
 
@@ -132,9 +134,11 @@ endpoints and where work lands.
 Every row's launch shape was measured against a real install, and the test suite drives the
 real harness binaries with only the model replaced. **Live coverage with paid models is thin.**
 The last column lists every live run on record, so a green canned test means the plumbing
-works, not that a vendor's endpoint accepts what marion sends. Google's Gemini CLI is no longer
-a harness: Google retired it in favour of Antigravity, which marion runs as `agy`. Versions, steer and resume behaviour per harness, and the ACP agents table are in
+works, not that a vendor's endpoint accepts what marion sends. Versions, steer and resume
+behaviour per harness, and the ACP agents table are in
 [docs/guide.md](docs/guide.md#harness-detail).
+
+Google retired the Gemini CLI in favour of Antigravity, which marion runs as `agy`.
 
 ## Logins
 
@@ -147,16 +151,16 @@ and never hides your credentials from the harness.
   any model through `--model <provider>:<model>`.
 - **`marion profile`** points a harness at a directory you logged into yourself, so one node can
   use your work account and another your personal one.
-- **Never:** marion never reuses a Claude, ChatGPT/Codex, Copilot or Google subscription token
-  outside that vendor's own harness, never presents itself as another client, and never rotates
-  between subscription accounts to get past a usage limit.
+- marion does not reuse a Claude, ChatGPT/Codex, Copilot or Google subscription token outside
+  that vendor's own harness, does not present itself as another client, and does not rotate
+  between subscription accounts to get around a usage limit.
 
 ## Security and efficiency
 
 - **The node's token never goes on argv.** Each node's bridge token reaches its harness through a
   declaration file or the environment. A lint rejects code that puts a secret on argv, and an
   end-to-end test reads the process table to confirm it.
-- **Secrets are protected.** A stored key is never printed or logged; its type redacts `Debug`,
+- **Stored keys are never printed or logged.** A stored key is never printed or logged; its type redacts `Debug`,
   and credential files are written `0600`. marion creates its state directory `0700`, and the
   supervisor's socket checks each caller's uid.
 - **A node cannot act as you on the supervisor's socket.** Every connection first says who it
@@ -166,7 +170,7 @@ and never hides your credentials from the harness.
   answering permission requests are yours alone. The key is a file of your own user, so a node
   running with no OS sandbox could still read it; the supervisor therefore also refuses the key
   from any process running inside a live node's process tree.
-- **A runaway node meets a ceiling.** Every node starts with at most 8192 open files and a
+- **Each node has file and process limits.** Every node starts with at most 8192 open files and a
   4096-process cap on your user (`RLIMIT_NPROC`), never raised above what you already have.
   Raise them under `[limits]` (`max_open_files`, `max_processes`) in
   `~/.config/marion/config.toml`.
@@ -187,27 +191,22 @@ and never hides your credentials from the harness.
   ACP agents and agy are not yet measured under it. On your own login a node runs exactly as its
   harness normally does, in that harness's own permission or auto mode; marion adds no sandbox
   there, since the home and the login are yours. `marion doctor` says whether this host can
-  sandbox nodes, and
-  `MARION_SANDBOX=off` turns it off, which also drops the containment it gives.
+  sandbox nodes, and `MARION_SANDBOX=off` turns it off, which also drops the containment it gives.
 - **An agent never starts one with more authority than its own.** marion compares the two on
   every axis before the child exists: a parent that cannot write or run commands cannot start
   one that can, a sandboxed agent cannot start one with no sandbox (codex is always sandboxed,
   and every row above is on a canned or endpoint tree; so a codex may start a claude child
-  there, but not on your own login),
-  a child cannot take an approval mode its parent lacks, and its writable scope stays inside its
+  there, but not on your own login), a child cannot take an approval mode its parent lacks, and its writable scope stays inside its
   parent's. The built-in `*-orchestrator` planners are the one exception on writing: they write
   nothing themselves and exist to start implementers, still bounded by containment, scope and
-  approval mode. Any other read-only agent starts only read-only ones — including a session you
-  started in a read-only mode, such as `marion claude --permission-mode plan` or `marion codex
+  approval mode. Any other read-only agent starts only read-only ones. That includes a session
+  you started in a read-only mode, such as `marion claude --permission-mode plan` or `marion codex
   --sandbox read-only`. marion sees only the flags you launched with: a mode you switch to inside
   the session (claude's shift-tab) or set in the harness's own config is invisible to it. The
   refusal names the axis and the fix: `marion run --allow-wider-children`, or `[delegation]
   allow_wider_children = true` in `~/.config/marion/config.toml`. Only you can opt in, and every
   child it lets through is journaled and marked on its row.
-- **A repository cannot run its own command without your consent.** A `.marion/agents.toml`
-  row with `harness = "acp:<command>"` runs only after `marion trust allow` has recorded the
-  file's exact bytes, and any edit revokes that. There is never a prompt.
-- **Near-zero idle cost.** marion waits on events, not timers. An idle supervisor with no
+- **An idle supervisor barely wakes up.** marion waits on events instead of polling. An idle supervisor with no
   running nodes measured 4 context switches per second, down from 264. The release binaries
   are 2.7 MB (`marion`) and 4.6 MB (`marion-supervisor`) on arm64 macOS.
   `scripts/perf-idle.sh` reproduces the measurement.
