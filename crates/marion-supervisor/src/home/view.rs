@@ -105,9 +105,12 @@ fn harness_row(h: &super::Harness) -> HarnessRow {
     }
 }
 
+/// What a type does where Start runs it: `marion run <type>` starts a **root**, whose directory is
+/// the operator's own checkout (`root::RootSpec::repo`) — a worktree is what marion makes for the
+/// children a root spawns, never for the root.
 fn grant(t: &AgentType) -> &'static str {
     if t.writes {
-        "edits in a worktree"
+        "edits this checkout"
     } else {
         "read-only, delegates"
     }

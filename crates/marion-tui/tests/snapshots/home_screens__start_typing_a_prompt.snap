@@ -15,7 +15,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
 
-  TYPE      ▸claude edits in a worktree   claude-orchestrator read-only, dele…
+  TYPE      ▸claude edits this checkout   claude-orchestrator read-only, dele…
   MODEL     default   ▸opus   sonnet
   OPTIONS   timeout 20m · change record on
 
@@ -31,7 +31,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   126  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexqwenopencodecopilot"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
    23  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONS"
-  518  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+  519  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
     3  Style::new().green().bg(Color::Reset)  "●●●"
@@ -51,7 +51,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
 
-  TYPE      ▸claude edits in a worktree   claude-orchestrator read-only, delegates
+  TYPE      ▸claude edits this checkout   claude-orchestrator read-only, delegates
   MODEL     default   ▸opus   sonnet
   OPTIONS   timeout 20m · change record on
 
@@ -73,7 +73,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   173  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexqwenopencodecopilot"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
    29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
-  890  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+  891  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"
@@ -93,7 +93,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
   ○ agy          —         not installed
 
-  TYPE      ▸claude edits in a worktree   claude-orchestrator read-only, delegates
+  TYPE      ▸claude edits this checkout   claude-orchestrator read-only, delegates
   MODEL     default   ▸opus   sonnet
   OPTIONS   timeout 20m · change record on
 
@@ -135,7 +135,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
   173  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexqwenopencodecopilot"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
    29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
- 1162  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+ 1163  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
     4  Style::new().green().bg(Color::Reset)  "●●●●"

@@ -16,7 +16,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
     └ FIX  brew upgrade copilot-cli, then r to re-check
   ○ agy          —         not installed
 
-  TYPE      ▸copilot edits in a worktree
+  TYPE      ▸copilot edits this checkout
   MODEL     ▸default
   OPTIONS   timeout 20m · change record on
 
@@ -31,7 +31,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
    65  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencode,"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
    26  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
-  465  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+  466  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    45  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
     3  Style::new().green().bg(Color::Reset)  "●●●"
@@ -52,7 +52,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
     └ FIX  brew upgrade copilot-cli, then r to re-check
   ○ agy          —         not installed
 
-  TYPE      ▸copilot edits in a worktree
+  TYPE      ▸copilot edits this checkout
   MODEL     ▸default
   OPTIONS   timeout 20m · change record on
 
@@ -73,7 +73,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
   101  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencode,"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
    32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
-  783  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+  784  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    45  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
     4  Style::new().green().bg(Color::Reset)  "●●●●"
@@ -94,7 +94,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
     └ FIX  brew upgrade copilot-cli, then r to re-check
   ○ agy          —         not installed
 
-  TYPE      ▸copilot edits in a worktree
+  TYPE      ▸copilot edits this checkout
   MODEL     ▸default
   OPTIONS   timeout 20m · change record on
 
@@ -135,7 +135,7 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
   112  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexqwenopencode,"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
    32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
- 1059  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+ 1060  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    45  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
     4  Style::new().green().bg(Color::Reset)  "●●●●"

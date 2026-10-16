@@ -48,7 +48,7 @@ pub struct StartView {
     pub checking: bool,
     pub cursor: usize,
     /// The agent types the selected harness offers, each with its grant in one phrase:
-    /// `("claude", "edits in a worktree")`, `("claude-orchestrator", "read-only, delegates")`.
+    /// `("claude", "edits this checkout")`, `("claude-orchestrator", "read-only, delegates")`.
     pub kinds: Vec<(String, String)>,
     pub kind: usize,
     /// `default` first, then models this project has run, most recent first.

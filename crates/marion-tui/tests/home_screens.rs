@@ -118,7 +118,7 @@ fn start_view() -> StartView {
         checking: false,
         cursor: 0,
         kinds: vec![
-            (s("claude"), s("edits in a worktree")),
+            (s("claude"), s("edits this checkout")),
             (s("claude-orchestrator"), s("read-only, delegates")),
         ],
         kind: 0,
@@ -818,7 +818,7 @@ fn start_blocked_harness_shows_its_fix() {
     let mut v = start_view();
     v.cursor = 4;
     // The choices are the selected harness's: copilot has no read-only flavour, and no history.
-    v.kinds = vec![(s("copilot"), s("edits in a worktree"))];
+    v.kinds = vec![(s("copilot"), s("edits this checkout"))];
     v.kind = 0;
     v.models = vec![s("default")];
     v.model = 0;

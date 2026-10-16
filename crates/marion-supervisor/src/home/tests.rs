@@ -87,6 +87,23 @@ fn typed(h: &mut Home, text: &str) {
     }
 }
 
+/// **Start says where a type's run edits**: `marion run` starts a root in the operator's own
+/// checkout, so a writing type edits that checkout, never a worktree (a worktree is a child's).
+#[test]
+fn start_says_a_writing_type_edits_this_checkout() {
+    let f = view::frame(&home(), &view::Places::default());
+    assert_eq!(
+        f.start.kinds,
+        [
+            ("claude".to_string(), "edits this checkout".to_string()),
+            (
+                "claude-orchestrator".to_string(),
+                "read-only, delegates".to_string()
+            ),
+        ]
+    );
+}
+
 #[test]
 fn start_types_the_prompt_and_enter_runs_the_chosen_type_and_model() {
     let mut h = home();
