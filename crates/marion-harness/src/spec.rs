@@ -1711,11 +1711,10 @@ fn apply_recipe(env: &mut Vec<(String, String)>, recipe: &WireRecipe) {
     }
 }
 
-/// **Whether `prompt` must ride behind a leading space**: it begins with `-`, so a parser would
-/// read it as an option, and `argv` does not place it straight after a `--` that ends them — the
-/// row carries it as a flag's value, or its parser has no `--` (pi), or the row does not say. The
-/// space is no option to any parser, and a model reads past it.
-fn prompt_needs_a_space(argv: &[Arg], prompt: &str) -> bool {
+/// **Whether `prompt` would read as an option**: it begins with `-`, and `argv` does not place it
+/// straight after a `--` that ends them — the row carries it as a flag's value, or its parser has
+/// no `--` (pi), or the row does not say.
+fn prompt_reads_as_a_flag(argv: &[Arg], prompt: &str) -> bool {
     let is_prompt = |a: &Arg| {
         matches!(
             a,
@@ -1747,17 +1746,9 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     if f.model.as_deref().is_some_and(|m| m.starts_with('-')) {
         return Err(Refusal::FlagLikeModel);
     }
-    let guarded;
-    let f = match prompt_needs_a_space(argv, &f.prompt) {
-        true => {
-            guarded = Fields {
-                prompt: format!(" {}", f.prompt),
-                ..f.clone()
-            };
-            &guarded
-        }
-        false => f,
-    };
+    if prompt_reads_as_a_flag(argv, &f.prompt) {
+        return Err(Refusal::FlagLikePrompt);
+    }
     // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
     // (claude 2.1.268), and appended it would swallow the positional prompt the pane seeds.
     let mut args: Vec<String> = match shape {
