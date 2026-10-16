@@ -342,12 +342,19 @@ fn agent_type_description_where(
     )
 }
 
-/// **The `PATH` a spawn from here is launched on**: the supervisor's, stated on this bridge's
-/// declaration ([`marion_harness::mcp_bridge::SPAWN_PATH_ENV`]) because it, not this process,
-/// execs the child, and a harness may start its MCP server on another. A bridge with no such
-/// declaration (a top-level client's) reads its own.
+/// **The `PATH` a spawn from here is launched on**: the supervisor's, which it records in the
+/// project's directory when it starts ([`marion_core::paths::ProjectDir::spawn_path`]) because
+/// it, not this process, execs the child, and a harness may start its MCP server on another. Read
+/// per `tools/list`, from a file rather than this node's declaration, which on some harnesses
+/// rides argv. Where no supervisor has recorded one yet this process's own is the best guess.
+///
+/// A row's own `env` could set `PATH` for its harness's process; no row does, and the lookup does
+/// not apply one.
 fn spawn_path() -> std::ffi::OsString {
-    std::env::var_os(marion_harness::mcp_bridge::SPAWN_PATH_ENV)
+    crate::mcp::project_dir()
+        .ok()
+        .and_then(|p| std::fs::read(p.spawn_path()).ok())
+        .map(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec)
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_default()
 }

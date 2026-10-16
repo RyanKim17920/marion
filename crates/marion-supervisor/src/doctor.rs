@@ -1949,7 +1949,6 @@ fn probe_ctx() -> SpawnCtx {
         // because it is what a real spawn would use — `mcp` is a subcommand of this binary (§10).
         bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
         bridge_args: vec!["mcp".into()],
-        spawn_path: None,
     }
 }
 

@@ -79,7 +79,6 @@ fn bridge() -> BridgeEnv {
         depth: 0,
         node_token: None,
         ready_file: None,
-        spawn_path: None,
     }
 }
 

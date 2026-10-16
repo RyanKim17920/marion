@@ -24,10 +24,6 @@ pub const NODE_TOKEN_FILE_ENV: &str = "MARION_NODE_TOKEN_FILE";
 /// The node token's file name, under the node's own config or document directory.
 pub const NODE_TOKEN_FILE: &str = "node-token";
 pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
-/// **The `PATH` a child this node spawns is launched on**: the supervisor's own, which execs the
-/// child (`Invocation::command` inherits it). Stated because a harness may start its MCP server on
-/// another, and the bridge lists only the built-ins a spawn could launch.
-pub const SPAWN_PATH_ENV: &str = "MARION_SPAWN_PATH";
 
 /// What every MCP declaration of marion's bridge carries — **one value, five documents**.
 ///
@@ -73,8 +69,6 @@ pub struct BridgeEnv {
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on.
     pub ready_file: Option<PathBuf>,
-    /// [`SPAWN_PATH_ENV`]. `None` where the declaring process cannot state it.
-    pub spawn_path: Option<String>,
 }
 
 impl BridgeEnv {
@@ -113,9 +107,6 @@ impl BridgeEnv {
         if let Some(r) = &self.ready_file {
             pairs.push((READY_FILE_ENV.to_string(), r.to_string_lossy().into_owned()));
         }
-        if let Some(p) = &self.spawn_path {
-            pairs.push((SPAWN_PATH_ENV.to_string(), p.clone()));
-        }
         pairs
     }
 
@@ -148,7 +139,6 @@ mod tests {
             depth: 1,
             node_token: node_token.map(Into::into),
             ready_file: None,
-            spawn_path: None,
         }
     }
 
@@ -172,27 +162,6 @@ mod tests {
                 .pairs()
                 .iter()
                 .all(|(k, _)| k != NODE_TOKEN_ENV)
-        );
-    }
-
-    /// **The spawn `PATH` is declared where the launching process states one**, and never as an
-    /// empty value where it does not: the bridge then reads its own.
-    #[test]
-    fn the_spawn_path_is_declared_when_stated_and_absent_otherwise() {
-        let stated = BridgeEnv {
-            spawn_path: Some("/opt/bin:/usr/bin".into()),
-            ..bridge(None)
-        };
-        assert!(
-            stated
-                .pairs()
-                .contains(&(SPAWN_PATH_ENV.to_string(), "/opt/bin:/usr/bin".to_string()))
-        );
-        assert!(
-            bridge(None)
-                .pairs()
-                .iter()
-                .all(|(k, _)| k != SPAWN_PATH_ENV)
         );
     }
 }

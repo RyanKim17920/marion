@@ -558,7 +558,6 @@ fn env() -> BridgeEnv {
         depth: ROOT_DEPTH,
         node_token: None,
         ready_file: Some("/state/x/mcp-ready".into()),
-        spawn_path: None,
     }
 }
 

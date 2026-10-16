@@ -105,7 +105,6 @@ fn adapter_prefix_precedes_boundary_tail_and_documents_remain_a_pure_handoff() {
         depth: 0,
         node_token: None,
         ready_file: None,
-        spawn_path: None,
     };
     let allowed_marion_tools = ["spawn_agent", "send_message"];
     let injection = PrefixAdapter

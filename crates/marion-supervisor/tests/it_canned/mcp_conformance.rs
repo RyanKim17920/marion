@@ -953,8 +953,8 @@ fn tools_list_for_tree(tag: &str, file: &str) -> Value {
     tools_list_on(tag, file, &["codex", "claude"], None)
 }
 
-/// [`tools_list_for_tree`] with the bridge's own `PATH` holding `own`, and the declaration's
-/// launch `PATH` (`MARION_SPAWN_PATH`) holding `launch` where it is stated.
+/// [`tools_list_for_tree`] with the bridge's own `PATH` holding `own`, and the supervisor's
+/// recorded spawn `PATH` (the project's `spawn-path`) holding `launch` where one is recorded.
 fn tools_list_on(tag: &str, file: &str, own: &[&str], launch: Option<&[&str]>) -> Value {
     use std::os::unix::fs::PermissionsExt;
     let dir = Scratch::new(tag);
@@ -972,13 +972,21 @@ fn tools_list_on(tag: &str, file: &str, own: &[&str], launch: Option<&[&str]>) -
         bin
     };
     let bin = shims("bin", own);
-    let launch = launch.map(|programs| shims("launch-bin", programs));
+    let state = dir.path.join("state");
+    if let Some(programs) = launch {
+        let launch = shims("launch-bin", programs);
+        let repo = dir.path.canonicalize().unwrap();
+        let project = marion_core::paths::ProjectDir::new(
+            &state,
+            &marion_supervisor::socket::project_root(&repo),
+        );
+        std::fs::create_dir_all(project.path()).unwrap();
+        std::fs::write(project.spawn_path(), launch.as_os_str().as_encoded_bytes()).unwrap();
+    }
     let mut b = Bridge::spawn_with(|cmd| {
-        cmd.env("MARION_REPO", &dir.path).env("PATH", &bin);
-        match &launch {
-            Some(l) => cmd.env("MARION_SPAWN_PATH", l),
-            None => cmd.env_remove("MARION_SPAWN_PATH"),
-        };
+        cmd.env("MARION_REPO", &dir.path)
+            .env("MARION_STATE_DIR", &state)
+            .env("PATH", &bin);
     });
     b.initialize("2025-06-18");
     b.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
@@ -989,9 +997,9 @@ fn tools_list_on(tag: &str, file: &str, own: &[&str], launch: Option<&[&str]>) -
 }
 
 /// **`spawn` lists the built-ins the supervisor can launch, not the ones this bridge can see.**
-/// The supervisor execs a child on its own `PATH` and states it on the declaration; a harness
-/// may start its MCP server on another. A program only on the launch `PATH` is listed, and one
-/// only on the bridge's is not.
+/// The supervisor execs a child on its own `PATH` and records it in the project's directory; a
+/// harness may start its MCP server on another. A program only on the recorded `PATH` is listed,
+/// and one only on the bridge's is not.
 ///
 /// Mutation: resolve programs on the bridge's own `PATH` and claude is counted while codex is
 /// named.

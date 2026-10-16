@@ -125,7 +125,6 @@ impl ProductionNativeCommandFactory {
             depth: 0,
             node_token: claim.node_token.clone(),
             ready_file: None,
-            spawn_path: None,
         }
     }
 }

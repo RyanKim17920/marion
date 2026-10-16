@@ -1579,6 +1579,11 @@ fn tree_agent_types() -> Result<marion_core::agent_type::AgentTypes, String> {
     crate::run::agent_types(std::path::Path::new(&repo)).map_err(|e| e.to_string())
 }
 
+/// The project directory this bridge's supervisor keeps: [`supervisor_paths`]' second half.
+pub(crate) fn project_dir() -> Result<ProjectDir, String> {
+    supervisor_paths().map(|(_, project)| project)
+}
+
 fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
     let repo = std::env::var(REPO_ENV).map_err(|_| {
         "marion: MARION_REPO is not set, so this bridge cannot find its project's supervisor. The \

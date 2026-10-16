@@ -248,7 +248,6 @@ pub fn compile(
         state_dir: w.state.clone(),
         bridge,
         bridge_args: vec!["mcp".into()],
-        spawn_path: None,
     };
     // Every document a real spawn writes, the overlay's seeds included (claude's onboarding).
     let files = t

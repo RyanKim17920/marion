@@ -6387,6 +6387,19 @@ mod owns_nodes {
     /// crossing — woken by the figure, never by a poll.
     ///
     /// Mutation: build the handle's `Spending` without `enforcing` and nothing is journaled.
+    /// **A handle that launches nodes records the `PATH` it launches them on**, where a bridge
+    /// reads it to list only the agent types a spawn could launch (`bridge::spawn_path`).
+    #[test]
+    fn an_owning_handle_records_the_path_it_launches_nodes_on() {
+        let o = owning("handler-spawn-path", vec![]);
+        assert_eq!(
+            std::fs::read(o.project.spawn_path()).unwrap(),
+            std::env::var_os("PATH")
+                .unwrap_or_default()
+                .as_encoded_bytes()
+        );
+    }
+
     #[test]
     fn a_published_spend_past_a_warn_line_is_journaled_by_the_enforcer() {
         let fx = owning("owns-budget-warn", vec![]);

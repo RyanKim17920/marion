@@ -21,7 +21,6 @@ fn neutral_and_compatibility_paths_name_one_bridge_contract() {
         depth: 0,
         node_token: None,
         ready_file: None,
-        spawn_path: None,
     };
     assert!(
         bridge

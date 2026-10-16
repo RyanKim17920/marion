@@ -1706,7 +1706,6 @@ mod tests {
             depth: 1,
             node_token: None,
             ready_file: None,
-            spawn_path: None,
         }
     }
 

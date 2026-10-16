@@ -147,6 +147,12 @@ impl ProjectDir {
         self.0.join("journal.jsonl")
     }
 
+    /// `spawn-path` — the `PATH` this project's supervisor launches nodes on, written by the
+    /// supervisor when it starts, so a bridge lists only the agent types a spawn could launch.
+    pub fn spawn_path(&self) -> PathBuf {
+        self.0.join("spawn-path")
+    }
+
     pub fn snapshot(&self) -> PathBuf {
         self.0.join("snapshot.json")
     }

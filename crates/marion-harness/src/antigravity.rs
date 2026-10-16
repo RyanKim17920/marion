@@ -551,7 +551,6 @@ mod tests {
             depth: 1,
             node_token: None,
             ready_file: None,
-            spawn_path: None,
         };
         let v: serde_json::Value = serde_json::from_str(&mcp_config_document(&b)).unwrap();
         let m = &v["mcpServers"]["marion"];

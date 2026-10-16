@@ -932,7 +932,6 @@ pub fn prepare_watched(
         state_dir: spec.state.clone(),
         bridge: spec.bridge.clone(),
         bridge_args: vec!["mcp".into()],
-        spawn_path: crate::run::spawn_path(),
     };
     let written = crate::run::write_config_documents(adapter.launch_documents(&launch, &ctx)?)?;
     let invocation = compile_root(adapter.as_ref(), spec.pane, &launch, &ctx)?;

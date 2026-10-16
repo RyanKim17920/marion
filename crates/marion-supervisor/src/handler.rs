@@ -578,6 +578,16 @@ impl RegistryHandle {
         } else {
             (Arc::new(spending), None)
         };
+        // **The `PATH` this handle launches nodes on**, for a bridge to list what a spawn could
+        // launch (`bridge::spawn_path`): `Invocation::command` inherits this process's own. A
+        // failed write leaves the bridges on their own `PATH`, which is all they had before.
+        if let Some(env) = &spawn_env {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let _ = crate::private_fs::write_atomic(
+                &env.project_dir.spawn_path(),
+                path.as_encoded_bytes(),
+            );
+        }
         let operator_key = match &spawn_env {
             Some(env) => crate::operator_key::ensure(&env.state).map_err(|e| {
                 format!(

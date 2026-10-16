@@ -275,9 +275,6 @@ pub struct SpawnCtx {
     /// The `marion-supervisor` binary the harness will start as the MCP server.
     pub bridge: PathBuf,
     pub bridge_args: Vec<String>,
-    /// The `PATH` this node's own children will be launched on
-    /// ([`crate::mcp_bridge::SPAWN_PATH_ENV`]).
-    pub spawn_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -1150,7 +1147,6 @@ pub(crate) fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> BridgeEnv {
         depth: ctx.depth,
         node_token: ctx.node_token.clone(),
         ready_file: ctx.ready_file.clone(),
-        spawn_path: ctx.spawn_path.clone(),
     }
 }
 
@@ -2036,7 +2032,6 @@ mod tests {
             state_dir: "/state".into(),
             bridge: "/bin/marion-supervisor".into(),
             bridge_args: vec!["mcp".into()],
-            spawn_path: None,
         }
     }
 
@@ -3092,7 +3087,6 @@ mod tests {
             depth: 0,
             node_token: None,
             ready_file: Some("/state/x/mcp-ready".into()),
-            spawn_path: None,
         });
         let expected: Vec<&String> = claude["mcpServers"]["marion"]["env"]
             .as_object()
@@ -3120,7 +3114,6 @@ mod tests {
                 depth: 0,
                 node_token: None,
                 ready_file: Some("/state/x/mcp-ready".into()),
-                spawn_path: None,
             }),
         );
         let got: Vec<&String> = o["mcp"]["marion"]["environment"]

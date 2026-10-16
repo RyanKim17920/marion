@@ -2141,7 +2141,6 @@ fn launch_ctx() -> SpawnCtx {
         state_dir: "/state".into(),
         bridge: "/bin/marion-supervisor".into(),
         bridge_args: vec!["mcp".into()],
-        spawn_path: None,
     }
 }
 
