@@ -1862,28 +1862,61 @@ fn p_untrusted_mcp(c: &mut Ctx<'_>) -> Outcome {
             ));
             continue;
         }
-        let untrusted = untrusted_run(c, name, home, pane, false, None);
-        let trusted = untrusted_run(c, &format!("{name}-trusted"), home, pane, true, None);
-        let bare = untrusted_run(
-            c,
-            &format!("{name}-no-{}", flag.trim_start_matches('-')),
-            home,
-            pane,
-            false,
-            Some(flag),
+        let run = |part: &str, r: Run| untrusted_run(c, &format!("{name}{part}"), home, pane, r);
+        let untrusted = run("", Run::default());
+        // The overlay alone: the project source back on, so `.mcp.json` is read and only the
+        // overlay's rejection by name keeps the approved server down.
+        let overlay = run(
+            "-project-source",
+            Run {
+                sources: Some("user,project"),
+                ..Run::default()
+            },
+        );
+        let trusted = run(
+            "-trusted",
+            Run {
+                trusted: true,
+                approved_in_repo: true,
+                ..Run::default()
+            },
+        );
+        // A trusted repository whose server nobody approved: the pane must neither stall on the
+        // approval dialog nor start it. Recorded only, headless.
+        let unapproved = run(
+            "-trusted-unapproved",
+            Run {
+                trusted: true,
+                approved_by_user: false,
+                ..Run::default()
+            },
+        );
+        let bare = run(
+            &format!("-no-{}", flag.trim_start_matches('-')),
+            Run {
+                strip: Some(flag),
+                ..Run::default()
+            },
         );
         let word = |r: &Result<Started, String>| match r {
             Ok(r) => format!("server started {} (turn {})", r.started, r.turned),
             Err(e) => e.clone(),
         };
-        let ok =
-            matches!((&untrusted, &trusted), (Ok(u), Ok(t)) if !u.started && u.turned && t.started);
+        let down = |r: &Result<Started, String>| matches!(r, Ok(r) if !r.started && r.turned);
+        let ok = down(&untrusted)
+            && down(&overlay)
+            && matches!(&trusted, Ok(t) if t.started)
+            && (!pane || down(&unapproved));
         pass &= ok;
         parts.push(format!(
-            "{name}: untrusted: {}; trusted (control): {}; untrusted less `{flag}` (recorded, \
-             not judged): {}",
+            "{name}: untrusted: {}; untrusted with `--setting-sources user,project` (the overlay \
+             alone): {}; trusted, approved (control): {}; trusted, unapproved ({}): {}; untrusted \
+             less `{flag}` (recorded, not judged): {}",
             word(&untrusted),
+            word(&overlay),
             word(&trusted),
+            if pane { "judged" } else { "recorded" },
+            word(&unapproved),
             word(&bare)
         ));
     }
@@ -1892,9 +1925,37 @@ fn p_untrusted_mcp(c: &mut Ctx<'_>) -> Outcome {
         pass,
         "on a live launch in an untrusted repository, a `.mcp.json` server the operator's \
          settings approve by name (`enabledMcpjsonServers`) does not start, headless or in the \
-         pane, and the same server starts on the live launch of a trusted repository",
+         pane, also with the project setting source on (the overlay alone); the same server starts \
+         on the live launch of a trusted repository whose settings approve it; and a trusted \
+         repository's unapproved server neither stalls a pane nor starts in it",
         parts.join(" | "),
     )
+}
+
+/// How one [`untrusted_run`] departs from the untrusted live launch with the operator's approval.
+struct Run<'a> {
+    /// The repository is trusted in marion.
+    trusted: bool,
+    /// A flag (with its value) taken off the compiled argv.
+    strip: Option<&'a str>,
+    /// `--setting-sources`' value in place of the compiled one.
+    sources: Option<&'a str>,
+    /// The operator's user settings approve the server by name.
+    approved_by_user: bool,
+    /// The repository's own `.claude/settings.local.json` approves it too.
+    approved_in_repo: bool,
+}
+
+impl Default for Run<'_> {
+    fn default() -> Self {
+        Run {
+            trusted: false,
+            strip: None,
+            sources: None,
+            approved_by_user: true,
+            approved_in_repo: false,
+        }
+    }
 }
 
 /// What one [`p_untrusted_mcp`] run saw.
@@ -1905,15 +1966,14 @@ struct Started {
     turned: bool,
 }
 
-/// One run of [`p_untrusted_mcp`]: the repository's server, the operator's approval, the live
-/// launch of a repository `trusted` or not (less `strip`'s flag), one scripted turn.
+/// One run of [`p_untrusted_mcp`]: the repository's server, the approvals `r` names, the live
+/// launch of a repository trusted or not as `r` says, one scripted turn.
 fn untrusted_run(
     c: &Ctx<'_>,
     part: &str,
     home: &Path,
     pane: bool,
-    trusted: bool,
-    strip: Option<&str>,
+    r: Run<'_>,
 ) -> Result<Started, String> {
     let s = c.session("P-untrusted-mcp", part);
     let marker_file = s.world.config.join("repo-server-started");
@@ -1922,30 +1982,44 @@ fn untrusted_run(
         format!("touch '{}'; sleep 5", marker_file.display())]}}});
     std::fs::write(s.world.repo.join(".mcp.json"), server.to_string())
         .map_err(|e| format!(".mcp.json: {e}"))?;
+    let approval = json!({"enabledMcpjsonServers": [REPO_SERVER]}).to_string();
+    if r.approved_in_repo {
+        let dir = s.world.repo.join(".claude");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::write(dir.join("settings.local.json"), &approval)
+            .map_err(|e| format!("settings.local.json: {e}"))?;
+    }
     let marker = "CONFREPOMCP";
     s.provider
         .hold
         .add_turn(c.turn(marker, 0, "conformance repo mcp done"));
     let knobs = Knobs {
         pane,
-        live: Some(trusted),
+        live: Some(r.trusted),
         ..Knobs::default()
     };
     let text = if pane { String::new() } else { prompt(marker) };
     let mut launch = c
         .compile(&s, &text, &knobs)
         .map_err(|e| format!("marion will not compile the live launch: {e}"))?;
-    if let Some(flag) = strip {
+    if let Some(flag) = r.strip {
         strip_flag(&mut launch.inv.args, flag, true);
+    }
+    if let Some(sources) = r.sources {
+        let args = &mut launch.inv.args;
+        let at = args
+            .iter()
+            .position(|a| a == "--setting-sources")
+            .ok_or("the live argv carries no `--setting-sources` to widen")?;
+        args[at + 1] = sources.to_string();
     }
     // The operator's approval of the repository's server, in the user settings the launch reads.
     let dir = s.world.config.join(home);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::write(
-        dir.join("settings.json"),
-        json!({"enabledMcpjsonServers": [REPO_SERVER]}).to_string(),
-    )
-    .map_err(|e| format!("settings.json: {e}"))?;
+    if r.approved_by_user {
+        std::fs::write(dir.join("settings.json"), &approval)
+            .map_err(|e| format!("settings.json: {e}"))?;
+    }
     s.log.w(
         "note",
         &json!({"argv": launch.inv.args, "repo .mcp.json": server}),
