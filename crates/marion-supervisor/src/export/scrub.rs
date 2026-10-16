@@ -58,6 +58,57 @@ fn is_format(c: char) -> bool {
     )
 }
 
+/// **`text` as it reads on a screen, with nothing in it that drives one**: every terminal escape
+/// sequence taken out whole (CSI, a control string — OSC, DCS, APC, PM, SOS — to its terminator,
+/// any other `ESC` sequence, and their 8-bit forms), every other control character but the line
+/// feed and the tab, and every invisible format character ([`is_format`]). What is left is what a
+/// reader sees, so a key matched by value is matched where the screen shows it whole.
+fn plain(text: &str) -> String {
+    #[derive(Clone, Copy, PartialEq)]
+    enum In {
+        Text,
+        /// After `ESC`: intermediates, then the byte that ends it.
+        Escape,
+        /// Inside a CSI, to its final byte.
+        Csi,
+        /// Inside a control string, to `BEL` or `ST`.
+        Str,
+        /// `ESC` inside a control string: `ESC \` is its `ST`.
+        StrEscape,
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut state = In::Text;
+    for c in text.chars() {
+        // `CAN` and `SUB` abandon any sequence, as a terminal's parser does.
+        if matches!(c, '\u{18}' | '\u{1a}') {
+            state = In::Text;
+            continue;
+        }
+        state = match (state, c) {
+            (In::Str, '\u{1b}') => In::StrEscape,
+            (In::Str | In::StrEscape, '\u{7}' | '\u{9c}') | (In::StrEscape, '\\') => In::Text,
+            (In::Str | In::StrEscape, _) => In::Str,
+            (_, '\u{1b}') => In::Escape,
+            (In::Escape, '[') | (_, '\u{9b}') => In::Csi,
+            (In::Escape, ']' | 'P' | '_' | '^' | 'X')
+            | (_, '\u{90}' | '\u{98}' | '\u{9d}'..='\u{9f}') => In::Str,
+            (In::Escape, '\u{20}'..='\u{2f}') => In::Escape,
+            (In::Csi, '\u{40}'..='\u{7e}') | (In::Escape, _) => In::Text,
+            (In::Csi, _) => In::Csi,
+            (In::Text, '\n' | '\t') => {
+                out.push(c);
+                In::Text
+            }
+            (In::Text, c) if c.is_control() || is_format(c) => In::Text,
+            (In::Text, c) => {
+                out.push(c);
+                In::Text
+            }
+        };
+    }
+    out
+}
+
 /// Environment variable names, upper-cased, whose value is a secret by the name's own say-so.
 const SECRET_ENV_SUFFIXES: &[&str] = &[
     "_API_KEY",
@@ -115,8 +166,11 @@ impl Scrubber {
     }
 
     /// `text` with every known key, every secret-shaped run and the home directory taken out.
+    /// Terminal escape sequences, control characters and invisible format characters go first
+    /// ([`plain`]): a key with a colour change or a zero-width space inside it reads whole on the
+    /// screen, and is matched whole.
     pub fn clean(&self, text: &str) -> String {
-        let mut out = text.to_string();
+        let mut out = plain(text);
         for k in &self.keys {
             out = crate::endpoint::redact(&out, k.expose());
         }
@@ -129,15 +183,14 @@ impl Scrubber {
     }
 
     /// **`text` as one line safe to journal and print to a terminal**: [`Self::clean`]ed (a
-    /// vendor's error can echo the key it refused), every control character and invisible format
-    /// character (a bidi override among them) written as its escape (`\u{1b}`, `\n`,
-    /// `\u{202e}`) so no byte of it drives or reorders the reader's terminal, and capped at
-    /// [`LINE_CAP`] characters with `…` where it was cut.
+    /// vendor's error can echo the key it refused, and escapes and invisible characters are gone
+    /// with it), every line break written as its escape (`\n`, `\t`) so the line
+    /// stays one, and capped at [`LINE_CAP`] characters with `…` where it was cut.
     pub fn one_line(&self, text: &str) -> String {
         let mut out = String::new();
         let mut kept = 0;
         for c in self.clean(text).chars() {
-            let piece: String = if c.is_control() || is_format(c) {
+            let piece: String = if c.is_control() {
                 c.escape_default().collect()
             } else {
                 c.to_string()
@@ -508,13 +561,16 @@ mod tests {
         assert!(!line.contains("abcdefghijklmnop"), "{line}");
         assert!(line.contains(MASK), "{line}");
         assert!(!line.chars().any(char::is_control), "{line:?}");
-        assert!(line.contains("\\u{1b}[2J\\r\\nnext\\u{7}"), "{line}");
+        assert!(
+            line.ends_with("\\nnext"),
+            "the escape gone, the break escaped: {line}"
+        );
         let long = s.one_line(&"x".repeat(LINE_CAP * 2));
         assert_eq!(long.chars().count(), LINE_CAP + 1);
         assert!(long.ends_with('…'));
         assert_eq!(s.one_line("rate limit: 429"), "rate limit: 429");
         let bidi = s.one_line("ok \u{202e}txt.exe\u{200b}\u{2066}x\u{feff}");
-        assert_eq!(bidi, "ok \\u{202e}txt.exe\\u{200b}\\u{2066}x\\u{feff}");
+        assert_eq!(bidi, "ok txt.exex", "nothing left to reorder the line");
         assert_eq!(
             s.one_line("naïve — ✓ 東京"),
             "naïve — ✓ 東京",
@@ -525,6 +581,42 @@ mod tests {
             "y".repeat(LINE_CAP),
             "at the cap, whole"
         );
+    }
+
+    /// **A key with an escape sequence, a control or an invisible character inside it is masked
+    /// all the same**: each is taken out before keys are matched by value, so the key the screen
+    /// would show whole is found whole. Every kind of sequence goes, to its end, and text after it
+    /// stays.
+    #[test]
+    fn a_key_split_by_escapes_or_invisible_characters_is_still_masked() {
+        let s = scrubber();
+        for split in [
+            "envkey-\x1b[0mabcdefghijkl",
+            "envkey-\x1b[38;5;196mabcdef\x1b[0mghijkl",
+            "envkey-\x1b]8;;https://x\x07abcdefghijkl",
+            "envkey-\x1b]0;title\x1b\\abcdefghijkl",
+            "envkey-\x1bPq#0\x1b\\abcdefghijkl",
+            "envkey-\x1b(Babcdefghijkl",
+            "envkey-\u{9b}1mabcdefghijkl",
+            "envkey-\u{8}abcdefghijkl",
+            "envkey-\rabcdefghijkl",
+            "envkey-\u{200b}abcdefghijkl",
+            "envkey-\u{ad}abcdef\u{2060}ghijkl",
+        ] {
+            let clean = s.clean(&format!("key: {split} done"));
+            assert_eq!(clean, "key: *** done", "from {split:?}");
+        }
+        assert_eq!(
+            s.clean("a\x1b[1mb\x1b]2;t\x07c\x1b7d\u{7}e\tf\ng"),
+            "abcde\tf\ng",
+            "every sequence out whole, tab and line feed kept"
+        );
+        assert_eq!(
+            s.clean("x\x1b]0;never ended"),
+            "x",
+            "an unended string runs to the end"
+        );
+        assert_eq!(s.clean("x\x1b]0;t\u{18}y"), "xy", "CAN abandons a sequence");
     }
 
     #[test]
