@@ -42,10 +42,7 @@ impl RegistryHandle {
             ));
         }
         let principal = match (&p.operator, &p.node) {
-            (Some(key), None) => {
-                self.refuse_from_below_a_node(peer_pid)?;
-                self.prove_operator(key)?
-            }
+            (Some(key), None) => self.prove_operator_from(peer_pid, key)?,
             (None, Some(caller)) => match self.authenticate(caller) {
                 Some(_) => SessionPrincipal::Node(caller.agent_id.clone()),
                 None => return Err(unminted_token(&caller.agent_id)),
@@ -63,6 +60,18 @@ impl RegistryHandle {
             .principals
             .insert(conn, principal.clone());
         Ok(SessionHelloResult { principal })
+    }
+
+    /// **Whether process `peer_pid`, presenting `key`, speaks for the operator**: the key in this
+    /// state root, from outside every live node's process tree. Every surface that admits the
+    /// operator asks here — `session/hello` and the native socket's `Issue` alike.
+    pub(crate) fn prove_operator_from(
+        &self,
+        peer_pid: Option<u32>,
+        key: &Secret,
+    ) -> Result<SessionPrincipal, RpcError> {
+        self.refuse_from_below_a_node(peer_pid)?;
+        self.prove_operator(key)
     }
 
     /// **Defense in depth for a key at rest**: the operator's key is refused from any process

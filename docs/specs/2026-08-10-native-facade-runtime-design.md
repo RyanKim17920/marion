@@ -144,6 +144,13 @@ refuses, before any side effect, a working directory whose physical path does no
 same key or lies inside it. Every linked worktree of a repository therefore passes, and `.git`
 itself never does.
 
+The peer's uid admits nothing by itself: every process the operator runs shares it, a node's
+shell included, and a native session is a root above any node. So the request (wire version 3)
+also carries the operator's key from the state root's `operator.key`, after the hash and outside
+it, and the supervisor holds it to the same test as an operator `session/hello`: that key, from a
+process outside every live node's process tree. It is checked before the terminal is examined or
+a capability exists, and a client whose process speaks for a node refuses to dial at all.
+
 Only that `ConnectionKind::NativeBootstrap` handler can issue a `DirectCliCapability`. The
 capability is a random 256-bit opaque id stored server-side and bound to the authenticated
 connection id, peer pid/uid, terminal fingerprint, selector, context hash, initial geometry, and a

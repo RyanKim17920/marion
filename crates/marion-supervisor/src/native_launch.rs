@@ -527,6 +527,17 @@ impl PreparedNativeRelay for PreparedClaimRelay {
 }
 
 impl NativeBootstrapHandler for NativeLaunchHandler {
+    fn prove_operator(
+        &self,
+        peer: crate::native_bootstrap::PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError> {
+        self.handle
+            .prove_operator_from(Some(peer.pid()), key)
+            .map(|_| ())
+            .map_err(|refused| BootstrapError::OperatorRefused(refused.message))
+    }
+
     fn verify_terminal(
         &self,
         _peer: crate::native_bootstrap::PeerIdentity,

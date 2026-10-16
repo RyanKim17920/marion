@@ -1134,7 +1134,10 @@ fn ordinary_json_rpc_rejects_copied_native_token_before_capability_lookup() {
     client
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    let mut frame = crate::native_bootstrap::issue_request_bytes_for_tests(&context);
+    let mut frame = crate::native_bootstrap::issue_request_bytes_for_tests(
+        &context,
+        &crate::native_bootstrap::test_operator(),
+    );
     frame.push(b'\n');
     client.write_all(&frame).unwrap();
     client
@@ -1184,6 +1187,14 @@ struct SupportedNativeHandler(AtomicU64);
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl crate::native_bootstrap::NativeBootstrapHandler for SupportedNativeHandler {
+    fn prove_operator(
+        &self,
+        _peer: crate::native_bootstrap::PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), crate::native_bootstrap::BootstrapError> {
+        crate::native_bootstrap::prove_test_operator(key)
+    }
+
     fn verify_terminal(
         &self,
         _peer: crate::native_bootstrap::PeerIdentity,
@@ -1285,6 +1296,7 @@ fn native_listener_dispatches_the_wire_and_native_connections_block_idle_until_c
         input.as_fd(),
         output.as_fd(),
         &context,
+        &crate::native_bootstrap::test_operator(),
     )
     .unwrap();
     crate::native_bootstrap::present_direct_cli_capability(&mut client, capability, &context)

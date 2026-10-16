@@ -286,6 +286,14 @@ struct ClaimLifecycleHandler {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl NativeBootstrapHandler for ClaimLifecycleHandler {
+    fn prove_operator(
+        &self,
+        _peer: PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError> {
+        prove_test_operator(key)
+    }
+
     fn verify_terminal(
         &self,
         _peer: PeerIdentity,
@@ -356,8 +364,14 @@ fn start_claim_lifecycle_roundtrip(
         .write(true)
         .open("/dev/null")
         .unwrap();
-    let capability =
-        request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), context).unwrap();
+    let capability = request_direct_cli_capability(
+        &mut client,
+        input.as_fd(),
+        output.as_fd(),
+        context,
+        &test_operator(),
+    )
+    .unwrap();
     let receipt = present_direct_cli_capability(&mut client, capability, context).unwrap();
     write_native_claim_request(&mut client, &receipt).unwrap();
     (client, worker)
@@ -710,9 +724,14 @@ fn same_authenticated_socket_claims_and_owns_the_exact_conn_lifecycle() {
         .write(true)
         .open("/dev/null")
         .unwrap();
-    let capability =
-        request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
-            .unwrap();
+    let capability = request_direct_cli_capability(
+        &mut client,
+        input.as_fd(),
+        output.as_fd(),
+        &context,
+        &test_operator(),
+    )
+    .unwrap();
     let receipt = present_direct_cli_capability(&mut client, capability, &context).unwrap();
     write_native_claim_request(&mut client, &receipt).unwrap();
     let mut status = [WIRE_REFUSED];
@@ -1167,6 +1186,7 @@ fn wire_round_trip_preserves_raw_context_and_rejects_a_forged_claimed_hash() {
         &WireRequest::Issue {
             context: context.clone(),
             claimed_hash: ContextHash([0x5a; 32]),
+            operator: Some(test_operator()),
         },
     )
     .unwrap();
@@ -1182,6 +1202,7 @@ fn wire_round_trip_preserves_raw_context_and_rejects_a_forged_claimed_hash() {
         &WireRequest::Issue {
             context: context.clone(),
             claimed_hash: context_hash(&context),
+            operator: Some(test_operator()),
         },
     )
     .unwrap();
@@ -1776,6 +1797,14 @@ impl SelectingRouteHandler {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl NativeBootstrapHandler for SelectingRouteHandler {
+    fn prove_operator(
+        &self,
+        _peer: PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError> {
+        prove_test_operator(key)
+    }
+
     fn verify_terminal(
         &self,
         _peer: PeerIdentity,
@@ -1997,6 +2026,7 @@ fn real_tty_bootstrap_alias_probe() {
         stream: client_stream,
         canonical_project: project.clone(),
         client_cwd: project.clone(),
+        operator: test_operator(),
     };
     let registry = NativeFacadeRegistry::new(&[ROUTE_DESCRIPTOR]).expect("client registry");
     let opaque = OsString::from_vec(b"--opaque-\xff".to_vec());
@@ -2353,6 +2383,7 @@ fn real_tty_revalidation_probe() {
         stream: client_stream,
         canonical_project: project.clone(),
         client_cwd: project.clone(),
+        operator: test_operator(),
     };
     let context = DirectNativeRequestContext::new(
         project.clone(),
@@ -2737,6 +2768,14 @@ struct CountingHandler {
 }
 
 impl NativeBootstrapHandler for CountingHandler {
+    fn prove_operator(
+        &self,
+        _peer: PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError> {
+        prove_test_operator(key)
+    }
+
     fn verify_terminal(
         &self,
         _peer: PeerIdentity,
@@ -2764,6 +2803,14 @@ struct LateLaunchDecisionHandler {
 }
 
 impl NativeBootstrapHandler for LateLaunchDecisionHandler {
+    fn prove_operator(
+        &self,
+        _peer: PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError> {
+        prove_test_operator(key)
+    }
+
     fn verify_terminal(
         &self,
         _peer: PeerIdentity,
@@ -2823,9 +2870,14 @@ fn launch_success_and_handler_refusal_use_a_fresh_result_deadline() {
             .open("/dev/null")
             .unwrap();
         let context = request_context();
-        let capability =
-            request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
-                .unwrap();
+        let capability = request_direct_cli_capability(
+            &mut client,
+            input.as_fd(),
+            output.as_fd(),
+            &context,
+            &test_operator(),
+        )
+        .unwrap();
         let result = present_direct_cli_capability(&mut client, capability, &context);
         if refuse {
             assert!(matches!(result, Err(BootstrapError::AuthorizationRefused)));
@@ -2913,9 +2965,14 @@ fn native_wire_issues_and_consumes_only_after_the_verified_handoff() {
         .open("/dev/null")
         .unwrap();
     let context = request_context();
-    let capability =
-        request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
-            .unwrap();
+    let capability = request_direct_cli_capability(
+        &mut client,
+        input.as_fd(),
+        output.as_fd(),
+        &context,
+        &test_operator(),
+    )
+    .unwrap();
     let receipt = present_direct_cli_capability(&mut client, capability, &context).unwrap();
     assert_eq!(
         receipt.agent_id(),
@@ -2935,6 +2992,14 @@ struct EnvironmentCapturingHandler {
 }
 
 impl NativeBootstrapHandler for EnvironmentCapturingHandler {
+    fn prove_operator(
+        &self,
+        _peer: PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError> {
+        prove_test_operator(key)
+    }
+
     fn verify_terminal(
         &self,
         _peer: PeerIdentity,
@@ -3004,9 +3069,14 @@ fn authorized_launch_sees_the_client_environment_not_the_supervisors() {
         .write(true)
         .open("/dev/null")
         .unwrap();
-    let capability =
-        request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
-            .unwrap();
+    let capability = request_direct_cli_capability(
+        &mut client,
+        input.as_fd(),
+        output.as_fd(),
+        &context,
+        &test_operator(),
+    )
+    .unwrap();
     present_direct_cli_capability(&mut client, capability, &context).unwrap();
     worker.join().unwrap();
 
@@ -3365,6 +3435,7 @@ mod supported_descriptors {
             &WireRequest::Issue {
                 context: request_context(),
                 claimed_hash: ContextHash([0x44; 32]),
+                operator: Some(test_operator()),
             },
         )
         .unwrap();
@@ -3375,6 +3446,74 @@ mod supported_descriptors {
         assert_eq!(handler.terminal_verifications.load(Ordering::SeqCst), 0);
         assert_eq!(service.capability_lookup_count(), 0);
         effects.assert_zero();
+    }
+
+    /// **An `Issue` without the operator's key is refused before the terminal is looked at or a
+    /// capability exists**: the native socket admits every process of the operator's uid, a
+    /// node's shell included, and what it would start is a root above that node. A wrong key, and
+    /// a key-less frame (an older client) even where the versions agree, are both refused.
+    ///
+    /// Mutation: drop the `prove_operator` call from `serve_authenticated_with_receiver`, or
+    /// make its `ok_or` a default key. Each case then verifies the terminal and issues.
+    #[test]
+    fn an_issue_without_the_operator_key_is_refused_before_terminal_or_authority() {
+        let wrong = (
+            request_context(),
+            Some(marion_core::secret::Secret::new("not-it")),
+        );
+        let mut keyless = request_context();
+        keyless.native_wire_version = 2;
+        for (context, operator) in [wrong, (keyless, None)] {
+            let effects = Arc::new(Effects::default());
+            let handler = Arc::new(CountingHandler {
+                terminal_verifications: AtomicU64::new(0),
+                effects: Arc::clone(&effects),
+            });
+            let service = Arc::new(
+                NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+                    context.canonical_project().to_path_buf(),
+                    context.native_wire_version(),
+                    Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+                ),
+            );
+            let (mut client, server) = UnixStream::pair().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let worker = {
+                let service = Arc::clone(&service);
+                let active = service.try_acquire_connection().unwrap();
+                std::thread::spawn(move || service.serve_connection(ConnId(41), server, active))
+            };
+            let input = std::fs::File::open("/dev/null").unwrap();
+            let output = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/null")
+                .unwrap();
+            send_terminal_descriptors(&client, input.as_fd(), output.as_fd()).unwrap();
+            let keyed = operator.is_some();
+            write_wire_request(
+                &mut client,
+                &WireRequest::Issue {
+                    claimed_hash: context_hash(&context),
+                    context,
+                    operator,
+                },
+            )
+            .unwrap();
+            let mut status = [WIRE_OK];
+            client.read_exact(&mut status).unwrap();
+            assert_eq!(status, [WIRE_REFUSED], "keyed: {keyed}");
+            worker.join().unwrap();
+            assert_eq!(
+                handler.terminal_verifications.load(Ordering::SeqCst),
+                0,
+                "keyed: {keyed}"
+            );
+            assert!(lock(&service.authority.capabilities).is_empty());
+            assert_eq!(service.capability_lookup_count(), 0);
+            effects.assert_zero();
+        }
     }
 
     #[test]
@@ -3418,6 +3557,7 @@ mod supported_descriptors {
                 &WireRequest::Issue {
                     claimed_hash: context_hash(&context),
                     context,
+                    operator: Some(test_operator()),
                 },
             )
             .unwrap();

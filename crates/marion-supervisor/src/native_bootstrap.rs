@@ -34,7 +34,8 @@
 //!     stdout: BorrowedFd<'_>,
 //!     context: &DirectNativeRequestContext,
 //! ) {
-//!     let _ = request_direct_cli_capability(stream, stdin, stdout, context);
+//!     let operator = marion_core::secret::Secret::new("key");
+//!     let _ = request_direct_cli_capability(stream, stdin, stdout, context, &operator);
 //! }
 //! ```
 //!
@@ -112,7 +113,12 @@ const MAX_CONTEXT_ENVIRONMENT_ENTRIES: usize = 4096;
 const MAX_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SELECTOR_BYTES: usize = 255;
 const MAX_CAPABILITY_GENERATION_ATTEMPTS: usize = 128;
-pub(crate) const NATIVE_WIRE_VERSION: u32 = 2;
+/// The longest operator key an `Issue` may carry: [`crate::operator_key`] writes 64 hex bytes.
+const MAX_OPERATOR_KEY_BYTES: usize = 256;
+/// **3**: an `Issue` carries the operator's key after its hash. The native socket shares the
+/// operator's uid with every process they run, a node's shell included, and a native session is
+/// a root above any node, so the uid cannot be what admits it.
+pub(crate) const NATIVE_WIRE_VERSION: u32 = 3;
 
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +173,8 @@ pub struct NativeBootstrapClient {
     canonical_project: PathBuf,
     /// The working directory the project was resolved from — what the vendor must run in.
     client_cwd: PathBuf,
+    /// The operator's key for `paths`' state root, which the `Issue` presents.
+    operator: marion_core::secret::Secret,
 }
 
 impl NativeBootstrapClient {
@@ -181,16 +189,30 @@ impl NativeBootstrapClient {
     /// `client_cwd` is the working directory `paths` was resolved from — what the vendor must run
     /// in. Crate-private so the shipped path stays `crate::facade_cli`, which resolves, makes sure
     /// a supervisor serves, then dials; this module never learns how a supervisor is started.
+    ///
+    /// A native session is the operator's: a process that speaks for a node (its bridge set that
+    /// identity) is refused here, before it dials.
     pub(crate) fn connect(
         paths: &socket::SocketPaths,
         client_cwd: PathBuf,
     ) -> Result<Self, BootstrapError> {
+        let operator = match crate::client_auth::identity_for(paths) {
+            Ok(crate::client_auth::Identity::Operator(key)) => key,
+            Ok(crate::client_auth::Identity::Node(caller)) => {
+                return Err(BootstrapError::OperatorRefused(format!(
+                    "this process speaks for node `{}`, and a native session is the operator's",
+                    caller.agent_id.0
+                )));
+            }
+            Err(why) => return Err(BootstrapError::OperatorRefused(why)),
+        };
         let stream = UnixStream::connect(paths.native_bootstrap())
             .map_err(BootstrapError::NativeTransportIo)?;
         Ok(Self {
             stream,
             canonical_project: paths.canonical_project().to_path_buf(),
             client_cwd,
+            operator,
         })
     }
 
@@ -207,8 +229,13 @@ impl NativeBootstrapClient {
         tty: ClientTtyWitness,
         context: DirectNativeRequestContext,
     ) -> Result<NativeBootstrapClientSession, BootstrapError> {
-        let capability =
-            request_direct_cli_capability(&mut self.stream, tty.stdin(), tty.stdout(), &context)?;
+        let capability = request_direct_cli_capability(
+            &mut self.stream,
+            tty.stdin(),
+            tty.stdout(),
+            &context,
+            &self.operator,
+        )?;
         Ok(NativeBootstrapClientSession {
             stream: self.stream,
             capability,
@@ -2046,6 +2073,8 @@ enum WireRequest {
     Issue {
         context: DirectNativeRequestContext,
         claimed_hash: ContextHash,
+        /// From wire version 3; `None` from an older client, which is refused by version.
+        operator: Option<marion_core::secret::Secret>,
     },
     Consume {
         context: DirectNativeRequestContext,
@@ -2057,6 +2086,7 @@ enum WireRequest {
 struct AuthenticatedIssue {
     context: DirectNativeRequestContext,
     hash: ContextHash,
+    operator: Option<marion_core::secret::Secret>,
 }
 
 struct AuthenticatedConsume {
@@ -2070,12 +2100,17 @@ impl WireRequest {
         let Self::Issue {
             context,
             claimed_hash,
+            operator,
         } = self
         else {
             return Err(BootstrapError::NativeWireProtocol);
         };
         let hash = authenticate_context(&context, claimed_hash)?;
-        Ok(AuthenticatedIssue { context, hash })
+        Ok(AuthenticatedIssue {
+            context,
+            hash,
+            operator,
+        })
     }
 
     fn authenticate_consume(self) -> Result<AuthenticatedConsume, BootstrapError> {
@@ -2103,6 +2138,7 @@ impl WireRequest {
             WireRequest::Issue {
                 context,
                 claimed_hash,
+                ..
             } => (context, claimed_hash, None),
             WireRequest::Consume {
                 context,
@@ -2147,6 +2183,7 @@ pub(crate) fn request_direct_cli_capability(
     stdin: BorrowedFd<'_>,
     stdout: BorrowedFd<'_>,
     context: &DirectNativeRequestContext,
+    operator: &marion_core::secret::Secret,
 ) -> Result<DirectCliCapability, BootstrapError> {
     send_terminal_descriptors(stream, stdin, stdout)?;
     write_wire_request(
@@ -2154,6 +2191,7 @@ pub(crate) fn request_direct_cli_capability(
         &WireRequest::Issue {
             context: context.clone(),
             claimed_hash: context_hash(context),
+            operator: Some(operator.clone()),
         },
     )?;
     let mut status = [0u8; 1];
@@ -2290,16 +2328,38 @@ fn read_native_claim_request(stream: &mut impl Read) -> Result<NativeClaimReques
     })
 }
 
+/// The operator key a test handler accepts ([`prove_test_operator`]).
+#[cfg(test)]
+pub(crate) fn test_operator() -> marion_core::secret::Secret {
+    marion_core::secret::Secret::new("native-test-operator-key")
+}
+
+/// A test handler's [`NativeBootstrapHandler::prove_operator`]: [`test_operator`] and nothing else.
+#[cfg(test)]
+pub(crate) fn prove_test_operator(key: &marion_core::secret::Secret) -> Result<(), BootstrapError> {
+    if *key == test_operator() {
+        Ok(())
+    } else {
+        Err(BootstrapError::OperatorRefused(
+            "not the test operator key".into(),
+        ))
+    }
+}
+
 /// The exact bytes a native client puts on the wire for an `Issue`, for tests that must prove an
 /// ordinary transport refuses this frame before any capability lookup.
 #[cfg(test)]
-pub(crate) fn issue_request_bytes_for_tests(context: &DirectNativeRequestContext) -> Vec<u8> {
+pub(crate) fn issue_request_bytes_for_tests(
+    context: &DirectNativeRequestContext,
+    operator: &marion_core::secret::Secret,
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     write_wire_request(
         &mut bytes,
         &WireRequest::Issue {
             context: context.clone(),
             claimed_hash: context_hash(context),
+            operator: Some(operator.clone()),
         },
     )
     .expect("an in-memory wire frame encodes");
@@ -2310,16 +2370,17 @@ fn write_wire_request(
     stream: &mut impl Write,
     request: &WireRequest,
 ) -> Result<(), BootstrapError> {
-    let (kind, context, claimed_hash, token) = match request {
+    let (kind, context, claimed_hash, token, operator) = match request {
         WireRequest::Issue {
             context,
             claimed_hash,
-        } => (WIRE_ISSUE, context, claimed_hash, None),
+            operator,
+        } => (WIRE_ISSUE, context, claimed_hash, None, operator.as_ref()),
         WireRequest::Consume {
             context,
             claimed_hash,
             token,
-        } => (WIRE_CONSUME, context, claimed_hash, Some(token)),
+        } => (WIRE_CONSUME, context, claimed_hash, Some(token), None),
     };
     checked_context_wire_size(context)?;
     stream
@@ -2332,6 +2393,16 @@ fn write_wire_request(
     if let Some(token) = token {
         stream
             .write_all(token)
+            .map_err(BootstrapError::NativeTransportIo)?;
+    }
+    if let Some(operator) = operator {
+        let key = operator.expose().as_bytes();
+        if key.len() > MAX_OPERATOR_KEY_BYTES {
+            return Err(BootstrapError::NativeWireProtocol);
+        }
+        stream
+            .write_all(&(key.len() as u32).to_be_bytes())
+            .and_then(|()| stream.write_all(key))
             .map_err(BootstrapError::NativeTransportIo)?;
     }
     stream.flush().map_err(BootstrapError::NativeTransportIo)
@@ -2397,10 +2468,20 @@ fn read_wire_request<R: Read>(mut stream: R) -> Result<WireRequest, BootstrapErr
         .read_exact(&mut hash)
         .map_err(BootstrapError::NativeTransportIo)?;
     match kind[0] {
-        WIRE_ISSUE => Ok(WireRequest::Issue {
-            context,
-            claimed_hash: ContextHash(hash),
-        }),
+        WIRE_ISSUE => {
+            // Read only where the client's version says it is there: an older client is then
+            // refused by its version, not by a read that waits for bytes it never sends.
+            let operator = if context.native_wire_version >= 3 {
+                Some(read_operator_key(&mut stream)?)
+            } else {
+                None
+            };
+            Ok(WireRequest::Issue {
+                context,
+                claimed_hash: ContextHash(hash),
+                operator,
+            })
+        }
         WIRE_CONSUME => {
             let mut token = [0u8; 32];
             stream
@@ -2414,6 +2495,26 @@ fn read_wire_request<R: Read>(mut stream: R) -> Result<WireRequest, BootstrapErr
         }
         _ => Err(BootstrapError::NativeWireProtocol),
     }
+}
+
+fn read_operator_key<R: Read>(
+    stream: &mut R,
+) -> Result<marion_core::secret::Secret, BootstrapError> {
+    let mut length = [0u8; 4];
+    stream
+        .read_exact(&mut length)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length > MAX_OPERATOR_KEY_BYTES {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    let mut key = vec![0; length];
+    stream
+        .read_exact(&mut key)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    String::from_utf8(key)
+        .map(marion_core::secret::Secret::new)
+        .map_err(|_| BootstrapError::NativeWireProtocol)
 }
 
 fn read_context<R: Read>(stream: &mut R) -> Result<DirectNativeRequestContext, BootstrapError> {
@@ -2662,6 +2763,15 @@ impl TerminalGeometryObservation {
 }
 
 pub(crate) trait NativeBootstrapHandler: Send + Sync + 'static {
+    /// **Whether `peer`, presenting `key`, speaks for the operator** — the one gate in front of
+    /// every capability. `Ok` only for this state root's operator key, from a process that is
+    /// not inside a live node's process tree. No default: every handler states its answer.
+    fn prove_operator(
+        &self,
+        peer: PeerIdentity,
+        key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError>;
+
     fn verify_terminal(
         &self,
         peer: PeerIdentity,
@@ -2699,6 +2809,14 @@ pub(crate) trait PreparedNativeRelay: Send {
 struct DisabledNativeBootstrapHandler;
 
 impl NativeBootstrapHandler for DisabledNativeBootstrapHandler {
+    fn prove_operator(
+        &self,
+        _peer: PeerIdentity,
+        _key: &marion_core::secret::Secret,
+    ) -> Result<(), BootstrapError> {
+        Err(BootstrapError::AuthorizationRefused)
+    }
+
     fn verify_terminal(
         &self,
         _peer: PeerIdentity,
@@ -3161,6 +3279,13 @@ impl NativeBootstrapService {
         let mut transport = DeadlineIo::new(&connection.stream, deadline);
         let issue = read_wire_request(&mut transport)?.authenticate_issue()?;
         self.validate_context(&issue.context)?;
+        // Before the terminal is looked at or a capability exists: a version-3 `Issue` always
+        // carries a key, and `validate_context` has refused every other version.
+        let operator = issue
+            .operator
+            .as_ref()
+            .ok_or(BootstrapError::NativeWireProtocol)?;
+        self.handler.prove_operator(connection.peer, operator)?;
         deadline.require_remaining()?;
         let terminal = if self.verify_received_terminal {
             let witness = verify_bootstrap_tty(connection.peer, [stdin, stdout])
@@ -3490,6 +3615,8 @@ pub enum BootstrapError {
     LaunchResultExpired,
     #[error("native bootstrap authorization was refused")]
     AuthorizationRefused,
+    #[error("a native session is the operator's: {0}")]
+    OperatorRefused(String),
     #[error("native command could not be prepared: {0}")]
     NativeCommand(String),
     #[error("native bootstrap terminal verification failed: {0}")]
