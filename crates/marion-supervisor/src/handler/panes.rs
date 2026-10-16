@@ -597,7 +597,7 @@ impl RegistryHandle {
             )));
         };
         let events_path = project.agent(id).events();
-        let (reader, replayed) = crate::events::EventReader::open_path(&events_path)
+        let opening = crate::events::EventReader::opening(&events_path)
             .map_err(|e| attach_io_failure(id, &events_path, &e))?;
 
         // **"Nobody recorded this" is not "it said nothing", and a terminal node is where the two
@@ -607,7 +607,7 @@ impl RegistryHandle {
         // appears on its first frame and the reader is already watching for it. For one that has
         // exited, no frame is coming, and `ReplayOnly(records: 0)` would be marion asserting it
         // observed silence it never observed.
-        if !reader.ever_written() && state.is_exited() {
+        if !opening.ever_written() && state.is_exited() {
             return Err(RpcError::of(
                 FailureKind::NotFound,
                 Some(&id.0),
@@ -624,8 +624,6 @@ impl RegistryHandle {
             ));
         }
 
-        let point = reader.read_point();
-        let mode = attach_mode(state, reap_state, point);
         // A versioned pane reservation is the first side effect. If its bounded cursor, entropy,
         // or retained generation is unavailable, no NodeEvent, cursor, or lease has moved. It
         // must never silently downgrade to an attach without the pane.
@@ -635,9 +633,21 @@ impl RegistryHandle {
             (None, None)
         };
         // Sent before the reader is parked, so nothing appended between the two can be delivered
-        // ahead of the replay it comes after. Paced, on this connection's own thread and under no
-        // lock: a history longer than the outbound queue is the common case for a long run.
-        let live = deliver_events(out, id, &replayed, Outbound::notify_paced);
+        // ahead of the replay it comes after. Read and sent a chunk at a time, paced, on this
+        // connection's own thread and under no lock: a long run's history is up to two 64 MiB
+        // files and more events than the outbound queue holds.
+        let replayed =
+            opening.replay(|chunk| deliver_events(out, id, &chunk, Outbound::notify_paced));
+        let (reader, live) = match replayed {
+            Ok(read) => read,
+            Err(e) => {
+                if let Some(host) = reserved_host {
+                    self.rollback_pane_attach(id, out.conn(), &host);
+                }
+                return Err(attach_io_failure(id, &events_path, &e));
+            }
+        };
+        let mode = attach_mode(state, reap_state, reader.read_point());
         if !live {
             if let Some(host) = reserved_host {
                 self.rollback_pane_attach(id, out.conn(), &host);

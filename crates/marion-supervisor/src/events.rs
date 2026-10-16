@@ -746,6 +746,109 @@ pub struct EventReader {
     seen_file: bool,
 }
 
+/// A node's stream opened by [`EventReader::opening`] and not yet read.
+pub struct Opening {
+    path: PathBuf,
+    current: Option<File>,
+    older: Option<File>,
+    ino: Option<u64>,
+    seen_file: bool,
+}
+
+/// How much of a stream [`Opening::replay`] reads and folds at a time.
+const REPLAY_CHUNK_BYTES: usize = 1024 * 1024;
+
+impl Opening {
+    /// [`EventReader::ever_written`], known before anything is read.
+    pub fn ever_written(&self) -> bool {
+        self.seen_file
+    }
+
+    /// **Read the history and hand it to `sink` a chunk at a time**, oldest first — the rotated
+    /// half, then the current file as long as it was when this began — and answer the reader
+    /// parked at the end of what was read, and whether `sink` took every chunk (`false` stops the
+    /// reading there; the reader is then of no use and is dropped).
+    ///
+    /// Memory is one chunk's bytes and events, not the history's: a stream holds up to two
+    /// 64 MiB files, and an attach used to hold both and every event decoded from them at once.
+    /// Folding chunk by chunk reads the same events as one fold of the whole, because
+    /// [`EventLog::extend`] consumes only whole lines and the rest is offered again.
+    pub fn replay(
+        self,
+        mut sink: impl FnMut(Vec<Event>) -> bool,
+    ) -> Result<(EventReader, bool), EventError> {
+        use std::io::Read;
+        let mut log = EventLog::default();
+        let mut taken = true;
+        if let Some(older) = self.older {
+            let len = older.metadata()?.len();
+            taken = fold_chunks(older.take(len), &mut log, &mut sink, &mut Vec::new())?.1;
+        }
+        let mut head = Vec::new();
+        let mut consumed = 0;
+        if taken && let Some(current) = self.current {
+            let len = current.metadata()?.len();
+            (consumed, taken) = fold_chunks(current.take(len), &mut log, &mut sink, &mut head)?;
+        }
+        let status = status_for(&log, &self.path, consumed);
+        let reader = EventReader {
+            path: self.path,
+            offset: consumed,
+            ino: self.ino,
+            head,
+            log,
+            status,
+            polls: 0,
+            seen_file: self.seen_file,
+        };
+        Ok((reader, taken))
+    }
+}
+
+/// Fold `file` into `log` [`REPLAY_CHUNK_BYTES`] at a time, handing each chunk's events to `sink`,
+/// and answer the bytes consumed and whether `sink` took every chunk. Stops at a line the log
+/// will not read past, as one fold of the whole file would. `head` gets the file's first
+/// [`HEAD_BYTES`].
+fn fold_chunks(
+    mut file: impl std::io::Read,
+    log: &mut EventLog,
+    sink: &mut impl FnMut(Vec<Event>) -> bool,
+    head: &mut Vec<u8>,
+) -> Result<(u64, bool), EventError> {
+    let mut buf = Vec::new();
+    let mut events = Vec::new();
+    let mut consumed = 0u64;
+    let mut lines_before = 0usize;
+    loop {
+        let had = buf.len();
+        buf.resize(had + REPLAY_CHUNK_BYTES, 0);
+        let n = file.read(&mut buf[had..])?;
+        buf.truncate(had + n);
+        if head.len() < HEAD_BYTES {
+            let more = (HEAD_BYTES - head.len()).min(buf.len());
+            head.extend_from_slice(&buf[..more]);
+        }
+        let used = log.extend(&buf, &mut events);
+        if !events.is_empty() && !sink(std::mem::take(&mut events)) {
+            return Ok((consumed + used as u64, false));
+        }
+        if let Some(Truncation::Unparsable { line, byte_offset }) = log.truncation {
+            // Numbered in the file rather than in this chunk, as one fold would number it.
+            log.truncation = Some(Truncation::Unparsable {
+                byte_offset: consumed as usize + byte_offset,
+                line: lines_before + line,
+            });
+            return Ok((consumed + used as u64, true));
+        }
+        lines_before += buf[..used].iter().filter(|b| **b == b'\n').count();
+        consumed += used as u64;
+        buf.drain(..used);
+        if n == 0 {
+            return Ok((consumed, true));
+        }
+    }
+}
+
 impl EventReader {
     /// Attach to a node's stream inside its agent dir.
     pub fn open(agent: &AgentDir) -> Result<(Self, Vec<Event>), EventError> {
@@ -760,8 +863,22 @@ impl EventReader {
     /// [`Self::ever_written`]. An unreadable one is [`crate::registry::Status::Unreadable`] rather
     /// than a failure, because a client attaching to a tree must not be refused the whole tree by
     /// one node's permissions fault.
+    ///
+    /// The whole history in memory at once: for a caller that wants it as a value. One that sends
+    /// it on uses [`Self::opening`] and [`Opening::replay`], which hold one chunk at a time.
     pub fn open_path(path: &Path) -> Result<(Self, Vec<Event>), EventError> {
-        use std::io::Read;
+        let mut events = Vec::new();
+        let (reader, _) = Self::opening(path)?.replay(|chunk| {
+            events.extend(chunk);
+            true
+        })?;
+        Ok((reader, events))
+    }
+
+    /// **The files of a node's stream, open and not yet read**: what [`Self::open_path`] does
+    /// before it reads a byte, so a caller can decide on [`Opening::ever_written`] before any
+    /// event moves.
+    pub fn opening(path: &Path) -> Result<Opening, EventError> {
         use std::os::unix::fs::MetadataExt;
         // The current file is opened first and the rotated half read only if it is another file:
         // a rotation between the two opens would otherwise replay one file twice.
@@ -775,40 +892,18 @@ impl EventReader {
             None => None,
         };
         let older = match File::open(rotated_path(path)) {
-            Ok(mut f) if Some(f.metadata()?.ino()) != ino => {
-                let mut bytes = Vec::new();
-                f.read_to_end(&mut bytes)?;
-                Some(bytes)
-            }
+            Ok(f) if Some(f.metadata()?.ino()) != ino => Some(f),
             Ok(_) => None,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
-        let seen_file = current.is_some() || older.is_some();
-        let mut bytes = Vec::new();
-        if let Some(mut f) = current {
-            f.read_to_end(&mut bytes)?;
-        }
-        let mut log = EventLog::default();
-        let mut events = Vec::new();
-        if let Some(older) = older {
-            log.extend(&older, &mut events);
-        }
-        let consumed = log.extend(&bytes, &mut events);
-        let status = status_for(&log, path, consumed as u64);
-        Ok((
-            Self {
-                path: path.to_path_buf(),
-                offset: consumed as u64,
-                ino,
-                head: bytes[..bytes.len().min(HEAD_BYTES)].to_vec(),
-                log,
-                status,
-                polls: 0,
-                seen_file,
-            },
-            events,
-        ))
+        Ok(Opening {
+            path: path.to_path_buf(),
+            seen_file: current.is_some() || older.is_some(),
+            current,
+            older,
+            ino,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -1305,6 +1400,78 @@ mod tests {
             n,
             "the intact prefix's ordinal, as a whole-file read gives"
         );
+    }
+
+    /// **A history read a chunk at a time is the history read whole**: past several chunks, across
+    /// the rotated half, with a torn tail left for the next poll — and a bad line past the first
+    /// chunk is numbered in the file, as one fold of the whole file numbers it.
+    #[test]
+    fn a_replay_read_in_chunks_reads_what_one_whole_fold_reads() {
+        let dir = scratch("events-chunks");
+        let path = dir.join("events.jsonl");
+        let mut w = EventWriter::open_path(&path, &node())
+            .unwrap()
+            .capped_at(3 * REPLAY_CHUNK_BYTES as u64);
+        let pad = "y".repeat(500);
+        let mut i = 0;
+        while !rotated_path(&path).exists()
+            || std::fs::metadata(&path).unwrap().len() < 2 * REPLAY_CHUNK_BYTES as u64 + 7
+        {
+            w.append(frame(&format!("{pad}-{i}"))).unwrap();
+            i += 1;
+        }
+        drop(w);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"torn")
+            .unwrap();
+        let mut whole = std::fs::read(rotated_path(&path)).unwrap();
+        whole.extend(std::fs::read(&path).unwrap());
+        let (log, want) = marion_core::event::read(&whole);
+        let mut chunks = 0;
+        let (reader, taken) = EventReader::opening(&path)
+            .unwrap()
+            .replay(|c| {
+                chunks += 1;
+                assert!(!c.is_empty());
+                true
+            })
+            .unwrap();
+        assert!(taken && chunks > 2, "{chunks} chunks");
+        let (reader2, got) = EventReader::open_path(&path).unwrap();
+        assert_eq!(seqs(&got), seqs(&want));
+        assert_eq!(got.len() as u64, log.records);
+        assert_eq!(reader.read_point(), reader2.read_point());
+        let current = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(
+            reader.offset,
+            current - b"{\"torn".len() as u64,
+            "the torn tail is unread"
+        );
+
+        let bad = dir.join("bad.jsonl");
+        let mut b = EventWriter::open_path(&bad, &node()).unwrap();
+        let mut lines = 0;
+        while std::fs::metadata(&bad).unwrap().len() < REPLAY_CHUNK_BYTES as u64 + 10 {
+            b.append(frame(&pad)).unwrap();
+            lines += 1;
+        }
+        drop(b);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&bad)
+            .unwrap()
+            .write_all(b"not an event\n")
+            .unwrap();
+        let (r, _) = EventReader::open_path(&bad).unwrap();
+        let whole = marion_core::event::read(&std::fs::read(&bad).unwrap()).0;
+        assert_eq!(r.log().truncation, whole.truncation);
+        assert!(matches!(
+            r.log().truncation,
+            Some(Truncation::Unparsable { line, .. }) if line == lines
+        ));
     }
 
     /// **NC — the one-writer invariant is checked, not assumed.**
