@@ -558,6 +558,16 @@ pub enum TurnDelivery {
 }
 
 impl HarnessSpec {
+    /// **The row's own refusal of `auth`** where it has no recipe for that mode
+    /// ([`Need::NoRecipe`]) — agy's canned route, say — and `None` where it can launch under it.
+    /// Asked of the row, so a test or a caller that must step over a mode never names a harness.
+    pub fn no_recipe(&self, auth: Auth) -> Option<&'static str> {
+        self.requires
+            .iter()
+            .find(|r| r.modes.covers(auth) && r.need == Need::NoRecipe)
+            .map(|r| r.why)
+    }
+
     /// `stderr` without the lines [`Self::stderr_boilerplate`] names, trimmed. A line is dropped
     /// only when it is one of them whole, so an error that merely quotes one is kept.
     pub fn quiet_stderr(&self, stderr: &str) -> String {

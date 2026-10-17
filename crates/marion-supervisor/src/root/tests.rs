@@ -1263,12 +1263,12 @@ fn every_builtin_agent_type_prepares_as_a_root_with_its_config_actually_on_disk(
         // compiled, never launched. Asked of the row and the binding, not of a name list.
         let mut spec = root_spec(&dir, name);
         let agent_type = builtin(name).unwrap();
-        if agent_type.harness == Harness::Antigravity {
+        if let Some(why) =
+            marion_harness::adapter::harness_spec(agent_type.harness).no_recipe(Auth::Canned)
+        {
             let canned = prepare(&spec).err().map(|e| e.to_string());
             assert!(
-                canned
-                    .as_deref()
-                    .is_some_and(|e| e.contains("no canned or endpoint provider route")),
+                canned.as_deref().is_some_and(|e| e.contains(why)),
                 "{name}: {canned:?}"
             );
             spec.auth = Auth::Inherited;

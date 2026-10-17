@@ -9070,9 +9070,9 @@ mod tests {
         let a = launch_adapter(h).unwrap();
         let mut launches: Vec<Launch> = Vec::new();
         for auth in [Auth::Canned, Auth::Inherited] {
-            // agy has no canned route, and refuses one by name
-            // (`agy_refuses_a_canned_launch_by_name`): there is no canned launch to render.
-            if h == Harness::Antigravity && auth == Auth::Canned {
+            // A row with no recipe for the mode (agy's canned route) refuses it by name
+            // (`every_requirement_a_row_states_is_refused_by_name_when_unmet`): nothing to render.
+            if harness_spec(h).no_recipe(auth).is_some() {
                 continue;
             }
             let launch = LaunchSpec {
@@ -10142,8 +10142,8 @@ mod tests {
                 .iter()
                 .any(|(verb, _)| *verb == agent_type::TOOL_WRITE);
             for auth in [Auth::Canned, Auth::Inherited] {
-                // agy has no canned route (`agy_refuses_a_canned_launch_by_name`).
-                if h == Harness::Antigravity && auth == Auth::Canned {
+                // A row with no recipe for the mode refuses it by name, as above.
+                if harness_spec(h).no_recipe(auth).is_some() {
                     continue;
                 }
                 let base = LaunchSpec {

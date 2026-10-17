@@ -513,10 +513,6 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
         // `write_file` refuses a relative `file_path` (`File path must be absolute`, s25 item 17),
         // and the worktree's absolute path does not exist until `spawn` creates it, so no canned
         // script can name it. qwen is driven as a **root** here and as a child in `harness_matrix`.
-        Harness::Antigravity => unreachable!(
-            "no cell names an agy child: agy has no canned route, and runs only on the \
-             operator's own login (the gated live test in harness_matrix drives it)"
-        ),
         Harness::Qwen => unreachable!(
             "no cell names a qwen child: its write_file refuses the relative path every child \
              cell writes (s25 item 17)"
@@ -533,7 +529,8 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
                 args: json!({ "path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
             });
         }
-        Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
+        // agy and ACP have no canned route, and a row added since has no cell yet.
+        h => unreachable!("no cell of this matrix names a `{h}` child"),
     }
     s
 }

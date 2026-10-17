@@ -166,19 +166,12 @@ fn reached_the_bridge(node: &Node) -> String {
         // Unreachable by construction — the table has three entries and claude-code is not one of
         // them — and a `panic!` rather than a fabricated frame, because a duplex harness arriving
         // here would mean this file had grown a root path it does not test.
-        Harness::Copilot
-        | Harness::Goose
-        | Harness::Cline
-        | Harness::Qwen
-        | Harness::Antigravity
-        | Harness::Pi => {
-            unreachable!("a LaunchOnly root this file does not drive yet")
-        }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => panic!(
             "claude-code is the duplex root path and has no LaunchOnly stream to fake (§3.4)"
         ),
+        _ => unreachable!("a LaunchOnly root this file does not drive yet"),
     }
 }
 
@@ -306,17 +299,10 @@ fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String]
                 "{h}: the prompt is the trailing positional argument (§6.1 step 8): {args:?}"
             );
         }
-        Harness::Copilot
-        | Harness::Goose
-        | Harness::Cline
-        | Harness::Qwen
-        | Harness::Antigravity
-        | Harness::Pi => {
-            unreachable!("a LaunchOnly root this file does not drive yet")
-        }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => unreachable!("not a LaunchOnly root — see the module docs"),
+        _ => unreachable!("a LaunchOnly root this file does not drive yet"),
     }
     // The **compiled** model, not the requested one.
     assert_eq!(
@@ -337,17 +323,10 @@ fn assert_the_bridge_declaration_was_written(node: &Node, dir: &Path) {
     let (var, beneath): (&str, &[&str]) = match h {
         marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         Harness::OpenCode => ("XDG_CONFIG_HOME", &["opencode", "opencode.json"]),
-        Harness::Copilot
-        | Harness::Goose
-        | Harness::Cline
-        | Harness::Qwen
-        | Harness::Antigravity
-        | Harness::Pi => {
-            unreachable!("a LaunchOnly root this file does not drive yet")
-        }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => unreachable!("not a LaunchOnly root — see the module docs"),
+        _ => unreachable!("a LaunchOnly root this file does not drive yet"),
     };
     let value = recorded_env(dir, var).unwrap_or_else(|| {
         panic!(
@@ -676,19 +655,12 @@ fn refused_at_the_bridge(node: &Node) -> String {
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","error":"The user rejected permission to use this specific tool call."}}}}}}"#,
             adapter.marion_tool_name("spawn")
         ),
-        Harness::Copilot
-        | Harness::Goose
-        | Harness::Cline
-        | Harness::Qwen
-        | Harness::Antigravity
-        | Harness::Pi => {
-            unreachable!("a LaunchOnly root this file does not drive yet")
-        }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => panic!(
             "claude-code is the duplex root path and has no LaunchOnly stream to fake (§3.4)"
         ),
+        _ => unreachable!("a LaunchOnly root this file does not drive yet"),
     }
 }
 
