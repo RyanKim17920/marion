@@ -2678,7 +2678,17 @@ fn a_continuation_and_a_resume_launch_ask_the_roots_trust_again() {
             text: "go on".into(),
             queued_at: std::time::SystemTime::UNIX_EPOCH,
         };
-        let next = continuation_spec(&first, &relaunch, "s1".into(), &message);
+        let (next, held) = continuation_spec(&first, &relaunch, "s1".into(), &message);
+        assert_eq!(held, first.trust.now().held, "{name}: the generation's own");
+        let planted = marion_core::journal::ConfigHeld {
+            paths: vec![".codex/config.toml".into()],
+            unverified: false,
+        };
+        assert_eq!(
+            spawned_record(&first, &planted, "1.0", None).repo_config_held,
+            planted,
+            "{name}: and its Spawned names it"
+        );
         assert!(
             !next.extra.repo_config_own && !next.extra.repo_trusted,
             "{name}: a continuation after the plant"

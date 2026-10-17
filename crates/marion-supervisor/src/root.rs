@@ -481,6 +481,11 @@ pub struct RootNode {
     pub rotation: Option<RootRelaunch>,
     /// What every later launch of this root asks its repository-config trust of ([`RootTrust`]).
     pub trust: RootTrust,
+    /// **What this launch held back of the repository's config** that a trusted repository would
+    /// load ([`crate::run::RepoTrust::held`]): its `Spawned`'s. Empty on a first launch, which
+    /// is what the trust record was taken from; asked again on a resume and a rotation, and per
+    /// generation by a continuation ([`launch_only`]).
+    pub repo_config_held: marion_core::journal::ConfigHeld,
 }
 
 /// **A root's repository-config trust, for its later launches**: its checkout, and what the
@@ -505,11 +510,11 @@ impl RootTrust {
         )
     }
 
-    /// `launch`, with its trust asked again of the checkout as it is now.
-    fn applied(&self, mut launch: LaunchSpec) -> LaunchSpec {
+    /// `launch`, with its trust asked again of the checkout as it is now, and what that holds back.
+    fn applied(&self, mut launch: LaunchSpec) -> (LaunchSpec, marion_core::journal::ConfigHeld) {
         let now = self.now();
         (launch.extra.repo_config_own, launch.extra.repo_trusted) = (now.own, now.trusted);
-        launch
+        (launch, now.held)
     }
 }
 
@@ -951,8 +956,9 @@ pub fn prepare_watched(
         project_root: project_root.clone(),
         record: trust_record.clone(),
     };
+    let mut repo_config_held = marion_core::journal::ConfigHeld::default();
     if spec.resume.is_some() {
-        launch = trust.applied(launch);
+        (launch, repo_config_held) = trust.applied(launch);
     }
     let gateway = match &endpoint {
         Some(ep) => crate::endpoint::open(ep)?.map(std::sync::Arc::new),
@@ -1112,6 +1118,7 @@ pub fn prepare_watched(
         relaunch,
         rotation,
         trust,
+        repo_config_held,
         agent_id,
         project,
         agent_dir,
@@ -1596,9 +1603,11 @@ fn launch_inner(
     let result = loop {
         let node: &RootNode = &current;
         let bound = whole_bound.saturating_sub(launched_at.elapsed());
-        let started = |pid: i32| {
+        // A `LaunchOnly` root's continuation names what its own generation held back.
+        let started_held = |pid: i32, held: &marion_core::journal::ConfigHeld| {
             confirm_root_started(
                 node,
+                held,
                 &harness_version,
                 on_started,
                 &spawned,
@@ -1606,6 +1615,7 @@ fn launch_inner(
                 pid,
             )
         };
+        let started = |pid: i32| started_held(pid, &node.repo_config_held);
         let tmpdir = match node_tmp.as_ref().map(crate::node_tmp::NodeTmp::path) {
             Ok(tmpdir) => tmpdir,
             Err(e) => break Err(RootError::Io(std::io::Error::new(e.kind(), e.to_string()))),
@@ -1652,7 +1662,7 @@ fn launch_inner(
                 tmpdir,
                 bound,
                 events.as_mut(),
-                &started,
+                &started_held,
                 &unaccountable,
                 &session,
             ),
@@ -1833,7 +1843,7 @@ fn continuation_spec(
     relaunch: &RootRelaunch,
     resume: String,
     message: &crate::inbox::Message,
-) -> LaunchSpec {
+) -> (LaunchSpec, marion_core::journal::ConfigHeld) {
     node.trust.applied(LaunchSpec {
         resume: Some(resume),
         prompt: crate::inbox::render(message),
@@ -1849,7 +1859,7 @@ fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode,
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     let gateway = crate::endpoint::open(&next)?.map(std::sync::Arc::new);
     // The process it replaces ran in the checkout: its trust is asked again.
-    let mut launch = node.trust.applied(r.launch.clone());
+    let (mut launch, repo_config_held) = node.trust.applied(r.launch.clone());
     crate::endpoint::apply(&mut launch, &next, gateway.as_deref());
     crate::run::write_config_documents(
         &launch.config_dir,
@@ -1864,6 +1874,7 @@ fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode,
         }),
         endpoint: Some(next),
         gateway,
+        repo_config_held,
         ..node.clone()
     })
 }
@@ -1877,6 +1888,7 @@ fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode,
 /// process to make it about.
 fn confirm_root_started(
     node: &RootNode,
+    held: &marion_core::journal::ConfigHeld,
     harness_version: &str,
     on_started: Option<&dyn Fn(i32)>,
     spawned: &std::cell::Cell<bool>,
@@ -1885,7 +1897,7 @@ fn confirm_root_started(
 ) {
     match crate::journal::confirm_spawned(
         &node.project,
-        spawned_record(node, harness_version, Some(pid)),
+        spawned_record(node, held, harness_version, Some(pid)),
     ) {
         Ok(_) => {
             spawned.set(true);
@@ -2120,7 +2132,12 @@ fn journal_the_roots_outcome(
         if !spawned {
             crate::journal::record(
                 &node.project,
-                RecordKind::Spawned(spawned_record(node, harness_version, None)),
+                RecordKind::Spawned(spawned_record(
+                    node,
+                    &node.repo_config_held,
+                    harness_version,
+                    None,
+                )),
             );
         }
     };
@@ -2415,9 +2432,14 @@ fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBu
 /// a fake harness on `PATH` is invoked once with `--version` before its run, so a stub that
 /// records or parks on every invocation has to answer that argv first (`launch_only_root.rs`'s
 /// `stub_harness` does).
-fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> Spawned {
+fn spawned_record(
+    node: &RootNode,
+    held: &marion_core::journal::ConfigHeld,
+    harness_version: &str,
+    pid: Option<i32>,
+) -> Spawned {
     Spawned {
-        repo_config_held: Default::default(),
+        repo_config_held: held.clone(),
         agent_id: node.agent_id.clone(),
         harness_version: harness_version.to_string(),
         // The **compiled** invocation's model, for §6.7's reason: what went on the wire, not what
@@ -2467,7 +2489,7 @@ fn launch_only(
     tmpdir: &Path,
     bound: StdDuration,
     mut events: Option<&mut crate::events::EventSink>,
-    on_started: &dyn Fn(i32),
+    on_started: &dyn Fn(i32, &marion_core::journal::ConfigHeld),
     unaccountable: &std::cell::Cell<Option<crate::journal::JournalError>>,
     session: &crate::session_watch::SessionWatch<'_>,
 ) -> Result<RootOutcome, RootError> {
@@ -2486,7 +2508,7 @@ fn launch_only(
         tmpdir,
         bound,
         events.as_deref_mut(),
-        on_started,
+        &|pid| on_started(pid, &node.repo_config_held),
         session,
         adapter.as_ref(),
     )?;
@@ -2524,7 +2546,7 @@ fn launch_only(
         };
         generation += 1;
         let via = format!("continuation:gen{generation}");
-        let launch = continuation_spec(node, relaunch, resume, &message);
+        let (launch, held) = continuation_spec(node, relaunch, resume, &message);
         let inv = adapter
             .launch_documents(&launch, &relaunch.ctx)
             .map_err(RootError::from)
@@ -2547,7 +2569,7 @@ fn launch_only(
         // generation's own `Spawned`, through the first generation's confirmation.
         let carried = std::cell::Cell::new(false);
         let started = |pid: i32| {
-            on_started(pid);
+            on_started(pid, &held);
             let failed = unaccountable.take();
             if failed.is_none() {
                 turns.delivered(&message.id, &via);
