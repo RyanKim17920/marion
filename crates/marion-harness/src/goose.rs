@@ -207,9 +207,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // nothing else), the binary contains no check-for-update, "new version" or "update
     // available" text, and its `GOOSE_*` variable list has no update entry. There is nothing to
     // switch off, and the row says so rather than inventing a variable.
+    // 1.55.0 adds `goose plugin install --auto-update`: at most once per interval, a git-sourced
+    // plugin so marked is refreshed when goose collects plugin skills (`crates/goose/src/plugins/
+    // mod.rs`, `auto_update_plugins_at_root`). That changes plugin files, never the binary.
     updates: UpdatePolicy::Never {
         note: "1.49.0 never updates itself on `run`/`session`: no update check in the binary's \
-               strings, no `GOOSE_*` update variable; `goose update` is explicit only",
+               strings, no `GOOSE_*` update variable; `goose update` is explicit only. 1.55.0 \
+               adds a git refresh of plugins installed with --auto-update; the binary still never \
+               updates itself",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     boot: Boot::Measured {

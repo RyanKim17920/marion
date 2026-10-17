@@ -70,7 +70,9 @@ live = { inherited-env = """s26 on 1.49.0: the `--with-extension` child inherits
 
 [updates]
 never = """1.49.0 never updates itself on `run`/`session`: no update check in the binary's \
-               strings, no `GOOSE_*` update variable; `goose update` is explicit only"""
+               strings, no `GOOSE_*` update variable; `goose update` is explicit only. 1.55.0 \
+               adds a git refresh of plugins installed with --auto-update; the binary still never \
+               updates itself"""
 
 [boot.measured]
 cpu-ms = 200
