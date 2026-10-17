@@ -207,11 +207,6 @@ pub struct NodeHandle {
     /// what a child carrying this node's work is committed onto
     /// ([`crate::run::SpawnObserver::recorded_branch`]). In memory, beside [`Self::repo`].
     branch: Option<String>,
-    /// **The branch the root of this node's tree was on when that root launched**: read from a
-    /// root's checkout at its claim, before its process exists, and inherited by every node below
-    /// it ([`crate::run::SpawnObserver::trust_branch`]). Never re-read from a tree later, since a
-    /// root can write its checkout's HEAD.
-    trust_branch: Option<String>,
     /// **What this node's repository-config trust is held to**, as it recorded before its process
     /// existed ([`crate::run::SpawnObserver::trust_recorded`]): what a node it spawns inherits.
     /// `None` between its claim and that record.

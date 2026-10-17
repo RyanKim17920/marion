@@ -2202,7 +2202,7 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     let mut first = launch_spec(None);
     first.cwd = wt.clone();
     let record = TrustRecord::default();
-    let trust = repo_trust(&env, &wt, Some(&base), None, &record);
+    let trust = repo_trust(&env, &wt, Some(&base), &record);
     (first.extra.repo_config_own, first.extra.repo_trusted) = (trust.own, trust.trusted);
     assert!(
         first.extra.repo_config_own,
@@ -2217,7 +2217,7 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     let (next, _) = continuation_launch(
         &env,
         &wt,
-        (Some(&base), None, &record),
+        (Some(&base), &record),
         &first,
         "s1".into(),
         "go on".into(),
@@ -2256,9 +2256,10 @@ fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
     std::fs::write(repo.join(".claude/settings.json"), "{}\n").unwrap();
     let paths = crate::trust::repo_config_paths();
     let record = TrustRecord {
+        branch: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
     };
-    let gen0 = repo_trust(&env, &repo, None, None, &record);
+    let gen0 = repo_trust(&env, &repo, None, &record);
     assert!(
         gen0.own,
         "the operator's checkout as they launched it is theirs, uncommitted config included"
@@ -2276,7 +2277,7 @@ fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
     let (next, _) = continuation_launch(
         &env,
         &repo,
-        (None, None, &record),
+        (None, &record),
         &first,
         "s1".into(),
         "go on".into(),
@@ -2288,17 +2289,17 @@ fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
 
     std::fs::remove_dir_all(repo.join(".codex")).unwrap();
     assert!(
-        repo_trust(&env, &repo, None, None, &record).own,
+        repo_trust(&env, &repo, None, &record).own,
         "put back exactly as it was, it is the operator's again"
     );
     std::fs::write(repo.join(".claude/settings.json"), "{\"hooks\":{}}\n").unwrap();
     assert!(
-        !repo_trust(&env, &repo, None, None, &record).own,
+        !repo_trust(&env, &repo, None, &record).own,
         "an edit to a config the operator had is held too"
     );
     std::fs::write(repo.join(".claude/settings.json"), "{}\n").unwrap();
     assert!(
-        !repo_trust(&env, &repo, None, None, &TrustRecord::default()).own,
+        !repo_trust(&env, &repo, None, &TrustRecord::default()).own,
         "a resume whose intent recorded nothing has nothing to hold the checkout to"
     );
 }
@@ -2315,12 +2316,12 @@ fn a_linked_config_in_the_operator_tree_is_not_the_operators_after_generation_0(
     std::os::unix::fs::symlink(&elsewhere, repo.join(".claude")).unwrap();
     let paths = crate::trust::repo_config_paths();
     let record = TrustRecord {
+        branch: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
     };
     let trust = repo_trust_of(
         crate::spawn::Tree::Operator(&repo),
         &crate::socket::project_root(&repo),
-        None,
         None,
         &record,
     );

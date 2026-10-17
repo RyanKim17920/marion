@@ -2543,6 +2543,7 @@ fn a_root_that_plants_repo_config_in_generation_0_is_untrusted_in_generation_1()
     let dir = marion_testsupport::scratch("root-trust-plant");
     let checkout = dir.to_path_buf();
     let record = TrustRecord {
+        branch: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(
             &checkout,
             &crate::trust::repo_config_paths(),
@@ -2562,4 +2563,64 @@ fn a_root_that_plants_repo_config_in_generation_0_is_untrusted_in_generation_1()
     .unwrap();
     let now = trust.now();
     assert!(!now.own && !now.trusted, "{now:?}");
+}
+
+/// **A resumed root keeps the trust record its first launch took**: the branch and the config
+/// fingerprint are read off its intent, not re-read from a checkout the root has since moved and
+/// written, and the resume's own intent records them again unchanged.
+#[test]
+fn a_resumed_root_keeps_its_first_launchs_trust_record() {
+    let (dir, repo) = temp_repo("trust-resume");
+    let first = prepare(&RootSpec {
+        repo: repo.clone(),
+        state: dir.join("state"),
+        ..root_spec(&dir, "claude-orchestrator")
+    })
+    .expect("the root compiles");
+    let intent = |agent: &AgentId| {
+        let tree = marion_core::registry::replay(&std::fs::read(first.project.journal()).unwrap());
+        tree.get(agent).unwrap().intent.clone().unwrap()
+    };
+    let recorded = intent(&first.agent_id).trust;
+    assert_eq!(recorded.branch.as_deref(), Some("main"), "{recorded:?}");
+    assert!(recorded.repo_config.is_some());
+
+    let git = |args: &[&str]| {
+        let out = marion_harness::env_filter::git_command()
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["checkout", "-qb", "elsewhere"]);
+    std::fs::create_dir_all(repo.join(".codex")).unwrap();
+    std::fs::write(
+        repo.join(".codex/config.toml"),
+        "[mcp_servers.x]\ncommand = \"x\"\n",
+    )
+    .unwrap();
+
+    let resumed = prepare(&RootSpec {
+        repo: repo.clone(),
+        state: dir.join("state"),
+        resume: Some(RootResume {
+            agent_id: first.agent_id.clone(),
+            session: "s1".into(),
+            usage: None,
+            trust: recorded.clone(),
+        }),
+        ..root_spec(&dir, "claude-orchestrator")
+    })
+    .expect("the resume compiles");
+    assert_eq!(resumed.trust.record, recorded, "carried, not re-taken");
+    assert_eq!(
+        intent(&first.agent_id).trust,
+        recorded,
+        "and journaled again"
+    );
+    assert!(
+        !resumed.trust.now().own,
+        "the config the root planted is not the operator's on its resume"
+    );
 }

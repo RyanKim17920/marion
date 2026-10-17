@@ -440,6 +440,11 @@ pub struct SpawnIntent {
 /// counts the repository's config as the operator's only while it is still exactly that.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustRecord {
+    /// The branch the operator's checkout was on at the root's first launch, where it named a
+    /// commit and was not a task branch (`marion/…`): what a child tree's config is held to, in
+    /// place of the common `HEAD`, which a root running in the checkout can move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// The repository's own harness config in the operator's checkout at the root's first launch.
     /// `None` where none was taken (an older intent): nothing to hold a tree to, so no config in
     /// the operator's checkout counts as theirs.
@@ -449,7 +454,7 @@ pub struct TrustRecord {
 
 impl TrustRecord {
     pub fn is_empty(&self) -> bool {
-        self.repo_config.is_none()
+        self.branch.is_none() && self.repo_config.is_none()
     }
 }
 
@@ -1616,13 +1621,14 @@ mod tests {
             race: None,
             workflow: None,
             trust: TrustRecord {
+                branch: Some("main".into()),
                 repo_config: Some(was),
             },
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(intent.clone())).unwrap();
         assert!(
             line.contains(
-                r#""trust":{"repo_config":{".codex/config.toml":"bb",".mcp.json":"aa",".pi":null}}"#
+                r#""trust":{"branch":"main","repo_config":{".codex/config.toml":"bb",".mcp.json":"aa",".pi":null}}"#
             ),
             "{line}"
         );

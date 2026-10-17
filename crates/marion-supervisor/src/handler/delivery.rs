@@ -225,28 +225,13 @@ impl RegistryHandle {
         repo: PathBuf,
     ) -> Secret {
         let token = mint_token();
-        // A root (no contract, §9) records the branch its checkout is on now, before it runs; a
-        // child inherits its caller's, whose tree it is claimed under.
-        let root_branch = task_id
-            .is_none()
-            .then(|| crate::spawn::checked_out_branch(crate::spawn::Tree::Operator(&repo)))
-            .flatten();
-        let mut nodes = lock(&self.nodes);
-        let trust_branch = match task_id {
-            None => root_branch,
-            Some(_) => nodes
-                .values()
-                .find(|n| n.repo == repo)
-                .and_then(|n| n.trust_branch.clone()),
-        };
-        nodes.insert(
+        lock(&self.nodes).insert(
             agent_id.clone(),
             NodeHandle {
                 task_id,
                 token: token.clone(),
                 repo,
                 branch: None,
-                trust_branch,
                 trust: None,
                 pid: None,
                 pgid: None,
@@ -258,7 +243,6 @@ impl RegistryHandle {
                 escalated: false,
             },
         );
-        drop(nodes);
         self.inboxes.open(agent_id);
         token
     }

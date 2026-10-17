@@ -9014,50 +9014,6 @@ mod owns_nodes {
     }
 }
 
-/// **A root records its checkout's branch at its claim, before it runs, and its children inherit
-/// it**: a root that later points the checkout's HEAD elsewhere does not move the reference its
-/// children's repository-config trust is held to.
-#[test]
-fn a_roots_branch_is_recorded_at_its_claim_and_inherited_below_it() {
-    let fx = fx("handler-trust-branch");
-    let dir = marion_testsupport::scratch("handler-trust-branch-repo");
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&[
-        "-c",
-        "user.name=u",
-        "-c",
-        "user.email=u@example.invalid",
-        "commit",
-        "-q",
-        "--allow-empty",
-        "-m",
-        "base",
-    ]);
-    let repo = dir.to_path_buf();
-    fx.handle.claim(&id("root"), None, repo.clone());
-    git(&["checkout", "-qb", "elsewhere"]);
-    fx.handle.claim(
-        &id("child"),
-        Some(marion_core::contract::TaskId("t".into())),
-        repo.clone(),
-    );
-    let branch_of = |agent: &str| lock(&fx.handle.nodes)[&id(agent)].trust_branch.clone();
-    assert_eq!(branch_of("root").as_deref(), Some("main"));
-    assert_eq!(
-        branch_of("child").as_deref(),
-        Some("main"),
-        "the child inherits the root's, not the HEAD the root moved"
-    );
-}
-
 /// **A node's trust record is kept by its owner for the nodes it spawns**: what the root recorded
 /// before it ran is what its child inherits, and a node with none recorded hands down none.
 #[test]
@@ -9077,6 +9033,7 @@ fn a_nodes_trust_record_is_kept_for_the_nodes_it_spawns() {
     owner.identified(&id("root"));
     assert_eq!(owner.trust_record(&id("root")), None, "none until recorded");
     let record = marion_core::journal::TrustRecord {
+        branch: None,
         repo_config: Some(marion_core::journal::RepoConfigSnapshot(
             [(".mcp.json".to_string(), Some("aa".to_string()))].into(),
         )),

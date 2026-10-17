@@ -294,13 +294,6 @@ impl crate::run::SpawnObserver for NodeOwner {
             .and_then(|n| n.branch.clone())
     }
 
-    fn trust_branch(&self, tree: &std::path::Path) -> Option<String> {
-        lock(&self.handle.nodes)
-            .values()
-            .find(|n| n.repo == tree)
-            .and_then(|n| n.trust_branch.clone())
-    }
-
     fn trust_record(&self, agent_id: &AgentId) -> Option<marion_core::journal::TrustRecord> {
         lock(&self.handle.nodes)
             .get(agent_id)

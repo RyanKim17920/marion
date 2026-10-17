@@ -501,7 +501,6 @@ impl RootTrust {
             crate::spawn::Tree::Operator(&self.checkout),
             &self.project_root,
             None,
-            None,
             &self.record,
         )
     }
@@ -810,6 +809,7 @@ pub fn prepare_watched(
     let trust_record = match &spec.resume {
         Some(r) => r.trust.clone(),
         None => TrustRecord {
+            branch: crate::spawn::trust_branch(crate::spawn::Tree::Operator(&spec.repo)),
             repo_config: Some(crate::spawn::repo_config_snapshot(
                 &spec.repo,
                 &crate::trust::repo_config_paths(),

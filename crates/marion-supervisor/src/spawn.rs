@@ -712,6 +712,28 @@ pub fn checked_out_branch(wt: Tree<'_>) -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
+/// **The branch `wt` has checked out, as a trust reference** ([`repo_config_unchanged`]'s
+/// `branch`): one that names a commit (`rev-parse --verify`), and never a branch under `marion/`,
+/// which is a node's own work.
+pub fn trust_branch(wt: Tree<'_>) -> Option<String> {
+    checked_out_branch(wt).filter(|b| trust_reference(wt, b))
+}
+
+/// Whether the branch `b` may be a trust reference: not a node's (`marion/…`), and naming a commit.
+fn trust_reference(wt: Tree<'_>, b: &str) -> bool {
+    !b.starts_with("marion/")
+        && git(
+            wt,
+            &[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("refs/heads/{b}^{{commit}}"),
+            ],
+        )
+        .is_ok()
+}
+
 /// **HEAD of the tree at `cwd`, or `None` because there is no commit to name.**
 ///
 /// The `shared-cwd` counterpart of the `rev-parse HEAD` inside [`make_worktree`], and separate from
@@ -976,13 +998,14 @@ pub fn commit_child_work(
 /// the operator's commit, not to one a parent made. Each path is read as the harness reads it
 /// ([`config_as_committed`]). Any git failure answers `false`.
 ///
-/// The reference is only as much the operator's as their `HEAD` is: an operator who checks out a
-/// child's branch (or merges it) makes that child's commits theirs, and its config with them.
+/// The reference is only as much the operator's as their `HEAD` is: an operator who merges a
+/// child's branch makes that child's commits theirs, and its config with them. A `HEAD` on a task
+/// branch (`marion/…`) is never the reference, so nothing there is the operator's.
 ///
 /// `branch` is the branch the root's checkout was on when the root launched
-/// ([`crate::run::SpawnObserver::trust_branch`]): where it still resolves, the reference meets
-/// `base` there instead of at the common `HEAD`, which a root running in the operator's checkout
-/// can write.
+/// ([`marion_core::journal::TrustRecord::branch`], by [`trust_branch`]): where it still resolves
+/// and is not a task branch, the reference meets `base` there instead of at the common `HEAD`,
+/// which a root running in the operator's checkout can write.
 pub fn repo_config_unchanged(
     wt: Tree<'_>,
     base: &Oid,
@@ -1008,13 +1031,14 @@ pub fn repo_config_held(
         return Vec::new();
     }
     let operator = Tree::Operator(common);
-    let recorded = branch.map(|b| format!("refs/heads/{b}")).filter(|tip| {
-        git(
-            operator,
-            &["rev-parse", "--verify", "-q", &format!("{tip}^{{commit}}")],
-        )
-        .is_ok()
-    });
+    let recorded = branch
+        .filter(|b| trust_reference(operator, b))
+        .map(|b| format!("refs/heads/{b}"));
+    // The common HEAD stands in only where it is not on a node's own branch.
+    if recorded.is_none() && checked_out_branch(operator).is_some_and(|b| b.starts_with("marion/"))
+    {
+        return config_held_unverified(wt.dir(), paths);
+    }
     let against = recorded.as_deref().unwrap_or("HEAD");
     let Ok(reference) = git(operator, &["merge-base", against, &base.0]) else {
         return config_held_unverified(wt.dir(), paths);
@@ -2899,6 +2923,49 @@ mod tests {
         assert!(
             repo_config_unchanged(child, &base, &common, Some("gone"), &paths),
             "a recorded branch that no longer resolves falls back to the common HEAD"
+        );
+    }
+
+    /// **A task branch is never the trust reference**, recorded or fallen back to: a node's own
+    /// commits are on it, and a root that pointed the checkout's HEAD at one would have them read
+    /// as the operator's. Nor is a branch with no commit recorded.
+    #[test]
+    fn a_task_branch_is_never_the_trust_reference() {
+        let (dir, repo, _) = committed_repo("spawn-config-task-branch");
+        std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "config"]);
+        assert_eq!(trust_branch(Tree::Operator(&repo)).as_deref(), Some("main"));
+        tgit(&repo, &["checkout", "-qb", "marion/planted"]);
+        std::fs::write(repo.join(".mcp.json"), "{\"mcpServers\":{\"x\":{}}}\n").unwrap();
+        tgit(&repo, &["commit", "-qam", "planted"]);
+        assert_eq!(
+            trust_branch(Tree::Operator(&repo)),
+            None,
+            "a task branch is not recorded"
+        );
+        let common = crate::socket::project_root(&repo);
+        let paths = [".mcp.json"];
+        let wt = dir.join("child-wt");
+        let (base, _) = make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree, cut from the task branch");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        assert!(
+            !repo_config_unchanged(child, &base, &common, Some("marion/planted"), &paths),
+            "a task branch recorded is refused"
+        );
+        assert!(
+            !repo_config_unchanged(child, &base, &common, None, &paths),
+            "and so is a common HEAD on one"
+        );
+        tgit(&repo, &["checkout", "-q", "--orphan", "unborn"]);
+        assert_eq!(
+            trust_branch(Tree::Operator(&repo)),
+            None,
+            "a branch with no commit is not recorded"
         );
     }
 
