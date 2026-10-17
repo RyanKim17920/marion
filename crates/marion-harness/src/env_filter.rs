@@ -151,10 +151,19 @@ pub fn credential_values(env: impl IntoIterator<Item = (String, String)>) -> Vec
 /// suite run from a git hook (which exports `GIT_DIR` and `GIT_INDEX_FILE`) once had a fixture's
 /// `git init` reinitialise the developer's own repository as bare. No git process marion starts
 /// inherits one, and neither does a node or a verification line, whose own git must act on the
-/// tree they run in; marion sets what it means explicitly. `GIT_CONFIG_GLOBAL` and
-/// `GIT_CONFIG_SYSTEM` are deliberately left out: they name the operator's own config files, which
-/// carry the identity marion's commits are made under, not another repository.
-pub const GIT_REDIRECTING: [&str; 10] = [
+/// tree they run in; marion sets what it means explicitly. Also here: what makes git read
+/// another tree's attributes (`GIT_ATTR_SOURCE`), other objects in place of the repository's own
+/// (`GIT_REPLACE_REF_BASE`, `GIT_NO_REPLACE_OBJECTS`, `GIT_SHALLOW_FILE`, `GIT_GRAFT_FILE`,
+/// `GIT_QUARANTINE_PATH`), or discover a repository other than the one it runs in
+/// (`GIT_IMPLICIT_WORK_TREE`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`).
+///
+/// Deliberately left out: `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` name the operator's own
+/// config files, which carry the identity marion's commits are made under, not another
+/// repository. `GIT_EXEC_PATH` and `GIT_TEMPLATE_DIR` choose the operator's own git installation;
+/// `GIT_CEILING_DIRECTORIES` only stops discovery sooner; the pathspec flags
+/// (`GIT_LITERAL_PATHSPECS` and its kin) change how a path is matched, not which repository is
+/// acted on.
+pub const GIT_REDIRECTING: [&str; 18] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
@@ -165,6 +174,14 @@ pub const GIT_REDIRECTING: [&str; 10] = [
     "GIT_CONFIG",
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_PARAMETERS",
+    "GIT_ATTR_SOURCE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+    "GIT_QUARANTINE_PATH",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 ];
 
 /// Whether `name` is one of [`GIT_REDIRECTING`], or a `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`
@@ -325,6 +342,10 @@ mod tests {
                 assert!(f.withholds(name, &|_| false), "{auth:?} {name}");
             }
             assert!(!f.withholds("GIT_CONFIG_GLOBAL", &|_| false));
+            assert!(
+                !f.withholds("GIT_EXEC_PATH", &|_| false),
+                "left out, as stated"
+            );
             assert!(!f.withholds("GIT_AUTHOR_NAME", &|_| false));
         }
         let cmd = git_command_from(
