@@ -469,6 +469,11 @@ codex-impl = ["MY_PROVIDER_KEY"]   # say, a codex model_providers env_key
 "*" = ["CORP_*"]                  # every agent type
 ```
 
+The git variables that point git at another repository or inject configuration into it
+(`GIT_DIR`, `GIT_INDEX_FILE`, `GIT_CONFIG_COUNT` with its `GIT_CONFIG_KEY_<n>`/`VALUE_<n>` pairs,
+`GIT_CONFIG_PARAMETERS` and their kin) are withheld from every node even when a passthrough names
+them, so a node's git acts on the tree it runs in; your `GIT_CONFIG_GLOBAL` and identity pass.
+
 A node on your own login also runs on your configuration as you wrote it: your settings, MCP
 servers, extensions, skills, instructions and plugins load as they do when you run the harness
 yourself, and marion adds only its own server or extension beside them; your hooks run too. A
