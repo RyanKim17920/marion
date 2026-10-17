@@ -65,11 +65,22 @@ const HOME_DIR: &str = "home";
 pub const SETTINGS_FILE: &str = "settings.json";
 
 /// Claude Code's stream grammar, measured frame for frame on 0.23.0 (item 2), with Claude's own
-/// usage rule and **not** its in-flight counters: qwen's `assistant` frames carry `usage` of zeros
+/// usage frame and **not** its in-flight counters: qwen's `assistant` frames carry `usage` of zeros
 /// (`s25`), so a run cut short mid-turn would claim to have spent nothing.
 pub const STREAM: crate::grammar::StreamGrammar = crate::grammar::StreamGrammar {
-    usage: Some(crate::claude_code::USAGE),
+    usage: Some(USAGE),
     ..crate::claude_code::STREAM
+};
+
+/// Claude's `result` usage, except that qwen's `input_tokens` is the provider's prompt count,
+/// cache reads included: on the Chat Completions wire it copies `prompt_tokens` (conformance
+/// P-activity, `qwen-0.24.7/p-activity.jsonl`: `input_tokens` 100 beside
+/// `cache_read_input_tokens` 10, from a chunk whose `prompt_tokens` 100 held 10 cached; 0.23.0
+/// reported 337 for prompts of 116 and 221). Read as Anthropic's uncached input, every cache
+/// read was counted twice.
+pub const USAGE: crate::grammar::UsageRule = crate::grammar::UsageRule {
+    input_includes_cache: true,
+    ..crate::claude_code::USAGE
 };
 
 /// Qwen Code's row. Measured against 0.23.0 on 2026-09-05 (`tests/fixtures/s25/`), every probe
@@ -421,6 +432,18 @@ pub const ROW: Row = Row {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// qwen's `input_tokens` holds its cache reads (P-activity on 0.24.7: 100 beside 10 cached),
+    /// so marion's uncached input is their difference and the total counts each token once.
+    #[test]
+    fn a_result_s_input_is_read_without_its_cache_reads() {
+        let frames = [
+            serde_json::json!({"type": "result", "usage": {"input_tokens": 100,
+            "output_tokens": 20, "cache_read_input_tokens": 10}}),
+        ];
+        let u = crate::grammar::usage(STREAM.usage.as_ref().unwrap(), &frames).unwrap();
+        assert_eq!((u.input, u.output, u.cache_read), (90, 20, 10));
+    }
 
     const WRITE_THEN_REPORT: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

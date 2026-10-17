@@ -545,9 +545,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
 /// Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
 /// S31 `p0a/out/a` measured two stream-json turns reporting 10/5 each in `usage` while
 /// `modelUsage` ran cumulative, so a node that took several turns sums them. `input_tokens`
-/// excludes both cache counters (Anthropic's convention). qwen reads its stream with this rule and
-/// was measured emitting the same shape without the cache-write key (`s25`); one result, so the sum
-/// is it.
+/// excludes both cache counters (Anthropic's convention). qwen emits the same shape without the
+/// cache-write key (`s25`), but its `input_tokens` holds its cache reads (`qwen::USAGE`).
 pub const USAGE: UsageRule = UsageRule {
     at: Where {
         frame: &[Cond::Eq("/type", "result")],

@@ -414,7 +414,10 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     model: None,
     session: None,
     // The terminal `complete` frame (`s26/*.stdout.jsonl`) totals the run at the top level, with
-    // `total_tokens` = input + output and the cache counters beside them.
+    // `total_tokens` = input + output and the cache counters beside them. Its `input_tokens` is the
+    // provider's prompt count, cache reads included (goose copies Chat Completions'
+    // `prompt_tokens`): conformance P-activity on 1.55.0 read 547 for prompts of 221 and 326 that
+    // held 25 cached.
     usage: Some(UsageRule {
         at: Where {
             frame: &[Cond::Eq("/type", "complete")],
@@ -426,7 +429,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_read: Some("/cache_read_input_tokens"),
         cache_write: Some("/cache_write_input_tokens"),
         reasoning: None,
-        input_includes_cache: false,
+        input_includes_cache: true,
         fold: UsageFold::Last,
         in_flight: None,
     }),
@@ -572,6 +575,17 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    /// goose's `complete` copies the provider's prompt count, cache reads included (P-activity on
+    /// 1.55.0: 547 for prompts of 221 and 326 holding 25 cached).
+    #[test]
+    fn complete_s_input_is_read_without_its_cache_reads() {
+        let frames = [serde_json::json!({"type": "complete", "input_tokens": 547,
+            "output_tokens": 41, "cache_read_input_tokens": 25, "cache_write_input_tokens": 0,
+            "total_tokens": 588})];
+        let u = crate::grammar::usage(STREAM.usage.as_ref().unwrap(), &frames).unwrap();
+        assert_eq!((u.input, u.output, u.cache_read), (522, 41, 25));
+    }
 
     /// The s26 captures this module's claims rest on, verbatim (paths and ids redacted).
     const REPORT: &str = include_str!(concat!(
