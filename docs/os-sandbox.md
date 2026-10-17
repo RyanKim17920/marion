@@ -27,6 +27,23 @@
 - **What it cannot change.** What the node may do and hand down (its tree's agent-types table, the
   scope its caller granted, the operator's opt-ins) is kept at `<state>/<project>/authority/<id>.json`,
   outside its agent dir, so rewriting its own agent dir widens nothing.
+- **What a link it leaves grants.** Nothing. A node may move a directory it may write and leave a
+  link in its place; on macOS that includes the root of each grant, its agent dir among them
+  (Seatbelt lets a process rename the root of a `subpath` it may write; Landlock needs the right
+  to remove from the parent, which no grant gives). So no grant is resolved through a component
+  the node may write: each is its marion-owned ancestor resolved (the agents dir,
+  `~/.claude/projects`, `/tmp/<prefix>-<uid>`, a checkout's parent) with the node's own names
+  appended as written, and a launch refuses one that is a link. Seatbelt resolves a path when it
+  is used, so a link the node swaps in while it runs resolves outside the grant and is refused;
+  Landlock opens each rule through those names `O_NOFOLLOW`. A `TMPDIR` inside the agent dir is
+  writable only as part of the agent dir. A checkout named through a link of its own is refused;
+  a link above it is resolved.
+- **marion's writes into its agent dir.** marion writes there outside any sandbox: config
+  documents, contracts, the event stream, a root's change record and prompt, a pane's recording,
+  `tmp/` and its git scratch. All of them go through one writer that opens the agent dir once and
+  every directory below it `O_NOFOLLOW` from the one above, so a link the node left at a document
+  is replaced and never written through, and a link or a file in place of the agent dir or a
+  directory under it refuses the launch by name.
 - **Its verification lines.** A spawn's `verification` lines run over the node's work under the
   node's own plan, with its `TMPDIR`, so a test script the child wrote is kept to what the child
   could write; the contract records them as `sandboxed`.
