@@ -247,11 +247,57 @@ impl ClientPolicy {
         }
     }
 
+    /// `resolved` (inside [`Self::root`], as [`Self::confine`] gives it) opened **from the root
+    /// down**: the root `O_NOFOLLOW`, each directory below it `O_DIRECTORY | O_NOFOLLOW` from the
+    /// one before, the file itself `O_NOFOLLOW | O_NONBLOCK` and taken only when regular. `confine`
+    /// judged the path with every link resolved; a link the agent swaps in for any component
+    /// after that check then fails the open rather than taking it out of the tree, and a FIFO
+    /// cannot hold it. A file created here gets `0666` less the umask, as any file in the tree.
+    fn open_beneath(
+        &self,
+        resolved: &Path,
+        flags: rustix::fs::OFlags,
+    ) -> std::io::Result<std::fs::File> {
+        use rustix::fs::{Mode, OFlags};
+        use std::path::Component;
+        const DIR: OFlags = OFlags::RDONLY
+            .union(OFlags::DIRECTORY)
+            .union(OFlags::NOFOLLOW)
+            .union(OFlags::CLOEXEC);
+        let outside = || std::io::Error::other("not a file below the node's working tree");
+        let rel = resolved.strip_prefix(&self.root).map_err(|_| outside())?;
+        let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+        for c in rel.components() {
+            let Component::Normal(n) = c else {
+                return Err(outside());
+            };
+            parts.push(n);
+        }
+        let Some((name, dirs)) = parts.split_last() else {
+            return Err(outside());
+        };
+        let mut dir = rustix::fs::open(&self.root, DIR, Mode::empty())?;
+        for d in dirs {
+            dir = rustix::fs::openat(&dir, *d, DIR, Mode::empty())?;
+        }
+        let fd = rustix::fs::openat(
+            &dir,
+            *name,
+            flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o666),
+        )?;
+        let file = std::fs::File::from(fd);
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        Ok(file)
+    }
+
     fn read(&self, path: &str) -> Result<String, String> {
         use std::io::Read as _;
         let at = self.confine(path)?;
         let mut text = String::new();
-        std::fs::File::open(&at)
+        self.open_beneath(&at, rustix::fs::OFlags::RDONLY)
             .map_err(|e| format!("{path}: {e}"))?
             .take(READ_LIMIT + 1)
             .read_to_string(&mut text)
@@ -265,22 +311,15 @@ impl ClientPolicy {
     }
 
     fn write(&self, path: &str, content: &str) -> Result<(), String> {
+        use rustix::fs::OFlags;
         use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
         if !self.writes {
             return Err(format!(
                 "{path}: this node is read-only, so marion's client writes nothing for it"
             ));
         }
         let at = self.confine(path)?;
-        // `confine` followed every link already; refusing one here closes the gap in which the
-        // file could be swapped for a link after the check.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(&at)
+        self.open_beneath(&at, OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC)
             .and_then(|mut f| f.write_all(content.as_bytes()))
             .map_err(|e| format!("{path}: {e}"))
     }
@@ -1133,6 +1172,59 @@ mod tests {
             "{}",
             &r.to_string()[..200.min(r.to_string().len())]
         );
+    }
+
+    /// **A path judged inside the tree is opened from the tree down**, so a directory the agent
+    /// swaps for a link after [`ClientPolicy::confine`] judged it fails the open instead of being
+    /// followed out: here the swap is made before the call, with the path `confine` would have
+    /// given. A FIFO in the tree is refused without waiting for a writer, and an in-tree link
+    /// `confine` resolves is still read through its target.
+    #[test]
+    fn a_link_swapped_in_after_the_check_is_not_followed_out_of_the_tree() {
+        use rustix::fs::OFlags;
+        let dir = scratch("acp-fs-swap");
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("f.txt"), "operator's").unwrap();
+        let policy = full_grant(&tree);
+        let judged = policy
+            .confine(tree.join("sub/f.txt").to_str().unwrap())
+            .unwrap();
+        std::fs::remove_dir(tree.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("sub")).unwrap();
+        assert!(policy.open_beneath(&judged, OFlags::RDONLY).is_err());
+        assert!(
+            policy
+                .open_beneath(&judged, OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("f.txt")).unwrap(),
+            "operator's"
+        );
+
+        let fifo = tree.join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut peer = AcpPeer(full_grant(&tree));
+        let r = ask(&mut peer, "fs/read_text_file", json!({"path": fifo}));
+        assert!(r.get("error").is_some(), "{r}");
+
+        std::fs::write(tree.join("real.txt"), "inside").unwrap();
+        std::os::unix::fs::symlink("real.txt", tree.join("alias.txt")).unwrap();
+        let r = ask(
+            &mut peer,
+            "fs/read_text_file",
+            json!({"path": tree.join("alias.txt")}),
+        );
+        assert_eq!(r["result"]["content"], "inside", "{r}");
     }
 
     /// **Permission follows the grant, never approve-all.** Reading is always approved; editing
