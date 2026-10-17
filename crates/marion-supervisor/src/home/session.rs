@@ -729,31 +729,13 @@ impl Session {
     }
 
     /// Setup's repository row answered: `marion trust allow --repo` or `deny --repo` in this
-    /// project, run here by the same code the CLI runs ([`crate::trust::run`]), its last line the
-    /// notice.
+    /// project, run here by the same code the CLI runs, refused from inside a node as the CLI is
+    /// ([`crate::trust::answer_repo`]), its last line the notice.
     fn repo_trust(&mut self, allow: bool) {
         let verb = if allow { "allow" } else { "deny" };
-        let mut out = Vec::new();
-        let done = match crate::trust::store_path() {
-            Some(store) => crate::trust::run(
-                &[verb.to_string(), "--repo".to_string()],
-                &self.repo,
-                store,
-                &mut out,
-            ),
-            None => Err(Some(crate::trust::TrustError::NoStore.to_string())),
-        };
-        let said = String::from_utf8_lossy(&out);
-        self.home.notice = Some(match done {
-            Ok(()) => said
-                .lines()
-                .rfind(|l| !l.trim().is_empty())
-                .unwrap_or("")
-                .to_string(),
-            Err(why) => format!(
-                "marion trust {verb} --repo: {}",
-                why.unwrap_or_else(|| "refused".into())
-            ),
+        self.home.notice = Some(match crate::trust::answer_repo(allow, &self.repo) {
+            Ok(said) => said,
+            Err(why) => format!("marion trust {verb} --repo: {why}"),
         });
         self.load_repo_trust();
     }

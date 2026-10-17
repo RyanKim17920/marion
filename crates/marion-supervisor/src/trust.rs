@@ -937,6 +937,66 @@ fn operator_hello_refusal(cwd: &Path) -> Option<String> {
     }
 }
 
+/// **Why `args` may not run from `cwd` in this process** ([`node_refusal`] over this process's
+/// environment): the one check before [`run`] changes the store, made by [`cli_main`] and by the
+/// home screen's Setup row ([`answer_repo`]) alike.
+pub fn refusal_here(args: &[String], cwd: &Path) -> Option<String> {
+    refusal_with(args, cwd, |name| std::env::var(name).ok())
+}
+
+/// [`refusal_here`] over an explicit environment.
+fn refusal_with(
+    args: &[String],
+    cwd: &Path,
+    var: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    node_refusal(
+        args,
+        var,
+        // The cwd's, and the target's where that is another project: a node can `cd` out of its
+        // tree, or name a repository whose supervisor is not the cwd's.
+        || {
+            let target = target_dir(args, cwd);
+            operator_hello_refusal(cwd).or_else(|| {
+                (target != cwd)
+                    .then(|| operator_hello_refusal(&target))
+                    .flatten()
+            })
+        },
+    )
+}
+
+/// **The home screen's Setup row answering for the repository at `cwd`**: `marion trust allow
+/// --repo` (`allow`) or `deny --repo`, refused from inside a node exactly as [`cli_main`] refuses
+/// it ([`refusal_here`]), then [`run`]. `Ok` is its last line; `Err` why it did not run.
+pub fn answer_repo(allow: bool, cwd: &Path) -> Result<String, String> {
+    answer_repo_with(allow, cwd, store_path(), |name| std::env::var(name).ok())
+}
+
+/// [`answer_repo`] over an explicit store and environment.
+fn answer_repo_with(
+    allow: bool,
+    cwd: &Path,
+    store: Option<PathBuf>,
+    var: impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
+    let args = [
+        if allow { "allow" } else { "deny" }.to_string(),
+        "--repo".to_string(),
+    ];
+    if let Some(why) = refusal_with(&args, cwd, var) {
+        return Err(format!("refused: {}", visible(&why)));
+    }
+    let store = store.ok_or_else(|| TrustError::NoStore.to_string())?;
+    let mut out = Vec::new();
+    run(&args, cwd, store, &mut out).map_err(|why| why.unwrap_or_else(|| "refused".into()))?;
+    Ok(String::from_utf8_lossy(&out)
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .to_string())
+}
+
 /// `marion trust allow [<file>] | deny [<file>] | list`.
 pub fn cli_main(args: &[String]) -> ExitCode {
     let cwd = match std::env::current_dir() {
@@ -946,20 +1006,7 @@ pub fn cli_main(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Some(why) = node_refusal(
-        args,
-        |name| std::env::var(name).ok(),
-        // The cwd's, and the target's where that is another project: a node can `cd` out of
-        // its tree, or name a repository whose supervisor is not the cwd's.
-        || {
-            let target = target_dir(args, &cwd);
-            operator_hello_refusal(&cwd).or_else(|| {
-                (target != cwd)
-                    .then(|| operator_hello_refusal(&target))
-                    .flatten()
-            })
-        },
-    ) {
+    if let Some(why) = refusal_here(args, &cwd) {
         err!("marion trust: refused: {}", visible(&why));
         return ExitCode::FAILURE;
     }
@@ -1254,6 +1301,45 @@ mod tests {
         assert!(why.contains("inside node `n-1`"), "{why}");
         let dir = marion_testsupport::scratch("trust-no-supervisor");
         assert_eq!(operator_hello_refusal(&dir), None);
+    }
+
+    /// **Setup's repository row is refused from inside a node as the CLI is**: with a node's
+    /// identity in the environment neither answer is recorded, and the reason says why; from the
+    /// operator's own environment the same call trusts the repository.
+    #[test]
+    fn setups_answer_is_refused_inside_a_node_as_the_cli_is() {
+        let (repo, _file, store) = repo("repo-answer-node", CUSTOM);
+        assert!(
+            marion_harness::env_filter::git_command()
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(repo.join(".mcp.json"), "{}").unwrap();
+        let node = |name: &str| {
+            (name == marion_harness::mcp_bridge::AGENT_ID_ENV).then(|| "n-1".to_string())
+        };
+        for allow in [true, false] {
+            let why = answer_repo_with(allow, &repo, Some(store.clone()), node).unwrap_err();
+            assert!(
+                why.starts_with("refused: ")
+                    && why.contains(marion_harness::mcp_bridge::AGENT_ID_ENV),
+                "{why}"
+            );
+            assert_eq!(
+                repo_standing_in(store.clone(), &repo),
+                Some((None, vec![".mcp.json"])),
+                "nothing recorded"
+            );
+        }
+        let said = answer_repo_with(true, &repo, Some(store.clone()), |_| None).unwrap();
+        assert!(!said.is_empty());
+        assert_eq!(
+            repo_standing_in(store.clone(), &repo),
+            Some((Some(true), vec![".mcp.json"]))
+        );
     }
 
     /// **The hello goes to the supervisor of the repository the verb decides about**, resolved
