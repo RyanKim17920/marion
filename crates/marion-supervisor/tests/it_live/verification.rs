@@ -124,18 +124,11 @@ fn a_failing_verification_command_fails_the_contract_and_carries_its_evidence() 
     );
 
     assert_eq!(c.verification.len(), 2, "both lines are on the record");
-    // A codex child: each line runs inside codex's own workspace sandbox, and the record is the
-    // command that actually ran.
+    // A codex child runs under marion's own sandbox, so each line runs under that same plan as
+    // `sh -c <line>`, not under codex's sandbox prefix; the containment below says it was wrapped.
     for (cmd, line) in c.verification.iter().zip(["cat src/keep.txt", "exit 3"]) {
-        assert_eq!(cmd.program, "codex");
-        assert!(
-            cmd.args.contains(&"sandbox".to_string())
-                && cmd
-                    .args
-                    .ends_with(&["sh".to_string(), "-c".into(), line.to_string()]),
-            "{:?}",
-            cmd.args
-        );
+        assert_eq!(cmd.program, "sh");
+        assert_eq!(cmd.args, ["-c".to_string(), line.to_string()]);
         assert_eq!(
             cmd.cwd, wt,
             "run in the child's worktree, not the operator's tree"
