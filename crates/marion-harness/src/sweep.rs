@@ -244,6 +244,9 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
     if (1..row.verified.len()).any(|i| row.verified[..i].contains(&row.verified[i])) {
         fault("version.verified", "a version repeats".into());
     }
+    if row.held.is_some_and(|why| why.trim().is_empty()) {
+        fault("held", "holds every launch and says nothing of why".into());
+    }
     for r in row.requires {
         match r.need {
             spec::Need::PathAbsent(p) if !std::path::Path::new(p).is_absolute() => fault(
@@ -502,6 +505,14 @@ mod tests {
                 },
                 "files",
                 "files: \"home/settings.json\"'s base is not a JSON object",
+            ),
+            (
+                HarnessSpec {
+                    held: Some(" "),
+                    ..qwen
+                },
+                "held",
+                "held: holds every launch and says nothing of why",
             ),
             (
                 HarnessSpec {

@@ -331,6 +331,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    own default",
         },
     ],
+    held: None,
     // One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
     // built-ins, as `--core-tools` names them — and the audit record is that same list.
     //

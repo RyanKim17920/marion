@@ -329,6 +329,9 @@ pub enum HarnessError {
     /// Deleting it would mean whoever adds that harness has to re-derive the refusal.
     #[error("no adapter for harness {0} yet")]
     Unimplemented(Harness),
+    /// The row is held ([`spec::HarnessSpec::held`]): no launch of its binary runs yet.
+    #[error("{harness}: not launched: {why}")]
+    Held { harness: Harness, why: &'static str },
     #[error("{harness}: {what}")]
     MissingInput {
         harness: Harness,
@@ -392,6 +395,12 @@ pub trait HarnessAdapter {
     /// default below reads it, and an adapter is the row plus the measured logic no row can hold.
     fn spec(&self) -> &'static spec::HarnessSpec {
         harness_spec(self.harness())
+    }
+
+    /// **Why this launch is held back** ([`spec::HarnessSpec::held`]), or `None`: the row's own
+    /// hold, or on the ACP adapter the hold of the row whose binary the command runs.
+    fn held(&self, _spec: &LaunchSpec) -> Option<&'static str> {
+        self.spec().held
     }
 
     /// What starting this adapter's program costs — the row's [`spec::Boot`], or on the ACP
@@ -650,11 +659,20 @@ pub trait HarnessAdapter {
     /// node token's own file where the launch's carrier withholds the token from the declaration
     /// ([`spec::TokenCarrier::document`]). What a spawn site writes; `config_files` is what the
     /// harness reads.
+    ///
+    /// **Every launch site takes this step before its harness starts**, so it is where a held row
+    /// ([`Self::held`]) is refused, whatever route named the binary.
     fn launch_documents(
         &self,
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if let Some(why) = self.held(spec) {
+            return Err(HarnessError::Held {
+                harness: self.harness(),
+                why,
+            });
+        }
         let mut documents = self.config_files(spec, ctx)?;
         if spec.auth.overlays() {
             documents.extend(
@@ -1800,6 +1818,83 @@ mod tests {
         assert!(!refused(Need::EnvUnset(
             "MARION_REQUIRES_READS_THE_MACHINE_UNSET"
         )));
+    }
+
+    /// **A held row refuses every launch of its binary, by every route, in the row's words**: a
+    /// type on the row (`harness = "hermes"`), an ACP agent by id, and an ACP command running any
+    /// program the row's guard names — bare, by full path, or with other arguments — each refused
+    /// at `launch_documents`, the step every launch site takes before its harness starts. With the
+    /// hold lifted the row's own launch goes through, and a command for another binary was never
+    /// held. Mutation: drop the check, or key the ACP hold on the agent id.
+    #[test]
+    fn held_rows_refuse_every_launch_until_the_hold_lifts() {
+        let mut held = Vec::new();
+        for h in Harness::ALL {
+            let r = row(h);
+            let Some(why) = r.spec.held else { continue };
+            held.push(h.as_str());
+            let own = spec_for(h);
+            assert_eq!(
+                adapter_for(h).unwrap().launch_documents(&own, &ctx()),
+                Err(HarnessError::Held { harness: h, why }),
+                "{h}: a type on the row"
+            );
+            let mut selectors = Vec::new();
+            for agent in acp::AGENTS {
+                let guard = agent.login_guard.filter(|g| g.row == h);
+                if guard.is_none() && agent.updates != acp::AgentUpdates::Twin(h) {
+                    continue;
+                }
+                selectors.push(agent.id.to_string());
+                selectors.push(agent.argv.join(" "));
+                for program in guard.map_or(&[][..], |g| g.programs) {
+                    selectors.push(program.to_string());
+                    selectors.push(format!("/opt/agents/bin/{program} --profile p acp"));
+                }
+            }
+            assert!(!selectors.is_empty(), "{h}: no ACP route was tried");
+            for selector in selectors {
+                let launch = LaunchSpec {
+                    extra: Extras {
+                        acp_agent: Some(selector.clone()),
+                        ..Extras::default()
+                    },
+                    ..acp_spec()
+                };
+                assert_eq!(
+                    AcpAdapter::resolve(&selector)
+                        .unwrap()
+                        .launch_documents(&launch, &ctx()),
+                    Err(HarnessError::Held {
+                        harness: Harness::Acp,
+                        why
+                    }),
+                    "acp:{selector}"
+                );
+            }
+            let lifted = DataAdapter::of(Box::leak(Box::new(spec::HarnessSpec {
+                held: None,
+                ..*r.spec
+            })));
+            assert!(
+                lifted.launch_documents(&own, &ctx()).is_ok(),
+                "{h}: still refused with the hold lifted"
+            );
+        }
+        assert_eq!(held, ["hermes"], "the held rows, by name");
+        let other = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some("opencode acp".into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        assert!(
+            AcpAdapter::resolve("opencode acp")
+                .unwrap()
+                .launch_documents(&other, &ctx())
+                .is_ok()
+        );
     }
 
     /// **Another launch of a row's binary takes only the row's refusals of the machine**: a launch
@@ -3897,8 +3992,21 @@ mod tests {
     ///
     /// Signature deliberately matches `adapter_for`'s, so a sweep reads the same either way and the
     /// only difference is which of the two is being claimed about.
+    /// The adapter the sweeps launch: a held row's ([`spec::HarnessSpec::held`]) with its hold
+    /// lifted, so every sweep still asserts what its launch will be once the measurement lands. A
+    /// held row served by code of its own has no such copy, and fails the sweeps that launch it.
+    /// `held_rows_refuse_every_launch_until_the_hold_lifts` holds the real rows to the hold.
     fn launch_adapter(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, HarnessError> {
-        adapter_for_type(h, spec_for(h).extra.acp_agent.as_deref())
+        let r = row(h);
+        match (r.spec.held, r.serve) {
+            (Some(_), Serve::Data) => Ok(Box::new(DataAdapter::of(Box::leak(Box::new(
+                spec::HarnessSpec {
+                    held: None,
+                    ..*r.spec
+                },
+            ))))),
+            _ => adapter_for_type(h, spec_for(h).extra.acp_agent.as_deref()),
+        }
     }
 
     /// **§6.4's central MUST, as a sweep: marion never writes outside the node's own agent dir.**

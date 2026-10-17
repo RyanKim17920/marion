@@ -310,6 +310,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    own default",
         },
     ],
+    held: None,
     // §3.1's availability axis, in the only form this harness has one: **a builtin, not a
     // list.** `mode` is `Some(developer)` exactly when the declaration names a developer-extension
     // tool, and `None` — no `--with-builtin`, nothing but marion — otherwise.

@@ -231,6 +231,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    login, so launch it without --canned or a provider",
         },
     ],
+    held: None,
     // A mode, not a list, like gemini's: `accept-edits` exactly when an edit tool is declared,
     // and agy's default otherwise — under which a headless edit is auto-denied (s32).
     axes: AxesRule::Mode {

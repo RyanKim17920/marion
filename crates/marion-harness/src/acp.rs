@@ -204,6 +204,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            refused session/new vendor-side). The argv of every refinement row is the one those \
            spikes launched; a generic `acp:<command>` row is the operator's own",
     requires: &[],
+    held: None,
     axes: AxesRule::Split,
     // The model rides the session, set by the driver over the protocol, and under the opencode
     // canned recipe it is that config's own ([`AcpAdapter`]'s hook).
@@ -1400,6 +1401,20 @@ impl Binding {
             .map(|a| a.updates.policy())
     }
 
+    /// The built-in row of the binary this agent runs ([`AgentUpdates::Twin`]) — the bound row's,
+    /// or the one whose program the command runs ([`same_program`]). `None` for an agent with no
+    /// built-in twin.
+    pub fn twin(&self) -> Option<&'static HarnessSpec> {
+        match self
+            .refinement
+            .or_else(|| same_program(&self.argv))?
+            .updates
+        {
+            AgentUpdates::Twin(h) => Some(crate::adapter::harness_spec(h)),
+            AgentUpdates::Own(_) => None,
+        }
+    }
+
     /// The row whose borrowed-login switch this launch carries ([`LoginGuard`]), keyed off the
     /// **program** alone and never the id or the arguments: `hermes acp`, `hermes-acp`, and a full
     /// path to either are guarded as the `hermes` row is. `None` for a program no row guards.
@@ -2250,6 +2265,19 @@ fn login_guard_documents(
 impl HarnessAdapter for AcpAdapter {
     fn harness(&self) -> Harness {
         Harness::Acp
+    }
+
+    /// The hold of the built-in row whose binary the command runs: its guard's
+    /// ([`Binding::login_guard`]), keyed off the program alone so no spelling of the command gets
+    /// past it, or its twin's ([`Binding::twin`]).
+    fn held(&self, spec: &LaunchSpec) -> Option<&'static str> {
+        self.spec().held.or_else(|| {
+            let binding = self.binding(spec).ok()?;
+            [binding.login_guard(), binding.twin()]
+                .into_iter()
+                .flatten()
+                .find_map(|row| row.held)
+        })
     }
 
     /// The bound agent's own boot where a refinement row measured one; the protocol row's floor

@@ -1911,6 +1911,9 @@ impl RowDto {
                     })
                     .collect(),
             ),
+            // A hold is marion's own decision about a built-in, lifted by a measurement in this
+            // repository; a row file is the operator's, and launches as its author wrote it.
+            held: None,
             axes: match self.axes {
                 AxesDto::Split => AxesRule::Split,
                 AxesDto::Mode {

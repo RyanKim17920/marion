@@ -372,6 +372,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",
     requires: &[],
+    held: None,
     axes: AxesRule::Split,
     // `provider/model`, parsed once for argv and the generated provider block and refused where it
     // is not one, qualified under marion's own block on an endpoint, and dropped on a live node

@@ -279,6 +279,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    providers.json's own",
         },
     ],
+    held: None,
     axes: AxesRule::Split,
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,

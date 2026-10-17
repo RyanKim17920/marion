@@ -305,6 +305,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    pi's own default",
         },
     ],
+    held: None,
     // One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
     // built-ins. An empty list is legitimate here, since `--tools ""` offers nothing
     // (`pi-empty-tools.*`), so unlike qwen there is nothing to refuse.

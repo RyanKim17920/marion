@@ -617,7 +617,8 @@ tokens are single-use (read from the 0.22.2 source; not yet measured): marion po
 `auth.adopt_external_logins: false` and declares marion's server, and the rest of your Hermes
 config stays as it is. That scope would hide an administrator's `/etc/hermes` or your own
 `HERMES_MANAGED_DIR`, so marion refuses to launch Hermes while either exists. Until that switch
-is measured, no built-in type runs Hermes.
+is measured, Hermes is held: marion refuses every launch of it, whether from an agent type naming
+`harness = "hermes"`, an `acp:` command or `marion doctor --try`, and only reads its version.
 
 On your own login a pi child runs on your agent dir as you configured it: your extensions, skills,
 prompts and packages load, and marion adds only its own `-e` extension. Canned pi keeps them out
@@ -711,12 +712,12 @@ once pointed at a model provider through its own configuration. **Refused** rows
 | `qoder` | `qodercli --acp` | — | **refused** | `qodercli login` (account) |
 | `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |
 | `pi-acp` | `pi-acp` | — | **refused** | shim/pi version skew |
-| `hermes` | `hermes acp` | — | not probed | read from the 0.22.2 source; held, so doctor never launches it |
+| `hermes` | `hermes acp` | — | not probed | read from the 0.22.2 source; held, so no launch of it runs |
 
-Any command that runs Hermes (`hermes`, `hermes-acp` or `hermes-agent`, by any path) carries the
-`hermes` row's switch against adopting your Codex CLI or Claude Code login. That switch is read
-from the 0.22.2 source and not yet measured, and a wrapper such as `npx` or `uvx` in front of it
-is not recognised.
+Any command that runs Hermes (`hermes`, `hermes-acp` or `hermes-agent`, by any path) is held as
+the `hermes` row is, and once the hold lifts carries its switch against adopting your Codex CLI or
+Claude Code login. marion cannot see Hermes behind a wrapper such as `npx`, `uvx` or `python -m`,
+so a command spelled that way is neither held nor guarded.
 
 `marion doctor --harness acp` probes every row and names the MCP transports each
 agent advertises; `marion-supervisor doctor --acp-command "<cmd>"` probes your own agent and says

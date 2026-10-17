@@ -50,6 +50,11 @@ pub const SYSTEM_MANAGED_DIR: &str = "/etc/hermes";
 pub const MCP_SERVERS_KEY: &str = "mcp_servers";
 /// The switch that stops Hermes adopting the Codex CLI's and Claude Code's logins.
 pub const ADOPT_EXTERNAL_LOGINS: &str = "auth.adopt_external_logins";
+/// The row's hold ([`HarnessSpec::held`]). Lifted, in the commit that records it, by the
+/// measurement `tasks/todo.md` plans: a traced run on sentinel codex and claude logins.
+pub const HELD: &str = "Hermes' guard against adopting your codex and claude logins is \
+                        read from the 0.22.2 source and not yet verified, so marion launches no \
+                        Hermes until a measurement of it is recorded";
 
 /// Hermes' row, read from the v0.22.2 source.
 pub const SPEC: HarnessSpec = HarnessSpec {
@@ -196,7 +201,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     }),
     note: "read from the hermes-agent v0.22.2 source (hermes_cli/stream_json.py, _parser.py, \
            managed_scope.py, agent/credential_sources.py); no capture yet, and conformance is \
-           pending a working 0.22.2 install",
+           pending a working 0.22.2 install. A command that reaches Hermes through a wrapper \
+           (npx, uvx, python -m) is not recognised as Hermes, so it is neither held nor guarded",
     requires: &[
         // The canned route (`--provider custom --base-url <url> --api-key canned`) is not built.
         Requirement {
@@ -223,6 +229,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    launch Hermes until it can name a scope that keeps yours",
         },
     ],
+    held: Some(HELD),
     axes: AxesRule::Split,
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,

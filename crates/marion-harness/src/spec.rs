@@ -206,6 +206,11 @@ pub struct HarnessSpec {
     /// checked — each refused by name with its own measured reason before the row's hook runs
     /// ([`crate::adapter::requirements`]). Empty where the row needs nothing a launch could omit.
     pub requires: &'static [Requirement],
+    /// **Why no launch of this row's binary runs yet**, or `None`. Set where a launch could harm
+    /// the operator and the row's protection is read rather than measured; every launch is refused
+    /// with this reason, whatever route named the binary ([`crate::HarnessAdapter::held`]), and
+    /// the measurement's commit sets it back to `None`. Reading the binary's version still runs.
+    pub held: Option<&'static str>,
     /// How §3.1's two axes are compiled from a launch ([`crate::HarnessAdapter::axes`]).
     pub axes: AxesRule,
     /// **Documents the harness reads beside its declaration**, written under the node's own

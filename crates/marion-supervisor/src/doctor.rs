@@ -813,6 +813,14 @@ fn micro_contract(
         return false;
     };
 
+    // A held row launches nothing, by any route: the contract is refused in the row's words.
+    if let Some(why) = probe_spec(opts.model.clone(), McpDeclaration::Marion, agent)
+        .and_then(|spec| adapter.held(&child_shaped(adapter, spec)))
+    {
+        notes.push(format!("micro-contract: REFUSED — {why}"));
+        return false;
+    }
+
     match declaration_step(adapter, opts, agent, notes) {
         Declaration::NotRun => {}
         Declaration::Checked(passed) => ok &= passed,
@@ -3024,14 +3032,27 @@ mod tests {
 
     /// **A probe runs the launch a node runs, documents included**: Hermes' borrowed-login switch
     /// lives in the managed document its variable names, so a probe that compiled the variable and
-    /// wrote no document would run Hermes unguarded on the operator's login.
+    /// wrote no document would run Hermes unguarded on the operator's login. The row is held, so
+    /// its hold is lifted here to see the launch the measurement will unlock.
     #[test]
     fn a_probe_launch_writes_the_documents_its_launch_reads() {
-        let adapter = adapter_for_type(Harness::Hermes, None).unwrap();
+        let adapter = marion_harness::adapter::DataAdapter::of(Box::leak(Box::new(
+            marion_harness::spec::HarnessSpec {
+                held: None,
+                ..marion_harness::hermes::SPEC
+            },
+        )));
         let spec = probe_spec(None, McpDeclaration::None, None)
-            .map(|spec| child_shaped(adapter.as_ref(), spec))
+            .map(|spec| child_shaped(&adapter, spec))
             .unwrap();
-        let (inv, tmp) = probe_launch(adapter.as_ref(), spec).unwrap();
+        assert!(
+            probe_launch(
+                adapter_for_type(Harness::Hermes, None).unwrap().as_ref(),
+                spec.clone()
+            )
+            .is_err()
+        );
+        let (inv, tmp) = probe_launch(&adapter, spec).unwrap();
         let dir = tmp.path().join("agent").join("managed");
         assert!(
             inv.env
@@ -3573,6 +3594,46 @@ mod tests {
                 r.role.as_str()
             );
         }
+    }
+
+    /// **`--try` on a held row launches nothing**: the contract is refused in the row's words, and
+    /// the binary is run for its version alone. A stub that logs its arguments stands in for it.
+    #[test]
+    fn try_refuses_a_held_row_and_only_reads_its_version() {
+        let dir = marion_testsupport::scratch("doctor-held-try");
+        let log = dir.join("ran.log");
+        let mut held = Vec::new();
+        for h in Harness::ALL {
+            let row = marion_harness::adapter::harness_spec(h);
+            let (Some(why), Some(program)) = (row.held, row.program) else {
+                continue;
+            };
+            held.push(h.as_str());
+            let _ = std::fs::remove_file(&log);
+            marion_testsupport::write_executable(
+                &dir.join(program),
+                format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 1\n", log.display()),
+            );
+            let rows = run(&Options {
+                mode: ProbeMode::Adapter,
+                harness: Some(h),
+                model: None,
+                acp_command: None,
+                path: Some(dir.as_os_str().to_owned()),
+            });
+            let notes = rows[0].report.notes.join("\n");
+            assert!(
+                notes.contains(&format!("micro-contract: REFUSED — {why}")),
+                "{h}:\n{notes}"
+            );
+            assert_eq!(rows[0].report.adapter_check, Some(false), "{h}");
+            let ran = std::fs::read_to_string(&log).unwrap_or_default();
+            assert!(
+                ran.lines().all(|l| l == "--version"),
+                "{h}: ran more than its version: {ran}"
+            );
+        }
+        assert_eq!(held, ["hermes"], "the held rows, by name");
     }
 
     /// The two names §8 requires and this probe cannot honour must appear as refusals, on every

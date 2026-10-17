@@ -405,6 +405,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    Copilot's own default",
         },
     ],
+    held: None,
     // Its two axes spell one tool two ways (`--available-tools` names, `--allow-tool` patterns)
     // and marion's verbs are re-read out of the model-facing spelling, with a refusal of its own:
     // no rule above states that, so [`CopilotAdapter::axes`] does.

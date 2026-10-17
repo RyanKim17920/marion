@@ -384,6 +384,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            omissions measured on 0.147.0 for M3 C2; tests/codex_app_server.rs, harness_matrix's \
            codex cell and M1's hop run the app-server row end to end",
     requires: &[],
+    held: None,
     axes: AxesRule::Split,
     // `-m` is compiled only where a real endpoint serves the model it is asked for: canned compiles
     // none, so every canned contract records `None` and the canned argv is byte-identical to what
