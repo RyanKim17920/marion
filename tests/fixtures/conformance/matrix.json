@@ -364,9 +364,9 @@
       "fixtures": "acp-opencode-1.19.3",
       "probes": {
         "P-activity": {
-          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_eb48b8c24ffej2D0We1Owc5P4w ; activity none (row: no activity rule)",
-          "status": "PASS"
+          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 311, output: 24, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5) no tools, (211, 17, 10), (311, 24, 15)]); session ses_eb466e7edffew1vx50b929WkiB ; activity none (row: no activity rule)",
+          "status": "FAIL"
         },
         "P-approval": {
           "expected": "",
@@ -571,8 +571,8 @@
       "fixtures": "claude-code-2.1.302",
       "probes": {
         "P-activity": {
-          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 5fc46959-0e47-465d-b44b-7eeb93d99903 ; activity mcp__marion__report",
+          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session ff597035-0373-46ff-91c8-158828979a0c ; activity mcp__marion__report",
           "status": "PASS"
         },
         "P-approval": {
@@ -696,8 +696,8 @@
       "fixtures": "codex-0.163.0",
       "probes": {
         "P-activity": {
-          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a14b6f-34ca-7a03-a4e5-0c658c8448d0 ; activity report",
+          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5) no tools, (211, 17, 10) no tools]); session 01a14b98-f63f-7660-a338-e3bb81b29486 ; activity report",
           "status": "PASS"
         },
         "P-approval": {
@@ -885,8 +885,8 @@
       "fixtures": "opencode-1.19.3",
       "probes": {
         "P-activity": {
-          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb48e5699ffeCU81STfs6Hx5xV ; activity marion_report",
+          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb466fae5ffehIBrHgNh5hZsWS ; activity marion_report",
           "status": "PASS"
         },
         "P-approval": {

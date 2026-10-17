@@ -9,7 +9,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | acp:codex-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:copilot | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:goose | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:opencode | OpenCode 1.19.3 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS | n/a |
+| acp:opencode | OpenCode 1.19.3 | PASS | PASS | PASS | **FAIL** | n/a | PASS | PASS | PASS | PASS | PASS | n/a |
 | acp:qwen | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | claude-code | 2.1.302 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
@@ -98,7 +98,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-version** PASS: OpenCode 1.19.3 (not listed in the row's verified releases); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; still running; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.9 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_eb48b8c24ffej2D0We1Owc5P4w ; activity none (row: no activity rule)
+- **P-activity** FAIL: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 311, output: 24, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5) no tools, (211, 17, 10), (311, 24, 15)]); session ses_eb466e7edffew1vx50b929WkiB ; activity none (row: no activity rule)
 - **P-approval** UNSUPPORTED: granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised
 - **P-midturn** PASS: queued as its own turn (2 turn ends; requests [4]); 2 prompt answer(s)
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
@@ -140,7 +140,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-version** PASS: 2.1.302 (not listed in the row's verified releases); no-self-update env DISABLE_AUTOUPDATER=1 carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"anthropic"}; still running; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.9 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 5fc46959-0e47-465d-b44b-7eeb93d99903 ; activity mcp__marion__report
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session ff597035-0373-46ff-91c8-158828979a0c ; activity mcp__marion__report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("marion denies `mcp__marion__report`: no operator answers a child's ask")), 1 permission ask(s) reached marion
 - **P-midturn** PASS: folded into the running turn (1 turn end; requests [4])
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
@@ -168,7 +168,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-version** PASS: 0.163.0 (not listed in the row's verified releases); no-self-update pair check_for_update_on_startup=false carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"responses"}; still running; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 1.7 s after the spawn and did NOT list marion's tools (marion gates the first prompt on marion's server being ready)
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a14b6f-34ca-7a03-a4e5-0c658c8448d0 ; activity report
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5) no tools, (211, 17, 10) no tools]); session 01a14b98-f63f-7660-a338-e3bb81b29486 ; activity report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("failed: user rejected MCP tool call")), 0 permission ask(s) reached marion
 - **P-midturn** PASS: folded into the running turn (1 turn end; requests [3])
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
@@ -210,7 +210,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-version** PASS: 1.19.3 (not listed in the row's verified releases); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; exit 0; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 11.3 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb48e5699ffeCU81STfs6Hx5xV ; activity marion_report
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb466fae5ffehIBrHgNh5hZsWS ; activity marion_report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("The user rejected permission to use this specific tool call.")), 0 permission ask(s) reached marion
 - **P-midturn** UNSUPPORTED: headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/opencode (1.18.32): `run --session <id>` continues the session with the store in a file OPENCODE_DB (db1/db2); `:memory:` failed with Session not found
 - **P-interrupt** PASS: the cancel ended the turn in 0.1 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []

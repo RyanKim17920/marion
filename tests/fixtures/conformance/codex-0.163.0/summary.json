@@ -3,8 +3,8 @@
     "fixtures": "codex-0.163.0",
     "probes": {
       "P-activity": {
-        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a14b6f-34ca-7a03-a4e5-0c658c8448d0 ; activity report",
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5) no tools, (211, 17, 10) no tools]); session 01a14b98-f63f-7660-a338-e3bb81b29486 ; activity report",
         "status": "PASS"
       },
       "P-approval": {

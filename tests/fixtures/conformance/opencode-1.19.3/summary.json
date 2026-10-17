@@ -3,8 +3,8 @@
     "fixtures": "opencode-1.19.3",
     "probes": {
       "P-activity": {
-        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb48e5699ffeCU81STfs6Hx5xV ; activity marion_report",
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb466fae5ffehIBrHgNh5hZsWS ; activity marion_report",
         "status": "PASS"
       },
       "P-approval": {

@@ -3,9 +3,9 @@
     "fixtures": "acp-opencode-1.19.3",
     "probes": {
       "P-activity": {
-        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_eb48b8c24ffej2D0We1Owc5P4w ; activity none (row: no activity rule)",
-        "status": "PASS"
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 311, output: 24, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5) no tools, (211, 17, 10), (311, 24, 15)]); session ses_eb466e7edffew1vx50b929WkiB ; activity none (row: no activity rule)",
+        "status": "FAIL"
       },
       "P-approval": {
         "expected": "",

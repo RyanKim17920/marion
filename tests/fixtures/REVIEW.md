@@ -177,6 +177,15 @@ changed its logging was not measured. `acp:opencode`'s record
 still does not admit, because P-approval is UNSUPPORTED (no ask reaches marion), as it was on 1.18.33.
 `scripts/fixture-privacy.py` was clean; read by the author.
 
+**2026-10-17, P-activity refresh under the strict usage probe.** After 56c3e53f, only P-activity
+(and P-version) were rerun on 55289ab0, canned, for claude 2.1.302, codex 0.163.0, opencode 1.19.3
+and `acp:opencode`. Each figure now has to equal what the provider sent. claude, codex and opencode
+pass at 322/27/15. `acp:opencode` fails at 311/24/15: it reports only the turn's last request,
+the one-step gap 56c3e53f names. Its 1.18.33 cell, 90/20/10 against the same three requests, was
+the same gap under the old bar, so this is not a 1.19.3 change. opencode's other figure moved
+(180/40/20 before) because eaff005f changed the canned provider's usage, not because of opencode.
+`scripts/fixture-privacy.py` was clean; read by the author.
+
 **2026-10-01, claude 2.1.286 conformance.** Two tool-probe transcripts named one of the operator's
 installed plugins; it reads as the same-length `plugin01xxxxxxxxxxx`.
 

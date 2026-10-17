@@ -3,8 +3,8 @@
     "fixtures": "claude-code-2.1.302",
     "probes": {
       "P-activity": {
-        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 5fc46959-0e47-465d-b44b-7eeb93d99903 ; activity mcp__marion__report",
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session ff597035-0373-46ff-91c8-158828979a0c ; activity mcp__marion__report",
         "status": "PASS"
       },
       "P-approval": {
