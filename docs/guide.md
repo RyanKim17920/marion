@@ -611,11 +611,13 @@ per harness on your login, which makes a model call.
 | `hermes` | 0.22.2, read from source; conformance pending | `chat -q` stream-json, on your own login only | `--resume` | no | disabled |
 | `acp:<command>` | n/a | the Agent Client Protocol | `session/load` where offered | per agent | — |
 
-A Hermes child never adopts your Codex CLI or Claude Code login, whose refresh tokens are
-single-use: marion points `HERMES_MANAGED_DIR` at a scope of its own whose `config.yaml` sets
+A Hermes child is configured not to adopt your Codex CLI or Claude Code login, whose refresh
+tokens are single-use (read from the 0.22.2 source; not yet measured): marion points
+`HERMES_MANAGED_DIR` at a scope of its own whose `config.yaml` sets
 `auth.adopt_external_logins: false` and declares marion's server, and the rest of your Hermes
 config stays as it is. That scope would hide an administrator's `/etc/hermes` or your own
-`HERMES_MANAGED_DIR`, so marion refuses to launch Hermes while either exists.
+`HERMES_MANAGED_DIR`, so marion refuses to launch Hermes while either exists. Until that switch
+is measured, no built-in type runs Hermes.
 
 On your own login a pi child runs on your agent dir as you configured it: your extensions, skills,
 prompts and packages load, and marion adds only its own `-e` extension. Canned pi keeps them out
