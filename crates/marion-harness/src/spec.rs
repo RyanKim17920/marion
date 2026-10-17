@@ -412,7 +412,9 @@ pub enum Need {
     /// harness's own that the row's launch would shadow (an administrator's managed config dir).
     PathAbsent(&'static str),
     /// This variable is unset in marion's own environment, which the node inherits — one the
-    /// row's launch would overwrite, hiding the operator's setting.
+    /// row's launch would overwrite, hiding the operator's setting. Read from the supervisor's
+    /// environment as it was when it started, which may not be the operator's current shell: a
+    /// variable exported after that is not seen, and one unset since still is.
     EnvUnset(&'static str),
 }
 
