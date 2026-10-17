@@ -1980,28 +1980,30 @@ pub(crate) fn agent_types_read(
 /// file another user can write, or one a child planted elsewhere — so it is refused by name.
 pub(crate) fn read_agent_types(tree: &Path) -> Result<Option<(PathBuf, String)>, SpawnError> {
     let path = tree.join(AGENT_TYPES_FILE);
-    if std::fs::symlink_metadata(&path).is_ok() {
-        let (real, root) = (path.canonicalize(), tree.canonicalize());
-        if let (Ok(real), Ok(root)) = (&real, &root)
-            && !real.starts_with(root)
-        {
-            return Err(SpawnError::AgentTypesFile {
-                path,
-                error: format!(
-                    "it is a link to {}, outside the tree it belongs to; marion reads a tree's \
-                     agent types only from the tree itself",
-                    real.display()
-                ),
-            });
-        }
+    let refused = |error: String| SpawnError::AgentTypesFile {
+        path: path.clone(),
+        error,
+    };
+    // Resolved first, so the read below follows no link: an in-tree one is the tree's own and is
+    // read where it points, one leaving the tree is refused.
+    let real = match path.canonicalize() {
+        Ok(real) => real,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(refused(e.to_string())),
+    };
+    if let Ok(root) = tree.canonicalize()
+        && !real.starts_with(&root)
+    {
+        return Err(refused(format!(
+            "it is a link to {}, outside the tree it belongs to; marion reads a tree's agent \
+             types only from the tree itself",
+            real.display()
+        )));
     }
-    match std::fs::read_to_string(&path) {
+    match marion_harness::tree_file::read_to_string(&real) {
         Ok(text) => Ok(Some((path, text))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(SpawnError::AgentTypesFile {
-            path,
-            error: e.to_string(),
-        }),
+        Err(e) => Err(refused(e.to_string())),
     }
 }
 

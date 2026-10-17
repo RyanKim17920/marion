@@ -2756,6 +2756,29 @@ fn agent_types_reads_the_trees_file_or_refuses_by_name() {
         matches!(agent_types(&repo), Err(SpawnError::AgentTypesFile { .. })),
         "only NotFound means the built-ins"
     );
+    // A FIFO the tree planted is refused at once rather than holding the spawn on its open, and
+    // an in-tree link is still read where it points.
+    std::fs::remove_dir(&file).unwrap();
+    assert!(
+        SysCommand::new("mkfifo")
+            .arg(&file)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(matches!(
+        agent_types(&repo),
+        Err(SpawnError::AgentTypesFile { .. })
+    ));
+    std::fs::remove_file(&file).unwrap();
+    let held = file.with_file_name("held.toml");
+    std::fs::write(
+        &held,
+        "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"Reviews.\"\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&held, &file).unwrap();
+    assert!(agent_types(&repo).unwrap().resolve("reviewer").is_some());
 }
 
 /// **A node's config documents are the owner's alone.** They carry the node's capability token
