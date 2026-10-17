@@ -3677,3 +3677,58 @@ fn a_childs_cause_is_kept_with_its_key_masked_and_its_controls_escaped() {
         "{words:?}"
     );
 }
+
+/// **Only the operator's own request takes a fresh trust record**: below a node, the record is
+/// that node's, and a node with none hands its child an empty one, never the checkout as it is
+/// now (which that node may have written). A resume carries its own whoever asks.
+///
+/// Mutation: fall back to `trust_record_taken` for a node with no record and the second
+/// assertion fails.
+#[test]
+fn only_the_operators_request_takes_a_fresh_trust_record() {
+    struct Parent(Option<TrustRecord>);
+    impl SpawnObserver for Parent {
+        fn identified(&self, _: &AgentId) -> Option<Secret> {
+            None
+        }
+        fn started(&self, _: &AgentId, _: i32) {}
+        fn trust_record(&self, _: &AgentId) -> Option<TrustRecord> {
+            self.0.clone()
+        }
+    }
+    let root = scratch("supervisor-trust-record-for");
+    let repo = fixture_repo(&root);
+    let operator = Requester::Operator {
+        allow_wider_children: false,
+    };
+    let node = Requester::from(Caller::root(
+        "parent",
+        marion_core::agent_type::builtin("codex").unwrap(),
+    ));
+    let taken = trust_record_for(None, &operator, &Parent(None), &repo);
+    assert!(
+        taken.head.is_some() && taken.repo_config.is_some(),
+        "{taken:?}"
+    );
+    assert_eq!(
+        trust_record_for(None, &node, &Parent(None), &repo),
+        TrustRecord::default(),
+        "a node with no record hands down nothing"
+    );
+    let parents = TrustRecord {
+        head: Some(Oid("c0ffee".into())),
+        ..TrustRecord::default()
+    };
+    assert_eq!(
+        trust_record_for(None, &node, &Parent(Some(parents.clone())), &repo),
+        parents
+    );
+    let resumed = TrustRecord {
+        head: Some(Oid("beef".into())),
+        ..TrustRecord::default()
+    };
+    assert_eq!(
+        trust_record_for(Some(&resumed), &operator, &Parent(None), &repo),
+        resumed
+    );
+}

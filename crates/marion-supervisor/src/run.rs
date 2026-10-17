@@ -1811,6 +1811,27 @@ pub fn run_spawn(
     )
 }
 
+/// **What a new node's repository-config trust is held to**, decided before it exists: a
+/// resume's own, carried; below a node, that node's record; for the operator's own request, the
+/// checkout `repo` as it is now ([`crate::spawn::trust_record_taken`]). Only the operator's
+/// request takes a fresh record: below a node with none (one launched before records, or whose
+/// record was lost), the checkout as it is now may be what that node made of it, so the record is
+/// empty and nothing is the operator's.
+pub(crate) fn trust_record_for(
+    resume: Option<&TrustRecord>,
+    requester: &Requester,
+    observer: &dyn SpawnObserver,
+    repo: &Path,
+) -> TrustRecord {
+    if let Some(carried) = resume {
+        return carried.clone();
+    }
+    match requester.parent_id() {
+        Some(parent) => observer.trust_record(&parent).unwrap_or_default(),
+        None => crate::spawn::trust_record_taken(repo),
+    }
+}
+
 /// **How far marion trusts the git configuration of `dir`.** A tree under this project's agent
 /// directories is a worktree marion made for a child, so its gitfile is checked and its git
 /// directory pinned ([`crate::gitcmd::Tree::Child`]); any other directory is the operator's own
@@ -2302,15 +2323,12 @@ pub fn run_spawn_watched(
     // its intent was lost is invisible to a restart — the untracked live process this ordering
     // exists to prevent.
     check_budget_enforceable(agent_type.harness, req.budget.as_ref())?;
-    // **What this node's repository-config trust is held to**, decided before it exists: a
-    // resume's own, carried; below a node, that node's; else the operator's checkout as it is now.
-    let trust_record = match &req.resume {
-        Some(r) => r.trust.clone(),
-        None => requester
-            .parent_id()
-            .and_then(|parent| observer.trust_record(&parent))
-            .unwrap_or_else(|| crate::spawn::trust_record_taken(&req.repo)),
-    };
+    let trust_record = trust_record_for(
+        req.resume.as_ref().map(|r| &r.trust),
+        requester,
+        observer,
+        &req.repo,
+    );
     crate::journal::append(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
