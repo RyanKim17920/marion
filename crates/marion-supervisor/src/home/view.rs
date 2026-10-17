@@ -7,7 +7,7 @@ use marion_core::contract::{AgentId, ExitStatus};
 use marion_core::proto::NodeSummary;
 use marion_core::proto::result::{ActionKind, NodeDetail};
 use marion_tui::home::help::KeyRow;
-use marion_tui::home::setup::ADD_LOGIN;
+use marion_tui::home::setup::{ADD_LOGIN, STOP_TRUSTING, TRUST};
 use marion_tui::home::text::{elapsed, shell_line, tokens};
 use marion_tui::home::{
     AgentRow, AgentsView, Body, Footer, HarnessRow, HelpView, Hint, Ink, LineKind, LoginRow, Page,
@@ -1032,9 +1032,9 @@ fn setup_keys(home: &Home) -> Vec<Hint> {
         Some(SetupItem::Notify) if home.setup.notify == Some(true) => vec![("enter", "turn off")],
         Some(SetupItem::Notify) => vec![("enter", "turn on")],
         Some(SetupItem::Repo) if home.repo_effect() == Effect::RepoTrust(true) => {
-            vec![("enter", "trust")]
+            vec![("enter", TRUST)]
         }
-        Some(SetupItem::Repo) => vec![("enter", "stop trusting")],
+        Some(SetupItem::Repo) => vec![("enter", STOP_TRUSTING)],
         None => Vec::new(),
     };
     k.extend([("r", "re-check"), ("esc", "back")]);

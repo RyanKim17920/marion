@@ -2100,7 +2100,7 @@ fn setup_repository_row_trusts_after_a_y_and_stops_trusting_at_once() {
     );
     assert!(v.lines.contains(&SetupLine::Group("repository".into())));
     assert_eq!(footer_keys(&h), ["enter", "r", "esc"]);
-    assert!(footer_has(&h, "enter", "trust"));
+    assert!(footer_has(&h, "enter", marion_tui::home::setup::TRUST));
     let e = h.key(Key::Enter);
     assert!(!e.destructive(), "Enter alone trusts nothing: {e:?}");
     assert_eq!(h.mode, Mode::Confirm(Effect::RepoTrust(true)));
@@ -2117,7 +2117,11 @@ fn setup_repository_row_trusts_after_a_y_and_stops_trusting_at_once() {
     h.key(Key::Enter);
     assert_eq!(h.key(Key::Char('y')), Effect::RepoTrust(true));
     h.setup.repo.as_mut().unwrap().answer = Some(true);
-    assert!(footer_has(&h, "enter", "stop trusting"));
+    assert!(footer_has(
+        &h,
+        "enter",
+        marion_tui::home::setup::STOP_TRUSTING
+    ));
     assert_eq!(h.key(Key::Enter), Effect::RepoTrust(false));
     assert_eq!(
         Effect::RepoTrust(false).argv().unwrap(),

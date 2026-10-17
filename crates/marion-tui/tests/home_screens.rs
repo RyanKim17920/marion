@@ -14,7 +14,7 @@
 //! With `MARION_HOME_DUMP=<dir>` set, every screen is also written there as `<name>.json` — one
 //! `[symbol, fg, bg, flags]` per cell — for a rasteriser to turn into dark- and light-theme images.
 
-use marion_tui::home::setup::ADD_LOGIN;
+use marion_tui::home::setup::{ADD_LOGIN, TRUST};
 use marion_tui::home::{
     self, AgentRow, AgentsView, Body, Footer, HarnessRow, HelpView, Hint, Ink, KeyRow, LineKind,
     LoginRow, Preview, ProfileRow, Ready, Screen, SetupLine, SetupView, StreamLine, Theme,
@@ -987,7 +987,7 @@ fn setup_repository_row_waits_for_the_operators_answer() {
         files: s(".mcp.json, .claude/settings.json"),
     });
     select(&mut v, |l| matches!(l, SetupLine::Repo { .. }));
-    let footer = keys(&[("enter", "trust"), ("r", "re-check"), ("esc", "back")]);
+    let footer = keys(&[("enter", TRUST), ("r", "re-check"), ("esc", "back")]);
     insta::assert_snapshot!(report(&setup_screen(&v, footer), 100, 30));
 }
 

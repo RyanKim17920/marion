@@ -107,6 +107,10 @@ pub struct SetupView {
 /// screens' own tests alike.
 pub const ADD_LOGIN: &str = "add login";
 
+/// The hints on the repository row for `enter`, which trusts the repository or stops trusting it.
+pub const TRUST: &str = "trust";
+pub const STOP_TRUSTING: &str = "stop trusting";
+
 /// The name column's floor and ceiling: wide enough for `acp claude-agent-acp`, never wider.
 const NAME_W: usize = 13;
 const NAME_MAX: usize = 26;
