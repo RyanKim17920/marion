@@ -194,6 +194,31 @@ fn n_line_runs_the_chosen_type_on_the_chosen_model() {
     );
 }
 
+/// **`n` opens on a type that can run**: the one last used while it still can, else the first
+/// whose harness is ready, rather than the first in the list.
+#[test]
+fn n_opens_on_a_type_that_can_run() {
+    let mut h = home();
+    h.harnesses[0].ready = Ready::Broken;
+    h.harnesses[1].ready = Ready::Ready;
+    h.key(Key::Char('n'));
+    assert_eq!(h.new_type().map(|t| t.name.as_str()), Some("copilot"));
+    h.key(Key::Esc);
+    h.harnesses[0].ready = Ready::Ready;
+    h.key(Key::Char('n'));
+    assert_eq!(
+        h.new_type().map(|t| t.name.as_str()),
+        Some("copilot"),
+        "the last type, still ready, is kept"
+    );
+    h.key(Key::Esc);
+    for x in &mut h.harnesses {
+        x.ready = Ready::Broken;
+    }
+    h.key(Key::Char('n'));
+    assert_eq!(h.new.kind, 2, "none ready: the line says why instead");
+}
+
 /// The type's own default model sends no `--model`; shift-tab wraps backwards; another type
 /// starts again on its own default.
 #[test]

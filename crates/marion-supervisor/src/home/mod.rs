@@ -510,6 +510,18 @@ impl Home {
             .cloned()
     }
 
+    /// The `n` line opens on a type that can run: the one last used if it still can, else the
+    /// first whose harness is ready. Where none is, the choice is left for the line to explain.
+    fn ready_type(&mut self) {
+        if self.new_blocked().is_none() {
+            return;
+        }
+        let ready = |t: &AgentType| self.harness_of(t).is_some_and(|h| h.ready == Ready::Ready);
+        if let Some(i) = self.types.iter().position(ready) {
+            self.new = NewTask { kind: i, model: 0 };
+        }
+    }
+
     /// Why the `n` line's type cannot run now, in a few words, or `None` when it can.
     pub fn new_blocked(&self) -> Option<String> {
         let t = self.new_type()?;
@@ -886,6 +898,7 @@ impl Home {
             Key::PageDown => self.watch.scroll = self.watch.scroll.saturating_sub(PAGE),
             Key::End => self.watch.scroll = 0,
             Key::Char('n') => {
+                self.ready_type();
                 self.mode = Mode::Typing {
                     purpose: Purpose::New,
                     text: String::new(),
