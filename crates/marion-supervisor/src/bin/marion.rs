@@ -3805,6 +3805,7 @@ mod tests {
                 "Setup's allow and deny on a file row; not built yet",
             ),
             ("mcp", "an MCP client's server, not something a person does"),
+            ("search", "reachable through the `:` line (slice 5)"),
         ];
         // Keys a screen has and a command line does not need: moving, paging, the line's own
         // keys, and `/`, which filters what is on screen (`marion ls --plain` is greppable).
