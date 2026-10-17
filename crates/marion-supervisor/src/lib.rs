@@ -26,6 +26,8 @@ pub mod acp_child;
 /// A bounded peek at what a running node has done — its last tool calls and words — read from its
 /// `events.jsonl` through its row's stream grammar.
 pub mod activity;
+/// The one way the supervisor writes under a node's agent dir, following no link the node left.
+pub(crate) mod agent_fs;
 pub mod app_server;
 #[cfg(feature = "client")]
 pub mod attach;

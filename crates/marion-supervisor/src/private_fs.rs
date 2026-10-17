@@ -104,37 +104,70 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         create_dir_all(dir)?;
     }
-    replace(path, bytes, 0o600)
+    replace(path, bytes, Perm::Private)
 }
 
-fn replace(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+fn replace(path: &Path, bytes: &[u8], perm: Perm) -> io::Result<()> {
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
         _ => Path::new("."),
     };
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other(format!("{} names no file", path.display())))?;
+    replace_in(&File::open(dir)?.into(), name, bytes, perm)
+}
+
+/// The mode a replaced document gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Perm {
+    /// `0600`, set through the staged file's fd whatever the umask.
+    Private,
+}
+
+/// **Replace `name` in the open directory `dir` with `bytes`**: a sibling staged `O_CREAT |
+/// O_EXCL | O_NOFOLLOW` under an unguessable name, chmodded through its fd for
+/// [`Perm::Private`], written, `fsync`ed and renamed over `name` within `dir`, then `dir`
+/// `fsync`ed so the rename itself survives a crash. rename(2) replaces a link at `name` rather
+/// than following it. The staging file is removed on any failure.
+pub(crate) fn replace_in(
+    dir: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    bytes: &[u8],
+    perm: Perm,
+) -> io::Result<()> {
+    use rustix::fs::{AtFlags, Mode, OFlags};
     let mut nonce = [0u8; 8];
     getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let staged = dir.join(format!(
-        ".{name}.{}.{}",
+    let staged = format!(
+        ".{}.{}.{}",
+        name.to_str().unwrap_or("file"),
         std::process::id(),
         nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ));
+    );
+    let mode = match perm {
+        Perm::Private => 0o600,
+    };
+    let fd = rustix::fs::openat(
+        dir,
+        staged.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(mode),
+    )?;
     let written = (|| -> io::Result<()> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .open(&staged)?;
+        if perm == Perm::Private {
+            rustix::fs::fchmod(&fd, Mode::from_raw_mode(0o600))?;
+        }
+        let mut f = File::from(fd);
         f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::rename(&staged, path)
+        Ok(rustix::fs::renameat(dir, staged.as_str(), dir, name)?)
     })();
     if written.is_err() {
-        let _ = std::fs::remove_file(&staged);
+        let _ = rustix::fs::unlinkat(dir, staged.as_str(), AtFlags::empty());
         return written;
     }
-    File::open(dir)?.sync_all()
+    Ok(rustix::fs::fsync(dir)?)
 }
 
 #[cfg(test)]
