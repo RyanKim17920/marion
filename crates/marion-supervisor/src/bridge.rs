@@ -354,6 +354,11 @@ fn agent_type_description_where(
 /// The file is read through [`crate::private_fs::read_capped`]: the state directory is the
 /// operator's, but a FIFO or a link planted there must not hang or exhaust every node's
 /// `tools/list`, so anything but a small regular file falls back too.
+///
+/// Only the daemon writes the file (`detach.rs` builds the one owning handle). Under
+/// protect-marion, where a wrapped node's state directory is read-denied, the file is unreadable
+/// and the bridge falls back to its own `PATH`; once the bridge's state reads move onto the
+/// socket, the PATH (or the launchable built-ins themselves) should come over it instead.
 fn spawn_path() -> std::ffi::OsString {
     spawn_path_in(crate::mcp::project_dir().ok().as_ref())
 }
