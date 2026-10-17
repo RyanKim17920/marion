@@ -2637,6 +2637,71 @@ fn a_resumed_root_keeps_its_first_launchs_trust_record() {
     );
 }
 
+/// **A key rotation's relaunch asks the root's trust again**, wired: a config the root planted in
+/// its checkout before its provider refused a key is not the operator's in the launch the next
+/// credential recompiles, and that launch's node names it held for its `Spawned`. Driven on every
+/// built-in root type whose headless launch rotates.
+///
+/// Mutation: build `rotated`'s launch from `r.launch` without `RootTrust::applied`, or keep the
+/// node's earlier `repo_config_held`, and this fails.
+#[test]
+fn a_rotated_root_asks_its_trust_again() {
+    let mut rotating = 0;
+    for name in marion_core::agent_type::builtin_names() {
+        let (dir, repo) = temp_repo(&format!("trust-rotated-{name}"));
+        let Ok(mut first) = prepare(&RootSpec {
+            repo: repo.clone(),
+            state: dir.join("state"),
+            ..root_spec(&dir, name)
+        }) else {
+            continue;
+        };
+        // What `prepare` keeps for a rotation when the endpoint has a fallback credential: the
+        // launch before any endpoint, here the continuation's.
+        let Some(relaunch) = first.relaunch.clone() else {
+            continue;
+        };
+        first.rotation = Some(relaunch);
+        // What the launch before held, which the rotated one must not inherit.
+        first.repo_config_held = marion_core::journal::ConfigHeld {
+            paths: vec!["stale".into()],
+            unverified: false,
+        };
+        std::fs::create_dir_all(repo.join(".codex")).unwrap();
+        std::fs::write(
+            repo.join(".codex/config.toml"),
+            "[mcp_servers.x]\ncommand = \"x\"\n",
+        )
+        .unwrap();
+        let next = crate::endpoint::Endpoint {
+            provider: "groq".into(),
+            wire: marion_core::provider::Wire::OpenAiChat,
+            base_url: "http://127.0.0.1:9/v1".into(),
+            key: None,
+            credential: marion_core::provider::CredentialId::default_for("groq"),
+            fallbacks: vec![],
+            model: "llama".into(),
+            key_header: marion_core::provider::KeyHeader::XApiKey,
+            route: crate::endpoint::Route::Native,
+        };
+        let Ok(rotated) = rotated(&first, next) else {
+            continue;
+        };
+        rotating += 1;
+        let launch = &rotated.relaunch.as_ref().expect("still continues").launch;
+        assert!(
+            !launch.extra.repo_config_own && !launch.extra.repo_trusted,
+            "{name}: a rotation after the plant"
+        );
+        assert_eq!(
+            rotated.repo_config_held,
+            first.trust.now().held,
+            "{name}: the rotated launch's own"
+        );
+    }
+    assert!(rotating > 0, "some built-in root rotates headless");
+}
+
 /// **Every later launch of a root asks its trust again**, wired, not only computable: a config
 /// the root planted in its checkout after its first launch is not the operator's in the launch a
 /// continuation generation compiles, nor in a resume's. Driven on every built-in root type whose
