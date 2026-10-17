@@ -80,9 +80,10 @@ impl Project {
 
 /// **Every project under `state`**: each `<12 lowercase hex>/` directory, never through a
 /// symlink, that holds a journal. Siblings that are not projects (`conformance/`,
-/// `harness-pins/`, `private/`) fail the name test. A project's root is what its `project.json`
-/// names (written by its supervisor), else what its digest's header recorded, kept only when it
-/// hashes to the directory; a project with neither shows as its hash until a rebuild learns one.
+/// `harness-pins/`, `private/`, `profiles/`) fail the name test. A project's root is what its
+/// `project.json` names (written by its supervisor), else what its digest's header recorded, kept
+/// only when it hashes to the directory; a project with neither shows as its hash until a rebuild
+/// learns one.
 pub fn every(state: &Path) -> Vec<Project> {
     let Ok(entries) = std::fs::read_dir(state) else {
         return Vec::new();
@@ -309,7 +310,7 @@ mod tests {
         let a = project_with(&state, &acme, vec![ended("a1", NOW - 5_000)]);
         let gone = Path::new("/nonexistent-search-every/billing/.git");
         let b = project_with(&state, gone, vec![ended("b1", NOW - 1_000)]);
-        for sibling in ["conformance", "harness-pins", "private"] {
+        for sibling in ["conformance", "harness-pins", digest::PRIVATE, "profiles"] {
             std::fs::create_dir_all(state.join(sibling)).unwrap();
         }
         let elsewhere = scratch("search-every-elsewhere");
@@ -369,7 +370,7 @@ mod tests {
         };
         let out = find(&mut projects, &Query::parse("x", NOW).unwrap(), opts);
         assert!(out.found.is_empty() && out.failed.is_empty());
-        assert!(!state.join("private").exists());
+        assert!(!state.join(digest::PRIVATE).exists());
     }
 
     /// A FIFO planted where the digest goes is never opened to wait on: it has no header, so the

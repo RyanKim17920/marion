@@ -54,6 +54,7 @@ use std::time::{Duration, Instant};
 use marion_core::journal::{RecordKind, decode};
 use marion_core::paths::ProjectDir;
 use marion_core::root_change::{RootChange, RootDelta};
+use marion_supervisor::search::digest::is_project_hash;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::fixture_repo;
 
@@ -497,6 +498,11 @@ fn concurrent_runs_in_distinct_projects_never_share_a_supervisor_a_journal_or_a_
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.is_dir())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_project_hash)
+        })
         .collect();
     assert_eq!(
         on_disk.len(),

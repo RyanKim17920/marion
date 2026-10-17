@@ -31,6 +31,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::export::scrub::Scrubber;
 
+/// The directory under `<state>` that holds every project's digest, as `private/<hash>/`.
+pub const PRIVATE: &str = "private";
+
 /// The digest line's format. A file whose header names another is rebuilt. 2: lines end in the
 /// `"end":1` seal; a version-1 digest may hold unsealed lines, so it is rebuilt once.
 pub const VERSION: u32 = 2;
@@ -76,7 +79,7 @@ impl Place {
     /// The digest of the project `hash` names under `state`. The caller has checked the hash.
     pub(crate) fn at(state: &Path, hash: &str) -> Place {
         Place {
-            dir: state.join("private").join(hash),
+            dir: state.join(PRIVATE).join(hash),
         }
     }
 
@@ -569,7 +572,7 @@ pub(crate) mod tests {
         let ok = Place::of(&ProjectDir::from_hash(&state, HASH)).unwrap();
         assert_eq!(
             ok.digest(),
-            state.join("private").join(HASH).join("runs.jsonl")
+            state.join(PRIVATE).join(HASH).join("runs.jsonl")
         );
         for bad in ["..", "0123456789AB", "0123456789a", "agents"] {
             assert!(
@@ -641,8 +644,8 @@ pub(crate) mod tests {
         let state = scratch("digest-symlink");
         let elsewhere = state.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
-        std::fs::create_dir_all(state.join("private")).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, state.join("private").join(HASH)).unwrap();
+        std::fs::create_dir_all(state.join(PRIVATE)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, state.join(PRIVATE).join(HASH)).unwrap();
         let place = Place::at(&state, HASH);
         assert!(append_line(&place, b"{}\n").is_err());
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);

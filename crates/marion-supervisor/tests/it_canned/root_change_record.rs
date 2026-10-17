@@ -26,6 +26,7 @@ use std::time::Duration;
 use marion_core::journal::{RecordKind, decode};
 use marion_core::root_change::{RootChange, RootChanged, RootDelta, RootObservation};
 use marion_supervisor::run::run_bounded;
+use marion_supervisor::search::digest::PRIVATE;
 use marion_supervisor::spawn::TreeSnapshot;
 use marion_testsupport::{fixture_repo, git, scratch, write_executable};
 
@@ -593,7 +594,7 @@ fn a_root_that_ended_leaves_exactly_one_search_line() {
     let mut digests = Vec::new();
     find_all(&run.state, "runs.jsonl", &mut digests);
     assert_eq!(digests.len(), 1, "{digests:?}");
-    assert!(digests[0].starts_with(run.state.join("private")));
+    assert!(digests[0].starts_with(run.state.join(PRIVATE)));
     let lines: Vec<serde_json::Value> = std::fs::read_to_string(&digests[0])
         .unwrap()
         .lines()
