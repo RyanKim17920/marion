@@ -160,8 +160,9 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 let c = s.profile_command(&["add", &harness, &name]);
                 s.foreground(c, "marion profile add");
                 if s.home.notice.is_none() {
+                    // The probe has not answered yet: the row says whether it is signed in.
                     s.home.notice = Some(format!(
-                        "profile {name} added; log in with the command under it"
+                        "login {harness} {name} added; signed out, it shows the command to sign in"
                     ));
                 }
                 s.added_profile = Some(name);

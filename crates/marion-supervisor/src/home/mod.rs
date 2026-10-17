@@ -711,7 +711,7 @@ impl Home {
         match effect {
             Effect::Logout(_) => self.notice = Some("key kept".into()),
             Effect::Merge(_) => self.notice = Some("not merged".into()),
-            Effect::ProfileRemove { .. } => self.notice = Some("profile kept".into()),
+            Effect::ProfileRemove { .. } => self.notice = Some("login kept".into()),
             _ => self.notice = Some("not cancelled".into()),
         }
         Effect::None

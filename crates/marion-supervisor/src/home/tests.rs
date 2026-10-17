@@ -1728,7 +1728,7 @@ fn del_removes_a_key_or_a_login_after_y() {
     };
     assert_eq!(question, "remove the login claude work?");
     assert_eq!(h.key(Key::Char('x')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("profile kept"));
+    assert_eq!(h.notice.as_deref(), Some("login kept"));
     h.key(Key::Backspace);
     assert_eq!(h.key(Key::Char('y')), remove);
     for item in [SetupItem::Harness(0), SetupItem::Types] {
