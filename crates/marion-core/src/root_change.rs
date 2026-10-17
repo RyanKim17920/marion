@@ -196,8 +196,9 @@ pub enum RootObservation {
 ///
 /// # Why the oid is worth writing down
 ///
-/// `pre_tree` is not a bare number. The tree object it names is in `<agent-dir>/objects`, written
-/// by the snapshot and not removed by [`crate::paths::AgentDir`] cleanup, so a `git
+/// `pre_tree` is not a bare number. The tree object it names is in the node's git scratch
+/// ([`crate::paths::AgentDir::git_scratch`]) `objects/`, written by the snapshot, outside what the
+/// node may write and not removed by cleanup, so a `git
 /// --git-dir=… cat-file` against that store reconstructs the operator's working tree as it stood
 /// when marion handed out the grant — after a crash that produced no post-tree at all.
 ///

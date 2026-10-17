@@ -3134,7 +3134,7 @@ pub fn run_spawn_watched(
     let changed = base.as_ref().and_then(|b| changed_paths(tree, b).ok());
     let diff = base
         .as_ref()
-        .and_then(|b| diff_text(tree, agent_dir.path(), b).ok())
+        .and_then(|b| diff_text(tree, &agent_dir.git_scratch(), b).ok())
         .filter(|d| !d.is_empty());
     // **The child's work onto its own branch, over the same sealed tree the diff describes** —
     // before verification can write into it, and before the reap below removes it. Without this

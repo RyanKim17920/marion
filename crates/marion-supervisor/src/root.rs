@@ -1074,7 +1074,8 @@ pub fn prepare_watched(
     // it is about.
     //
     // The oid is recoverable evidence and not a bare number: the tree object lives in
-    // `<agent-dir>/objects`, so it can be read back after the run that produced no post-tree.
+    // the node's git scratch `objects/`, so it can be read back after the run that produced no
+    // post-tree.
     crate::journal::record(
         &project,
         root_grant_record(&agent_id, &change_base, &launch.tools),
@@ -1244,7 +1245,7 @@ fn root_change_base(spec: &RootSpec, agent_dir: &AgentDir) -> RootChangeBase {
         true => RootChangeBase::NotAttempted {
             reason: "the operator passed --no-change-record".into(),
         },
-        false => match crate::spawn::TreeSnapshot::open(&spec.repo, agent_dir.path()) {
+        false => match crate::spawn::TreeSnapshot::open(&spec.repo, &agent_dir.git_scratch()) {
             Ok(snapshot) => {
                 let base_commit = snapshot.head(&spec.repo);
                 match snapshot.take(&spec.repo) {
@@ -1355,7 +1356,8 @@ fn root_launch_spec(
 /// that is the whole point, and it is a barrier so "before" survives the crash it is about.
 ///
 /// The oid is recoverable evidence and not a bare number: the tree object lives in
-/// `<agent-dir>/objects`, so it can be read back after the run that produced no post-tree.
+/// the node's git scratch `objects/`, so it can be read back after the run that produced no
+/// post-tree.
 fn root_grant_record(
     agent_id: &AgentId,
     change_base: &RootChangeBase,

@@ -815,8 +815,8 @@ pub fn changed_paths(wt: Tree<'_>, base: &Oid) -> Result<Vec<PathBuf>, SpawnErro
 
 /// A scratch `GIT_INDEX_FILE`, seeded from a commit and removed on the way out.
 ///
-/// It lives in `scratch_dir` — the node's own agent directory, marion's and owner-only — and
-/// **never inside the workspace**: an index file written under the worktree would itself show up
+/// It lives in `scratch_dir` — the node's git scratch ([`marion_core::paths::AgentDir::git_scratch`]), marion's,
+/// owner-only and outside what the node may write — and **never inside the workspace**: an index file written under the worktree would itself show up
 /// as an untracked file, so the diff would report the instrument that produced it. Not the shared
 /// system temp dir either, where a predictable name could be planted or read by another local user.
 struct ScratchIndex(PathBuf);
@@ -832,7 +832,7 @@ impl Drop for ScratchIndex {
 impl ScratchIndex {
     /// `GIT_INDEX_FILE=<tmp>` plus `git read-tree <base>`, §6.7's own recipe.
     fn seeded(wt: Tree<'_>, scratch_dir: &Path, base: &Oid) -> Result<Self, SpawnError> {
-        // The node can write its agent dir, and so leave a link in its place.
+        // Opened, and made where missing, without following a link in its place.
         crate::agent_fs::AgentFs::open(scratch_dir)?;
         let path = scratch_dir.join(format!(
             "diff-index-{}-{:?}",
@@ -1490,7 +1490,8 @@ impl Landed {
 /// # Why nothing is written to the operator's `.git`
 ///
 /// `GIT_OBJECT_DIRECTORY` sends every blob and tree `git add -A` and `git write-tree` create into
-/// `<agent-dir>/objects`; `GIT_ALTERNATE_OBJECT_DIRECTORIES` keeps the repository's real objects
+/// the node's git scratch `objects/` ([`marion_core::paths::AgentDir::git_scratch`], which the node cannot write);
+/// `GIT_ALTERNATE_OBJECT_DIRECTORIES` keeps the repository's real objects
 /// *readable*. `GIT_INDEX_FILE` is a **copy** of the repo's index, never the index itself. This
 /// extends the non-mutation discipline `git_indexed` already states one step further than the child
 /// path needed, because a child's worktree is marion's and the operator's repository is not — and
@@ -1503,7 +1504,7 @@ impl Landed {
 /// Both snapshots together cost ~70 ms warm, which is why the copy is worth the disk it uses.
 #[derive(Debug)]
 pub struct TreeSnapshot {
-    /// The copied index. Lives under the agent dir rather than the repo, so it can never itself
+    /// The copied index. Lives in the git scratch rather than the repo, so it can never itself
     /// show up as an untracked file in the tree it is being used to measure — [`ScratchIndex`]'s
     /// reason, and the same trap.
     index: PathBuf,
@@ -1519,7 +1520,7 @@ impl TreeSnapshot {
     /// **Every failure here is a refusal to measure, never a silent skip.** The caller turns it into
     /// `RootObservation::NotAttempted` or `Failed` with this error's own words, because a root that
     /// produced no delta because nobody looked must never read as a root that changed nothing.
-    pub fn open(repo: &Path, agent_dir: &Path) -> Result<Self, SpawnError> {
+    pub fn open(repo: &Path, scratch: &Path) -> Result<Self, SpawnError> {
         // **The state directory must not be inside the repository being measured** — refused
         // first, because every other failure here is git's and this one is marion's own.
         //
@@ -1547,10 +1548,10 @@ impl TreeSnapshot {
         // for nobody. A path that cannot be canonicalised is compared as given — a check that
         // cannot resolve its subject must not silently pass.
         let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        if real(agent_dir).starts_with(real(repo)) {
+        if real(scratch).starts_with(real(repo)) {
             return Err(SpawnError::StateDirInsideRepo {
                 repo: repo.to_path_buf(),
-                agent_dir: agent_dir.to_path_buf(),
+                agent_dir: scratch.to_path_buf(),
             });
         }
         // Asked of git rather than by probing for a `.git` entry: a linked worktree's `.git` is a
@@ -1569,9 +1570,9 @@ impl TreeSnapshot {
             ));
         }
         let real_objects = git_path(repo, "objects")?;
-        let objects = agent_dir.join("objects");
-        // A sandboxed root can write its agent dir, and so leave a link for either.
-        crate::agent_fs::AgentFs::open(agent_dir)?.dir(&objects)?;
+        let objects = scratch.join("objects");
+        // Made where missing without following a link in the place of either.
+        crate::agent_fs::AgentFs::open(scratch)?.dir(&objects)?;
 
         // **The repo's own alternates are carried forward.** `GIT_OBJECT_DIRECTORY` replaces the
         // main object store, and git reads `info/alternates` from *that* directory — so a repository
@@ -1586,7 +1587,7 @@ impl TreeSnapshot {
             }
         }
 
-        let index = agent_dir.join("snapshot-index");
+        let index = scratch.join("snapshot-index");
         // A missing source index is not a failure: a repository with nothing ever added has none,
         // and git will create one. What must not happen is *reusing* a stale copy from an earlier
         // run, which would be read as this run's starting point.

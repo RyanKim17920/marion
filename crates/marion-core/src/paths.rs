@@ -237,6 +237,22 @@ impl AgentDir {
 
     // No `meta()`. §4.3 declares `meta.json` and nothing writes it; see the module doc.
 
+    /// `<project>/scratch/<agent_id>` — **marion's git scratch for this node**: a root's snapshot
+    /// object store and copied index, a child's diff index. **Outside the agent dir on purpose**,
+    /// as [`ProjectDir::authority`] is: a sandboxed node may write its own agent dir, and so could
+    /// swap a directory git writes into by path for a link, or rewrite the objects a root's
+    /// `pre_tree` is evidence in.
+    pub fn git_scratch(&self) -> PathBuf {
+        let project = self
+            .0
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("."));
+        project
+            .join("scratch")
+            .join(self.0.file_name().unwrap_or_default())
+    }
+
     pub fn contracts_dir(&self) -> PathBuf {
         self.0.join("contracts")
     }
@@ -430,6 +446,14 @@ mod tests {
         assert_eq!(a.config_dir(), base.join("config"));
         assert_eq!(a.tmp_dir(), base.join("tmp"));
         assert_eq!(a.worktree(), base.join("worktree"));
+        assert_eq!(
+            a.git_scratch(),
+            p("/s/0123456789ab/scratch/0197f3aa-1c2d-7e00-8000-0102030405f0")
+        );
+        assert!(
+            !a.git_scratch().starts_with(a.path()),
+            "outside the agent dir"
+        );
         assert_eq!(
             a.contract(&TaskId("0197f3aa-1c2d-7e01-8000-0102030405f1".into())),
             base.join("contracts/0197f3aa-1c2d-7e01-8000-0102030405f1.json")

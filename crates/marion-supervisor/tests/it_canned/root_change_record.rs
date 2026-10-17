@@ -796,6 +796,23 @@ fn a_root_that_wrote_and_a_root_that_did_not_produce_different_records() {
          a file, a patch says whether it fixed the bug or deleted the file:\n{patch}"
     );
     assert!(bytes > 0);
+    // The snapshot's objects are in the node's git scratch, outside the agent dir the root may
+    // write, where a link it left could not redirect them.
+    let mut sidecars = Vec::new();
+    find_all(&a.state, "root-change.json", &mut sidecars);
+    let agent = sidecars[0].parent().unwrap();
+    assert!(!agent.join("objects").exists(), "nothing in the agent dir");
+    let project = agent.parent().and_then(Path::parent).unwrap();
+    assert!(
+        !files_under(
+            &project
+                .join("scratch")
+                .join(agent.file_name().unwrap())
+                .join("objects")
+        )
+        .is_empty(),
+        "the pre- and post-trees were written to the git scratch"
+    );
     match rec_a.observation {
         RootObservation::Observed {
             changed_count,
