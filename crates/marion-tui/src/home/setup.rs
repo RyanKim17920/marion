@@ -103,6 +103,10 @@ pub struct SetupView {
     pub expanded: bool,
 }
 
+/// The hint on a harness or login row for `a`, which adds a login: one word for the footer and the
+/// screens' own tests alike.
+pub const ADD_LOGIN: &str = "add login";
+
 /// The name column's floor and ceiling: wide enough for `acp claude-agent-acp`, never wider.
 const NAME_W: usize = 13;
 const NAME_MAX: usize = 26;

@@ -14,8 +14,3 @@ crates/marion-harness/src/spec.rs:KeyRecipe  `note` is the row's measurement pro
 crates/marion-harness/src/row_file.rs:KeyRecipeDto  a row file's KeyRecipe as TOML states it: `note` is measurement prose; the recipe names header spellings, never a key
 crates/marion-harness/src/row_file.rs:TokenCarrierDto  a row file's TokenCarrier as TOML states it: each variant's string is the measurement note of where the node token rides, never the token
 crates/marion-harness/src/adapter.rs:render_row  formats the header's *name* ("Authorization: Bearer" / "x-api-key") into a refusal; no key is in scope
-
-# --- verified safe: slim Setup (2026-10-16) ---
-crates/marion-supervisor/src/home/tests.rs:a_on_a_harness_or_its_login_asks_for_the_new_logins_name  "not a login name" is the input line's refusal text; the test drives Home's keys and runs nothing
-crates/marion-tui/tests/home_screens.rs:setup_keys  "add login" is a footer hint drawn into a TestBackend; nothing runs
-crates/marion-tui/tests/home_screens.rs:setup_logged_out_login_shows_its_command  "add login" is a footer hint drawn into a TestBackend; nothing runs

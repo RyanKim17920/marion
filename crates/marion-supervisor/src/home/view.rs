@@ -7,6 +7,7 @@ use marion_core::contract::{AgentId, ExitStatus};
 use marion_core::proto::NodeSummary;
 use marion_core::proto::result::{ActionKind, NodeDetail};
 use marion_tui::home::help::KeyRow;
+use marion_tui::home::setup::ADD_LOGIN;
 use marion_tui::home::text::{elapsed, shell_line, tokens};
 use marion_tui::home::{
     AgentRow, AgentsView, Body, Footer, HarnessRow, HelpView, Hint, Ink, LineKind, LoginRow, Page,
@@ -1014,15 +1015,15 @@ fn setup_keys(home: &Home) -> Vec<Hint> {
                 .profile_harnesses
                 .contains(&home.harnesses[i].name)
             {
-                k.push(("a", "add login"));
+                k.push(("a", ADD_LOGIN));
             }
             k
         }
         Some(SetupItem::Profile(i)) if home.setup.profiles[i].default => {
-            vec![("a", "add login"), ("del", "remove")]
+            vec![("a", ADD_LOGIN), ("del", "remove")]
         }
         Some(SetupItem::Profile(_)) => {
-            vec![("enter", "use"), ("a", "add login"), ("del", "remove")]
+            vec![("enter", "use"), ("a", ADD_LOGIN), ("del", "remove")]
         }
         Some(SetupItem::Key(_)) => vec![("a", "add key"), ("del", "remove")],
         Some(SetupItem::NoKeys) => vec![("a", "add key")],

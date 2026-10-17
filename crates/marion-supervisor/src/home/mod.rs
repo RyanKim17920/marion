@@ -1340,9 +1340,7 @@ impl Home {
             return Err("type a name for the login".into());
         }
         if !marion_core::agent_type::is_valid_name(name) {
-            return Err(format!(
-                "`{name}` is not a login name: letters, digits, - and _"
-            ));
+            return Err(format!("`{name}` {NOT_A_LOGIN_NAME}"));
         }
         if self.setup.profiles.iter().any(|p| p.name == name) {
             return Err(format!("a login named `{name}` already exists"));
@@ -1359,6 +1357,9 @@ impl Default for Home {
         Home::new()
     }
 }
+
+/// Why a name typed for a new login is refused, after the name.
+pub const NOT_A_LOGIN_NAME: &str = "is not a login name: letters, digits, - and _";
 
 /// The commands the `:` line will not run, each with why: what is no operator's to run from a
 /// screen.

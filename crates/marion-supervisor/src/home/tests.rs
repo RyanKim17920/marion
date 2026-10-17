@@ -2194,7 +2194,7 @@ fn a_on_a_harness_or_its_login_asks_for_the_new_logins_name() {
     // Refused here, before the terminal changes hands: a name that is not one, a name taken, an
     // empty line. Each keeps the line open.
     for (text, says) in [
-        ("../x", "not a login name"),
+        ("../x", NOT_A_LOGIN_NAME),
         ("work", "already exists"),
         ("  ", "type a name"),
     ] {

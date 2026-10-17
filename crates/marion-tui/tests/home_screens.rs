@@ -14,6 +14,7 @@
 //! With `MARION_HOME_DUMP=<dir>` set, every screen is also written there as `<name>.json` — one
 //! `[symbol, fg, bg, flags]` per cell — for a rasteriser to turn into dark- and light-theme images.
 
+use marion_tui::home::setup::ADD_LOGIN;
 use marion_tui::home::{
     self, AgentRow, AgentsView, Body, Footer, HarnessRow, HelpView, Hint, Ink, KeyRow, LineKind,
     LoginRow, Preview, ProfileRow, Ready, Screen, SetupLine, SetupView, StreamLine, Theme,
@@ -525,7 +526,7 @@ fn ended_keys() -> Footer {
 fn setup_keys() -> Footer {
     keys(&[
         ("enter", "details"),
-        ("a", "add login"),
+        ("a", ADD_LOGIN),
         ("r", "re-check"),
         ("esc", "back"),
     ])
@@ -909,7 +910,7 @@ fn setup_logged_out_login_shows_its_command() {
     );
     let footer = keys(&[
         ("enter", "use"),
-        ("a", "add login"),
+        ("a", ADD_LOGIN),
         ("del", "remove"),
         ("r", "re-check"),
         ("esc", "back"),
