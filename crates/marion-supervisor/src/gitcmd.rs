@@ -228,22 +228,51 @@ struct Pinned {
 /// node's to write: a link left in place of either names another directory, and through it
 /// another registered tree (the operator's own linked worktree, a sibling's), whose state
 /// marion's git would stage and commit, or which `worktree remove --force` would delete. Part of
-/// every [`Tree::Child`] call's proof, and asked on its own before a removal from the operator's
-/// checkout.
-pub fn check_child_tree(wt: &Path) -> Result<(), SpawnError> {
-    open_child_tree(wt).map(drop)
+/// every [`Tree::Child`] call's proof, and of [`hold_child_tree`] before a removal.
+///
+/// **Child tree `wt`, moved into `hold` for its removal**, and its path there. `worktree remove
+/// --force` takes a path and deletes what it resolves to, so a removal by the tree's own name
+/// could still be swapped for a link between any check and git. `hold` is a directory of
+/// marion's no node writes (the node's git scratch, made `0700` where missing): the tree is
+/// renamed there from its agent dir's fd, and rename(2) moves a link as itself. What arrived is
+/// then opened `O_NOFOLLOW`; a link or a file is renamed back and refused, so only the directory
+/// marion made is ever removed, and nothing can take its new name.
+pub fn hold_child_tree(wt: &Path, hold: &Path) -> Result<PathBuf, SpawnError> {
+    let Some(name) = wt.file_name() else {
+        return Err(tampered(wt, "it is not a directory below another"));
+    };
+    let held = hold.join(name);
+    let (above, _) = open_below(wt)?;
+    crate::private_fs::create_dir_all(hold).map_err(|e| tampered(wt, e))?;
+    let into = rustix::fs::open(hold, DIR, rustix::fs::Mode::empty())
+        .map_err(|e| tampered(wt, std::io::Error::from(e)))?;
+    rustix::fs::renameat(&above, name, &into, name)
+        .map_err(|e| tampered(wt, std::io::Error::from(e)))?;
+    if let Err(e) = open_child_tree(&held) {
+        // Best-effort: what the node left in place of its tree goes back where it was.
+        let _ = rustix::fs::renameat(&into, name, &above, name);
+        return Err(e);
+    }
+    Ok(held)
 }
+
+/// How a child's tree and the agent dir above it are opened.
+const DIR: rustix::fs::OFlags = rustix::fs::OFlags::RDONLY
+    .union(rustix::fs::OFlags::DIRECTORY)
+    .union(rustix::fs::OFlags::NOFOLLOW)
+    .union(rustix::fs::OFlags::CLOEXEC);
 
 /// **A child's tree, open**: the agent dir above it `O_NOFOLLOW` by its path (the agents dir that
 /// holds it is no node's to write), then the tree `O_DIRECTORY | O_NOFOLLOW` below that, so a link
 /// or a file in place of either refuses the open. The fd is the tree whatever its name comes to
 /// hold afterwards.
 fn open_child_tree(wt: &Path) -> Result<OwnedFd, SpawnError> {
-    use rustix::fs::{Mode, OFlags};
-    const DIR: OFlags = OFlags::RDONLY
-        .union(OFlags::DIRECTORY)
-        .union(OFlags::NOFOLLOW)
-        .union(OFlags::CLOEXEC);
+    open_below(wt).map(|(_, tree)| tree)
+}
+
+/// [`open_child_tree`], with the agent dir it was opened below.
+fn open_below(wt: &Path) -> Result<(OwnedFd, OwnedFd), SpawnError> {
+    use rustix::fs::Mode;
     let (Some(parent), Some(name)) = (wt.parent(), wt.file_name()) else {
         return Err(tampered(wt, "it is not a directory below another"));
     };
@@ -261,7 +290,8 @@ fn open_child_tree(wt: &Path) -> Result<OwnedFd, SpawnError> {
         }
     };
     let above = rustix::fs::open(parent, DIR, Mode::empty()).map_err(|e| refused(parent, e))?;
-    rustix::fs::openat(&above, name, DIR, Mode::empty()).map_err(|e| refused(wt, e))
+    let tree = rustix::fs::openat(&above, name, DIR, Mode::empty()).map_err(|e| refused(wt, e))?;
+    Ok((above, tree))
 }
 
 fn verified(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
@@ -588,5 +618,44 @@ mod tests {
             .is_err(),
             "and a command built after the swap is refused"
         );
+    }
+
+    /// **A tree held for removal is the directory marion made, at a name no node writes**: a real
+    /// tree moves into the hold with its files, and a link the node left in its place is refused
+    /// and put back, so nothing it names is ever moved or removed.
+    ///
+    /// Mutation: drop the `open_child_tree` after the rename and the link is returned as held.
+    #[test]
+    fn hold_child_tree_moves_a_real_tree_and_puts_a_link_back() {
+        let root = marion_testsupport::scratch("gitcmd-hold-tree");
+        let repo = marion_testsupport::fixture_repo(&root);
+        let agent = root.join("agents/n");
+        std::fs::create_dir_all(&agent).unwrap();
+        let wt = agent.join("worktree");
+        crate::spawn::make_worktree(Tree::Operator(&repo), &wt, &["marion/n".into()], None)
+            .expect("the child's worktree");
+        std::fs::write(wt.join("ours.txt"), "child's\n").unwrap();
+        let hold = root.join("scratch/n");
+        let held = hold_child_tree(&wt, &hold).expect("a real tree is held");
+        assert_eq!(held, hold.join("worktree"));
+        assert!(!wt.exists(), "it left the agent dir");
+        assert_eq!(
+            std::fs::read_to_string(held.join("ours.txt")).unwrap(),
+            "child's\n"
+        );
+
+        let other = root.join("operator-dir");
+        std::fs::create_dir_all(&other).unwrap();
+        let hold = root.join("scratch/m");
+        let linked = root.join("agents/m/worktree");
+        std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&other, &linked).unwrap();
+        assert!(hold_child_tree(&linked, &hold).is_err());
+        assert!(
+            std::fs::symlink_metadata(&linked).unwrap().is_symlink(),
+            "the link is back in place"
+        );
+        assert!(!hold.join("worktree").exists());
+        assert!(other.is_dir(), "and what it names is untouched");
     }
 }

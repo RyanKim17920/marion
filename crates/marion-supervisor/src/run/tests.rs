@@ -1525,8 +1525,13 @@ fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
         None,
     )
     .unwrap();
-    cleanup(&repo, &unchanged, "marion/unchanged", Some(&base));
+    let hold = root.join("scratch");
+    cleanup(&repo, &unchanged, &hold, "marion/unchanged", Some(&base));
     assert!(!unchanged.exists(), "the worktree is removed");
+    assert!(
+        !hold.join("wt-unchanged").exists(),
+        "from where it was held, not left there"
+    );
     assert!(
         !exists("marion/unchanged"),
         "and its unchanged branch with it"
@@ -1560,7 +1565,7 @@ fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
             "work",
         ],
     );
-    cleanup(&repo, &advanced, "marion/advanced", Some(&base));
+    cleanup(&repo, &advanced, &hold, "marion/advanced", Some(&base));
     assert!(!advanced.exists(), "the worktree is removed");
     assert!(
         exists("marion/advanced"),
@@ -2950,8 +2955,9 @@ fn a_continuation_writes_no_config_document_through_a_link_generation_0_left() {
 /// `commit_child_work` refuses it and `cleanup` leaves it, so that tree's files, untracked and
 /// ignored ones included, and its index stay exactly as they were.
 ///
-/// Mutation: drop `check_child_tree` from `gitcmd::registered` and the commit stages the other
-/// tree; drop it from `cleanup` and `worktree remove --force` deletes it.
+/// Mutation: drop `open_child_tree` from `gitcmd::registered` and the commit stages the other
+/// tree; drop `hold_child_tree`'s check after the move and `cleanup`'s proof before the
+/// remove, and `worktree remove --force` deletes it.
 #[test]
 fn a_worktree_swapped_for_a_link_is_neither_committed_nor_removed() {
     let root = scratch("supervisor-worktree-link");
@@ -3002,7 +3008,13 @@ fn a_worktree_swapped_for_a_link_is_neither_committed_nor_removed() {
         "child work",
     );
     assert!(committed.is_err(), "{committed:?}");
-    cleanup(&repo, &wt, "marion/n", Some(&base));
+    let hold = root.join("scratch/n");
+    cleanup(&repo, &wt, &hold, "marion/n", Some(&base));
+    assert!(
+        std::fs::symlink_metadata(&wt).unwrap().is_symlink(),
+        "the link the node left goes back where it was"
+    );
+    assert!(!hold.join("worktree").exists(), "and nothing is held");
 
     assert_eq!(
         std::fs::read_to_string(theirs.join("untracked.txt")).unwrap(),

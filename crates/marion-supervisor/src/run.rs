@@ -3310,6 +3310,7 @@ pub fn run_spawn_watched(
         cleanup(
             &env.project_root,
             path,
+            &agent_dir.git_scratch(),
             branch,
             contract.base_commit.as_ref(),
         );
@@ -3539,6 +3540,7 @@ fn select_workspace(
             )?;
             let prelaunch = PrelaunchWorktree {
                 repo: project_root.to_path_buf(),
+                hold: agent_dir.git_scratch(),
                 target: Some((wt.clone(), branch.clone(), base.clone())),
             };
             Ok((
@@ -4089,14 +4091,21 @@ fn persist_contract_and_close_stream(
 ///
 /// Run in the operator's own repository `repo` — never in the caller's tree, which may be a child's
 /// worktree whose configuration is the child's — through [`crate::gitcmd::command`].
-fn cleanup(repo: &Path, wt: &Path, branch: &str, base: Option<&Oid>) {
+///
+/// **Removed from `hold`, never by its own name** ([`crate::gitcmd::hold_child_tree`]): the node
+/// can write its agent dir, and a link left in place of its worktree, even after any check, would
+/// have `--force` remove whichever registered tree it names. Such a tree is left, with its
+/// branch. Moved, the tree's registration is repaired to its new path and proven again before
+/// git removes it there.
+fn cleanup(repo: &Path, wt: &Path, hold: &Path, branch: &str, base: Option<&Oid>) {
     let _serialized = crate::spawn::repo_write_guard();
-    // The node can write its agent dir: a link left in place of its worktree would have
-    // `--force` remove whichever registered tree it names. Such a tree is left, with its branch.
-    if let Err(e) = crate::gitcmd::check_child_tree(wt) {
-        eprintln!("marion: not removing {}: {e}", wt.display());
-        return;
-    }
+    let held = match crate::gitcmd::hold_child_tree(wt, hold) {
+        Ok(held) => held,
+        Err(e) => {
+            eprintln!("marion: not removing {}: {e}", wt.display());
+            return;
+        }
+    };
     let git = |args: &[&str]| {
         crate::gitcmd::command(&crate::spawn::Tree::Operator(repo), args).is_ok_and(
             |mut command| {
@@ -4107,7 +4116,17 @@ fn cleanup(repo: &Path, wt: &Path, branch: &str, base: Option<&Oid>) {
             },
         )
     };
-    let removed = git(&["worktree", "remove", "--force", &wt.to_string_lossy()]);
+    let held_arg = held.to_string_lossy();
+    let removed = git(&["worktree", "repair", &held_arg])
+        && crate::gitcmd::admin_dir(&held, repo).is_some()
+        && git(&["worktree", "remove", "--force", &held_arg]);
+    if !removed {
+        eprintln!(
+            "marion: could not remove {} (held at {})",
+            wt.display(),
+            held.display()
+        );
+    }
     if let (true, Some(task_ref), Some(base)) = (removed, task_branch_ref(branch), base) {
         git(&["update-ref", "-d", &task_ref, &base.0]);
     }
@@ -4120,6 +4139,8 @@ fn cleanup(repo: &Path, wt: &Path, branch: &str, base: Option<&Oid>) {
 /// a `shared-cwd` directory is not this spawn's to remove, and gets [`Self::none`].
 struct PrelaunchWorktree {
     repo: PathBuf,
+    /// Where [`cleanup`] moves the tree to remove it: the node's git scratch.
+    hold: PathBuf,
     target: Option<(PathBuf, String, Oid)>,
 }
 
@@ -4127,6 +4148,7 @@ impl PrelaunchWorktree {
     fn none() -> Self {
         PrelaunchWorktree {
             repo: PathBuf::new(),
+            hold: PathBuf::new(),
             target: None,
         }
     }
@@ -4140,7 +4162,7 @@ impl PrelaunchWorktree {
 impl Drop for PrelaunchWorktree {
     fn drop(&mut self) {
         if let Some((path, branch, base)) = self.target.take() {
-            cleanup(&self.repo, &path, &branch, Some(&base));
+            cleanup(&self.repo, &path, &self.hold, &branch, Some(&base));
         }
     }
 }
