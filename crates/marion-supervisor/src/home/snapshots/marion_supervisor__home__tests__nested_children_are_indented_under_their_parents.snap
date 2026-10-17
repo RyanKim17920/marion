@@ -1,0 +1,19 @@
+---
+source: crates/marion-supervisor/src/home/tests.rs
+assertion_line: 743
+expression: screen
+---
+ marion                                                                                   7 running
+  ⠋ ship the rate limiter       codex                       │ codex root  ship the rate limiter
+  ├ ⠸ plan the limiter          codex                       │
+  │ ├ ⠦ build the bucket        codex                       │ tokens not reported  0 files  7 agen…
+  │ │ ├ ⠏ test the bucket       codex                       │
+  │ │ └ ⠹ lint it               codex                       │ reading
+  │ └ ⠴ document the limiter    codex                       │
+  └ ⠇ review the orders api     codex                       │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+ j/k move  enter output  n new  x cancel  : command  , setup  q quit  ? help

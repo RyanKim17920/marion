@@ -426,13 +426,18 @@ fn help_opens_from_any_page_and_returns_to_it() {
 /// Help drawn as the operator sees it: the real key table (`view::KEYS`) through `marion_tui`, at
 /// the size a terminal opens at.
 fn help_screen(h: &Home, w: u16, rows: u16) -> String {
+    screen_of(h, Page::Help, w, rows)
+}
+
+/// `page` of `h` drawn as the operator sees it, at `w`x`rows`.
+fn screen_of(h: &Home, page: Page, w: u16, rows: u16) -> String {
     use ratatui::widgets::Widget as _;
     let f = frame(h);
     let screen = marion_tui::home::Screen {
         theme: marion_tui::home::theme::Theme::from_colorterm(None),
         title: &f.title,
         counts: &f.counts,
-        body: f.body(Page::Help),
+        body: f.body(page),
         footer: f.footer.clone(),
         notice: None,
         frame: 0,
@@ -695,6 +700,47 @@ fn a_title_for_a_node_that_is_gone_records_nothing() {
         h.set_title(&AgentId("gone".into()), Some("its task")),
         "a task is its own title, known or not"
     );
+}
+
+/// **A nested tree reads at a glance**: each level indents two columns under its parent, the
+/// connectors say which rows are siblings, and the deepest row still shows its title and harness.
+#[test]
+fn nested_children_are_indented_under_their_parents() {
+    let mut h = home();
+    let n = |id: &str, parent: Option<&str>| node(id, parent, NodeState::Running);
+    h.set_nodes(vec![
+        n("root", None),
+        n("plan", Some("root")),
+        n("build", Some("plan")),
+        n("test", Some("build")),
+        n("lint", Some("build")),
+        n("docs", Some("plan")),
+        n("review", Some("root")),
+    ]);
+    for (id, title) in [
+        ("root", "ship the rate limiter"),
+        ("plan", "plan the limiter"),
+        ("build", "build the bucket"),
+        ("test", "test the bucket"),
+        ("lint", "lint it"),
+        ("docs", "document the limiter"),
+        ("review", "review the orders api"),
+    ] {
+        h.set_title(&AgentId(id.into()), Some(title));
+    }
+    let f = frame(&h);
+    let prefix = |id: &str| row(&f, id).prefix.clone();
+    assert_eq!(prefix("root"), "");
+    assert_eq!(prefix("plan"), "├ ");
+    assert_eq!(prefix("build"), "│ ├ ");
+    assert_eq!(
+        prefix("lint").chars().count(),
+        6,
+        "depth 3: {:?}",
+        prefix("lint")
+    );
+    let screen = screen_of(&h, Page::Agents, 100, 14);
+    insta::assert_snapshot!(screen);
 }
 
 /// A row carries its run time and its token total from the summary, for every node, not only
