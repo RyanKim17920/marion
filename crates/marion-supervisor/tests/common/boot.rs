@@ -9,15 +9,33 @@
 
 use std::time::Duration;
 
+use marion_harness::spec::Boot;
+
 /// The wall clock `agent_type`'s harness is given to boot — the same budget the supervisor's own
 /// readiness waits use ([`marion_harness::HarnessAdapter::boot`]).
 pub fn budget(agent_type: &str) -> Duration {
+    boot(agent_type).budget()
+}
+
+/// How many times over its cores a quiet machine is taken to be committed: [`quiet`]'s factor.
+const QUIET_OVERSUBSCRIPTION: u32 = 3;
+
+/// **A short first bound on `agent_type`'s boot**, for a test that can tell a bound too short for
+/// the machine apart from a failure and then retries on [`budget`]: the row's measured CPU cost
+/// [`QUIET_OVERSUBSCRIPTION`] times over, or the whole budget where the row measured none.
+pub fn quiet(agent_type: &str) -> Duration {
+    match boot(agent_type) {
+        Boot::Measured { cpu, .. } => cpu * QUIET_OVERSUBSCRIPTION,
+        Boot::Unmeasured { .. } => budget(agent_type),
+    }
+}
+
+fn boot(agent_type: &str) -> Boot {
     let t = marion_core::agent_type::builtin(agent_type)
         .unwrap_or_else(|| panic!("`{agent_type}` is a built-in agent type"));
     marion_harness::adapter::adapter_for_type(t.harness, t.acp_agent.as_deref())
         .unwrap_or_else(|e| panic!("`{agent_type}` has an adapter: {e}"))
         .boot()
-        .budget()
 }
 
 /// A canned node's **whole run**: its boot, and the scripted turns after it, which together cost

@@ -31,7 +31,7 @@
 //! criterion that quietly passes on a machine that cannot run it is worth less than no criterion.
 //! No model is called — everything is served by the in-process `CannedServer`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use marion_core::contract::Isolation;
@@ -47,15 +47,39 @@ use crate::common;
 
 use common::canned::canned_env;
 
-/// The child's bound: long enough for its harness to boot, take turn one and get its tool call
+/// The child's bound: long enough for its harness to `boot`, take turn one and get its tool call
 /// running, and the tool call is still in flight when it expires — that is the whole point.
 ///
-/// The boot is the row's budget ([`common::boot::budget`]) and not a number typed here: this was a
-/// flat 25 s, measured against `codex exec` reaching its call in ~4 s on a quiet machine, and
-/// every opencode cell failed it under load with no tool call recorded — opencode had not finished
-/// booting. The turn after the boot is one small request and a spawn.
-fn child_timeout_secs(agent_type: &str) -> u64 {
-    (common::boot::budget(agent_type) + TOOL_CALL_TURN).as_secs()
+/// The boot comes from the row ([`Bounds`]) and not a number typed here: this was a flat 25 s,
+/// measured against `codex exec` reaching its call in ~4 s on a quiet machine, and every opencode
+/// cell failed it under load with no tool call recorded — opencode had not finished booting. The
+/// turn after the boot is one small request and a spawn.
+fn child_timeout_secs(boot: Duration) -> u64 {
+    (boot + TOOL_CALL_TURN).as_secs()
+}
+
+/// Which boots a cell bounds its child by, in turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bounds {
+    /// The row's whole boot budget ([`common::boot::budget`]), once: the bound a loaded machine
+    /// needs, and the path a cell takes when nothing shorter is tried.
+    Budget,
+    /// A quiet machine's boot first ([`common::boot::quiet`]), and the budget only if the tool
+    /// call was not running when that bound expired. A bound fixed at spawn cannot be started at
+    /// the tool call, and every cell on the budget waited out a boot sized for a load of 25 per
+    /// core. The short bound cannot pass a broken kill: a run that reached case B is asserted in
+    /// full, and one that did not is the vacuous run the retry replaces.
+    QuietThenBudget,
+}
+
+impl Bounds {
+    fn boots(self, agent_type: &str) -> Vec<Duration> {
+        let budget = common::boot::budget(agent_type);
+        match self {
+            Bounds::Budget => vec![budget],
+            Bounds::QuietThenBudget => vec![common::boot::quiet(agent_type), budget],
+        }
+    }
 }
 
 /// What a child spends after its boot to get its tool call running: one small request answered by
@@ -136,10 +160,12 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         None,
         "Start the long-running command and keep it running.",
         Expiry::Driver,
+        // The one cell on the row's real bound, so the budget path itself stays exercised.
+        Bounds::Budget,
         // **codex's second request is held open**, so marion's bound always fires first: codex
         // ends its own session about 30 s into a code-mode `exec` it cannot finish, and a bound
         // longer than that (the row's boot budget is) let the child exit before it expired.
-        Some(TurnGate::holding_from("responses", 2)),
+        || Some(TurnGate::holding_from("responses", 2)),
         |runaway, pidfile| Script {
             child_exec_js: Some(case_b_js(runaway, pidfile)),
             ..Script::default()
@@ -168,7 +194,8 @@ fn a_timed_out_opencode_child_leaves_no_surviving_tool_call_descendant() {
         Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
         &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
         Expiry::TwoStepSweep,
-        None,
+        Bounds::QuietThenBudget,
+        || None,
         opencode_bash_script,
     );
 }
@@ -188,7 +215,8 @@ fn a_timed_out_acp_opencode_child_leaves_no_surviving_tool_call_descendant() {
         None,
         &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
         Expiry::Driver,
-        None,
+        Bounds::QuietThenBudget,
+        || None,
         opencode_bash_script,
     );
 }
@@ -213,7 +241,8 @@ fn a_timed_out_pi_child_leaves_no_surviving_tool_call_descendant() {
         None,
         &format!("{PI_MARKER}: Start the long-running command and keep it running."),
         Expiry::Driver,
-        None,
+        Bounds::QuietThenBudget,
+        || None,
         |runaway, pidfile| Script {
             nodes: vec![NodeScript {
                 marker: PI_MARKER.into(),
@@ -269,19 +298,73 @@ static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// One child of `agent_type`, given `script` for its provider and a short bound, whose tool call is
 /// still running when the bound expires: every process marion's step 1 enumerated, and every pid
-/// the tool call recorded, must be gone, and the contract must say the child timed out.
+/// the tool call recorded, must be gone, and the contract must say the child timed out. `bounds`
+/// says which boots it tries; only a run whose tool call never got running moves on to the next.
+#[allow(clippy::too_many_arguments)]
 fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     tag: &str,
     agent_type: &str,
     model: Option<String>,
     prompt: &str,
     expiry: Expiry,
-    hold: Option<std::sync::Arc<TurnGate>>,
-    script: impl FnOnce(&Path, &Path) -> Script,
+    bounds: Bounds,
+    hold: fn() -> Option<std::sync::Arc<TurnGate>>,
+    script: impl Fn(&Path, &Path) -> Script,
 ) {
     // `last_kill_sweep` is one process-wide record, and every cell here expires at about the same
     // moment: run concurrently, one cell would read another's sweep.
     let _one_at_a_time = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let boots = bounds.boots(agent_type);
+    for (attempt, boot) in boots.iter().enumerate() {
+        let timeout_secs = child_timeout_secs(*boot);
+        let run = expire_one_child(
+            &format!("{tag}-{attempt}"),
+            agent_type,
+            model.clone(),
+            prompt,
+            expiry,
+            timeout_secs,
+            hold(),
+            &script,
+        );
+        if run.recorded.len() == 2 || attempt + 1 == boots.len() {
+            run.assert_no_survivor(agent_type, expiry, timeout_secs);
+            return;
+        }
+        eprintln!(
+            "timeout_kill: the {agent_type} tool call was not running when its {timeout_secs}s \
+             bound expired ({:?} in); retrying on the next bound",
+            run.elapsed
+        );
+    }
+}
+
+/// What one expired child left behind, gathered after every process it recorded is killed.
+struct Expired {
+    pidfile: PathBuf,
+    enumerated: Vec<i32>,
+    recorded: Vec<i32>,
+    survivors: Vec<i32>,
+    recorded_survivors: Vec<i32>,
+    /// The spawn path's contract, or its error: a bound short enough to expire inside the boot
+    /// ends the spawn before any contract (the MCP readiness wait shares it).
+    contract: Result<marion_core::contract::TaskContract, String>,
+    elapsed: Duration,
+}
+
+/// Run one child under a `timeout_secs` bound and clean up after it, asserting nothing — even a
+/// spawn that failed is returned, so a too-short bound can be retried.
+#[allow(clippy::too_many_arguments)]
+fn expire_one_child(
+    tag: &str,
+    agent_type: &str,
+    model: Option<String>,
+    prompt: &str,
+    expiry: Expiry,
+    timeout_secs: u64,
+    hold: Option<std::sync::Arc<TurnGate>>,
+    script: &impl Fn(&Path, &Path) -> Script,
+) -> Expired {
     let root_dir = scratch(tag);
     let repo = fixture_repo(&root_dir);
     let state = root_dir.join("state");
@@ -316,7 +399,7 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
         acceptance_criteria: vec!["the command is running".into()],
         verification: vec![],
         writable_scope: vec!["src/**".into()],
-        timeout_secs: child_timeout_secs(agent_type),
+        timeout_secs,
         model,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
@@ -332,8 +415,8 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
         "root",
         marion_core::agent_type::builtin("claude").expect("the root type resolves"),
     );
-    let contract = run_spawn(&env, &req, &TaskId(tag.into()), &caller)
-        .expect("the spawn path runs to a contract");
+    let contract =
+        run_spawn(&env, &req, &TaskId(tag.into()), &caller).map_err(|e| format!("{e:?}"));
     let elapsed = started.elapsed();
     // The child is gone; nothing may stay parked on the provider it left.
     if let Some(gate) = &hold {
@@ -364,51 +447,78 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     }
     drop(server);
 
-    // ---- the tool call really reached case B. --------------------------------------------------
-    assert_eq!(
-        recorded.len(),
-        2,
-        "the {agent_type} tool call did not record its runaway pids in {} within {elapsed:?}, so this \
-         run never reached case B and the criterion would be vacuous. Got {recorded:?}",
-        pidfile.display()
-    );
-
-    // ---- criterion 6, first half: a non-empty enumerated set. ----------------------------------
-    if expiry == Expiry::TwoStepSweep {
-        assert!(
-            !enumerated.is_empty(),
-            "marion enumerated no descendants at expiry; an empty set makes the ESRCH check vacuous"
-        );
-        assert!(
-            recorded.iter().all(|p| enumerated.contains(p)),
-            "marion's step-1 enumeration missed the tool call's own processes: enumerated \
-             {enumerated:?}, tool call recorded {recorded:?}"
-        );
+    Expired {
+        pidfile,
+        enumerated,
+        recorded,
+        survivors,
+        recorded_survivors,
+        contract,
+        elapsed,
     }
+}
 
-    // ---- criterion 6, second half: ESRCH for every pid in that set. ----------------------------
-    assert!(
-        survivors.is_empty(),
-        "processes marion enumerated survived the timeout kill — the S7 leak: {survivors:?} \
+impl Expired {
+    fn assert_no_survivor(&self, agent_type: &str, expiry: Expiry, timeout_secs: u64) {
+        let Expired {
+            pidfile,
+            enumerated,
+            recorded,
+            survivors,
+            recorded_survivors,
+            contract,
+            elapsed,
+        } = self;
+
+        let contract = contract
+            .as_ref()
+            .unwrap_or_else(|e| panic!("the spawn path runs to a contract: {e}"));
+
+        // ---- the tool call really reached case B. --------------------------------------------------
+        assert_eq!(
+            recorded.len(),
+            2,
+            "the {agent_type} tool call did not record its runaway pids in {} within {elapsed:?}, so this \
+         run never reached case B and the criterion would be vacuous. Got {recorded:?}",
+            pidfile.display()
+        );
+
+        // ---- criterion 6, first half: a non-empty enumerated set. ----------------------------------
+        if expiry == Expiry::TwoStepSweep {
+            assert!(
+                !enumerated.is_empty(),
+                "marion enumerated no descendants at expiry; an empty set makes the ESRCH check vacuous"
+            );
+            assert!(
+                recorded.iter().all(|p| enumerated.contains(p)),
+                "marion's step-1 enumeration missed the tool call's own processes: enumerated \
+             {enumerated:?}, tool call recorded {recorded:?}"
+            );
+        }
+
+        // ---- criterion 6, second half: ESRCH for every pid in that set. ----------------------------
+        assert!(
+            survivors.is_empty(),
+            "processes marion enumerated survived the timeout kill — the S7 leak: {survivors:?} \
          (kill(pid, 0) did not return ESRCH; EPERM counts as a survivor). Enumerated set was \
          {enumerated:?}"
-    );
-    assert!(
-        recorded_survivors.is_empty(),
-        "the tool call's own setsid'd processes outlived the expired child: {recorded_survivors:?}"
-    );
+        );
+        assert!(
+            recorded_survivors.is_empty(),
+            "the tool call's own setsid'd processes outlived the expired child: {recorded_survivors:?}"
+        );
 
-    // ---- the node was expired, not merely finished. --------------------------------------------
-    let completion = contract
-        .completion
-        .as_ref()
-        .expect("a terminal node has a completion");
-    assert_eq!(
-        completion.status,
-        ExitStatus::TimedOut,
-        "the child must have been expired by marion's bound, not have exited on its own; \
-         ran for {elapsed:?} against a {}s bound. exit: {}",
-        child_timeout_secs(agent_type),
-        completion.exit.description
-    );
+        // ---- the node was expired, not merely finished. --------------------------------------------
+        let completion = contract
+            .completion
+            .as_ref()
+            .expect("a terminal node has a completion");
+        assert_eq!(
+            completion.status,
+            ExitStatus::TimedOut,
+            "the child must have been expired by marion's bound, not have exited on its own; \
+         ran for {elapsed:?} against a {timeout_secs}s bound. exit: {}",
+            completion.exit.description
+        );
+    }
 }
