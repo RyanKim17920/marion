@@ -2406,7 +2406,7 @@ pub fn run_spawn_watched(
     };
     let agent_dir = env.project_dir.agent(&agent_id);
     let ch = agent_dir.config_dir();
-    crate::private_fs::create_dir_all(&ch)?;
+    crate::agent_fs::AgentFs::open(agent_dir.path())?.dir(&ch)?;
     // The child's children resolve through the same table, and are held inside the scope this
     // child was granted: handed down before the child exists.
     snapshot
@@ -3917,7 +3917,7 @@ fn declare_and_compile(
     launch: &LaunchSpec,
     ctx: &SpawnCtx,
 ) -> Result<Invocation, SpawnError> {
-    write_config_documents(adapter.launch_documents(launch, ctx)?)?;
+    write_config_documents(&launch.config_dir, adapter.launch_documents(launch, ctx)?)?;
     Ok(adapter.compile(launch, ctx)?)
 }
 
@@ -3928,15 +3928,31 @@ fn declare_and_compile(
 /// because `$XDG_CONFIG_HOME` is a directory whose layout the harness owns. Creating only
 /// `config_dir` failed the whole launch with a bare `No such file or directory` naming nothing.
 ///
+/// Every document lies below `config_dir`, which the node can write: a node can leave a link at a
+/// document's path, or in place of `config_dir` or a directory under it, before its next
+/// generation, rotation or resume. So each is replaced through [`crate::agent_fs::AgentFs`] on
+/// the node's agent dir (`config_dir`'s parent): a link at the document is replaced, and a link
+/// or file in place of a directory refuses the launch, rather than marion writing the operator's
+/// own file.
+///
 /// Returns the paths written, in order, for a caller that checks the declaration against them.
 pub(crate) fn write_config_documents(
+    config_dir: &Path,
     files: Vec<(PathBuf, String)>,
 ) -> std::io::Result<Vec<PathBuf>> {
+    let agent = crate::agent_fs::AgentFs::open(config_dir.parent().unwrap_or(config_dir))?;
     let mut written = Vec::with_capacity(files.len());
     for (path, contents) in files {
+        if !path.starts_with(config_dir) {
+            return Err(std::io::Error::other(format!(
+                "config document {} is not under {}",
+                path.display(),
+                config_dir.display()
+            )));
+        }
         // Owner-only: a document can carry the node's capability token and, on an endpoint node,
         // the user's key.
-        std::io::Write::write_all(&mut crate::private_fs::create(&path)?, contents.as_bytes())?;
+        agent.replace(&path, contents.as_bytes())?;
         written.push(path);
     }
     Ok(written)

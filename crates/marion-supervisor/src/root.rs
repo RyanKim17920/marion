@@ -819,7 +819,7 @@ pub fn prepare_watched(
     let project_root = crate::socket::project_root(&spec.repo);
     let project = ProjectDir::new(&spec.state, &project_root);
     let agent_dir = project.agent(&agent_id);
-    crate::private_fs::create_dir_all(&agent_dir.config_dir())?;
+    crate::agent_fs::AgentFs::open(agent_dir.path())?.dir(&agent_dir.config_dir())?;
 
     // §6.1 step 5, through the seam, **dispatched on the root's own agent type** — the root used to
     // be `Harness::ClaudeCode` by constant, which is why `marion run codex` compiled a Claude Code
@@ -1002,7 +1002,10 @@ pub fn prepare_watched(
         bridge: spec.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };
-    let written = crate::run::write_config_documents(adapter.launch_documents(&launch, &ctx)?)?;
+    let written = crate::run::write_config_documents(
+        &launch.config_dir,
+        adapter.launch_documents(&launch, &ctx)?,
+    )?;
     let invocation = compile_root(adapter.as_ref(), spec.pane, &launch, &ctx)?;
 
     // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
@@ -1846,7 +1849,10 @@ fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode,
     // The process it replaces ran in the checkout: its trust is asked again.
     let mut launch = node.trust.applied(r.launch.clone());
     crate::endpoint::apply(&mut launch, &next, gateway.as_deref());
-    crate::run::write_config_documents(adapter.launch_documents(&launch, &r.ctx)?)?;
+    crate::run::write_config_documents(
+        &launch.config_dir,
+        adapter.launch_documents(&launch, &r.ctx)?,
+    )?;
     let invocation = compile_root(adapter.as_ref(), false, &launch, &r.ctx)?;
     Ok(RootNode {
         invocation,
@@ -2518,7 +2524,10 @@ fn launch_only(
         let inv = adapter
             .launch_documents(&launch, &relaunch.ctx)
             .map_err(RootError::from)
-            .and_then(|files| crate::run::write_config_documents(files).map_err(RootError::from))
+            .and_then(|files| {
+                crate::run::write_config_documents(&launch.config_dir, files)
+                    .map_err(RootError::from)
+            })
             .and_then(|_| compile_root(adapter.as_ref(), false, &launch, &relaunch.ctx));
         let inv = match inv {
             Ok(inv) => inv,

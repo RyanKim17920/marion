@@ -2799,22 +2799,141 @@ fn agent_types_reads_the_trees_file_or_refuses_by_name() {
 #[test]
 fn config_documents_are_written_owner_only_even_over_a_wider_file() {
     use std::os::unix::fs::PermissionsExt;
-    let root = scratch("config-docs-mode");
-    let path = root.join("nested/dir/doc.json");
+    let config = scratch("config-docs-mode").join("config");
+    let path = config.join("nested/dir/doc.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "old").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let fresh = root.join("fresh/doc.toml");
-    write_config_documents(vec![
-        (path.clone(), "{}".into()),
-        (fresh.clone(), "x = 1".into()),
-    ])
+    let fresh = config.join("fresh/doc.toml");
+    write_config_documents(
+        &config,
+        vec![(path.clone(), "{}".into()), (fresh.clone(), "x = 1".into())],
+    )
     .unwrap();
     for p in [&path, &fresh] {
         let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{}", p.display());
     }
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+}
+
+/// **A link a node left in its own `config/` never leads marion's write elsewhere.** The node
+/// can write its agent dir, so between generations it can put a link to an operator file at a
+/// document's path, in place of `config/`, or in place of a directory under it. A link at the
+/// document is replaced by the document, and the file it named is untouched in bytes and mode; a
+/// link in place of a directory refuses the write by name, and whatever it named is untouched.
+#[test]
+fn a_link_left_in_config_is_replaced_or_refused_and_never_written_through() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let root = scratch("config-docs-links");
+    let operator = root.join("operator");
+    std::fs::create_dir_all(&operator).unwrap();
+    let theirs = operator.join("doc.json");
+    std::fs::write(&theirs, "operator's").unwrap();
+    std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let untouched = || {
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "operator's");
+        let mode = std::fs::metadata(&theirs).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "never chmodded");
+        assert_eq!(
+            std::fs::read_dir(&operator).unwrap().count(),
+            1,
+            "nothing staged there"
+        );
+    };
+    let config = root.join("agent/config");
+    std::fs::create_dir_all(config.join("nested")).unwrap();
+
+    let doc = config.join("doc.json");
+    symlink(&theirs, &doc).unwrap();
+    write_config_documents(&config, vec![(doc.clone(), "marion's".into())]).unwrap();
+    untouched();
+    assert!(
+        std::fs::symlink_metadata(&doc).unwrap().is_file(),
+        "the link is gone"
+    );
+    assert_eq!(std::fs::read_to_string(&doc).unwrap(), "marion's");
+
+    let nested = config.join("nested");
+    std::fs::remove_dir(&nested).unwrap();
+    symlink(&operator, &nested).unwrap();
+    let err = write_config_documents(&config, vec![(nested.join("doc.json"), "x".into())])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(&nested.display().to_string()), "{err}");
+    untouched();
+
+    std::fs::remove_dir_all(&config).unwrap();
+    symlink(&operator, &config).unwrap();
+    let err = write_config_documents(&config, vec![(config.join("doc.json"), "x".into())])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(&config.display().to_string()), "{err}");
+    untouched();
+
+    let outside = write_config_documents(
+        &root.join("agent/config"),
+        vec![(theirs.clone(), "x".into())],
+    );
+    assert!(outside.is_err(), "a document outside config/ is refused");
+    untouched();
+}
+
+/// **Generation 1 writes its config documents as marion's, whatever generation 0 left in
+/// `config/`**: a document generation 0 swapped for a link to an operator file is replaced and
+/// the operator's file keeps its bytes and mode; `config/` itself swapped for a link to an
+/// operator directory refuses the continuation and writes nothing there. Both go through
+/// [`declare_and_compile`], the one step every generation's launch takes.
+///
+/// Mutation: write the documents through `private_fs::create` again and the operator's file
+/// holds marion's document.
+#[test]
+fn a_continuation_writes_no_config_document_through_a_link_generation_0_left() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let root = scratch("supervisor-continuation-config-links");
+    let operator = root.join("home");
+    std::fs::create_dir_all(&operator).unwrap();
+    let rc = operator.join(".zshrc");
+    std::fs::write(&rc, "operator's").unwrap();
+    std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let untouched = || {
+        assert_eq!(std::fs::read_to_string(&rc).unwrap(), "operator's");
+        let mode = std::fs::metadata(&rc).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "never chmodded");
+        assert_eq!(
+            std::fs::read_dir(&operator).unwrap().count(),
+            1,
+            "nothing written beside it"
+        );
+    };
+    let adapter = adapter_for(Harness::Codex).unwrap();
+    let ctx = launch_ctx();
+    let mut gen0 = launch_spec(None);
+    gen0.config_dir = root.join("agents/n/config");
+    let docs = adapter.launch_documents(&gen0, &ctx).unwrap();
+    let (doc, body) = docs.first().expect("codex declares a document").clone();
+    declare_and_compile(adapter.as_ref(), &gen0, &ctx).unwrap();
+    let gen1 = LaunchSpec {
+        resume: Some("s1".into()),
+        prompt: "go on".into(),
+        ..gen0.clone()
+    };
+
+    std::fs::remove_file(&doc).unwrap();
+    symlink(&rc, &doc).unwrap();
+    declare_and_compile(adapter.as_ref(), &gen1, &ctx).unwrap();
+    untouched();
+    assert!(
+        std::fs::symlink_metadata(&doc).unwrap().is_file(),
+        "the link is replaced"
+    );
+    assert_eq!(std::fs::read_to_string(&doc).unwrap(), body);
+
+    std::fs::remove_dir_all(&gen0.config_dir).unwrap();
+    symlink(&operator, &gen0.config_dir).unwrap();
+    let refused = declare_and_compile(adapter.as_ref(), &gen1, &ctx);
+    assert!(refused.is_err(), "a linked config/ refuses the launch");
+    untouched();
 }
 
 /// **A row's `provider` must be one the user has** — a built-in, or one in their own
