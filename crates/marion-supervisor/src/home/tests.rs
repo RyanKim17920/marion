@@ -1912,6 +1912,81 @@ fn enter_does_the_selected_rows_one_thing() {
     );
 }
 
+/// **Setup's repository row answers `marion trust … --repo`**: last, under its own group; Enter on
+/// an unanswered repository asks for a `y` before `allow --repo`, and `n` keeps it untrusted;
+/// Enter on a trusted one runs `deny --repo` at once.
+#[test]
+fn setup_repository_row_trusts_after_a_y_and_stops_trusting_at_once() {
+    let mut h = profiles_home();
+    h.setup.notify = Some(true);
+    h.setup.repo = Some(crate::home::RepoTrust {
+        answer: None,
+        files: vec![".mcp.json".into()],
+    });
+    assert_eq!(h.setup_items().last(), Some(&SetupItem::Repo));
+    for _ in 0..20 {
+        h.key(Key::Char('j'));
+    }
+    assert_eq!(
+        h.selected_item(),
+        Some(SetupItem::Repo),
+        "the cursor stops on the last row"
+    );
+    let v = frame(&h).setup;
+    assert!(
+        matches!(
+            &v.lines[v.cursor.unwrap()],
+            SetupLine::Repo { answer: None, files } if files == ".mcp.json"
+        ),
+        "{:?}",
+        v.lines
+    );
+    assert!(v.lines.contains(&SetupLine::Group("repository".into())));
+    assert_eq!(footer_keys(&h), ["enter", "r", "esc"]);
+    assert!(footer_has(&h, "enter", "trust"));
+    let e = h.key(Key::Enter);
+    assert!(!e.destructive(), "Enter alone trusts nothing: {e:?}");
+    assert_eq!(h.mode, Mode::Confirm(Effect::RepoTrust(true)));
+    let Footer::Confirm { command, .. } = frame(&h).footer else {
+        panic!("a confirm asks before trusting");
+    };
+    assert_eq!(command, "marion trust allow --repo");
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("not trusted"));
+    h.key(Key::Enter);
+    assert_eq!(h.key(Key::Char('y')), Effect::RepoTrust(true));
+    h.setup.repo.as_mut().unwrap().answer = Some(true);
+    assert!(footer_has(&h, "enter", "stop trusting"));
+    assert_eq!(h.key(Key::Enter), Effect::RepoTrust(false));
+    assert_eq!(
+        Effect::RepoTrust(false).argv().unwrap(),
+        ["marion", "trust", "deny", "--repo"]
+    );
+    h.setup.repo = None;
+    assert!(
+        !h.setup_items().contains(&SetupItem::Repo),
+        "no row where there is nothing to show"
+    );
+}
+
+/// **An unanswered repository needs the operator**: the agents page's status line says so and
+/// where it is answered, with no key of its own. A declined one was answered and says nothing.
+#[test]
+fn an_unanswered_repository_is_named_on_the_status_line() {
+    let mut h = home();
+    h.setup.repo = Some(crate::home::RepoTrust {
+        answer: None,
+        files: vec![".mcp.json".into(), ".claude/settings.json".into()],
+    });
+    assert!(h.repo_needs_you());
+    let counts = frame(&h).counts;
+    assert!(counts.ends_with("  repository trust in ,"), "{counts}");
+    h.setup.repo.as_mut().unwrap().answer = Some(false);
+    assert!(!h.repo_needs_you());
+    let counts = frame(&h).counts;
+    assert!(!counts.contains("repository"), "{counts}");
+}
+
 /// **`del` removes, after a `y`**: a key by its credential id, a login by harness and name. Both
 /// the Mac's delete (Backspace) and forward delete are `del`; on any other row it does nothing.
 #[test]

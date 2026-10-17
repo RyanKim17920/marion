@@ -407,7 +407,10 @@ holds any of that config and that you have not decided about, it asks once: `thi
 its own harness config (.mcp.json, .codex/config.toml). … Trust it? [y/N]`. `y` trusts it; anything
 else declines it, and either answer is recorded, so it is not asked again. Run without a terminal,
 or as `marion mcp`, marion asks nothing and prints one line naming `marion trust allow --repo`.
-Which paths count is each harness row's `repo_config`.
+Which paths count is each harness row's `repo_config`. On the home screen, Setup's (`,`) last row,
+under **repository**, shows the answer and the files; Enter runs `marion trust allow --repo`
+(after a `y`) or `deny --repo`. While a repository is not yet answered about, the status line says
+`repository trust in ,`.
 
 | harness | untrusted repository | trusted repository |
 |---|---|---|

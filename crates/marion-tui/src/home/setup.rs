@@ -1,6 +1,6 @@
 //! Setup, on `,`: one list under dim lowercase group headers — the harnesses as `marion doctor`
-//! found them with each one's logins indented under it, the stored API keys, the project's files
-//! and notifications. Every row takes single keys, which the footer names for the selected row.
+//! found them with each one's logins indented under it, the stored API keys, the project's files,
+//! notifications, and whether this repository's own harness config is trusted. Every row takes single keys, which the footer names for the selected row.
 //!
 //! The supervisor decides the rows and their order ([`SetupLine`]); this draws them, the selected
 //! one as the agents list draws its own, with a harness's detail or a logged-out login's command
@@ -8,7 +8,7 @@
 
 use super::GUTTER;
 use super::text::{fit, pad, width};
-use super::theme::{Ready, Theme, bad, dim, good};
+use super::theme::{Ready, Theme, bad, dim, good, warn};
 use super::widgets::{code_spans, expansion, row_bar, span};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -61,7 +61,7 @@ pub struct ProfileRow {
 /// One line of Setup, in the order it shows them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupLine {
-    /// A dim lowercase header: `harnesses`, `api keys`, `files`, `notify`.
+    /// A dim lowercase header: `harnesses`, `api keys`, `files`, `notify`, `repository`.
     Group(String),
     Harness(HarnessRow),
     /// A login, indented under its harness.
@@ -82,6 +82,14 @@ pub enum SetupLine {
     Notify {
         on: bool,
         shown_by: String,
+    },
+    /// This repository's own harness configuration and the operator's answer about it.
+    Repo {
+        /// `Some(true)` trusted, `Some(false)` declined, `None` never answered — which needs them.
+        answer: Option<bool>,
+        /// The files it holds, as the operator would type them (`.mcp.json, .claude/settings.json`);
+        /// empty where it holds none now.
+        files: String,
     },
 }
 
@@ -245,6 +253,24 @@ fn body_lines<'a>(
                         format!("when an agent ends or needs you · shown by {shown_by}"),
                         dim(),
                     ),
+                ]
+            }
+            SetupLine::Repo { answer, files } => {
+                let (glyph, style, word) = match answer {
+                    Some(true) => ("●", good(), "trusted"),
+                    Some(false) => ("○", dim(), "declined"),
+                    None => ("◐", warn(), "not asked"),
+                };
+                let note = match (answer, files.is_empty()) {
+                    (_, true) => "no harness config of its own now".to_string(),
+                    (Some(true), false) => format!("nodes on your login load {files}"),
+                    (_, false) => format!("held back from nodes on your login: {files}"),
+                };
+                vec![
+                    span(glyph, style),
+                    Span::raw(" "),
+                    span(pad(word, name_w), Style::default()),
+                    span(note, dim()),
                 ]
             }
         };

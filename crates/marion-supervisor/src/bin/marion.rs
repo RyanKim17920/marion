@@ -5259,8 +5259,12 @@ mod tests {
             assert_eq!(a, ["key", v, "openrouter:work"]);
             assert!(marion_core::provider::CredentialId::parse(&a[2]).is_some());
         }
+        // Setup's repository row runs `marion trust allow|deny --repo` in the project, which is
+        // the directory `--repo` defaults to.
+        assert_eq!(verb(&Effect::RepoTrust(true)), ["trust", "allow", "--repo"]);
+        assert_eq!(verb(&Effect::RepoTrust(false)), ["trust", "deny", "--repo"]);
         // The verbs the echoes name are the verbs this binary dispatches.
-        for v in ["attach", "cancel", "resume", "steer", "key", "run"] {
+        for v in ["attach", "cancel", "resume", "steer", "key", "run", "trust"] {
             assert!(
                 cli::verb(v).is_some(),
                 "`marion {v}` is echoed and not dispatched"

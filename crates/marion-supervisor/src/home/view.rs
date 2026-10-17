@@ -70,8 +70,9 @@ pub fn frame_at(home: &Home, places: &Places, now: std::time::SystemTime) -> Fra
     }
 }
 
-/// The status line's counts: what runs, what needs the operator, what is ready to land. A count of
-/// zero is left out rather than shown.
+/// The status line's counts: what runs, what needs the operator, what is ready to land, and this
+/// repository's own harness config while it waits for an answer. A count of zero is left out
+/// rather than shown.
 fn counts(home: &Home) -> String {
     let w = &home.watch;
     let land = w.nodes.iter().filter(|n| w.lands(n)).count();
@@ -83,6 +84,8 @@ fn counts(home: &Home) -> String {
     .into_iter()
     .filter(|(n, _)| *n > 0)
     .map(|(n, what)| format!("{n} {what}"))
+    // There is no needs-you key to lead there, so the count names where it is answered.
+    .chain(home.repo_needs_you().then(|| "repository trust in ,".to_string()))
     .collect::<Vec<_>>()
     .join("  ")
 }
@@ -606,6 +609,14 @@ fn setup(home: &Home) -> SetupView {
                     shown_by: su.notify_shown_by.clone(),
                 }
             }
+            SetupItem::Repo => {
+                enter(&mut lines, "repository");
+                let r = su.repo.as_ref().expect("a repository row only where one was read");
+                SetupLine::Repo {
+                    answer: r.answer,
+                    files: r.files.join(", "),
+                }
+            }
         };
         if i == at {
             cursor = Some(lines.len());
@@ -969,6 +980,10 @@ fn setup_keys(home: &Home) -> Vec<Hint> {
         Some(SetupItem::Types) => vec![("enter", "edit")],
         Some(SetupItem::Notify) if home.setup.notify == Some(true) => vec![("enter", "turn off")],
         Some(SetupItem::Notify) => vec![("enter", "turn on")],
+        Some(SetupItem::Repo) if home.repo_effect() == Effect::RepoTrust(true) => {
+            vec![("enter", "trust")]
+        }
+        Some(SetupItem::Repo) => vec![("enter", "stop trusting")],
         None => Vec::new(),
     };
     k.extend([("r", "re-check"), ("esc", "back")]);
@@ -988,6 +1003,10 @@ fn confirm(home: &Home, effect: &Effect) -> Footer {
         Effect::ProfileRemove { harness, name } => {
             (format!("remove the login {harness} {name}?"), line(effect))
         }
+        Effect::RepoTrust(_) => (
+            "trust this repository, so nodes on your own login load its harness config?".into(),
+            line(effect),
+        ),
         Effect::Kill(id) => (
             format!("cancel pending; kill {} now?", who_short(home, id)),
             line(effect),

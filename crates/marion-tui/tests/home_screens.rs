@@ -961,6 +961,23 @@ fn setup_a_failing_file_and_notify_off() {
     insta::assert_snapshot!(report(&setup_screen(&v, footer), 100, 30));
 }
 
+/// **The repository row, last on Setup**: a repository with harness config of its own that the
+/// operator has not answered about is marked `◐` and names the files held back, and the footer
+/// offers the one key that trusts it (after a `y`).
+#[test]
+fn setup_repository_row_waits_for_the_operators_answer() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    v.lines.push(SetupLine::Group(s("repository")));
+    v.lines.push(SetupLine::Repo {
+        answer: None,
+        files: s(".mcp.json, .claude/settings.json"),
+    });
+    select(&mut v, |l| matches!(l, SetupLine::Repo { .. }));
+    let footer = keys(&[("enter", "trust"), ("r", "re-check"), ("esc", "back")]);
+    insta::assert_snapshot!(report(&setup_screen(&v, footer), 100, 30));
+}
+
 /// A key the store could not read keeps its row, with why in red after its id.
 #[test]
 fn setup_a_key_the_store_could_not_read() {

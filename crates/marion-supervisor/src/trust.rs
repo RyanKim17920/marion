@@ -728,6 +728,27 @@ pub fn repo_config_present(checkout: &Path) -> Vec<&'static str> {
         .collect()
 }
 
+/// **Where the repository at `checkout` stands**, for the home screen's Setup row: the operator's
+/// answer (`Some(true)` trusted, `Some(false)` declined, `None` never given) and the harness
+/// configuration it holds of its own ([`repo_config_present`]). `None` where there is nothing to
+/// show — no configuration of its own and no answer — or the store cannot be read. Reads only;
+/// the row's Enter runs [`run`]'s `allow --repo` or `deny --repo`, as the CLI does.
+pub fn repo_standing(checkout: &Path) -> Option<(Option<bool>, Vec<&'static str>)> {
+    repo_standing_in(store_path()?, checkout)
+}
+
+/// [`repo_standing`] over an explicit store.
+pub fn repo_standing_in(
+    store: PathBuf,
+    checkout: &Path,
+) -> Option<(Option<bool>, Vec<&'static str>)> {
+    let root = crate::socket::project_root(&std::fs::canonicalize(checkout).ok()?);
+    let store = Store::open(store).ok()?;
+    let answer = store.repo_decided(&root).then(|| store.repo_trusted(&root));
+    let present = repo_config_present(checkout);
+    (answer.is_some() || !present.is_empty()).then_some((answer, present))
+}
+
 /// How marion may raise a repository's trust with whoever is running it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Asking {
@@ -1608,6 +1629,43 @@ mod tests {
             !repo_trusted_in(store, &crate::socket::project_root(&other)),
             "an unrecorded directory is untrusted"
         );
+    }
+
+    /// **Setup's row reads where a repository stands**: nothing for one with no harness config of
+    /// its own and no answer; its config and no answer once it holds some; then trusted and
+    /// declined exactly as `allow --repo` and `deny --repo` record them.
+    #[test]
+    fn a_repositorys_standing_is_its_answer_and_its_own_config() {
+        let (repo, _file, store) = repo("repo-standing", CUSTOM);
+        assert!(
+            marion_harness::env_filter::git_command()
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(repo_standing_in(store.clone(), &repo), None);
+        std::fs::write(repo.join(".mcp.json"), "{}").unwrap();
+        assert_eq!(
+            repo_standing_in(store.clone(), &repo),
+            Some((None, vec![".mcp.json"]))
+        );
+        for (verb, answer) in [("allow", true), ("deny", false)] {
+            let mut out = Vec::new();
+            run(
+                &[verb.into(), "--repo".into()],
+                &repo,
+                store.clone(),
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(
+                repo_standing_in(store.clone(), &repo),
+                Some((Some(answer), vec![".mcp.json"])),
+                "after {verb}"
+            );
+        }
     }
 
     /// **An operator at a terminal is asked once about a repository with harness config of its

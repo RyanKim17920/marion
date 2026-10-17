@@ -106,6 +106,10 @@ pub enum Effect {
     /// `marion notify on|off`: the operator's notify.toml, and this project's running supervisor at
     /// once. The row's Enter, turning it to the other state.
     Notify(bool),
+    /// `marion trust allow --repo` (`true`) or `deny --repo`: whether nodes on the operator's own
+    /// login load this repository's own harness config. The repository row's Enter; trusting
+    /// widens what loads, so it waits for a `y`.
+    RepoTrust(bool),
 }
 
 impl Effect {
@@ -163,6 +167,12 @@ impl Effect {
             Effect::Merge(branch) => v(&["git", "merge", "--no-ff", "--", branch]),
             Effect::Recheck => v(&["marion", "doctor"]),
             Effect::Notify(on) => v(&["marion", "notify", if *on { "on" } else { "off" }]),
+            Effect::RepoTrust(on) => v(&[
+                "marion",
+                "trust",
+                if *on { "allow" } else { "deny" },
+                "--repo",
+            ]),
             Effect::EditTypes => {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
                 v(&[&editor, crate::run::AGENT_TYPES_FILE])
@@ -170,7 +180,8 @@ impl Effect {
         })
     }
 
-    /// Whether this effect ends or discards something, and so waits for a `y`.
+    /// Whether this effect ends or discards something, or widens what loads on the operator's
+    /// login, and so waits for a `y`.
     pub fn destructive(&self) -> bool {
         matches!(
             self,
@@ -179,6 +190,7 @@ impl Effect {
                 | Effect::Merge(_)
                 | Effect::Logout(_)
                 | Effect::ProfileRemove { .. }
+                | Effect::RepoTrust(true)
         )
     }
 }
@@ -263,6 +275,8 @@ pub enum SetupItem {
     Types,
     /// Desktop notifications, once read.
     Notify,
+    /// This repository's own harness config and the operator's answer, where there is either.
+    Repo,
 }
 
 /// One stored provider key, by credential id — the only thing about a key the home screen holds.
@@ -390,6 +404,27 @@ pub struct Setup {
     pub notify: Option<bool>,
     /// How a notice is shown here (`marion notify status`'s "shown by"), once read.
     pub notify_shown_by: String,
+    /// This repository's own harness config and the operator's answer about it, once read;
+    /// `None` where it holds none and has no answer.
+    pub repo: Option<RepoTrust>,
+}
+
+/// This repository's own harness configuration, as Setup's repository row shows it
+/// ([`crate::trust::repo_standing`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoTrust {
+    /// `Some(true)` trusted, `Some(false)` declined, `None` never answered.
+    pub answer: Option<bool>,
+    /// The harness config it holds of its own (`.mcp.json`, …).
+    pub files: Vec<String>,
+}
+
+impl RepoTrust {
+    /// It holds harness config the operator has never answered about: a needs-you item. A
+    /// declined repository was answered, and is not asked about again.
+    pub fn needs_you(&self) -> bool {
+        self.answer.is_none() && !self.files.is_empty()
+    }
 }
 
 /// The whole home screen's state.
@@ -730,6 +765,7 @@ impl Home {
             Effect::Logout(_) => self.notice = Some("key kept".into()),
             Effect::Merge(_) => self.notice = Some("not merged".into()),
             Effect::ProfileRemove { .. } => self.notice = Some("login kept".into()),
+            Effect::RepoTrust(_) => self.notice = Some("not trusted".into()),
             _ => self.notice = Some("not cancelled".into()),
         }
         Effect::None
@@ -1138,6 +1174,10 @@ impl Home {
                 }
                 Some(SetupItem::Types) => return Effect::EditTypes,
                 Some(SetupItem::Notify) => return Effect::Notify(self.setup.notify != Some(true)),
+                Some(SetupItem::Repo) => match self.repo_effect() {
+                    deny @ Effect::RepoTrust(false) => return deny,
+                    allow => self.mode = Mode::Confirm(allow),
+                },
                 Some(SetupItem::Key(_) | SetupItem::NoKeys) | None => {}
             },
             Key::Char('a') => match item {
@@ -1161,7 +1201,7 @@ impl Home {
                         text: String::new(),
                     }
                 }
-                Some(SetupItem::Types | SetupItem::Notify) | None => {}
+                Some(SetupItem::Types | SetupItem::Notify | SetupItem::Repo) | None => {}
             },
             Key::Backspace | Key::Delete => match item {
                 Some(SetupItem::Key(i)) => {
@@ -1204,9 +1244,9 @@ impl Home {
 
     /// **Setup's rows the cursor can rest on, in the order Setup shows them**: each installed
     /// harness with its logins under it, then any login whose harness doctor does not list, the
-    /// stored keys (or the one row that adds the first), the agents file, and notifications once
-    /// read. A harness that is not installed is folded into one line and is not a row, unless it
-    /// has logins.
+    /// stored keys (or the one row that adds the first), the agents file, notifications once read,
+    /// and the repository's trust where there is something to show. A harness that is not
+    /// installed is folded into one line and is not a row, unless it has logins.
     pub fn setup_items(&self) -> Vec<SetupItem> {
         let mut out = Vec::new();
         let profiles = &self.setup.profiles;
@@ -1242,6 +1282,9 @@ impl Home {
         if self.setup.notify.is_some() {
             out.push(SetupItem::Notify);
         }
+        if self.setup.repo.is_some() {
+            out.push(SetupItem::Repo);
+        }
         out
     }
 
@@ -1251,6 +1294,16 @@ impl Home {
         items
             .get(self.setup.cursor.min(items.len().saturating_sub(1)))
             .copied()
+    }
+
+    /// The repository row's Enter: stop trusting a trusted repository, trust any other.
+    pub fn repo_effect(&self) -> Effect {
+        Effect::RepoTrust(self.setup.repo.as_ref().and_then(|r| r.answer) != Some(true))
+    }
+
+    /// This repository's own harness config waits for the operator's answer.
+    pub fn repo_needs_you(&self) -> bool {
+        self.setup.repo.as_ref().is_some_and(RepoTrust::needs_you)
     }
 
     /// A new listing of the profiles. The cursor moves onto `select` where the listing has it — a
