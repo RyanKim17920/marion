@@ -50,10 +50,11 @@ pub fn words(line: &str) -> Result<Vec<String>, String> {
 }
 
 /// One shell word from the start of `s` (which starts with one), and what follows it: `'…'` taken
-/// as it is, `"…"` and bare text with `\` escaping the next character.
+/// as it is, bare text with `\` escaping the next character, and `"…"` with `\` escaping only what
+/// a POSIX shell lets it there.
 fn token(s: &str) -> Result<(String, &str), String> {
     let mut out = String::new();
-    let mut chars = s.char_indices();
+    let mut chars = s.char_indices().peekable();
     let mut quote: Option<char> = None;
     while let Some((i, c)) = chars.next() {
         match (quote, c) {
@@ -61,6 +62,15 @@ fn token(s: &str) -> Result<(String, &str), String> {
             (None, '\'' | '"') => quote = Some(c),
             (Some(q), c) if c == q => quote = None,
             (Some('\''), c) => out.push(c),
+            // Inside "…", as a POSIX shell reads it: `\` escapes only $ ` " \ and a newline, and
+            // is itself kept before anything else (`"C:\dir"` is `C:\dir`).
+            (Some('"'), '\\') => match chars.peek() {
+                Some(&(_, next)) if matches!(next, '$' | '`' | '"' | '\\' | '\n') => {
+                    out.push(next);
+                    chars.next();
+                }
+                _ => out.push('\\'),
+            },
             (_, '\\') => match chars.next() {
                 Some((_, next)) => out.push(next),
                 None => out.push('\\'),
@@ -132,6 +142,16 @@ mod tests {
         assert_eq!(
             ok("--frobnicate do it"),
             (vec!["--frobnicate".into()], "do it".into())
+        );
+    }
+
+    /// Inside `"…"` a backslash escapes only `$`, `` ` ``, `"` and `\`, as in a shell; before
+    /// anything else it is kept. Outside quotes it escapes any character.
+    #[test]
+    fn double_quotes_escape_only_what_a_shell_escapes_there() {
+        assert_eq!(
+            words(r#""C:\dir" "a \"b\" \\ \$x" bare\ word"#).unwrap(),
+            ["C:\\dir", "a \"b\" \\ $x", "bare word"]
         );
     }
 

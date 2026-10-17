@@ -339,6 +339,8 @@ fn options_typed_before_the_task_reach_marion_run_and_detach_runs_headless() {
         ("--timeout", "needs a value"),
         ("--detach", "type the task"),
         ("--verify \"open fix it", "not closed"),
+        ("--repo /elsewhere fix it", "its own project"),
+        ("--state-dir=/tmp/s fix it", "its own project"),
     ] {
         h.key(Key::Char('n'));
         typed(&mut h, line);

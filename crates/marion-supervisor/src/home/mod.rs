@@ -871,6 +871,16 @@ impl Home {
         {
             return Err("the task is the text after the options; leave out --prompt".into());
         }
+        // The screen states its own project to every run; a second one would contradict it.
+        if let Some(flag) = PLACE_FLAGS.iter().find(|f| {
+            words
+                .iter()
+                .any(|w| w == *f || w.starts_with(&format!("{f}=")))
+        }) {
+            return Err(format!(
+                "{flag}: the screen runs its tasks in its own project"
+            ));
+        }
         let mut take = |flag: &str| {
             let had = words.iter().any(|w| w == flag);
             words.retain(|w| w != flag);
@@ -1357,6 +1367,10 @@ impl Default for Home {
         Home::new()
     }
 }
+
+/// The flags that say which project a command is for: the screen adds its own, so the `n` line
+/// takes neither.
+const PLACE_FLAGS: &[&str] = &["--repo", "--state-dir"];
 
 /// Why a name typed for a new login is refused, after the name.
 pub const NOT_A_LOGIN_NAME: &str = "is not a login name: letters, digits, - and _";
