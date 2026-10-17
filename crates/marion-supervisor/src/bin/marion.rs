@@ -2421,7 +2421,7 @@ struct SupervisorSession {
     /// load-bearing with step 6 — until then this connection carried one request and one response
     /// and nothing else, and now it carries the root's whole event stream.
     lines: io::BufReader<std::os::unix::net::UnixStream>,
-    socket: PathBuf,
+    paths: socket::SocketPaths,
     next_id: i64,
 }
 
@@ -2443,7 +2443,7 @@ impl SupervisorSession {
         self.stream
             .write_all(frame.to_line().as_bytes())
             .and_then(|()| self.stream.flush())
-            .map_err(|e| supervisor_unreachable(&self.socket, &e.to_string()))?;
+            .map_err(|e| supervisor_unreachable(self.paths.socket(), &e.to_string()))?;
         Ok(id)
     }
 
@@ -2457,16 +2457,16 @@ impl SupervisorSession {
         let mut line = String::new();
         match self.lines.read_line(&mut line) {
             Ok(0) => Err(supervisor_unreachable(
-                &self.socket,
+                self.paths.socket(),
                 "it closed the connection while the run was still in flight",
             )),
             Ok(_) => marion_core::proto::Frame::from_line(&line).map_err(|e| {
                 supervisor_unreachable(
-                    &self.socket,
+                    self.paths.socket(),
                     &format!("it sent a frame marion cannot read: {e}"),
                 )
             }),
-            Err(e) => Err(supervisor_unreachable(&self.socket, &e.to_string())),
+            Err(e) => Err(supervisor_unreachable(self.paths.socket(), &e.to_string())),
         }
     }
 
@@ -2523,7 +2523,7 @@ fn supervisor_unreachable(socket: &Path, why: &str) -> String {
 ///
 /// **A bound, not a measurement**, and it decides nothing: a supervisor that is going has already
 /// journaled its exit record before the accept loop breaks, so what is being waited for is one
-/// `unlink`. Nothing asserts on how long it takes.
+/// `unlink` and its process's exit. Nothing asserts on how long it takes.
 const SUPERVISOR_EXIT_WAIT: StdDuration = StdDuration::from_secs(5);
 
 /// The §5.7 idle grace `marion run` asks a supervisor it starts to use.
@@ -2733,19 +2733,22 @@ impl SupervisorSession {
         None
     }
 
-    /// Wait up to [`SUPERVISOR_EXIT_WAIT`] for an exiting supervisor's socket to go, and say so
-    /// on `err` if it is still there.
+    /// Wait up to [`SUPERVISOR_EXIT_WAIT`] for an exiting supervisor's socket to go and then for
+    /// its lock to, and say so on `err` if either is still there.
     ///
     /// The socket's **directory** is watched, not the socket: a socket cannot be opened to be
     /// watched, and its unlinking is an entry change in the directory. The watch is armed before
     /// the first look, so an unlink between the look and the wait still ends it.
+    ///
+    /// **The lock as well, because the lock is what says a supervisor is there.** [`socket`]'s
+    /// `Serving` unlinks the socket while it still holds the lock, and the process takes a few
+    /// milliseconds more to exit (longer on a loaded host). A run that returned on the unlink
+    /// alone would leave the next command to find the lock held and nobody to dial.
     fn wait_for_supervisor_exit(&self, err: &mut io::Stderr) {
         let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
-        let mut dir = self
-            .socket
-            .parent()
-            .map(marion_supervisor::wake::Watch::new);
-        while self.socket.exists() && std::time::Instant::now() < deadline {
+        let socket = self.paths.socket();
+        let mut dir = socket.parent().map(marion_supervisor::wake::Watch::new);
+        while socket.exists() && std::time::Instant::now() < deadline {
             marion_supervisor::wake::wait_until(
                 &[dir.as_ref().and_then(|w| w.fd())],
                 Some(deadline),
@@ -2754,12 +2757,22 @@ impl SupervisorSession {
                 dir.rearm();
             }
         }
-        if self.socket.exists() {
+        let gone = !socket.exists()
+            && socket::left_within(
+                &self.paths,
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            );
+        if !gone {
             let _ = out_to!(
                 err,
                 "marion: this project's supervisor said it was exiting and {} is still there \
                  after {} s; it may still be shutting down",
-                self.socket.display(),
+                if socket.exists() {
+                    socket
+                } else {
+                    self.paths.lock()
+                }
+                .display(),
                 SUPERVISOR_EXIT_WAIT.as_secs()
             );
         }
@@ -3405,7 +3418,7 @@ fn connect_supervisor(
             let session = SupervisorSession {
                 stream: ensured.stream,
                 lines,
-                socket: sock.socket().to_path_buf(),
+                paths: sock.clone(),
                 next_id: 1,
             };
             Ok((session, ensured.started))
