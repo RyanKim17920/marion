@@ -1200,7 +1200,7 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
     let file = Path::new(file.as_str().expect("contract_file is a string"));
     assert!(
         file.is_absolute(),
-        "{cell}: contract_file {} is absolute",
+        "{cell}: contract_file {} is not absolute",
         file.display()
     );
     assert_eq!(
