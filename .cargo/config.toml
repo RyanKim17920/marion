@@ -1,0 +1,4 @@
+# Every binary cargo runs (`cargo test`, `cargo run`) goes through this script, which execs it
+# unchanged except for one cap: see the script.
+[target.'cfg(unix)']
+runner = "scripts/cargo-runner.sh"
