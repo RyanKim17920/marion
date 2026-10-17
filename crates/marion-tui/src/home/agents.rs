@@ -192,7 +192,7 @@ enum Pane {
 
 fn split(area: Rect, rows: usize) -> (Rect, Pane) {
     if area.width >= SPLIT_MIN {
-        let list_w = area.width * LIST_SHARE / 100;
+        let list_w = share(area.width, LIST_SHARE);
         let list = Rect::new(area.x, area.y, list_w, area.height);
         let pane = Rect::new(area.x + list_w, area.y, area.width - list_w, area.height);
         return (list, Pane::Beside(pane));
@@ -200,7 +200,7 @@ fn split(area: Rect, rows: usize) -> (Rect, Pane) {
     let spare = area
         .height
         .saturating_sub(u16::try_from(rows).unwrap_or(u16::MAX));
-    let pane_h = (area.height * STACKED_SHARE / 100).max(spare);
+    let pane_h = share(area.height, STACKED_SHARE).max(spare);
     // A preview of under three rows (the rule, a title, one line) says nothing: the list keeps them.
     if pane_h < 3 {
         return (area, Pane::None);
@@ -208,6 +208,12 @@ fn split(area: Rect, rows: usize) -> (Rect, Pane) {
     let list = Rect::new(area.x, area.y, area.width, area.height - pane_h);
     let pane = Rect::new(area.x, list.bottom(), area.width, pane_h);
     (list, Pane::Below(pane))
+}
+
+/// `pct` percent of `n`, worked in `u32`: a terminal more than 1092 columns wide would overflow
+/// `u16` on the way.
+fn share(n: u16, pct: u16) -> u16 {
+    (u32::from(n) * u32::from(pct) / 100) as u16
 }
 
 /// The list: a window over the rows that keeps the cursor in view, the selected row in reverse.
@@ -383,6 +389,15 @@ fn keep_end(text: &str, w: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_split_holds_on_a_terminal_wider_than_u16_math_allows() {
+        let (list, pane) = split(Rect::new(0, 0, u16::MAX, u16::MAX), 3);
+        assert_eq!(list.width, share(u16::MAX, LIST_SHARE));
+        assert!(matches!(pane, Pane::Beside(p) if p.width == u16::MAX - list.width));
+        let (list, pane) = split(Rect::new(0, 0, 80, u16::MAX), 3);
+        assert!(matches!(pane, Pane::Below(p) if p.bottom() == u16::MAX && list.height < 4));
+    }
 
     /// A changed file keeps its name in view however deep its path: the path is clipped from the
     /// left, after the `~` that says what the line is.
