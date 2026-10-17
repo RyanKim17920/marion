@@ -3158,6 +3158,11 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     };
     let root_id = spawned.agent_id.clone();
     let _ = poller_id.send(root_id.clone());
+    // Beside the start line, whichever follows: config its tree held back is said up front, not
+    // only by a later `marion ls`.
+    if let Some(held) = held_back_line(&project, &root_id) {
+        err!("marion: {held}");
+    }
 
     // **A paned root is started and then attached to, and this client does neither of the two
     // things `watch_the_root` exists to do.**
@@ -3277,6 +3282,18 @@ fn root_follow(pane: bool) -> RootFollow {
     } else {
         RootFollow::Watch
     }
+}
+
+/// **The repository config the node's running generation held back**, as its `Spawned` journaled
+/// it ([`marion_core::proto::result::repo_config_held_line`]), or `None` where nothing was, or
+/// the journal cannot be read.
+fn held_back_line(
+    project: &marion_core::paths::ProjectDir,
+    id: &marion_core::contract::AgentId,
+) -> Option<String> {
+    let registry = marion_supervisor::registry::Registry::boot(project).ok()?;
+    let node = registry.tree().get(id)?;
+    marion_core::proto::result::repo_config_held_line(&node.repo_config_held)
 }
 
 /// One line for a paned root: what started, and the three commands that matter next.
@@ -3784,6 +3801,42 @@ fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec
 
 #[cfg(test)]
 mod tests {
+    /// **`marion run` says what the node's tree held back as it starts**: the line its running
+    /// generation's `Spawned` journaled, and nothing for a node that held nothing back or that the
+    /// journal does not name.
+    #[test]
+    fn the_start_line_says_what_the_running_generation_held_back() {
+        use marion_core::contract::AgentId;
+        use marion_core::journal::{ConfigHeld, RecordKind, Spawned};
+        let dir = marion_testsupport::scratch("marion-run-held");
+        let project = marion_core::paths::ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        let spawned = |id: &AgentId, paths: &[&str]| {
+            RecordKind::Spawned(Spawned {
+                repo_config_held: ConfigHeld {
+                    paths: paths.iter().map(|p| p.to_string()).collect(),
+                    unverified: false,
+                },
+                agent_id: id.clone(),
+                harness_version: "1".into(),
+                model: None,
+                pid: Some(1),
+                start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
+            })
+        };
+        let (held, clean) = (AgentId("held".into()), AgentId("clean".into()));
+        marion_supervisor::journal::append(&project, spawned(&held, &[".mcp.json"])).unwrap();
+        marion_supervisor::journal::append(&project, spawned(&clean, &[])).unwrap();
+        assert_eq!(
+            held_back_line(&project, &held).as_deref(),
+            Some("repository config held back: .mcp.json differs from yours")
+        );
+        assert_eq!(held_back_line(&project, &clean), None);
+        assert_eq!(held_back_line(&project, &AgentId("absent".into())), None);
+    }
+
     /// **Raw frames reach stdout only when stdout is not a terminal.** The live view already
     /// rendered every frame on stderr; printing the transcript again on a terminal dumped ~20 KB of
     /// stream-json over it when the picker's run ended. Piped, stdout stays the machine surface.
