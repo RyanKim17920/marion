@@ -1172,8 +1172,11 @@ pub const PI_ACP: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
-    // A shim over the pi row's binary, which it starts with its own env: that row's switch
-    // reaches the wrapped binary that way (inherited, not measured through the shim).
+    // A shim over the operator's `pi`, which 0.0.34 starts as `pi --mode rpc` with its own
+    // environment (dist/index.js:137), so the pi row's variable reaches it. The shim itself has
+    // no updater, but it asks npm for pi's latest version on every new session
+    // (`buildUpdateNotice`, dist/index.js:2888) whatever the switch says: a network call that only
+    // shows a notice and never installs.
     updates: AgentUpdates::Twin(Harness::Pi),
     agent_info: "pi-acp",
     install: "npm i -g pi-acp",
