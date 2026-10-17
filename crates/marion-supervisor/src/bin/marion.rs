@@ -591,7 +591,7 @@ fn shell_main(argv: &[String]) -> Result<ExitCode, Exit> {
 }
 
 fn landed_main(argv: &[String], what: Landed) -> Result<ExitCode, Exit> {
-    use marion_supervisor::home::session::{branch_log, branch_merge};
+    use marion_supervisor::landing::{branch_log, branch_merge};
     let args = parse_attach(argv)?;
     let Some((repo, state)) = resolve_project(&args.place) else {
         return Ok(ExitCode::FAILURE);

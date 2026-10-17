@@ -153,18 +153,8 @@ impl Effect {
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
                 v(&["cd", &dir.to_string_lossy(), "&&", &shell])
             }
-            // As `branch_log` runs it: raw, so no diff driver a branch names runs over its content.
-            Effect::Diff(branch) => v(&[
-                "git",
-                "log",
-                "-p",
-                "--stat",
-                "--no-textconv",
-                "--no-ext-diff",
-                &format!("HEAD..{branch}"),
-            ]),
-            // `--` so a branch name cannot be read as a flag.
-            Effect::Merge(branch) => v(&["git", "merge", "--no-ff", "--", branch]),
+            Effect::Diff(branch) => crate::landing::log_argv(branch),
+            Effect::Merge(branch) => crate::landing::merge_argv(branch),
             Effect::Recheck => v(&["marion", "doctor"]),
             Effect::Notify(on) => v(&["marion", "notify", if *on { "on" } else { "off" }]),
             Effect::RepoTrust(on) => v(&[
