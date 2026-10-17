@@ -288,6 +288,22 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
             );
         }
     }
+    // The channel writes nothing of its own, so a directory none of the row's declaring documents
+    // sits in under every mode would name an empty scope and declare nothing.
+    if let Some(spec::LiveDeclaration::EnvDir { dir, .. }) = row.live_declaration
+        && !row.files.iter().any(|f| {
+            f.servers.is_some()
+                && f.modes == spec::Modes::All
+                && std::path::Path::new(f.path).starts_with(dir)
+        })
+    {
+        fault(
+            "declaration",
+            format!(
+                "no document of the row's under {dir:?} declares marion's server in every mode"
+            ),
+        );
+    }
     let mut seen = Vec::new();
     for r in row.wires {
         if unstated(r.note) {
@@ -522,6 +538,23 @@ mod tests {
                 "files",
                 "files: \"home/settings.json\" guards a borrowed login, so it must be written \
                  under every auth mode",
+            ),
+            (
+                HarnessSpec {
+                    live_declaration: Some(spec::LiveDeclaration::EnvDir {
+                        key: "QWEN_MANAGED_DIR",
+                        dir: "home",
+                    }),
+                    mcp: spec::McpRoutes {
+                        live: spec::McpRoute::Document,
+                        ..qwen.mcp
+                    },
+                    token: spec::TokenCarriers::DECLARATION,
+                    ..qwen
+                },
+                "declaration",
+                "declaration: no document of the row's under \"home\" declares marion's server in \
+                 every mode",
             ),
             (
                 HarnessSpec {

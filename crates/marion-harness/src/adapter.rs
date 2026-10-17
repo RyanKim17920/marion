@@ -8584,7 +8584,47 @@ mod tests {
             LiveDeclaration::ArgvRoot {
                 flag, root, file, ..
             } => assert_argv_root(h, d, m, flag, root, file),
+            LiveDeclaration::EnvDir { key, dir } => assert_env_dir(h, d, m, key, dir),
         }
+    }
+
+    /// [`LiveDeclaration::EnvDir`]: the live launch's documents under the directory, byte for
+    /// byte, and the directory named by the same variable.
+    fn assert_env_dir(h: Harness, d: &Injected, m: &Managed, key: &str, dir: &str) {
+        let root = m.document_dir.join(dir);
+        let under: Vec<(PathBuf, String)> = m
+            .files
+            .iter()
+            .filter(|(p, _)| p.starts_with(&root))
+            .cloned()
+            .collect();
+        let native: Vec<(PathBuf, String)> = d
+            .documents
+            .iter()
+            .map(|doc| {
+                let body = String::from_utf8(doc.contents.clone()).unwrap();
+                (doc.path.clone(), body)
+            })
+            .collect();
+        assert!(
+            !under.is_empty(),
+            "{h}: the live launch writes nothing under {dir}"
+        );
+        assert_eq!(
+            native, under,
+            "{h}: the native documents are not the live launch's"
+        );
+        let named = (key.to_string(), root.display().to_string());
+        assert!(d.overlay.contains(&named), "{h}: {:?}", d.overlay);
+        assert!(
+            d.prefix.is_empty(),
+            "{h}: a directory carried by env adds no argv"
+        );
+        assert!(
+            m.inv.env.contains(&named),
+            "{h}: the live launch's env differs: {:?}",
+            m.inv.env
+        );
     }
 
     /// **Nothing managed:** no isolation row of this harness appears in the overlay, nothing
@@ -8769,6 +8809,84 @@ mod tests {
         assert_eq!(
             covered, expected,
             "every harness but ACP has a native adapter"
+        );
+    }
+
+    /// **A directory channel injects the row's own documents under it, and names the directory**:
+    /// nothing else of the row's, and no document outside it.
+    #[test]
+    fn a_directory_declaration_injects_the_rows_documents_under_it() {
+        use std::ffi::OsString;
+
+        use std::path::Path;
+
+        use serde_json::json;
+
+        use crate::native::{
+            NativeEnvironmentView, NativeInjectionAdapter, NativeNodeContext, SpecNativeAdapter,
+        };
+        use crate::spec::{ConfigFile, LiveDeclaration, Modes};
+
+        static ROW: crate::spec::HarnessSpec = crate::spec::HarnessSpec {
+            live_declaration: Some(LiveDeclaration::EnvDir {
+                key: "QWEN_MANAGED_DIR",
+                dir: "home",
+            }),
+            files: &[
+                ConfigFile {
+                    modes: Modes::All,
+                    borrowed_login: &[("auth.adopt_external_logins", false)],
+                    ..crate::qwen::SPEC.files[0]
+                },
+                ConfigFile {
+                    path: "elsewhere/other.json",
+                    modes: Modes::All,
+                    servers: None,
+                    ..crate::qwen::SPEC.files[0]
+                },
+            ],
+            ..crate::qwen::SPEC
+        };
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        let operator_env = vec![(OsString::from("PATH"), OsString::from("/usr/bin"))];
+        let ctx = ctx();
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            config_dir: document_dir.clone(),
+            ..spec_for(Harness::Qwen)
+        };
+        let bridge = bridge_env(&live, &ctx);
+        let injection = SpecNativeAdapter::for_row(&ROW)
+            .unwrap()
+            .prepare_native(&NativeNodeContext {
+                bridge: &bridge,
+                document_dir: &document_dir,
+                allowed_marion_tools: &["spawn"],
+                environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+            })
+            .unwrap();
+        assert!(injection.argv_prefix.is_empty());
+        assert!(injection.env_overlay.contains(&(
+            OsString::from("QWEN_MANAGED_DIR"),
+            OsString::from("/state/agents/019f-root/home"),
+        )));
+        let paths: Vec<&Path> = injection
+            .documents
+            .iter()
+            .map(|d| d.path.as_path())
+            .collect();
+        assert_eq!(
+            paths,
+            [Path::new("/state/agents/019f-root/home/settings.json")]
+        );
+        let doc: serde_json::Value =
+            serde_json::from_slice(&injection.documents[0].contents).unwrap();
+        assert_eq!(doc["auth"]["adopt_external_logins"], json!(false));
+        assert_eq!(
+            doc["mcpServers"]["marion"]["env"]["MARION_AGENT_ID"],
+            json!(ctx.agent_id.0)
         );
     }
 

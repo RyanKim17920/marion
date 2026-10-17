@@ -2385,6 +2385,15 @@ pub enum LiveDeclaration {
         file: &'static str,
         body: Body,
     },
+    /// The environment variable `key` names a **directory**, `dir` under the node's own
+    /// directory, and the row's own [`ConfigFile`]s under it carry the declaration — Hermes'
+    /// `HERMES_MANAGED_DIR`, whose `config.yaml` also holds the row's borrowed-login switch and
+    /// so is written whether or not a bridge is declared. The channel writes nothing of its own:
+    /// the row's documents are the declaration.
+    EnvDir {
+        key: &'static str,
+        dir: &'static str,
+    },
 }
 
 impl LiveDeclaration {
@@ -2399,7 +2408,8 @@ impl LiveDeclaration {
             } => Some((PathBuf::from(root).join(file), body)),
             LiveDeclaration::EnvInline { .. }
             | LiveDeclaration::ArgvPairs { .. }
-            | LiveDeclaration::ArgvInline { .. } => None,
+            | LiveDeclaration::ArgvInline { .. }
+            | LiveDeclaration::EnvDir { .. } => None,
         }
     }
 
@@ -2428,7 +2438,8 @@ impl LiveDeclaration {
         match self {
             LiveDeclaration::ArgvDocument { .. }
             | LiveDeclaration::EnvDocument { .. }
-            | LiveDeclaration::ArgvRoot { .. } => McpRoute::Document,
+            | LiveDeclaration::ArgvRoot { .. }
+            | LiveDeclaration::EnvDir { .. } => McpRoute::Document,
             LiveDeclaration::EnvInline { key, .. } => McpRoute::Environment(key),
             LiveDeclaration::ArgvPairs { key, .. } | LiveDeclaration::ArgvInline { key, .. } => {
                 McpRoute::Argv(key)

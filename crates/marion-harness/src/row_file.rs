@@ -1028,6 +1028,10 @@ pub enum DeclarationDto {
         file: String,
         body: BodyDto,
     },
+    EnvDir {
+        key: String,
+        dir: String,
+    },
 }
 
 impl DeclarationDto {
@@ -1070,6 +1074,10 @@ impl DeclarationDto {
                 root: leak(root),
                 file: leak(file),
                 body: body.body(),
+            },
+            DeclarationDto::EnvDir { key, dir } => LiveDeclaration::EnvDir {
+                key: leak(key),
+                dir: leak(dir),
             },
         }
     }

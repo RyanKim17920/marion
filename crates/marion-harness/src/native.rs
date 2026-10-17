@@ -329,6 +329,28 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 injection.argv_prefix =
                     vec![OsString::from(flag), OsString::from(body.render(bridge))];
             }
+            LiveDeclaration::EnvDir { key, dir } => {
+                injection.env_overlay.push((
+                    OsString::from(key),
+                    context.document_dir.join(dir).into_os_string(),
+                ));
+                // The row's documents under the directory, as the managed live launch writes them.
+                for file in self.row.files.iter().filter(|f| {
+                    f.modes.covers(crate::auth::Auth::Inherited)
+                        && Path::new(f.path).starts_with(dir)
+                }) {
+                    let contents = file.render(Some(bridge)).ok_or_else(|| {
+                        NativeInjectionError::Adapter(format!(
+                            "{}'s document {} has a base that is not a JSON object",
+                            self.row.harness, file.path
+                        ))
+                    })?;
+                    injection.documents.push(NativeDocument {
+                        path: context.document_dir.join(file.path),
+                        contents: contents.into_bytes(),
+                    });
+                }
+            }
         }
         // The row's completion push is enabled here as on the pane shape, and for the same reason
         // it leads: the flag is variadic, and the declaration flag behind it is what closes it
