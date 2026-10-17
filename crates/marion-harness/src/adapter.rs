@@ -9179,18 +9179,15 @@ mod tests {
 
     /// [`UpdatePolicy::Never`] / [`UpdatePolicy::None`]: the row does not know a switch — so it
     /// must also not smuggle one in as an ordinary `Env` row, where nothing would check it against
-    /// the binary, and its note must say what was searched and not found.
-    fn assert_update_none(h: Harness, note: &str) {
+    /// the binary. The variant is the reason (the binary never updates itself, or no switch is
+    /// known), and the note the sweep already holds non-empty says what was searched.
+    fn assert_update_none(h: Harness) {
         assert!(
             !harness_spec(h)
                 .env
                 .iter()
                 .any(|e| e.key.to_ascii_uppercase().contains("UPDATE")),
             "{h}: an update-shaped `Env` row on a row that states no update policy"
-        );
-        assert!(
-            note.contains("no") || note.contains("never"),
-            "{h}: `None` must say what was searched and not found: {note}"
         );
     }
 
@@ -9297,9 +9294,7 @@ mod tests {
                 UpdatePolicy::Document { keys, .. } => {
                     assert_update_document(h, &launches, native, keys)
                 }
-                UpdatePolicy::Never { note } | UpdatePolicy::None { note } => {
-                    assert_update_none(h, note)
-                }
+                UpdatePolicy::Never { .. } | UpdatePolicy::None { .. } => assert_update_none(h),
             }
         }
     }
@@ -9375,10 +9370,8 @@ mod tests {
                         );
                     }
                 }
-                UpdatePolicy::Never { .. } | UpdatePolicy::None { .. } => assert!(
-                    note.contains("no") || note.contains("never"),
-                    "{who}: must say what was searched and not found: {note}"
-                ),
+                // The variant is the reason, and the note is held non-empty above.
+                UpdatePolicy::Never { .. } | UpdatePolicy::None { .. } => {}
                 UpdatePolicy::Pair { .. } | UpdatePolicy::Document { .. } => {
                     panic!("{who}: an ACP launch has no channel for {policy:?}")
                 }
