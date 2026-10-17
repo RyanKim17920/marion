@@ -879,6 +879,21 @@ fn node_refusal(
     operator_hello()
 }
 
+/// **Where `args` decide trust for**: the `--repo` directory, or the directory of the file named,
+/// else `cwd` — the project whose supervisor knows whether its nodes are live, which need not be
+/// the cwd's.
+fn target_dir(args: &[String], cwd: &Path) -> PathBuf {
+    match args {
+        [_, flag, dir] if flag == "--repo" => cwd.join(dir),
+        [_, flag, ..] if flag == "--repo" => cwd.to_path_buf(),
+        [_, file] => cwd
+            .join(file)
+            .parent()
+            .map_or_else(|| cwd.to_path_buf(), Path::to_path_buf),
+        _ => cwd.to_path_buf(),
+    }
+}
+
 /// **The cwd's supervisor's refusal of the operator's hello**, where one is listening: it refuses
 /// the operator's key from any process inside a live node's process tree
 /// (`handler/session.rs`'s `refuse_from_below_a_node`). Nothing listening refuses nothing, since
@@ -905,7 +920,16 @@ pub fn cli_main(args: &[String]) -> ExitCode {
     if let Some(why) = node_refusal(
         args,
         |name| std::env::var(name).ok(),
-        || operator_hello_refusal(&cwd),
+        // The cwd's, and the target's where that is another project: a node can `cd` out of
+        // its tree, or name a repository whose supervisor is not the cwd's.
+        || {
+            let target = target_dir(args, &cwd);
+            operator_hello_refusal(&cwd).or_else(|| {
+                (target != cwd)
+                    .then(|| operator_hello_refusal(&target))
+                    .flatten()
+            })
+        },
     ) {
         err!("marion trust: refused: {}", visible(&why));
         return ExitCode::FAILURE;
@@ -1225,6 +1249,28 @@ mod tests {
         assert!(why.contains("inside node `n-1`"), "{why}");
         let dir = marion_testsupport::scratch("trust-no-supervisor");
         assert_eq!(operator_hello_refusal(&dir), None);
+    }
+
+    /// **The hello goes to the supervisor of the repository the verb decides about**: the
+    /// `--repo` directory or the named file's, not only the cwd's, which a node can leave.
+    #[test]
+    fn a_trust_change_is_checked_against_its_targets_supervisor() {
+        let cwd = Path::new("/somewhere");
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            target_dir(&args(&["allow", "--repo", "/repo"]), cwd),
+            Path::new("/repo")
+        );
+        assert_eq!(
+            target_dir(&args(&["deny", "--repo", "sub"]), cwd),
+            Path::new("/somewhere/sub")
+        );
+        assert_eq!(target_dir(&args(&["allow", "--repo"]), cwd), cwd);
+        assert_eq!(
+            target_dir(&args(&["allow", "/repo/.marion/agents.toml"]), cwd),
+            Path::new("/repo/.marion")
+        );
+        assert_eq!(target_dir(&args(&["allow"]), cwd), cwd);
     }
 
     use super::*;
