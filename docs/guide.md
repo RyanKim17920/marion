@@ -191,7 +191,9 @@ it lets through is recorded in the journal with the axes it widened and marked o
 ("uncontained child (operator opt-in)", or "wider than its parent: write, shell (operator
 opt-in)"). A child's verification lines run inside codex's sandbox when the child is a codex
 agent, and as you otherwise, which its contract states (`verification_containment`); either way
-they see none of marion's variables or provider keys.
+they see none of marion's variables or provider keys. Each line is self-contained: anything it
+leaves running, a background server included, is ended when that line ends, so start a server
+and test against it in the same line (`./serve & sleep 1; ./test`).
 
 ## Where a child's work lands
 

@@ -661,17 +661,20 @@ pub fn verification_process(command: &Command) -> SysCommand {
     sys
 }
 
-/// Run `commands` one after another, in order, each bounded as [`run_bounded`] bounds a command so
-/// an expired one is killed with its whole process group, and each one's session ended when it
-/// exits ([`AfterExit::EndSession`]): what a line left running in the background (`cargo test &`)
-/// goes with it, as it does on expiry, rather than outliving the run that asked for it. Sequential
-/// on purpose: `cargo build` before `cargo test`
-/// is the ordinary shape, and a later line must see what an earlier one wrote.
+/// Run `commands` one after another, in order, each bounded as [`run_bounded`] bounds a command,
+/// so an expired one is killed with its whole process group. Sequential on purpose: `cargo build`
+/// before `cargo test` is the ordinary shape, and a later line must see what an earlier one wrote.
+///
+/// **Each line is self-contained.** Its session is ended when it exits
+/// ([`AfterExit::EndSession`]), as on expiry: what it left running in the background (`cargo test
+/// &`, a server it started) goes with it, so a later line cannot rely on a server an earlier one
+/// left up, and nothing outlives the run that asked for it.
 ///
 /// Every stream is recorded `Capped::whole`: the persisted contract is the uncapped record
-/// (`cross_product.rs` asserts it) and `cap_for_return` alone shortens the copy handed back. A command
-/// that could not be started at all is an outcome too — `exit_code: None`, the error in `stderr` —
-/// never a gap in the evidence, which would read as "one fewer command was asked for".
+/// (`cross_product.rs` asserts it) and `cap_for_return` alone shortens the copy handed back. A
+/// command that could not be started at all is an outcome too — `exit_code: None`, the error in
+/// `stderr` — never a gap in the evidence, which would read as "one fewer command was asked
+/// for".
 pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
     commands
         .iter()

@@ -2987,7 +2987,10 @@ fn a_background_job_a_verification_line_started_is_gone_when_it_ends() {
         std::thread::sleep(StdDuration::from_millis(20));
     }
     let left = !gone();
-    let _ = unsafe { kill(pid, SIGKILL) };
+    if left {
+        // Only a pid still present is ours to end: one seen gone may since name a stranger.
+        let _ = unsafe { kill(pid, SIGKILL) };
+    }
     assert!(
         !left,
         "the background sleep {pid} outlived the verification line"
