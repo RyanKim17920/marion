@@ -538,6 +538,9 @@ pub(crate) fn tail_lines(file: &mut File, limit: u64) -> std::io::Result<Vec<u8>
 /// An open `events.jsonl` for one node, with the next ordinal it will use.
 pub struct EventWriter {
     path: PathBuf,
+    /// The directory holding the stream, open: on Linux the node can write `events.jsonl` and
+    /// its rotated copy, so neither is opened or renamed by path.
+    dir: crate::agent_fs::AgentFs,
     file: File,
     /// Bytes in the current file, and the most it may hold ([`MAX_EVENTS_FILE_BYTES`]).
     len: u64,
@@ -554,7 +557,6 @@ pub struct EventWriter {
 impl EventWriter {
     /// Open (creating) a node's event stream inside its agent dir.
     pub fn open(agent: &AgentDir, agent_id: &AgentId) -> Result<Self, EventError> {
-        crate::private_fs::create_dir_all(agent.path())?;
         Self::open_path(&agent.events(), agent_id)
     }
 
@@ -571,14 +573,16 @@ impl EventWriter {
     /// prefix and the writer continues past it. Where nothing in the tail parses, the whole file is
     /// read as it always was. Refusing to open would mean a node could not record what it is doing
     /// now because of a line written before it started.
+    ///
+    /// The file's directory (the agent dir) is opened through [`crate::agent_fs::AgentFs`], and
+    /// both halves of the stream are read, appended to and rotated through it, so a link the node
+    /// left at either name, or in place of the agent dir, is refused rather than followed.
     pub fn open_path(path: &Path, agent_id: &AgentId) -> Result<Self, EventError> {
-        if let Some(dir) = path.parent() {
-            crate::private_fs::create_dir_all(dir)?;
-        }
+        let dir = crate::agent_fs::AgentFs::open(path.parent().unwrap_or(Path::new(".")))?;
         // The fresh file after a rotation may hold nothing yet; the ordinals then run on from
         // the rotated one.
         let next_in = |p: &Path| -> Result<Option<u64>, EventError> {
-            let mut file = match File::open(p) {
+            let mut file = match dir.read(p) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(e) => return Err(e.into()),
@@ -587,7 +591,11 @@ impl EventWriter {
             match marion_core::event::read(&tail).0.next_seq() {
                 Some(seq) => Ok(Some(seq)),
                 None if file.metadata()?.len() > SEQ_TAIL_BYTES => {
-                    Ok(marion_core::event::read(&std::fs::read(p)?).0.next_seq())
+                    use std::io::{Read, Seek};
+                    let mut whole = Vec::new();
+                    file.seek(std::io::SeekFrom::Start(0))?;
+                    file.read_to_end(&mut whole)?;
+                    Ok(marion_core::event::read(&whole).0.next_seq())
                 }
                 None => Ok(None),
             }
@@ -596,9 +604,10 @@ impl EventWriter {
             Some(seq) => seq,
             None => next_in(&rotated_path(path))?.unwrap_or(0),
         };
-        let file = crate::private_fs::open_append(path)?;
+        let file = dir.append(path)?;
         Ok(Self {
             path: path.to_path_buf(),
+            dir,
             len: file.metadata()?.len(),
             cap: MAX_EVENTS_FILE_BYTES,
             file,
@@ -674,8 +683,8 @@ impl EventWriter {
     /// old file finishes it from the new name ([`EventReader::poll`]).
     fn rotate(&mut self) -> Result<(), EventError> {
         self.sync()?;
-        std::fs::rename(&self.path, rotated_path(&self.path))?;
-        self.file = crate::private_fs::open_append(&self.path)?;
+        self.dir.rename(&self.path, &rotated_path(&self.path))?;
+        self.file = self.dir.append(&self.path)?;
         self.len = 0;
         Ok(())
     }
@@ -1254,6 +1263,50 @@ mod tests {
             resumed.next_seq(),
             seqs(&older).last().unwrap() + 1,
             "an empty fresh file seeds from the rotated one"
+        );
+    }
+
+    /// **A link the node left at its event stream is never appended to, read or chmodded**: on
+    /// Linux Landlock lets the node write `events.jsonl`, so a link there (or at the rotated
+    /// copy) refuses the open, and the operator's file it named stays byte- and mode-identical.
+    /// A stream that rotates over a linked `events.jsonl.1` replaces the link.
+    #[test]
+    fn a_linked_event_stream_is_refused_and_its_target_untouched() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = scratch("events-link");
+        let theirs = dir.join("operator-file");
+        std::fs::write(&theirs, b"operator's\n").unwrap();
+        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let untouched = || {
+            assert_eq!(std::fs::read(&theirs).unwrap(), b"operator's\n");
+            let mode = std::fs::metadata(&theirs).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o644);
+        };
+        let agent = dir.join("agents/n");
+        std::fs::create_dir_all(&agent).unwrap();
+        let path = agent.join("events.jsonl");
+        symlink(&theirs, &path).unwrap();
+        assert!(EventWriter::open_path(&path, &node()).is_err());
+        untouched();
+
+        std::fs::remove_file(&path).unwrap();
+        symlink(&theirs, rotated_path(&path)).unwrap();
+        assert!(EventWriter::open_path(&path, &node()).is_err(), "nor read");
+        untouched();
+
+        std::fs::remove_file(rotated_path(&path)).unwrap();
+        let mut w = EventWriter::open_path(&path, &node())
+            .unwrap()
+            .capped_at(2_000);
+        symlink(&theirs, rotated_path(&path)).unwrap();
+        for i in 0..60 {
+            w.append(frame(&format!("frame-{i}"))).unwrap();
+        }
+        untouched();
+        assert!(
+            std::fs::symlink_metadata(rotated_path(&path))
+                .unwrap()
+                .is_file()
         );
     }
 
