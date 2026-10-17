@@ -2126,13 +2126,13 @@ mod tests {
             .open(&probe)
             .expect("the probe, open for writing");
         // The fixture only means something while the exec is refused; a kernel that lets a file
-        // open for writing be executed has no race to retry, so the test says so and stops.
+        // open for writing be executed has no race to retry, so the test says so and stops. Any
+        // other error is a broken fixture, not a kernel's choice.
         match Command::new(&probe).spawn() {
             Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {}
-            other => {
-                if let Ok(mut child) = other {
-                    let _ = child.wait();
-                }
+            Err(e) => panic!("the probe fixture cannot be run at all: {e}"),
+            Ok(mut child) => {
+                let _ = child.wait();
                 eprintln!("skipped: this kernel runs a file still open for writing");
                 return;
             }
