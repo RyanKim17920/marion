@@ -2,7 +2,9 @@
 //! --help` lists it under, and whether it acts on one agent.
 //!
 //! The binary's dispatch table (`bin/marion/cli.rs`, `VERBS`) runs them and takes each row's
-//! summary from here; a test there holds the two to the same words in the same order.
+//! summary from here; a test there holds the two to the same words in the same order. The home
+//! screen's `:` line completes and runs commands from this table, so a new command is reachable
+//! from the screen the moment it is added.
 
 /// One command of `marion`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

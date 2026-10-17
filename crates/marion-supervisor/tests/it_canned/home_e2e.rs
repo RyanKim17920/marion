@@ -9,8 +9,8 @@
 //!
 //! What it proves, in the order an operator meets it: the agents page opens empty; `n`, `tab` to
 //! the codex type, a typed task and Enter run `marion run … --detach`, and the node appears in the
-//! list; its calls appear in the preview as they happen; `s` sends a steer and the supervisor's
-//! answer lands on the footer; `x` asks before it cancels; `,` is Setup and `?` the keys; and Enter
+//! list; its calls appear in the preview as they happen; `:steer` runs `marion steer` on the
+//! selected agent and Enter comes back; `x` asks before it cancels; `,` is Setup and `?` the keys; and Enter
 //! on a pane node attaches, `^] d` comes back.
 //!
 //! ```sh
@@ -422,7 +422,7 @@ fn status_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// n → run → list → preview output → steer → confirm-then-cancel → Setup → keys, on one screen.
+/// n → run → list → preview output → `:steer` → confirm-then-cancel → Setup → keys, on one screen.
 #[test]
 fn n_runs_a_task_and_the_list_shows_it_steers_it_and_cancels_it() {
     let bed = Bed::new("home-e2e-run");
@@ -478,18 +478,28 @@ fn n_runs_a_task_and_the_list_shows_it_steers_it_and_cancels_it() {
         s.contains(&format!("codex {root_short}"))
     });
 
-    // Steer: the footer becomes the line, Enter sends, and the supervisor's answer takes it.
-    op.type_in(b"s");
-    op.wait_for("the steer line", |s| {
-        s.contains(&format!("steer codex {root_short}")) && s.contains("enter send")
+    // `:` runs a marion command on the selected agent: the footer becomes the line, it names the
+    // agent once the command is typed, and Enter runs `marion steer <id> …` with the terminal —
+    // its own answer shown — until Enter comes back.
+    op.type_in(b":");
+    op.wait_for("the command line", |s| {
+        s.contains("marion") && s.contains("tab complete") && s.contains("enter run")
     });
-    op.type_in(b"use a deque");
-    op.wait_for("the steer typed", |s| s.contains("use a deque"));
-    op.dump("real-agents-steer");
+    op.type_in(b"steer use a deque");
+    op.wait_for("the command typed, on the root", |s| {
+        s.contains("use a deque") && s.contains(&format!("on codex {root_short}"))
+    });
+    op.dump("real-agents-command");
     op.type_in(b"\r");
-    op.wait_for("the supervisor's answer to the steer", |s| {
-        s.contains("queued") || s.contains("delivered") || s.contains("steer refused")
+    let ran = op.wait_for("the steer's own answer, then enter to return", |s| {
+        s.contains("enter returns") && (s.contains("queued") || s.contains("delivered"))
     });
+    assert!(
+        ran.contains(&format!("$ marion steer {}", root.0)),
+        "the line it ran is shown first:\n{ran}"
+    );
+    op.type_in(b"\r");
+    op.wait_for("the screen again", |s| status_line(s).contains("running"));
 
     // Cancel asks first, naming what it ends below; `n` keeps it, `y` ends it.
     op.type_in(b"x");

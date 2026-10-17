@@ -3934,56 +3934,49 @@ mod tests {
         assert_eq!(dispatched, specs);
     }
 
-    /// **CLI/TUI parity, as one table**: every command `marion --help` lists is a key on the home
-    /// screen, whose row in [`marion_supervisor::home::view::KEYS`] names `marion <verb>`, or one
-    /// of a few gaps saying why; and every command a key names is a command this binary runs.
-    /// `run`'s options are all the `n` line's, through its options row. A key with no command is
-    /// one only a screen has. So a new verb without a key, a gap that got one, or a key whose
+    /// **CLI/TUI parity**: every command `marion --help` lists is reachable from the home screen's
+    /// `:` line — `:`, its word and enter run `marion <word>` — or is one of a few gaps saying why;
+    /// and every command a key's row in [`marion_supervisor::home::view::KEYS`] names is a command
+    /// this binary runs. A key with no command is one only a screen has. `run`'s options are all
+    /// the `n` line's, through its options row. So a gap that became reachable, or a key whose
     /// command was renamed, fails here rather than drifting.
     #[test]
-    fn every_command_is_a_key_and_every_keys_command_is_a_command() {
+    fn every_command_is_reachable_from_the_home_screen() {
         use marion_supervisor::home::view::KEYS;
-        const GAPS: &[(&str, &str)] = &[
-            ("race", "the n line's --on makes a race; not built yet"),
-            (
-                "workflow",
-                "workflows join the n line's tab cycle; not built yet",
-            ),
-            (
-                "harness",
-                "Setup's rows for your own harness files; not built yet",
-            ),
-            ("export", "e exports the selected agent; not built yet"),
-            (
-                "trust",
-                "Setup's allow and deny on a file row; not built yet",
-            ),
-            ("mcp", "an MCP client's server, not something a person does"),
-            ("search", "reachable through the `:` line (slice 5)"),
-        ];
-        // Keys a screen has and a command line does not need: moving, paging, the line's own
-        // keys, and `/`, which filters what is on screen (`marion ls --plain` is greppable).
-        const SCREEN_ONLY: &[&str] = &["j/k", "pgup/dn", ",", "?", "q", "tab", "enter", "esc", "/"];
+        use marion_supervisor::home::{Effect, Home};
+        use marion_tui::home::keys::Key;
+        const GAPS: &[(&str, &str)] =
+            &[("mcp", "an MCP client's server, not something a person does")];
+        for v in cli::VERBS.iter().filter(|v| v.summary().is_some()) {
+            let mut home = Home::new();
+            home.key(Key::Char(':'));
+            home.key(Key::Paste(v.name.into()));
+            let reached = matches!(
+                home.key(Key::Enter),
+                Effect::Command(words) if words.first().map(String::as_str) == Some(v.name)
+            );
+            let gap = GAPS.iter().any(|(g, _)| *g == v.name);
+            assert!(
+                reached != gap,
+                "`marion {}` {}",
+                v.name,
+                if reached {
+                    "is reachable now: take it off GAPS"
+                } else {
+                    "is not reachable from the `:` line and is not a listed gap"
+                }
+            );
+        }
+        // Keys a screen has and a command line does not need: moving, the pages, the line's own
+        // keys, and the `also` row of search and scrolling, which act on what is on screen.
+        const SCREEN_ONLY: &[&str] = &["j/k", ",", "?", "q", "also", "tab", "enter", "esc"];
         let rows: Vec<_> = KEYS.iter().flat_map(|(_, rows)| rows.iter()).collect();
         let named: Vec<&str> = rows
             .iter()
             .filter_map(|(_, _, command)| command.strip_prefix("marion "))
             .filter_map(|rest| rest.split_whitespace().next())
+            .filter(|word| !word.starts_with('<'))
             .collect();
-        for v in cli::VERBS.iter().filter(|v| v.summary().is_some()) {
-            let keyed = named.contains(&v.name);
-            let gap = GAPS.iter().any(|(g, _)| *g == v.name);
-            assert!(
-                keyed != gap,
-                "`marion {}` {}",
-                v.name,
-                if keyed {
-                    "has a key now: take it off GAPS"
-                } else {
-                    "has no key on the home screen and is not a listed gap"
-                }
-            );
-        }
         for verb in &named {
             assert!(
                 cli::verb(verb).is_some(),
@@ -5324,10 +5317,13 @@ mod tests {
         assert_eq!(attach.agent_id, id.0);
         let cancel = parse_attach(&verb(&Effect::Cancel(id.clone()))).unwrap();
         assert_eq!(cancel.agent_id, id.0);
-        let resume = parse_resume(&verb(&Effect::Resume(id.clone()))).unwrap();
+        // The `:` line runs its words as typed, the selected agent's id put first.
+        let command =
+            |words: &[&str]| Effect::Command(words.iter().map(|w| w.to_string()).collect());
+        let resume = parse_resume(&verb(&command(&["resume", &id.0]))).unwrap();
         assert_eq!(resume.agent_id, id.0);
-        for text in ["use a deque", "-starts with a dash", "  two  spaces  "] {
-            let steer = parse_steer(&verb(&Effect::Steer(id.clone(), text.into()))).unwrap();
+        for text in ["use a deque", "  two  spaces  "] {
+            let steer = parse_steer(&verb(&command(&["steer", &id.0, text]))).unwrap();
             assert_eq!(steer.target, id.0);
             assert_eq!(steer.text, SteerText::Words(text.into()));
         }

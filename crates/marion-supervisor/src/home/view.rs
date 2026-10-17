@@ -75,7 +75,7 @@ pub fn frame_at(home: &Home, places: &Places, now: std::time::SystemTime) -> Fra
 /// rather than shown.
 fn counts(home: &Home) -> String {
     let w = &home.watch;
-    let land = w.nodes.iter().filter(|n| w.lands(n)).count();
+    let land = w.nodes.iter().filter(|n| crate::tree::to_land(n)).count();
     [
         (crate::tree::running(&w.nodes), "running"),
         (crate::tree::attention_count(&w.nodes), "need you"),
@@ -736,23 +736,18 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("enter", "attach (pane); ^] d back", "marion attach <id>"),
             ("enter", "full output (headless)", "marion ls <id> --follow"),
             ("n", "new task", "marion run <type> --prompt <text>"),
-            ("/", "search; ↑↓ next, enter go", ""),
-            ("s", "steer a running agent", "marion steer <id> <text>"),
             ("x", "cancel, asks; again kills", "marion cancel <id>"),
-            ("u", "resume an ended agent", "marion resume <id>"),
-            ("o", "shell in its workspace", "marion shell <id>"),
-            ("d", "what its branch changed", "marion diff <id>"),
-            ("m", "merge its branch, asks", "marion merge <id>"),
-            ("pgup/dn", "scroll output; end follows", ""),
+            (":", "any marion command", "marion <command> [<id>]"),
             (",", "setup", ""),
             ("?", "this page", ""),
             ("q", "quit", ""),
+            ("also", "/ search, pgup/dn scroll", ""),
         ],
     ),
     (
         "input line",
         &[
-            ("tab", "next agent type", ""),
+            ("tab", "next type; : completes", ""),
             ("↑↓", "the type's models", "--model <m>"),
             (
                 "--detach",
@@ -760,7 +755,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
                 "marion run --detach",
             ),
             ("--<opt>", "options, before the task", "marion run --help"),
-            ("enter", "run, send or add", ""),
+            ("enter", "run or add", ""),
             ("esc", "close it", ""),
         ],
     ),
@@ -795,7 +790,8 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
     ),
 ];
 
-/// The key table, the page help was opened from first.
+/// The key table, the page help was opened from first, and after the agents' keys the commands
+/// the `:` line runs, from [`super::completions`]: the commands `marion --help` lists.
 fn help(home: &Home) -> HelpView {
     let first = match home.help_from {
         Page::Setup => "setup",
@@ -803,24 +799,59 @@ fn help(home: &Home) -> HelpView {
     };
     let mut order: Vec<&(&str, &[KeyRow3])> = KEYS.iter().collect();
     order.sort_by_key(|(title, _)| *title != first);
+    let rows = |keys: &[KeyRow3]| -> Vec<KeyRow> {
+        keys.iter()
+            .map(|(k, v, c)| KeyRow {
+                key: k.to_string(),
+                verb: v.to_string(),
+                command: c.to_string(),
+            })
+            .collect()
+    };
+    let mut sections: Vec<(String, Vec<KeyRow>)> = Vec::new();
+    for (title, keys) in order {
+        sections.push((title.to_string(), rows(keys)));
+        if *title == "agents" {
+            sections.push(("commands".to_string(), commands()));
+        }
+    }
     HelpView {
         scroll: home.help_scroll,
-        sections: order
-            .into_iter()
-            .map(|(title, keys)| {
-                (
-                    title.to_string(),
-                    keys.iter()
-                        .map(|(k, v, c)| KeyRow {
-                            key: k.to_string(),
-                            verb: v.to_string(),
-                            command: c.to_string(),
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
+        sections,
     }
+}
+
+/// The widest a row of command words is drawn on help: what is left of a column beside the key
+/// at 80 columns, where help lays out two.
+const COMMAND_ROW: usize = 26;
+
+/// The `:` line's commands as help rows: their words, packed into as few rows as fit, after a
+/// `:` — `marion --help` says what each does, and the `:` line's note says it as one is typed.
+fn commands() -> Vec<KeyRow> {
+    let mut lines: Vec<String> = Vec::new();
+    for s in super::completions("") {
+        match lines.last_mut() {
+            Some(l) if l.len() + 1 + s.name.len() <= COMMAND_ROW => {
+                l.push(' ');
+                l.push_str(s.name);
+            }
+            _ => lines.push(s.name.to_string()),
+        }
+    }
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, verb)| KeyRow {
+            key: if i == 0 { ":" } else { "" }.to_string(),
+            verb,
+            command: String::new(),
+        })
+        .collect()
+}
+
+/// How many lines help has: every section's rows and its heading, for its scroll to stop at.
+pub fn help_lines(home: &Home) -> usize {
+    help(home).sections.iter().map(|(_, k)| k.len() + 1).sum()
 }
 
 /// The footer: the line being typed, the confirm, or the keys the selection takes — each offered
@@ -873,10 +904,10 @@ fn footer(home: &Home) -> Footer {
                         h(&[("↑↓", "next"), ("enter", "go"), ("esc", "back")]),
                     )
                 }
-                Purpose::Steer(id) => (
-                    format!("steer {}", who_short(home, id)),
-                    String::new(),
-                    h(&[("enter", "send"), ("esc", "cancel")]),
+                Purpose::Command => (
+                    "marion".to_string(),
+                    command_note(home, text),
+                    h(&[("tab", "complete"), ("enter", "run"), ("esc", "cancel")]),
                 ),
                 Purpose::Key => (
                     "key add".to_string(),
@@ -917,50 +948,55 @@ fn who_short(home: &Home, id: &AgentId) -> String {
         )
 }
 
-fn can(n: &NodeSummary, action: &str) -> bool {
-    crate::tree::actions_for(n)
-        .iter()
-        .any(|a| a.name == action && a.available)
+/// The `:` line's note: while the command word is typed, the commands it could be; once it is a
+/// command, the agent it acts on, or what it does.
+fn command_note(home: &Home, text: &str) -> String {
+    let word = text.trim_start();
+    if !word.contains(char::is_whitespace) {
+        let found = super::completions(word);
+        return match found.as_slice() {
+            [] => "no such command".to_string(),
+            [one] if one.name == word => one.summary.unwrap_or_default().to_string(),
+            many => many.iter().map(|s| s.name).collect::<Vec<_>>().join(" "),
+        };
+    }
+    let name = word.split_whitespace().next().unwrap_or_default();
+    match (crate::verbs::spec(name), home.selected()) {
+        (Some(s), Some(n)) if s.on_agent => format!("on {}", who_short(home, &n.agent_id)),
+        (Some(s), _) => s.summary.unwrap_or_default().to_string(),
+        (None, _) => "no such command".to_string(),
+    }
 }
 
-/// The agents page's keys for the selection.
+/// The agents page's keys for the selection: the eight the page has, each offered only where it
+/// does something.
 fn agent_keys(home: &Home) -> Vec<Hint> {
     let mut k: Vec<(&str, &str)> = Vec::new();
-    let more = ("?", "more");
-    if home.watch.nodes.is_empty() {
-        return [("n", "new"), (",", "setup"), more]
-            .iter()
-            .map(|(a, b)| Hint::new(*a, *b))
-            .collect();
+    if !home.watch.nodes.is_empty() {
+        k.push(("j/k", "move"));
     }
     if home.selected_race().is_some() {
-        k.extend([("enter", "winner"), ("m", "merge"), ("n", "new")]);
+        k.push(("enter", "winner"));
     } else if home.selected_workflow().is_some() {
-        k.extend([("enter", "step"), ("n", "new")]);
+        k.push(("enter", "step"));
     } else if let Some(n) = home.selected() {
-        let landed = home.branch().is_some();
         if home.watch.full {
             k.push(("esc", "back"));
         } else {
             k.push(("enter", if n.pane { "attach" } else { "output" }));
-            k.push(("n", "new"));
-        }
-        if n.state.is_exited() {
-            if landed {
-                k.extend([("m", "merge"), ("d", "diff")]);
-            }
-            if can(n, "resume") {
-                k.push(("u", "resume"));
-            }
-            k.push(("o", "shell"));
-        } else {
-            if can(n, "steer") {
-                k.push(("s", "steer"));
-            }
-            k.push(("x", "cancel"));
         }
     }
-    k.extend([("/", "search"), more]);
+    k.push(("n", "new"));
+    if home.selected().is_some_and(|n| !n.state.is_exited()) {
+        k.push(("x", "cancel"));
+    }
+    // `?` last: on a narrow row it is the one kept, and it leads to every other.
+    k.extend([
+        (":", "command"),
+        (",", "setup"),
+        ("q", "quit"),
+        ("?", "help"),
+    ]);
     k.into_iter().map(|(a, b)| Hint::new(a, b)).collect()
 }
 
@@ -1008,7 +1044,6 @@ fn confirm(home: &Home, effect: &Effect) -> Footer {
     };
     let (question, command) = match effect {
         Effect::Logout(id) => (format!("remove the key {id}?"), line(effect)),
-        Effect::Merge(branch) => (format!("merge {branch} into your checkout?"), line(effect)),
         Effect::ProfileRemove { harness, name } => {
             (format!("remove the login {harness} {name}?"), line(effect))
         }

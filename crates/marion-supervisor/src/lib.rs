@@ -188,7 +188,8 @@ pub mod tool;
 pub mod trust;
 pub mod types_snapshot;
 pub mod user_config;
-/// marion's commands as a table the library reads: `marion --help`'s lines come from it.
+/// marion's commands as a table the library reads: `marion --help`'s lines and the home screen's
+/// `:` line both come from it.
 pub mod verbs;
 /// Event-driven waiting: self-pipes, change signals and file watches that long-lived loops block
 /// on instead of sleeping.

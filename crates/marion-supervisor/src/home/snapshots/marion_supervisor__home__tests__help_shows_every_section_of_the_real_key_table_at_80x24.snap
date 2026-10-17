@@ -1,26 +1,27 @@
 ---
 source: crates/marion-supervisor/src/home/tests.rs
+assertion_line: 468
 expression: screen
 ---
  marion  keys
   agents                                 input line
-  j/k       move                         tab       next agent type
+  j/k       move                         tab       next type; : completes
   enter     attach (pane); ^] d back     ↑↓        the type's models
   enter     full output (headless)       --detach  first on n: run it headless
   n         new task                     --<opt>   options, before the task
-  /         search; ↑↓ next, enter go    enter     run, send or add
-  s         steer a running agent        esc       close it
-  x         cancel, asks; again kills
-  u         resume an ended agent        setup
-  o         shell in its workspace       enter     harness: its detail
-  d         what its branch changed      enter     login: make it the default
-  m         merge its branch, asks       enter     agent types: edit them
-  pgup/dn   scroll output; end follows   enter     notify: turn on or off
-  ,         setup                        a         add a login, or a key
-  ?         this page                    del       remove a login or key, asks
-  q         quit                         r         re-check
-                                         esc       back
-
+  x         cancel, asks; again kills    enter     run or add
+  :         any marion command           esc       close it
+  ,         setup
+  ?         this page                    setup
+  q         quit                         enter     harness: its detail
+  also      / search, pgup/dn scroll     enter     login: make it the default
+                                         enter     agent types: edit them
+  commands                               enter     notify: turn on or off
+  :         run ls search race           a         add a login, or a key
+            workflow harness attach      del       remove a login or key, asks
+            diff merge shell steer       r         re-check
+            cancel resume key profile    esc       back
+            export trust notify doctor
 
 
 

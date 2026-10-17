@@ -10,8 +10,9 @@
 //! * [`view`] projects a [`Home`] onto `marion_tui::home`'s views, which only draw.
 //! * [`session`] runs the loop: it paints, reads the keyboard, keeps the forest current from
 //!   `tree/subscribe`, and carries each [`Effect`] out **through a command or an RPC marion already
-//!   has** — a run is `marion run …`, a steer is `node/steer`, a cancel is `node/cancel`, an attach
-//!   is [`crate::attach::run`] after leaving the screen. There is no second spawn path here.
+//!   has** — a run is `marion run …`, a cancel is `node/cancel`, an attach is
+//!   [`crate::attach::run`] after leaving the screen, and the `:` line runs the `marion` command
+//!   typed on it. There is no second spawn path here.
 //!
 //! # Every effect is a command
 //!
@@ -38,8 +39,7 @@ use marion_core::proto::result::{ActionLine, NodeDetail};
 use marion_tui::home::keys::Key;
 use marion_tui::home::{Page, Ready};
 use marion_tui::tree::Tree;
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashMap;
 
 /// What a key asks the session to do. [`Effect::None`] is by far the most common answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,23 +59,15 @@ pub enum Effect {
     },
     /// Leave the screen, run [`crate::attach::run`], come back.
     Attach(AgentId),
-    /// `node/steer`, as the operator.
-    Steer(AgentId, String),
     /// `node/cancel`: the node and everything below it, each turn ended the way its harness allows.
     /// Destructive: only ever returned after a confirming `y`.
     Cancel(AgentId),
     /// `node/kill` of a node already being cancelled — the cancel's escalation, for a harness that
     /// is ignoring its abort. Destructive: after a `y`.
     Kill(AgentId),
-    /// Leave the screen, run `marion resume <id>`, come back.
-    Resume(AgentId),
-    /// Leave the screen, open the operator's `$SHELL` in this directory, come back.
-    Shell(PathBuf),
-    /// Leave the screen, show what the branch changed, come back.
-    Diff(String),
-    /// Leave the screen, run `git merge --no-ff -- <branch>` in the project, come back. It changes the
-    /// operator's checkout: only ever after a `y`.
-    Merge(String),
+    /// Leave the screen, run `marion <words>` in the project, wait for `enter`, come back: the `:`
+    /// line, which reaches every command `marion --help` lists.
+    Command(Vec<String>),
     /// Probe the harnesses again (`marion doctor`).
     Recheck,
     /// Leave the screen, open the project's agents file in `$EDITOR`, come back and validate it.
@@ -144,17 +136,11 @@ impl Effect {
                 a
             }
             Effect::Attach(id) => v(&["marion", "attach", &id.0]),
-            // `--` so a message may begin with a dash and still be read as the message.
-            Effect::Steer(id, text) => v(&["marion", "steer", &id.0, "--", text]),
+            Effect::Command(words) => std::iter::once("marion".to_string())
+                .chain(words.iter().cloned())
+                .collect(),
             Effect::Cancel(id) => v(&["marion", "cancel", &id.0]),
             Effect::Kill(id) => v(&["marion", "cancel", &id.0, "--force"]),
-            Effect::Resume(id) => v(&["marion", "resume", &id.0]),
-            Effect::Shell(dir) => {
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
-                v(&["cd", &dir.to_string_lossy(), "&&", &shell])
-            }
-            Effect::Diff(branch) => crate::landing::log_argv(branch),
-            Effect::Merge(branch) => crate::landing::merge_argv(branch),
             Effect::Recheck => v(&["marion", "doctor"]),
             Effect::Notify(on) => v(&["marion", "notify", if *on { "on" } else { "off" }]),
             Effect::RepoTrust(on) => v(&[
@@ -177,7 +163,6 @@ impl Effect {
             self,
             Effect::Cancel(_)
                 | Effect::Kill(_)
-                | Effect::Merge(_)
                 | Effect::Logout(_)
                 | Effect::ProfileRemove { .. }
                 | Effect::RepoTrust(true)
@@ -230,8 +215,8 @@ pub enum Mode {
 pub enum Purpose {
     /// A new task, for [`Home::new_type`] on [`Home::new_model`].
     New,
-    /// A steer for this node.
-    Steer(AgentId),
+    /// A `marion` command, on the selected agent where it takes one ([`Home::command_line`]).
+    Command,
     /// The credential id (`<provider>[:<label>]`) to hand to `marion key add`.
     Key,
     /// A login's name, to hand to `marion profile add <harness> <name>`.
@@ -322,14 +307,8 @@ pub struct Watch {
     pub rollup: crate::rollup::Rollup,
     /// The selected agent's output fills the body: `enter` on a headless agent, `esc` back.
     pub full: bool,
-    /// `m` pressed on a race row: the winner's branch is merged once its detail arrives.
-    pub pending: Option<AgentId>,
     /// Each node's task, first line, once a `node/get` has read it: the row's title.
     pub titles: HashMap<String, String>,
-    /// Each node's landed branch, once a `node/get` has read it.
-    pub branches: HashMap<String, String>,
-    /// Branches merged from this screen: their nodes have nothing left to land.
-    pub merged: HashSet<String>,
 }
 
 impl Default for Watch {
@@ -344,23 +323,8 @@ impl Default for Watch {
             scroll: 0,
             rollup: crate::rollup::Rollup::default(),
             full: false,
-            pending: None,
             titles: HashMap::new(),
-            branches: HashMap::new(),
-            merged: HashSet::new(),
         }
-    }
-}
-
-impl Watch {
-    /// Whether `n` still has work to land: it has, by [`crate::tree::to_land`], and its branch has
-    /// not been merged from here.
-    pub fn lands(&self, n: &NodeSummary) -> bool {
-        crate::tree::to_land(n)
-            && !self
-                .branches
-                .get(&n.agent_id.0)
-                .is_some_and(|b| self.merged.contains(b))
     }
 }
 
@@ -563,20 +527,15 @@ impl Home {
             .map(|n| n.agent_id.clone())
     }
 
-    /// A key on a race's header row, which has no agent of its own: `enter` goes to the winner,
-    /// and `m` merges the winner's branch once its detail is read. Anything else says what does.
+    /// A key on a race's header row, which has no agent of its own: `enter` goes to the winner.
+    /// Anything else says what does.
     fn race_key(&mut self, race: &str, key: &Key) -> Effect {
-        let winner = self.race_winner(race);
-        match (key, winner) {
+        match (key, self.race_winner(race)) {
             (Key::Enter, Some(w)) => {
                 self.select(&w.0);
             }
-            (Key::Char('m'), Some(w)) => {
-                self.watch.pending = Some(w.clone());
-                self.select(&w.0);
-            }
-            (Key::Enter | Key::Char('m'), None) => self.notice = Some("no winner yet".into()),
-            _ => self.notice = Some("a race: enter goes to its winner, m merges it".into()),
+            (Key::Enter, None) => self.notice = Some("no winner yet".into()),
+            _ => self.notice = Some("a race: enter goes to its winner".into()),
         }
         Effect::None
     }
@@ -608,7 +567,7 @@ impl Home {
     pub fn set_nodes(&mut self, nodes: Vec<NodeSummary>) {
         let keep = self.watch.tree.selected().map(|n| n.id.clone());
         let nodes = if matches!(self.mode, Mode::Normal) {
-            crate::tree::by_urgency(&nodes, &|n| self.watch.lands(n))
+            crate::tree::by_urgency(&nodes, &crate::tree::to_land)
         } else {
             let at = |n: &NodeSummary| {
                 self.watch
@@ -708,22 +667,7 @@ impl Home {
             let task = detail.task.as_ref().map(|t| t.prompt.clone());
             let _ = self.set_title(&id, task.as_deref());
         }
-        let branch = detail.completion.as_ref().and_then(|c| c.branch.clone());
-        if let Some(b) = &branch {
-            self.watch.branches.insert(id.0.clone(), b.clone());
-        }
-        match (self.watch.pending.take(), branch) {
-            (Some(p), Some(b)) if p == id => self.mode = Mode::Confirm(Effect::Merge(b)),
-            (Some(p), None) if p == id => self.notice = Some("the winner landed no branch".into()),
-            (other, _) => self.watch.pending = other,
-        }
         self.watch.detail = Some((id, detail));
-    }
-
-    /// A merge of `branch` went through: its node has nothing left to land.
-    pub fn merged(&mut self, branch: &str) {
-        self.watch.merged.insert(branch.to_string());
-        self.reorder();
     }
 
     fn selection_moved(&mut self) {
@@ -753,7 +697,6 @@ impl Home {
         }
         match effect {
             Effect::Logout(_) => self.notice = Some("key kept".into()),
-            Effect::Merge(_) => self.notice = Some("not merged".into()),
             Effect::ProfileRemove { .. } => self.notice = Some("login kept".into()),
             Effect::RepoTrust(_) => self.notice = Some("not trusted".into()),
             _ => self.notice = Some("not cancelled".into()),
@@ -811,6 +754,7 @@ impl Home {
                 self.new.kind = (self.new.kind + by) % n;
                 self.new.model = 0;
             }
+            Key::Tab if purpose == Purpose::Command => self.complete(&mut text),
             Key::Down if purpose == Purpose::New => {
                 let n = self.models().len();
                 self.new.model = (self.new.model + 1) % n;
@@ -948,8 +892,10 @@ impl Home {
                 self.selection_moved();
                 Effect::None
             }
-            Purpose::Steer(target) if !text.trim().is_empty() => Effect::Steer(target, text),
-            Purpose::Steer(_) => Effect::None,
+            Purpose::Command => match self.command_line(&text) {
+                Ok(words) => Effect::Command(words),
+                Err(why) => refused(self, why, purpose, text),
+            },
             Purpose::New => {
                 let line = match self.new_options(&text) {
                     Ok(line) => line,
@@ -999,8 +945,7 @@ impl Home {
                     Effect::None
                 }
                 Key::Char('j') | Key::Down => {
-                    let lines = view::KEYS.iter().map(|(_, k)| k.len() + 1).sum::<usize>();
-                    self.help_scroll = (self.help_scroll + 1).min(lines);
+                    self.help_scroll = (self.help_scroll + 1).min(view::help_lines(self));
                     Effect::None
                 }
                 Key::Char('k') | Key::Up => {
@@ -1015,7 +960,7 @@ impl Home {
     fn agents_key(&mut self, key: Key) -> Effect {
         let anywhere = matches!(
             key,
-            Key::Char('q' | '?' | ',' | 'n' | 'j' | 'k' | '/')
+            Key::Char('q' | '?' | ',' | 'n' | 'j' | 'k' | '/' | ':')
                 | Key::Up
                 | Key::Down
                 | Key::PageUp
@@ -1058,18 +1003,14 @@ impl Home {
                     text: String::new(),
                 }
             }
+            Key::Char(':') => {
+                self.mode = Mode::Typing {
+                    purpose: Purpose::Command,
+                    text: String::new(),
+                }
+            }
             Key::Enter => return self.enter(),
             Key::Esc if self.watch.full => self.watch.full = false,
-            Key::Char('s') => match self.selected() {
-                Some(n) if !n.state.is_exited() => {
-                    self.mode = Mode::Typing {
-                        purpose: Purpose::Steer(n.agent_id.clone()),
-                        text: String::new(),
-                    }
-                }
-                Some(_) => self.notice = Some("ended: u resumes it".into()),
-                None => self.notice = Some("nothing selected".into()),
-            },
             Key::Char('x') => match self.selected() {
                 // A second `x` on a node whose cancel is still waiting out its grace kills it now.
                 Some(n) if !n.state.is_exited() && n.cancel.is_some() => {
@@ -1080,23 +1021,6 @@ impl Home {
                 }
                 Some(_) => self.notice = Some("already ended".into()),
                 None => self.notice = Some("nothing selected".into()),
-            },
-            Key::Char('u') => match self.selected() {
-                Some(n) if n.state.is_exited() => return Effect::Resume(n.agent_id.clone()),
-                Some(_) => self.notice = Some("still running: s steers it".into()),
-                None => self.notice = Some("nothing selected".into()),
-            },
-            Key::Char('o') => match self.workspace() {
-                Some(dir) => return Effect::Shell(dir),
-                None => self.notice = Some("no workspace known yet".into()),
-            },
-            Key::Char('d') => match self.branch() {
-                Some(b) => return Effect::Diff(b),
-                None => self.notice = Some("no branch landed".into()),
-            },
-            Key::Char('m') => match self.branch() {
-                Some(b) => self.mode = Mode::Confirm(Effect::Merge(b)),
-                None => self.notice = Some("no branch to merge".into()),
             },
             _ => {}
         }
@@ -1128,16 +1052,53 @@ impl Home {
         Effect::None
     }
 
-    fn workspace(&self) -> Option<PathBuf> {
-        use marion_core::contract::Workspace;
-        Some(match self.selected_detail()?.workspace.as_ref()? {
-            Workspace::Worktree { path, .. } | Workspace::SharedCwd { path } => path.clone(),
-        })
+    /// **The `:` line read**: `marion`'s words for the command typed, with the selected agent's id
+    /// put first after the command where the command acts on one agent (`:steer use a deque` is
+    /// `marion steer <id> use a deque`). Refused, with why, for a word that is no command or a
+    /// command that is [`OFF_LINE`].
+    pub fn command_line(&self, text: &str) -> Result<Vec<String>, String> {
+        let mut words = options::words(text)?;
+        let Some(name) = words.first() else {
+            return Err("type a command; tab completes it".into());
+        };
+        if let Some((_, why)) = OFF_LINE.iter().find(|(off, _)| off == name) {
+            return Err(why.to_string());
+        }
+        let Some(spec) = crate::verbs::spec(name) else {
+            return Err(format!("no command named `{name}`; tab completes one"));
+        };
+        if spec.on_agent
+            && let Some(n) = self.selected()
+        {
+            words.insert(1, n.agent_id.0.clone());
+        }
+        Ok(words)
     }
 
-    /// The selected node's landed branch, once its detail has been read.
-    pub fn branch(&self) -> Option<String> {
-        self.selected_detail()?.completion.as_ref()?.branch.clone()
+    /// `tab` on the `:` line: the command word typed so far completed — to the command where one
+    /// starts with it, else as far as every one that does agrees. After the command, nothing.
+    fn complete(&mut self, text: &mut String) {
+        let word = text.trim_start();
+        if word.contains(char::is_whitespace) {
+            return;
+        }
+        let found = completions(word);
+        match found.as_slice() {
+            [] => self.notice = Some(format!("no command starts `{word}`")),
+            [one] => *text = format!("{} ", one.name),
+            [first, rest @ ..] => {
+                // Command words are ASCII: a byte count is a char boundary.
+                let common = rest.iter().fold(first.name, |common, s| {
+                    let agree = common
+                        .bytes()
+                        .zip(s.name.bytes())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    &common[..agree]
+                });
+                *text = common.to_string();
+            }
+        }
     }
 
     fn setup_key(&mut self, key: Key) -> Effect {
@@ -1379,6 +1340,23 @@ impl Default for Home {
     fn default() -> Self {
         Home::new()
     }
+}
+
+/// The commands the `:` line will not run, each with why: what is no operator's to run from a
+/// screen.
+pub const OFF_LINE: &[(&str, &str)] = &[(
+    "mcp",
+    "marion mcp serves an MCP client over stdio; the client's own config runs it",
+)];
+
+/// The commands the `:` line completes `prefix` to: every command `marion --help` lists that
+/// starts with it, in that order, less [`OFF_LINE`].
+pub fn completions(prefix: &str) -> Vec<&'static crate::verbs::Spec> {
+    crate::verbs::SPECS
+        .iter()
+        .filter(|s| s.summary.is_some() && s.name.starts_with(prefix))
+        .filter(|s| !OFF_LINE.iter().any(|(off, _)| *off == s.name))
+        .collect()
 }
 
 /// [`Home::row_matches`] over the parts of a [`Home`] it reads, so the tree can be borrowed for its

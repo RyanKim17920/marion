@@ -474,7 +474,7 @@ fn help_shows_every_section_of_the_real_key_table_at_80x24() {
             .map(|(t, _)| t)
             .collect::<Vec<_>>()
     };
-    assert_eq!(titles(&h), ["agents", "input line", "setup"]);
+    assert_eq!(titles(&h), ["agents", "commands", "input line", "setup"]);
     h.key(Key::Esc);
     h.key(Key::Char(','));
     h.key(Key::Char('?'));
@@ -532,7 +532,7 @@ fn every_footer_key_is_in_the_key_table() {
     let mut empty = home();
     empty.set_nodes(vec![]);
     states.push(empty);
-    for k in ['n', 's'] {
+    for k in ['n', ':'] {
         let mut h = home();
         h.key(Key::Char(k));
         states.push(h);
@@ -562,39 +562,26 @@ fn every_footer_key_is_in_the_key_table() {
     }
 }
 
-/// **The footer offers only what the selection takes**: a running agent steers and cancels, an
-/// ended one resumes and opens its shell, merge and diff only once a branch has landed, and an
-/// empty list offers a new task and Setup.
+/// **The footer offers the page's eight keys, each only where it does something**: `x` for a
+/// running agent and not an ended one, `j/k` and `enter` only over a list, and `?` last, the one
+/// a narrow row keeps.
 #[test]
 fn the_footer_offers_only_what_the_selection_takes() {
     let mut h = home();
-    let running = footer_keys(&h);
-    assert!(running.contains(&"x".to_string()), "{running:?}");
-    assert!(!running.contains(&"u".to_string()), "{running:?}");
-    assert!(!running.contains(&"m".to_string()), "{running:?}");
     assert_eq!(
-        running.last().map(String::as_str),
-        Some("?"),
-        "`? more` last"
+        footer_keys(&h),
+        ["j/k", "enter", "n", "x", ":", ",", "q", "?"]
     );
     h.key(Key::Char('j'));
-    let ended = footer_keys(&h);
-    assert!(ended.contains(&"o".to_string()), "{ended:?}");
-    assert!(!ended.contains(&"x".to_string()), "{ended:?}");
-    assert!(
-        !ended.contains(&"m".to_string()),
-        "nothing landed yet: {ended:?}"
-    );
-    h.absorb_detail(AgentId("child".into()), landed("marion/t-1"));
-    let landed = footer_keys(&h);
-    assert!(
-        landed.contains(&"m".to_string()) && landed.contains(&"d".to_string()),
-        "{landed:?}"
+    assert_eq!(
+        footer_keys(&h),
+        ["j/k", "enter", "n", ":", ",", "q", "?"],
+        "an ended agent is not cancelled"
     );
     h.lost_supervisor();
-    assert_eq!(footer_keys(&h), ["n", ",", "?"]);
+    assert_eq!(footer_keys(&h), ["n", ":", ",", "q", "?"]);
     h.set_nodes(vec![]);
-    assert_eq!(footer_keys(&h), ["n", ",", "?"]);
+    assert_eq!(footer_keys(&h), ["n", ":", ",", "q", "?"]);
 }
 
 // ------------------------------------------------------------------ the list
@@ -614,22 +601,22 @@ fn the_list_leads_with_the_node_that_needs_you() {
     assert_eq!(h.selected().unwrap().agent_id.0, "b");
 }
 
-/// **The order holds while a line is open**: a row must not move under a steer being typed for
-/// it. A node that arrives meanwhile goes to the end, and the order comes back once the line
+/// **The order holds while a line is open**: a row must not move under a command being typed
+/// for it. A node that arrives meanwhile goes to the end, and the order comes back once the line
 /// closes.
 #[test]
 fn set_nodes_holds_the_order_while_a_line_is_open() {
     use marion_core::node::BlockReason;
     let mut h = home();
     h.set_nodes(vec![node("a", None, NodeState::Running)]);
-    h.key(Key::Char('s'));
+    h.key(Key::Char(':'));
     let asks = node("b", None, NodeState::Blocked(BlockReason::Permission));
     h.set_nodes(vec![asks.clone(), node("a", None, NodeState::Running)]);
     assert_eq!(row_ids(&frame(&h)), ["a", "b"], "held while typing");
     assert_eq!(
         h.selected().unwrap().agent_id.0,
         "a",
-        "the steer's row stays put"
+        "the command's row stays put"
     );
     h.key(Key::Esc);
     assert_eq!(
@@ -642,24 +629,6 @@ fn set_nodes_holds_the_order_while_a_line_is_open() {
         "a",
         "the selection follows its node"
     );
-}
-
-/// **A merge from here takes the node out of what is left to land**: its rank and the count drop.
-#[test]
-fn a_merged_branch_has_nothing_left_to_land() {
-    let mut h = home();
-    let mut root = node("root", None, NodeState::Exited(ExitStatus::Ok));
-    root.changed = Some(9);
-    let mut child = node("child", Some("root"), NodeState::Exited(ExitStatus::Ok));
-    child.changed = Some(2);
-    h.set_nodes(vec![root, child]);
-    assert_eq!(frame(&h).counts, "1 to land", "a root has nothing to land");
-    h.select("child");
-    h.absorb_detail(AgentId("child".into()), landed("marion/t-1"));
-    h.key(Key::Char('m'));
-    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/t-1".into()));
-    h.merged("marion/t-1");
-    assert_eq!(frame(&h).counts, "");
 }
 
 /// **A row's title is its task's first line**, read once per node; a root, whose prompt went to its
@@ -860,112 +829,143 @@ fn no_single_key_on_any_page_is_destructive() {
     }
 }
 
+/// An ended agent has nothing to cancel, and `x` says so rather than asking.
 #[test]
-fn steer_types_on_the_line_and_enter_sends_it_to_the_node_it_began_on() {
+fn x_on_an_ended_agent_says_it_has_ended() {
     let mut h = home();
-    h.key(Key::Char('s'));
+    h.key(Key::Char('j'));
+    assert_eq!(h.key(Key::Char('x')), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(h.notice.as_deref(), Some("already ended"));
+}
+
+// ------------------------------------------------------------------ the `:` line
+
+/// The `:` line's words once typed and entered.
+fn colon(h: &mut Home, text: &str) -> Effect {
+    h.mode = Mode::Normal;
+    h.key(Key::Char(':'));
+    h.key(Key::Paste(text.into()));
+    h.key(Key::Enter)
+}
+
+/// **`:` runs any command `marion --help` lists, on the selected agent**: a command that acts on
+/// one agent gets the selected agent's id first, one that does not runs as typed, and the words
+/// split as a shell splits them. `j` is text on the line.
+#[test]
+fn colon_runs_any_command_on_the_selected_agent() {
+    let mut h = home();
+    h.key(Key::Char(':'));
     let Footer::Input { target, .. } = frame(&h).footer else {
         panic!("the input line")
     };
-    assert_eq!(target, "steer codex root");
-    typed(&mut h, "use a deque");
-    h.key(Key::Paste(" please".into()));
-    h.key(Key::Char('j'));
-    assert!(
-        matches!(&h.mode, Mode::Typing { text, .. } if text == "use a deque pleasej"),
-        "j is text on the line: {:?}",
-        h.mode
-    );
-    h.key(Key::Backspace);
+    assert_eq!(target, "marion");
+    typed(&mut h, "steer use a deque j");
+    assert!(footer_has(&h, "enter", "run"));
+    let words = |w: &[&str]| Effect::Command(w.iter().map(|s| s.to_string()).collect());
     assert_eq!(
         h.key(Key::Enter),
-        Effect::Steer(AgentId("root".into()), "use a deque please".into())
-    );
-    // Esc drops it; a blank steer sends nothing.
-    h.key(Key::Char('s'));
-    typed(&mut h, "never mind");
-    assert_eq!(h.key(Key::Esc), Effect::None);
-    assert_eq!(h.mode, Mode::Normal);
-    h.key(Key::Char('s'));
-    assert_eq!(h.key(Key::Enter), Effect::None);
-}
-
-#[test]
-fn ended_nodes_resume_and_running_ones_steer() {
-    let mut h = home();
-    assert_eq!(h.key(Key::Char('u')), Effect::None, "root is running");
-    assert_eq!(h.notice.as_deref(), Some("still running: s steers it"));
-    h.key(Key::Char('j'));
-    assert_eq!(
-        h.key(Key::Char('u')),
-        Effect::Resume(AgentId("child".into()))
-    );
-    assert_eq!(h.key(Key::Char('s')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("ended: u resumes it"));
-    assert_eq!(
-        h.key(Key::Char('x')),
-        Effect::None,
-        "an ended node is not cancelled"
+        words(&["steer", "root", "use", "a", "deque", "j"])
     );
     assert_eq!(h.mode, Mode::Normal);
-}
-
-#[test]
-fn merge_and_diff_need_a_landed_branch() {
-    let mut h = home();
-    h.key(Key::Char('j'));
-    assert_eq!(h.key(Key::Char('d')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("no branch landed"));
-    assert_eq!(h.key(Key::Char('m')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("no branch to merge"));
-    assert_eq!(h.mode, Mode::Normal);
-    h.absorb_detail(AgentId("child".into()), landed("marion/t-1"));
-    assert_eq!(h.key(Key::Char('d')), Effect::Diff("marion/t-1".into()));
-}
-
-/// **`m` merges an agent's landed branch, and only after a `y` that names the branch and the
-/// command.**
-#[test]
-fn m_merges_a_landed_branch_after_a_y() {
-    let mut h = home();
-    let id = h.selected().unwrap().agent_id.clone();
-    h.absorb_detail(id, landed("marion/t1"));
     assert_eq!(
-        h.key(Key::Char('m')),
-        Effect::None,
-        "no merge on the first key"
+        colon(&mut h, r#"steer "use a deque""#),
+        words(&["steer", "root", "use a deque"])
     );
-    let Footer::Confirm { question, command } = frame(&h).footer else {
-        panic!("a confirm");
+    assert_eq!(colon(&mut h, "doctor"), words(&["doctor"]));
+    assert_eq!(
+        colon(&mut h, "cancel --force"),
+        words(&["cancel", "root", "--force"])
+    );
+    assert_eq!(
+        words(&["diff", "root"]).argv(),
+        Some(vec!["marion".into(), "diff".into(), "root".into()]),
+        "the line it runs is marion and the words"
+    );
+    h.set_nodes(vec![]);
+    assert_eq!(
+        colon(&mut h, "ls"),
+        words(&["ls"]),
+        "with nothing selected, as typed"
+    );
+}
+
+/// **A line that names no command, or one the screen does not run, stays open with why**, so the
+/// text is not lost.
+#[test]
+fn colon_refuses_what_is_no_command_and_keeps_the_text() {
+    let mut h = home();
+    for (text, why) in [
+        (
+            "bogus thing",
+            "no command named `bogus`; tab completes one".to_string(),
+        ),
+        ("  ", "type a command; tab completes it".to_string()),
+        ("mcp", OFF_LINE[0].1.to_string()),
+        (r#"steer "open"#, "a \" is not closed".to_string()),
+    ] {
+        assert_eq!(colon(&mut h, text), Effect::None, "{text}");
+        assert_eq!(h.notice.as_deref(), Some(why.as_str()), "{text}");
+        assert_eq!(
+            h.mode,
+            Mode::Typing {
+                purpose: Purpose::Command,
+                text: text.into()
+            }
+        );
+    }
+}
+
+/// **`tab` completes the command word**: to the command where only one starts with it, else as
+/// far as all that do agree; `mcp`, which the line refuses, is never offered. After the command,
+/// `tab` does nothing.
+#[test]
+fn tab_completes_the_command_word() {
+    let mut h = home();
+    let tab = |h: &mut Home, typed: &str| -> String {
+        h.mode = Mode::Normal;
+        h.key(Key::Char(':'));
+        h.key(Key::Paste(typed.into()));
+        h.key(Key::Tab);
+        match &h.mode {
+            Mode::Typing { text, .. } => text.clone(),
+            other => panic!("{other:?}"),
+        }
     };
-    assert_eq!(question, "merge marion/t1 into your checkout?");
-    assert_eq!(command, "git merge --no-ff -- marion/t1");
-    assert_eq!(h.key(Key::Char('n')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("not merged"));
-    h.key(Key::Char('m'));
-    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/t1".into()));
+    assert_eq!(tab(&mut h, "st"), "steer ");
+    assert_eq!(tab(&mut h, "m"), "merge ", "mcp is not a completion");
+    assert_eq!(tab(&mut h, "s"), "s", "search, shell and steer agree on s");
+    assert_eq!(tab(&mut h, "re"), "resume ");
+    assert_eq!(tab(&mut h, "steer x"), "steer x");
+    assert_eq!(tab(&mut h, "z"), "z");
+    assert_eq!(h.notice.as_deref(), Some("no command starts `z`"));
+    assert_eq!(completions("").len(), crate::verbs::SPECS.len() - 3);
 }
 
+/// **The `:` line's note teaches it**: the commands the word typed could be, then — once it is a
+/// command — the agent it acts on, or what it does.
 #[test]
-fn o_opens_a_shell_in_the_selected_agents_workspace() {
-    use marion_core::contract::Workspace;
+fn the_colon_lines_note_names_the_commands_then_the_agent() {
     let mut h = home();
-    assert_eq!(h.key(Key::Char('o')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("no workspace known yet"));
-    h.absorb_detail(
-        AgentId("root".into()),
-        NodeDetail {
-            workspace: Some(Workspace::Worktree {
-                path: "/w/agents/01a0/worktree".into(),
-                branch: "marion/t-3c33".into(),
-            }),
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        h.key(Key::Char('o')),
-        Effect::Shell("/w/agents/01a0/worktree".into())
-    );
+    let note = |h: &Home| match frame(h).footer {
+        Footer::Input { note, .. } => note,
+        other => panic!("{other:?}"),
+    };
+    h.key(Key::Char(':'));
+    typed(&mut h, "s");
+    assert_eq!(note(&h), "search shell steer");
+    typed(&mut h, "teer");
+    assert_eq!(note(&h), "send a running agent a message");
+    typed(&mut h, " ");
+    assert_eq!(note(&h), "on codex root");
+    h.mode = Mode::Normal;
+    h.key(Key::Char(':'));
+    typed(&mut h, "doctor ");
+    assert_eq!(note(&h), "check each harness is installed and ready");
+    h.mode = Mode::Normal;
+    h.key(Key::Char(':'));
+    typed(&mut h, "q");
+    assert_eq!(note(&h), "no such command");
 }
 
 /// **Enter shows a headless agent's output full, and attaches only to a pane agent**; Esc goes
@@ -1154,15 +1154,22 @@ fn arrows_step_through_the_matches_and_wrap() {
     assert_eq!(at(&h), "child", "the short id of `child` is itself");
 }
 
-/// `/` on an empty list opens nothing, and the footer offers it only where there is a list.
+/// `/` on an empty list opens nothing; over a list it opens the search line.
 #[test]
 fn slash_needs_a_list() {
     let mut h = home();
     h.set_nodes(vec![]);
     h.key(Key::Char('/'));
     assert_eq!(h.mode, Mode::Normal);
-    assert!(!footer_keys(&h).contains(&"/".to_string()));
-    assert!(footer_keys(&titled()).contains(&"/".to_string()));
+    let mut h = titled();
+    h.key(Key::Char('/'));
+    assert!(matches!(
+        h.mode,
+        Mode::Typing {
+            purpose: Purpose::Search { .. },
+            ..
+        }
+    ));
 }
 
 /// **What a model said is drawn, never obeyed**: a control in an output line reaches the preview
@@ -1467,11 +1474,10 @@ fn a_race_is_one_header_row_over_its_seats() {
     assert!(footer_has(&h, "enter", "winner"));
 }
 
-/// **A race row acts on its winner**: Enter goes to it, `m` goes to it and, once its detail says
-/// which branch it landed, asks to merge that branch; before a winner, or for keys that act on one
+/// **A race row goes to its winner on Enter**; before a winner, or for a key that acts on one
 /// agent, it says what does work there.
 #[test]
-fn a_race_row_goes_to_its_winner_and_merges_it() {
+fn a_race_row_goes_to_its_winner() {
     use marion_core::race::SeatVerdict;
     let mut h = home();
     h.set_nodes(vec![
@@ -1485,9 +1491,9 @@ fn a_race_row_goes_to_its_winner_and_merges_it() {
     h.watch.tree.select(RACE);
     assert_eq!(h.key(Key::Enter), Effect::None);
     assert_eq!(h.notice.as_deref(), Some("no winner yet"));
-    h.key(Key::Char('s'));
+    h.key(Key::Char('x'));
     assert!(h.notice.as_deref().unwrap_or("").starts_with("a race"));
-    assert_eq!(h.mode, Mode::Normal, "no steer for a header");
+    assert_eq!(h.mode, Mode::Normal, "no cancel for a header");
 
     h.set_nodes(vec![
         node("root", None, NodeState::Running),
@@ -1497,12 +1503,6 @@ fn a_race_row_goes_to_its_winner_and_merges_it() {
     h.watch.tree.select(RACE);
     h.key(Key::Enter);
     assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
-    h.watch.tree.select(RACE);
-    assert_eq!(h.key(Key::Char('m')), Effect::None);
-    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
-    h.absorb_detail(AgentId("s2".into()), landed("marion/s2"));
-    assert_eq!(h.mode, Mode::Confirm(Effect::Merge("marion/s2".into())));
-    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/s2".into()));
 }
 
 const WF: &str = "019f0000-1a2b-7000-8000-00000000000b";
@@ -1586,7 +1586,7 @@ fn a_workflow_is_one_header_row_over_its_steps() {
 // ------------------------------------------------------------------ effects and their words
 
 #[test]
-fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
+fn every_effect_has_its_command_and_only_cancel_and_kill_ask_first() {
     let id = AgentId("0199-abc".into());
     let all = [
         Effect::Run {
@@ -1597,13 +1597,9 @@ fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
             pane: true,
         },
         Effect::Attach(id.clone()),
-        Effect::Steer(id.clone(), "-x".into()),
+        Effect::Command(vec!["merge".into(), id.0.clone()]),
         Effect::Cancel(id.clone()),
         Effect::Kill(id.clone()),
-        Effect::Resume(id.clone()),
-        Effect::Shell("/w".into()),
-        Effect::Diff("b".into()),
-        Effect::Merge("marion/t1".into()),
         Effect::Recheck,
         Effect::EditTypes,
     ];
@@ -1611,18 +1607,10 @@ fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
         assert!(e.argv().is_some_and(|a| !a.is_empty()), "{e:?}");
         assert_eq!(
             e.destructive(),
-            matches!(e, Effect::Cancel(_) | Effect::Kill(_) | Effect::Merge(_)),
+            matches!(e, Effect::Cancel(_) | Effect::Kill(_)),
             "{e:?}"
         );
     }
-    assert_eq!(
-        Effect::Merge("marion/t1".into()).argv(),
-        Some(
-            ["git", "merge", "--no-ff", "--", "marion/t1"]
-                .map(String::from)
-                .to_vec()
-        )
-    );
     assert_eq!(Effect::None.argv(), None);
     assert_eq!(Effect::Quit.argv(), None);
 }

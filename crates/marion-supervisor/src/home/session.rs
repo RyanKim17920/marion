@@ -11,8 +11,8 @@
 //!
 //! # Leaving and coming back
 //!
-//! An attach, a resume, a shell, a diff and an editor each need the whole terminal, so the loop
-//! leaves the screen, runs the command in the foreground and re-enters — the pattern `marion tree`
+//! An attach, a `:` command and an editor each need the whole terminal, so the loop leaves the
+//! screen, runs the command in the foreground and re-enters — the pattern `marion tree`
 //! used for its attach. The state survives the trip; only the terminal changes hands.
 
 use super::view::{self, Places};
@@ -67,10 +67,8 @@ pub struct Options {
 enum Handoff {
     Quit,
     Attach(String),
-    Resume(AgentId),
-    Shell(PathBuf),
-    Diff(String),
-    Merge(String),
+    /// The `:` line's `marion <words>`, in the foreground, until the operator presses enter.
+    Command(Vec<String>),
     EditTypes,
     /// `marion login <credential id>` / `marion logout <credential id>`, in the foreground.
     Login(String),
@@ -118,30 +116,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
                     s.home.notice = Some(format!("attach refused: {e}"));
                 }
             }
-            Handoff::Resume(id) => {
-                let c = s.marion(&["resume", &id.0]);
-                s.foreground(c, "resume");
-            }
-            Handoff::Shell(dir) => {
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
-                let mut c = std::process::Command::new(shell);
-                c.current_dir(dir);
-                s.foreground(c, "shell");
-            }
-            Handoff::Diff(branch) => {
-                let c = crate::landing::branch_log(&s.repo, &branch);
-                s.foreground(c, "git log");
-            }
-            Handoff::Merge(branch) => match crate::landing::branch_merge(&s.repo, &branch) {
-                Err(why) => s.home.notice = Some(why),
-                Ok(c) => {
-                    s.foreground(c, "git merge");
-                    if s.home.notice.is_none() {
-                        s.home.notice = Some(format!("merged {branch}"));
-                        s.home.merged(&branch);
-                    }
-                }
-            },
+            Handoff::Command(words) => s.command(&words),
             Handoff::EditTypes => {
                 let file = s.repo.join(crate::run::AGENT_TYPES_FILE);
                 if let Some(dir) = file.parent() {
@@ -204,6 +179,8 @@ struct Session {
     /// The profiles have been asked for: once Setup is first shown, since listing them runs each
     /// harness's status probe.
     profiles_asked: bool,
+    /// A `:` command may have changed the stored keys: list them again when Setup next opens.
+    logins_stale: bool,
     /// A profile `marion profile add` just made, to select once the listing shows it.
     added_profile: Option<String>,
     /// Nodes whose task has been asked for, for their row's title: each is asked once.
@@ -257,6 +234,7 @@ impl Session {
             next_tick: Instant::now(),
             dirty: true,
             profiles_asked: false,
+            logins_stale: false,
             added_profile: None,
             titles_asked: std::collections::HashSet::new(),
         };
@@ -401,6 +379,9 @@ impl Session {
         if self.home.page == Page::Setup && !self.profiles_asked {
             self.load_profiles();
             self.load_notify();
+            if std::mem::take(&mut self.logins_stale) {
+                self.load_logins();
+            }
         }
         handoff
     }
@@ -418,10 +399,7 @@ impl Session {
                 }
                 None => None,
             },
-            Effect::Resume(id) => Some(Handoff::Resume(id)),
-            Effect::Shell(dir) => Some(Handoff::Shell(dir)),
-            Effect::Diff(branch) => Some(Handoff::Diff(branch)),
-            Effect::Merge(branch) => Some(Handoff::Merge(branch)),
+            Effect::Command(words) => Some(Handoff::Command(words)),
             Effect::EditTypes => Some(Handoff::EditTypes),
             Effect::Login(id) => Some(Handoff::Login(id)),
             Effect::Logout(id) => Some(Handoff::Logout(id)),
@@ -440,14 +418,6 @@ impl Session {
             }
             Effect::ProfileRemove { harness, name } => {
                 self.profile_verb(&["rm", &harness, &name]);
-                None
-            }
-            Effect::Steer(id, text) => {
-                self.home.notice =
-                    Some(match crate::courier::steer(&self.sock, &id, &text, None) {
-                        Ok(s) => s.sentence(),
-                        Err(e) => format!("steer refused: {e}"),
-                    });
                 None
             }
             // **On a thread**: a cancel waits out each level's grace, which can be seconds, and the
@@ -657,6 +627,38 @@ impl Session {
             .arg("--state-dir")
             .arg(&self.state);
         c
+    }
+
+    /// **The `:` line's command, with the terminal**: this binary in the project's directory, its
+    /// state directory in `$MARION_STATE_DIR` — how every command finds its place without a flag,
+    /// so a command that takes no `--repo` (`key`, `profile`) runs as typed. The line it runs is
+    /// printed first; then the operator reads what it said and presses enter to come back. Setup's
+    /// lists are read again the next time it opens, since a command may have changed them.
+    fn command(&mut self, words: &[String]) {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("marion"));
+        let mut c = std::process::Command::new(exe);
+        c.args(words)
+            .current_dir(&self.repo)
+            .env("MARION_STATE_DIR", &self.state);
+        let line = marion_tui::home::text::shell_line(
+            &std::iter::once("marion".to_string())
+                .chain(words.iter().cloned())
+                .collect::<Vec<_>>(),
+            usize::MAX,
+        );
+        eprintln!("$ {line}");
+        let what = format!("marion {}", words.first().map_or("", String::as_str));
+        self.foreground(c, &what);
+        eprint!(
+            "\n{}; enter returns ",
+            self.home.notice.as_deref().unwrap_or("done")
+        );
+        let _ = std::io::stdin().read_line(&mut String::new());
+        self.profiles_asked = false;
+        self.logins_stale = true;
+        self.load_types();
+        // A command may have started this project's supervisor: look again now.
+        self.last_dial = None;
     }
 
     /// Run `c` with the terminal, and say how it ended if it failed.

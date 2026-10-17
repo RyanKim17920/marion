@@ -97,24 +97,29 @@ harness.
 Bare `marion` on a terminal opens it, and so does `marion ls`; in a pipe it prints usage and exits
 non-zero. It is one list of the project's agents with the selected one previewed beside it (under
 it on a screen narrower than 100 columns), a status line above with what runs, what needs you and
-what is ready to land, and one footer line below with the keys the selection takes. `?` lists
-every key with the command it stands for, `,` opens Setup, Esc goes back, `q` or `^c` quits.
+what is ready to land, and one footer line below with the keys the selection takes. It has eight:
+`j/k` move, Enter opens, `n` starts a task, `x` cancels, `:` runs any `marion` command, `,` opens
+Setup, `?` lists every key with the command it stands for, and `q` or `^c` quits. Esc goes back.
 `NO_COLOR` draws it without colour: every status is also a glyph.
 
 - **The list** puts what needs you first, then work to land, then what runs, the newest first
   among equals; a tree is placed by its most urgent agent. Each row is the task's first line, the
   harness, how long it has run and its tokens (never a price). `j/k` move; the order holds while a
-  line is open, so a row never moves under a steer being typed. `/` searches it as you type, by
+  line is open, so a row never moves under a command being typed. `/` searches it as you type, by
   task, agent type or short id, keeping the rows above a match dim; `↑↓` step through the
   matches, Enter goes to one and Esc goes back.
 - **The preview** shows the agent's harness and id, what it needs from you, how it ended (status,
   tokens in and out, its own first line, the branch it landed with `+added -removed`), its
   subtree against its budget, and its output, which Page Up/Down scroll and End follows.
 - **Keys on an agent:** Enter attaches to a pane agent (`^] d` comes back) and fills the body with
-  a headless one's output (Esc goes back); `s` steers, `x` cancels after asking (again to kill),
-  `u` resumes an ended agent, `o` opens a shell in its workspace, `d` shows what its branch changed
-  and `m` merges it after asking. On a race's row, Enter goes to the winner and `m` merges it; on
-  a workflow's, Enter goes to the step it is on.
+  a headless one's output (Esc goes back); `x` cancels after asking (again to kill). On a race's
+  row, Enter goes to the winner; on a workflow's, Enter goes to the step it is on.
+- **`:` runs any command** `marion --help` lists, on the selected agent: `:steer use a deque` is
+  `marion steer <id> use a deque`, and `:diff`, `:merge`, `:shell`, `:resume` and `:export -o
+  run.html` work the same way. A command that does not act on one agent runs as typed (`:doctor`,
+  `:key list`). `tab` completes the command's name, and the line names the agent it acts on. The
+  command runs with the terminal, in the project; Enter comes back. `marion mcp` is for an MCP
+  client and is not run from here.
 - **`n` opens the new-task line** on the footer: `tab` picks the agent type, `↑↓` a model you last
   ran its harness on, and Enter runs `marion run <type> --prompt <text>`. The type's harness
   decides how: in a pane `enter` can attach to when doctor measured one, else detached. A type
@@ -140,7 +145,8 @@ generation is per harness; see [Harness detail](#harness-detail).
   node may steer any node below it; its parent, siblings and itself are refused with one
   sentence. `wait` and `status` reach only its direct children. Before steering, a parent's `status` on a running
   child shows its last few tool calls and the last line it wrote.
-- **The operator** presses `s` on an agent in the home screen, or runs `marion steer <id> <text…>`.
+- **The operator** types `:steer <text…>` on an agent in the home screen, or runs `marion steer <id>
+  <text…>`.
   Exit 0 prints the queued message's id; exit 1 prints the supervisor's refusal (an ended node
   points at `marion resume`).
 
