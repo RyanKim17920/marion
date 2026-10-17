@@ -636,6 +636,19 @@ fn a_spawning_nodes_missing_task_is_asked_again() {
     assert_eq!(row(&frame(&h), "kid").title, "read the limiter");
 }
 
+/// **A title for a node the forest no longer has records nothing**: its type is not known to stand
+/// in, and an empty title would be kept for good.
+#[test]
+fn a_title_for_a_node_that_is_gone_records_nothing() {
+    let mut h = home();
+    assert!(!h.set_title(&AgentId("gone".into()), None));
+    assert!(!h.watch.titles.contains_key("gone"));
+    assert!(
+        h.set_title(&AgentId("gone".into()), Some("its task")),
+        "a task is its own title, known or not"
+    );
+}
+
 /// A row carries its run time and its token total from the summary, for every node, not only
 /// the selected one whose detail was read; unknown is blank, never 0.
 #[test]

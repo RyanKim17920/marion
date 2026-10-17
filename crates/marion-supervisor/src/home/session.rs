@@ -100,6 +100,8 @@ enum Report {
     Ended(String),
     /// A node's task, as `node/get` read it for the row's title; `None` where it has none.
     Title(AgentId, Option<String>),
+    /// A node whose `node/get` failed: nothing is known of its task, so it is asked again.
+    TitleUnread(AgentId),
 }
 
 /// Run the home screen until the operator quits.
@@ -605,10 +607,11 @@ impl Session {
         let (sock, tx) = (self.sock.clone(), self.reporter.clone());
         std::thread::spawn(move || {
             for id in ids {
-                let task = crate::courier::node_get(&sock, &id)
-                    .ok()
-                    .and_then(|r| r.detail.task.map(|t| t.prompt));
-                if !tx.send(Report::Title(id, task)) {
+                let report = match crate::courier::node_get(&sock, &id) {
+                    Ok(r) => Report::Title(id, r.detail.task.map(|t| t.prompt)),
+                    Err(_) => Report::TitleUnread(id),
+                };
+                if !tx.send(report) {
                     return;
                 }
             }
@@ -991,6 +994,9 @@ impl Session {
                     if !self.home.set_title(&id, task.as_deref()) {
                         self.titles_asked.remove(&id);
                     }
+                }
+                Report::TitleUnread(id) => {
+                    self.titles_asked.remove(&id);
                 }
                 Report::Ran { ok, line, root } => {
                     self.home.notice = Some(if ok { line } else { format!("{line}  (esc)") });

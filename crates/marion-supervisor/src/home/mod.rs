@@ -669,7 +669,8 @@ impl Home {
     /// A node's title, read: its task's first line, or its agent type where it has no task (a
     /// root, whose prompt went to its harness rather than into a contract). Returns `false`, and
     /// records nothing, for a node with no task yet that is still spawning: its contract may not be
-    /// written yet, so the answer is not final and is worth asking again.
+    /// written yet, so the answer is not final and is worth asking again — nor for a node no
+    /// longer in the forest, whose type is not known to stand in.
     pub fn set_title(&mut self, id: &AgentId, task: Option<&str>) -> bool {
         let line = task
             .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
@@ -678,7 +679,8 @@ impl Home {
         let title = match (line, node) {
             (Some(l), _) => l,
             (None, Some(n)) if n.state == marion_core::node::NodeState::Spawning => return false,
-            (None, n) => n.map_or_else(String::new, |n| n.agent_type.clone()),
+            (None, Some(n)) => n.agent_type.clone(),
+            (None, None) => return false,
         };
         self.watch.titles.insert(id.0.clone(), title);
         true
