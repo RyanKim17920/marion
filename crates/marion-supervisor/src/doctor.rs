@@ -2819,17 +2819,49 @@ mod tests {
         );
     }
 
-    /// A sweep of every row finds no binary at all: it asserts what marion publishes, and a
-    /// harness installed on this machine must not run only because a sweep reached its row. A
-    /// test about one harness names it, and probes this process's own `PATH`.
+    /// A sweep runs nothing installed on this machine: a harness must not run only because a
+    /// sweep reached its row. Every row (`None`) finds no binary at all, and it asserts what marion
+    /// publishes. The protocol row is a sweep too, of every agent in `acp::AGENTS` (`probe`), and
+    /// finds [`acp_stub_path`]'s stand-ins. A test about one other harness names it, and probes
+    /// this process's own `PATH`.
     fn caps_rows(harness: Option<Harness>) -> Vec<Row> {
+        let stubs = (harness == Some(Harness::Acp))
+            .then(|| marion_testsupport::scratch("doctor-acp-stub-path"));
         run(&Options {
             mode: ProbeMode::Capabilities,
             harness,
             model: None,
             acp_command: None,
-            path: harness.is_none().then(std::ffi::OsString::new),
+            path: match (harness, &stubs) {
+                (None, _) => Some(std::ffi::OsString::new()),
+                (_, Some(dir)) => Some(acp_stub_path(dir)),
+                (Some(_), None) => None,
+            },
         })
+    }
+
+    /// A `PATH` of one scratch directory holding, under every program an `acp::AGENTS` row runs, a
+    /// stand-in that answers `initialize` as `stub-<program> 0.0.0` and nothing else. Alternate
+    /// programs advertise `loadSession`, so the rows differ only by what each agent said.
+    fn acp_stub_path(dir: &Path) -> std::ffi::OsString {
+        let mut programs: Vec<&str> = acp::AGENTS.iter().map(|a| a.argv[0]).collect();
+        programs.sort_unstable();
+        programs.dedup();
+        for (i, program) in programs.iter().enumerate() {
+            let body = format!(
+                "#!/bin/sh\n\
+                 IFS= read -r line\n\
+                 id=$(printf '%s\\n' \"$line\" | grep -o '\"id\":[0-9]*' | head -n 1 | cut -d: -f2)\n\
+                 printf '{{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{{\"protocolVersion\":{version},\
+                 \"agentInfo\":{{\"name\":\"stub-{program}\",\"version\":\"0.0.0\"}},\
+                 \"agentCapabilities\":{{\"loadSession\":{load}}}}}}}\\n' \"$id\"\n\
+                 cat >/dev/null\n",
+                version = acp::PROTOCOL_VERSION,
+                load = i % 2 == 0,
+            );
+            marion_testsupport::write_executable(&dir.join(program), body);
+        }
+        dir.as_os_str().to_owned()
     }
 
     /// A `PATH` of one scratch directory holding a stub that exits 1 under every program a row
@@ -2881,6 +2913,13 @@ mod tests {
             opts.acp_command.as_ref().map(|b| b.argv().to_vec()),
             Some(vec!["python3".to_string(), fake.to_string()])
         );
+        // The table's agents are probed too, so the `PATH` holds `python3` and nothing they run.
+        let dir = marion_testsupport::scratch("doctor-acp-command-path");
+        std::os::unix::fs::symlink(which("python3").unwrap(), dir.join("python3")).unwrap();
+        let opts = Options {
+            path: Some(dir.as_os_str().to_owned()),
+            ..opts
+        };
         let rows = run(&opts);
         assert_eq!(
             rows.len(),
@@ -3103,9 +3142,8 @@ mod tests {
     /// column comes from **that agent's own live `initialize`** rather than from a table keyed on a
     /// harness name — which is the whole of §3.3's stage two.
     ///
-    /// This spawns the installed agents. The capability half is therefore conditional on both
-    /// answering, and the condition is asserted rather than assumed: a machine with neither agent
-    /// installed fails here instead of passing quietly.
+    /// No installed agent runs: each finds [`acp_stub_path`]'s stand-in, which answers `initialize`
+    /// in its own words, so every row is asserted to answer and the capability half always runs.
     #[test]
     fn the_acp_agents_get_a_row_each_and_their_capabilities_differ() {
         let rows = caps_rows(Some(Harness::Acp));
@@ -3130,20 +3168,10 @@ mod tests {
             .iter()
             .filter(|r| r.report.harness_version.is_some())
             .collect();
-        // Everything above needed no binary and has already run. Only the capability half is
-        // conditional on a live `initialize`, and only a runner that has said it has no harness
-        // binaries at all may step over it — by name, on the uncaptured stderr. Anywhere else the
-        // assertion below still fails, which is what it is for.
-        if answered.is_empty() && marion_testsupport::declared_no_harnesses() {
-            marion_testsupport::announce_skip(
-                "no ACP agent answered `initialize`",
-                "reads capabilities off a live ACP handshake",
-            );
-            return;
-        }
-        assert!(
-            !answered.is_empty(),
-            "no installed ACP agent answered `initialize`, so this proved nothing: {}",
+        assert_eq!(
+            answered.len(),
+            acp::AGENTS.len(),
+            "every stand-in answers `initialize`: {}",
             render(&rows, &[])
         );
         // The version on an ACP row is the **agent's** identity, not a binary's `--version`: that
@@ -3154,9 +3182,6 @@ mod tests {
                 v.contains(' '),
                 "an ACP row keys on `<agentInfo.name> <version>`, not on a bare token: {v:?}"
             );
-        }
-        if answered.len() < acp::AGENTS.len() {
-            return;
         }
         // **The rows differ, not merely exist.** S20 measured `opencode acp` advertising
         // `sessionCapabilities {close, fork, list, resume}` where another agent advertised none, so
