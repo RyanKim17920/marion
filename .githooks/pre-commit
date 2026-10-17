@@ -25,6 +25,12 @@ MIN_TESTS=10
 
 cd "$(git rev-parse --show-toplevel)"
 
+# git runs this hook with GIT_INDEX_FILE (and, in some flows, GIT_DIR) naming this checkout. A
+# test fixture's git that inherited them would write this repository's index or config, so the
+# tests below run without any of them.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+	GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+
 printf 'L4.5 gate: cargo test -p marion-term --test %s\n' "$TARGET" >&2
 
 if ! output=$(cargo test -p marion-term --test "$TARGET" 2>&1); then
