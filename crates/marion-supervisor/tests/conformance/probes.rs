@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use marion_core::contract::FailureCause;
+use marion_core::contract::{FailureCause, TokenUsage};
 use marion_harness::grammar;
 use marion_harness::spec::{Approval, HarnessSpec, MidTurn, NodeShape, TurnDelivery, UpdatePolicy};
 use marion_harness::stream::{CallOutcome, ChildExit, json_frames};
@@ -17,7 +17,7 @@ use marion_supervisor::duplex::LaunchPath;
 use serde_json::{Value, json};
 
 use crate::driver::{self, BOOT, Gate, Node, Proc};
-use crate::provider::{Call, Provider, Turn};
+use crate::provider::{Call, Provider, Sent, Turn};
 use crate::report::{Log, Outcome, Scrub};
 use crate::target::{self, Knobs, Launch, Target, World};
 
@@ -592,7 +592,9 @@ fn first_request(
 
 /// One scripted turn — a `report`, then text, with counted usage — read back through the row's own
 /// reader: marion's calls and their verdicts, the narrative, the usage, the session id, the
-/// activity peek.
+/// activity peek. The usage must be **what the provider sent**, every request's counters added:
+/// budgets read nothing else, so a reader that misses a request, double-counts a cache or keeps
+/// the wrong report of two is spend marion cannot see.
 fn p_activity(c: &mut Ctx<'_>) -> Outcome {
     const P: &str = "P-activity";
     let s = c.session(P, "");
@@ -635,18 +637,34 @@ fn p_activity(c: &mut Ctx<'_>) -> Outcome {
     let wants_session = g.is_none_or(|g| g.session.is_some());
     let wants_activity = g.is_some_and(|g| g.activity.is_some());
     let sent = s.provider.hold.usage_sent();
+    // A row that says its figure leaves out the requests outside its turn is held to the rest.
+    let uncounted = g.and_then(|g| g.usage.as_ref()).and_then(|u| u.uncounted);
+    let expected_usage = sent_total(&sent, uncounted.is_some());
+    let usage_ok = r.usage.is_some_and(|u| same_counters(&u, &expected_usage));
+    let shown_usage = r.usage.map(|u| format!("{u:?}"));
+    let shown_sent: Vec<String> = sent
+        .iter()
+        .map(|s| {
+            let (i, o, c) = s.counts;
+            format!(
+                "({i}, {o}, {c}){}",
+                if s.offers_tools { "" } else { " no tools" }
+            )
+        })
+        .collect();
     let observed = format!(
-        "turn {}; report {:?}; narrative {:?}; usage {} (provider sent {:?}); session {} ; activity \
-         {}",
+        "turn {}; report {:?}; narrative {:?}; usage {} (provider sent [{}]{}); session {} ; \
+         activity {}",
         if ended { "ended" } else { "did not end" },
         r.report,
         r.narrative,
-        r.usage.as_deref().unwrap_or(if wants_usage {
+        shown_usage.as_deref().unwrap_or(if wants_usage {
             "NONE"
         } else {
             "none (row: no usage rule)"
         }),
-        sent,
+        shown_sent.join(", "),
+        uncounted.map_or(String::new(), |u| format!("; row leaves out: {u}")),
         r.session.as_deref().unwrap_or(if wants_session {
             "NONE"
         } else {
@@ -661,22 +679,46 @@ fn p_activity(c: &mut Ctx<'_>) -> Outcome {
     let pass = ended
         && r.report == Some(CallOutcome::Answered)
         && r.narrative.is_some()
-        && (!wants_usage || r.usage.is_some())
+        && (!wants_usage || usage_ok)
         && (!wants_session || r.session.is_some())
         && (!wants_activity || r.activity.is_some());
     Outcome::judged(
         P,
         pass,
         "the row's reader finds `report` answered, its narrative, and every unit the row says the \
-         stream carries (usage, session id, activity)",
+         stream carries (session id, activity, and usage equal to every request's counters the \
+         provider sent, added; only the tool-offering ones where the row says it leaves the rest \
+         out)",
         observed,
     )
+}
+
+/// Every counted request's spend, added, in marion's shape: `input` uncached, beside `cache_read`.
+/// `turn_only`: just the requests that offered tools, for a row whose figure leaves the rest out.
+fn sent_total(sent: &[Sent], turn_only: bool) -> TokenUsage {
+    sent.iter()
+        .filter(|s| s.offers_tools || !turn_only)
+        .fold(TokenUsage::default(), |t, s| {
+            let (input, output, cached) = s.counts;
+            TokenUsage {
+                input: t.input + input,
+                output: t.output + output,
+                cache_read: t.cache_read + cached,
+                ..t
+            }
+        })
+}
+
+/// The four disjoint counters agree; `reasoning` is a part of `output` the provider may not split.
+fn same_counters(a: &TokenUsage, b: &TokenUsage) -> bool {
+    (a.input, a.output, a.cache_read, a.cache_write)
+        == (b.input, b.output, b.cache_read, b.cache_write)
 }
 
 struct Read {
     report: Option<CallOutcome>,
     narrative: Option<String>,
-    usage: Option<String>,
+    usage: Option<TokenUsage>,
     session: Option<String>,
     activity: Option<String>,
 }
@@ -693,8 +735,7 @@ fn read_turn(c: &Ctx<'_>, node: &Node) -> Read {
     let usage =
         c.t.adapter
             .usage(&frames)
-            .filter(|u| u.input + u.output + u.cache_read > 0)
-            .map(|u| format!("{u:?}"));
+            .filter(|u| u.input + u.output + u.cache_read > 0);
     let session = match node.path {
         LaunchPath::Acp => node.session.clone(),
         _ => {
@@ -1720,6 +1761,40 @@ pub fn fixture_dir(out: &Path, selector: &str, version: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P-activity's expected figure: every counted request, or — for a row that says its figure
+    /// leaves the rest out — only those that offered tools, wherever they fall in the run.
+    #[test]
+    fn the_expected_usage_adds_every_request_or_only_the_tool_offering_ones() {
+        let side = |counts| Sent {
+            counts,
+            offers_tools: false,
+        };
+        let turn = |counts| Sent {
+            counts,
+            offers_tools: true,
+        };
+        let sent = [turn((211, 17, 10)), side((111, 10, 5)), turn((311, 24, 15))];
+        let all = sent_total(&sent, false);
+        assert_eq!((all.input, all.output, all.cache_read), (633, 51, 30));
+        let turn_only = sent_total(&sent, true);
+        assert_eq!(
+            (turn_only.input, turn_only.output, turn_only.cache_read),
+            (522, 41, 25)
+        );
+        let reported = TokenUsage {
+            input: 522,
+            output: 41,
+            cache_read: 25,
+            reasoning: Some(0),
+            ..TokenUsage::default()
+        };
+        assert!(
+            same_counters(&reported, &turn_only),
+            "reasoning is not compared"
+        );
+        assert!(!same_counters(&reported, &all));
+    }
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

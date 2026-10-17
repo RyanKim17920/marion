@@ -78,7 +78,7 @@ struct State {
     fault: Option<u16>,
     usage: bool,
     /// Requests answered with a counted usage, for the numbers the probe expects back.
-    usage_sent: Vec<(u64, u64, u64)>,
+    usage_sent: Vec<Sent>,
     stopping: bool,
 }
 
@@ -121,7 +121,7 @@ impl ProbeHold {
         self.lock().usage = true;
     }
 
-    pub fn usage_sent(&self) -> Vec<(u64, u64, u64)> {
+    pub fn usage_sent(&self) -> Vec<Sent> {
         self.lock().usage_sent.clone()
     }
 
@@ -200,7 +200,7 @@ impl Hold for ProbeHold {
             wire: wire.map(str::to_string),
             turn: step.clone(),
             marion_tools: text.contains(&self.needle),
-            offers_tools: body["tools"].as_array().is_some_and(|t| !t.is_empty()),
+            offers_tools: offers_tools(body),
             body: body.clone(),
         };
         self.log.w(
@@ -253,7 +253,10 @@ impl Hold for ProbeHold {
         let reply = if s.usage {
             let k = s.usage_sent.len() as u64 + 1;
             let counts = (100 * k + 11, 7 * k + 3, 5 * k);
-            s.usage_sent.push(counts);
+            s.usage_sent.push(Sent {
+                counts,
+                offers_tools: offers_tools(body),
+            });
             with_usage(wire, &reply, counts)
         } else {
             reply
@@ -265,6 +268,21 @@ impl Hold for ProbeHold {
             body: reply,
         })
     }
+}
+
+/// Whether a request lists any tools for the model — the one test of a request inside the agent's
+/// turn, read off the body, so a harness may send its side requests in any order.
+fn offers_tools(body: &Value) -> bool {
+    body["tools"].as_array().is_some_and(|t| !t.is_empty())
+}
+
+/// One counted answer: its `(uncached input, output, cache read)` and whether the request offered
+/// the model tools. A request offering none is outside the agent's turn (goose names its session
+/// with one), which is what a row's `UsageRule::uncounted` says its figure leaves out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sent {
+    pub counts: (u64, u64, u64),
+    pub offers_tools: bool,
 }
 
 fn call_turn(wire: &str, streaming: bool, call: &Call, id: &str) -> String {
