@@ -27,6 +27,7 @@ use marion_core::journal::{RecordKind, decode};
 use marion_core::root_change::{RootChange, RootChanged, RootDelta, RootObservation};
 use marion_supervisor::run::run_bounded;
 use marion_supervisor::search::digest::PRIVATE;
+use marion_supervisor::socket;
 use marion_supervisor::spawn::TreeSnapshot;
 use marion_testsupport::{fixture_repo, git, scratch, write_executable};
 
@@ -694,7 +695,8 @@ fn marion_search_all_reads_every_project() {
     let b = run_marion(&other, &repo, &state, &bin, "30");
     assert_eq!(b.code, Some(0), "{}", b.stderr);
     // Seen once, so its digest's header learns its root; then the repository moves away.
-    assert_eq!(marion_search(&b, &["delegate"]).0, Some(0));
+    let (code, _, err) = marion_search(&b, &["delegate"]);
+    assert_eq!(code, Some(0), "{err}");
     std::fs::rename(&other, dir.join("billing-moved")).unwrap();
 
     let (code, out, err) = marion_search(&a, &["--all", "delegate"]);
@@ -714,6 +716,30 @@ fn marion_search_all_reads_every_project() {
     );
     let (code, out, _) = marion_search(&a, &["project:nothing-named-so"]);
     assert_eq!(code, Some(1), "{out}");
+}
+
+/// **A search in the instant a run's supervisor leaves finds nobody serving**: the supervisor
+/// unlinks its socket before it lets its lock go, so the search finds the lock held and nothing to
+/// dial. The lock is held here for a moment, as that gap holds it. Mutation: refuse on the failed
+/// dial and this exits 1 with `search stopped`.
+#[test]
+fn a_search_while_the_runs_supervisor_leaves_waits_for_it_to_go() {
+    let dir = scratch("search-leaving");
+    let run = marion_run(&dir, &format!("{REACHED_THE_BRIDGE}\nexit 0"), "30");
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let key = socket::project_root(&run.repo);
+    let paths = socket::socket_paths(&run.state, &key, socket::own_uid());
+    let lock = std::fs::File::open(paths.lock()).expect("the run's supervisor left its lock file");
+    lock.try_lock_shared()
+        .expect("the run's supervisor has let its lock go");
+    let leaves = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        drop(lock);
+    });
+    let (code, out, err) = marion_search(&run, &["delegate"]);
+    leaves.join().unwrap();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(out.lines().count(), 1, "{out}");
 }
 
 /// **The tripwire**: `marion search` run from inside a live node's process tree is refused by the

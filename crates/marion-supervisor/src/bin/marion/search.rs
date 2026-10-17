@@ -9,7 +9,7 @@
 use marion_supervisor::{err, out};
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use marion_core::node::NodeState;
 use marion_core::proto::model::NodeSummary;
@@ -17,12 +17,18 @@ use marion_core::search::{Query, State};
 use marion_supervisor::search::digest::{PROMPT_CAP, Run};
 use marion_supervisor::search::open::{Kind, read_agent_file};
 use marion_supervisor::search::{self, Found, Hit, Matcher, Options, Project};
-use marion_supervisor::{socket, tree};
+use marion_supervisor::socket::{self, SocketPaths};
+use marion_supervisor::tree;
 
 use super::cli::{self, Exit, Place, Word, Words};
 
 /// Runs shown when `--limit` is not given.
 pub const DEFAULT_LIMIT: usize = 20;
+
+/// How long a failed dial waits for the supervisor's lock to go. A supervisor that answered a
+/// run's `session/quit` unlinks its socket before it lets its lock go, so a search in that gap
+/// finds the lock held and nobody to dial.
+const LEAVING: Duration = Duration::from_secs(2);
 
 /// What `marion search` was asked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -173,7 +179,29 @@ fn live_nodes(repo: &Path, state: &Path, key: &Path) -> Result<Vec<NodeSummary>,
     if socket::nobody_is_serving(&paths) {
         return Ok(Vec::new());
     }
-    tree::snapshot(repo, state).map_err(|why| format!("search stopped: {why}"))
+    tree::snapshot(repo, state).or_else(|why| {
+        if left(&paths) {
+            Ok(Vec::new())
+        } else {
+            Err(format!("search stopped: {why}"))
+        }
+    })
+}
+
+/// Whether the supervisor at `paths` lets its lock go within [`LEAVING`]: it was on its way out,
+/// so nothing of it is live. One still serving keeps the lock, and the failed dial stands — a
+/// node that unlinks the socket under a live supervisor is still refused.
+fn left(paths: &SocketPaths) -> bool {
+    let deadline = Instant::now() + LEAVING;
+    loop {
+        if socket::nobody_is_serving(paths) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// **The tripwire for `--all`**: every other project whose root is known and whose supervisor is
@@ -189,8 +217,11 @@ fn hello_every_live(state: &Path, projects: &[Project], current: &Project) -> Re
         if socket::nobody_is_serving(&paths) {
             continue;
         }
-        marion_supervisor::client_auth::dial(&paths)
-            .map_err(|why| format!("search stopped: {}: {why}", p.name()))?;
+        if let Err(why) = marion_supervisor::client_auth::dial(&paths)
+            && !left(&paths)
+        {
+            return Err(format!("search stopped: {}: {why}", p.name()));
+        }
     }
     Ok(())
 }
