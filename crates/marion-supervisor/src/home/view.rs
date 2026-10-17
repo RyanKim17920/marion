@@ -85,7 +85,10 @@ fn counts(home: &Home) -> String {
     .filter(|(n, _)| *n > 0)
     .map(|(n, what)| format!("{n} {what}"))
     // There is no needs-you key to lead there, so the count names where it is answered.
-    .chain(home.repo_needs_you().then(|| "repository trust in ,".to_string()))
+    .chain(
+        home.repo_needs_you()
+            .then(|| "repository trust in ,".to_string()),
+    )
     .collect::<Vec<_>>()
     .join("  ")
 }
@@ -614,7 +617,10 @@ fn setup(home: &Home) -> SetupView {
             }
             SetupItem::Repo => {
                 enter(&mut lines, "repository");
-                let r = su.repo.as_ref().expect("a repository row only where one was read");
+                let r = su
+                    .repo
+                    .as_ref()
+                    .expect("a repository row only where one was read");
                 SetupLine::Repo {
                     answer: r.answer,
                     files: r.files.join(", "),
