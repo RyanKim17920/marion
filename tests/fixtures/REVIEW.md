@@ -167,6 +167,16 @@ the battery was rerun canned for `codex` on f4126a9a and admitted 0.163.0 on its
 changed status. Every app-server `turn` object now carries a `rootTurnId` key, which is additive:
 marion reads none of it. `scripts/fixture-privacy.py` was clean; read by the author.
 
+**2026-10-17, opencode 1.19.3 conformance.** Homebrew moved 1.18.33 to 1.19.3; the battery was
+rerun canned for `opencode` and `acp:opencode` on f4126a9a, and `opencode` admitted 1.19.3 on its
+record. For both rows P-errors went from FAIL to PASS. These are the first recordings since
+81f9f797 made opencode print its error log (`--print-logs --log-level ERROR`): both 1.18.33
+recordings came before it, and their argvs do not carry the flag. A 429 and a 500 now classify as
+RateLimit and Outage off its `level=ERROR message="stream error"` lines. Whether 1.19.3 itself
+changed its logging was not measured. `acp:opencode`'s record
+still does not admit, because P-approval is UNSUPPORTED (no ask reaches marion), as it was on 1.18.33.
+`scripts/fixture-privacy.py` was clean; read by the author.
+
 **2026-10-01, claude 2.1.286 conformance.** Two tool-probe transcripts named one of the operator's
 installed plugins; it reads as the same-length `plugin01xxxxxxxxxxx`.
 

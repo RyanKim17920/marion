@@ -1,0 +1,6 @@
+{"dir":"note","msg":{"args":["acp","--print-logs","--log-level","ERROR"],"pid":82443,"spawned":"opencode"},"t":0.004}
+{"dir":"c2s","msg":{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},"protocolVersion":1}},"t":0.005}
+{"dir":"s2c","msg":{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"loadSession":true,"mcpCapabilities":{"http":true,"sse":true},"promptCapabilities":{"embeddedContext":true,"image":true},"sessionCapabilities":{"close":{},"fork":{},"list":{},"resume":{}}},"agentInfo":{"name":"OpenCode","version":"1.19.3"},"authMethods":[{"description":"Run `opencode auth login` in the terminal","id":"opencode-login","name":"Login with opencode"}],"protocolVersion":1}},"t":0.993}
+{"dir":"note","msg":"signal 9 to process group 82443","t":1.05}
+{"dir":"note","msg":{"code":null,"exited":82443,"signal":9},"t":1.089}
+{"dir":"note","msg":"version Some(\"OpenCode 1.19.3\"); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row)); not listed in the row's verified releases","t":1.111}

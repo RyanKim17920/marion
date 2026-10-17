@@ -1,10 +1,10 @@
 {
   "result": {
-    "fixtures": "opencode-1.18.33",
+    "fixtures": "opencode-1.19.3",
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_f0bb24977ffe5wqmIEBdyRcZnc ; activity marion_report",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb48e5699ffeCU81STfs6Hx5xV ; activity marion_report",
         "status": "PASS"
       },
       "P-approval": {
@@ -14,12 +14,12 @@
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: ended after 2.4 s, 1 request(s), exit 1; cause Auth { line: \"Incorrect API key provided: dummy.\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); refused credential read off a frame: \"Incorrect API key provided: dummy.\" | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
-        "status": "FAIL"
+        "observed": "401: ended after 8.6 s, 1 request(s), exit 1; cause Auth { line: \"timestamp=2026-10-17T19:59:36.451Z level=ERROR run=f6b9510a message=\\\"stream error\\\" providerID=marion modelID=default session.id=ses_eb48d4c3fffeS7PvMsRmhy4IxW small=false agent=build mode=primary error.error=\\\"AI_APICallError: Incorrect API key provided: dummy.\\\"\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); refused credential read off a frame: \"Incorrect API key provided: dummy.\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"timestamp=2026-10-17T19:59:44.496Z level=ERROR run=b1fbc01e message=\\\"stream error\\\" providerID=marion modelID=default session.id=ses_eb48d2b6effeOOgdW00GaSQWud small=false agent=build mode=primary error.error=\\\"AI_APICallError: rate limit exceeded\\\"\" }; stream failure None | 500: still running after 45.0 s, 4 request(s), still running; cause Outage { line: \"timestamp=2026-10-17T20:00:31.931Z level=ERROR run=d92b610a message=\\\"stream error\\\" providerID=marion modelID=default session.id=ses_eb48c76e1ffeoa6YnC0IFQ5T0a small=false agent=build mode=primary error.error=\\\"AI_APICallError: internal server error\\\"\" }; stream failure None",
+        "status": "PASS"
       },
       "P-interrupt": {
         "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
-        "observed": "the cancel ended the turn in 0.0 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "observed": "the cancel ended the turn in 0.1 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
         "status": "PASS"
       },
       "P-launch": {
@@ -28,8 +28,8 @@
         "status": "PASS"
       },
       "P-lifecycle": {
-        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
-        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left []",
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives the node",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [] (each after marion's end of the node)",
         "status": "PASS"
       },
       "P-midturn": {
@@ -40,12 +40,12 @@
       },
       "P-resume": {
         "expected": "the row's resume spelling continues the killed session with its history",
-        "observed": "second life ended; its request carries the first life's prompt: true; session ses_f0bb2306effedWXL2kvkHpjaS5 -> ses_f0bb2306effedWXL2kvkHpjaS5; resume refusal: none",
+        "observed": "second life ended; its request carries the first life's prompt: true; session ses_eb48de930ffeWLGmzo75uiKBfW -> ses_eb48de930ffeWLGmzo75uiKBfW; resume refusal: none",
         "status": "PASS"
       },
       "P-tools": {
         "expected": "`marion_report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-        "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.0 s after the spawn and listed marion's tools",
+        "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 11.3 s after the spawn and listed marion's tools",
         "status": "PASS"
       },
       "P-tui": {
@@ -56,11 +56,11 @@
       },
       "P-version": {
         "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-        "observed": "1.18.33 (admitted in PINNED_HARNESSES); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried",
+        "observed": "1.19.3 (not listed in the row's verified releases); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried",
         "status": "PASS"
       }
     },
-    "version": "1.18.33"
+    "version": "1.19.3"
   },
   "row": "opencode"
 }

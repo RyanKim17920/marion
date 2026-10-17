@@ -9,7 +9,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | acp:codex-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:copilot | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:goose | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:opencode | OpenCode 1.18.33 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | **FAIL** | n/a |
+| acp:opencode | OpenCode 1.19.3 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS | n/a |
 | acp:qwen | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | claude-code | 2.1.302 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
@@ -17,7 +17,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | codex | 0.163.0 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | copilot | 1.0.89 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a |
 | goose | 1.55.0 | PASS | PASS | PASS | PASS | n/a | n/a | PASS | n/a | PASS | PASS | n/a |
-| opencode | 1.18.33 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
+| opencode | 1.19.3 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | n/a |
 | pi | 0.99.1 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS | n/a |
 | qwen | 0.24.7 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
 
@@ -93,18 +93,18 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** UNSUPPORTED: marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### acp:opencode OpenCode 1.18.33
+### acp:opencode OpenCode 1.19.3
 
-- **P-version** PASS: OpenCode 1.18.33 (admitted in PINNED_HARNESSES); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))
+- **P-version** PASS: OpenCode 1.19.3 (not listed in the row's verified releases); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; still running; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.5 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f0bb0732bffenYE4H1e8o2LSN4 ; activity none (row: no activity rule)
+- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.9 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_eb48b8c24ffej2D0We1Owc5P4w ; activity none (row: no activity rule)
 - **P-approval** UNSUPPORTED: granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised
 - **P-midturn** PASS: queued as its own turn (2 turn ends; requests [4]); 2 prompt answer(s)
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f0bb04ad4ffeGuEfFYv8ruFFRM -> ses_f0bb04ad4ffeGuEfFYv8ruFFRM; resume refusal: none
-- **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: signal 15, left []
-- **P-errors** FAIL: 401: ended after 1.9 s, 2 request(s), still running; cause Auth { line: "Internal error: Incorrect API key provided: dummy." }; stream failure Some("Internal error: Incorrect API key provided: dummy."); no frame reads as a refused credential; prompt answer {"code":-32603,"data":{"errorName":"APIError","service":"session"},"message":"Internal error: Incorrect API key provided: dummy."} | 429: still running after 46.0 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 46.4 s, 8 request(s), still running; cause none said; stream failure None
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_eb48b41d9ffef6cmYWa1Oj72iW -> ses_eb48b41d9ffef6cmYWa1Oj72iW; resume refusal: none
+- **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: signal 15, left [] (each after marion's end of the node)
+- **P-errors** PASS: 401: ended after 3.8 s, 2 request(s), still running; cause Auth { line: "timestamp=2026-10-17T20:01:59.700Z level=ERROR run=49d54794 message=\"stream error\" providerID=marion modelID=default session.id=ses_eb48b070affej0gVY9OeqCQk1W small=true agent=title mode=primary error.error=\"AI_APICallError: Incorrect API key provided: dummy.\"" }; stream failure Some("Internal error: Incorrect API key provided: dummy."); no frame reads as a refused credential; prompt answer {"code":-32603,"data":{"errorName":"APIError","service":"session"},"message":"Internal error: Incorrect API key provided: dummy."} | 429: still running after 47.4 s, 8 request(s), still running; cause RateLimit { line: "timestamp=2026-10-17T20:02:06.563Z level=ERROR run=077e0009 message=\"stream error\" providerID=marion modelID=default session.id=ses_eb48af43fffeZA2xocDPNLP2Lw small=false agent=build mode=primary error.error=\"AI_APICallError: rate limit exceeded\"" }; stream failure None | 500: still running after 46.6 s, 8 request(s), still running; cause Outage { line: "timestamp=2026-10-17T20:02:52.538Z level=ERROR run=dc5af087 message=\"stream error\" providerID=marion modelID=default session.id=ses_eb48a3d62ffedI7yggDUS6aWPq small=false agent=build mode=primary error.error=\"AI_APICallError: internal server error\"" }; stream failure None
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
 ### acp:qwen unknown
@@ -205,18 +205,18 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** PASS: 401: ended after 0.2 s, 2 request(s), exit 1; cause Auth { line: "Error: Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:51215/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy.." }; stream failure Some("Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:51215/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\n\nPlease retry if you think this is a transient or recoverable error."); refused credential read off a frame: "Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:51215/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\n\nPlease retry if you think this is a transient or recoverable error." | 429: ended after 6.7 s, 7 request(s), exit 1; cause RateLimit { line: "Error: Ran into this error: Rate limit exceeded: rate limit exceeded." }; stream failure Some("Ran into this error: Rate limit exceeded: rate limit exceeded.\n\nPlease retry if you think this is a transient or recoverable error.") | 500: ended after 7.7 s, 8 request(s), exit 1; cause Outage { line: "Error: Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:51255/v1/chat/completions: internal server error." }; stream failure Some("Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:51255/v1/chat/completions: internal server error.\n\nPlease retry if you think this is a transient or recoverable error.")
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### opencode 1.18.33
+### opencode 1.19.3
 
-- **P-version** PASS: 1.18.33 (admitted in PINNED_HARNESSES); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried
+- **P-version** PASS: 1.19.3 (not listed in the row's verified releases); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; exit 0; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.0 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_f0bb24977ffe5wqmIEBdyRcZnc ; activity marion_report
+- **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 11.3 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_eb48e5699ffeCU81STfs6Hx5xV ; activity marion_report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("The user rejected permission to use this specific tool call.")), 0 permission ask(s) reached marion
 - **P-midturn** UNSUPPORTED: headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/opencode (1.18.32): `run --session <id>` continues the session with the store in a file OPENCODE_DB (db1/db2); `:memory:` failed with Session not found
-- **P-interrupt** PASS: the cancel ended the turn in 0.0 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f0bb2306effedWXL2kvkHpjaS5 -> ses_f0bb2306effedWXL2kvkHpjaS5; resume refusal: none
-- **P-lifecycle** PASS: turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left []
-- **P-errors** FAIL: 401: ended after 2.4 s, 1 request(s), exit 1; cause Auth { line: "Incorrect API key provided: dummy." }; stream failure Some("Incorrect API key provided: dummy."); refused credential read off a frame: "Incorrect API key provided: dummy." | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None
+- **P-interrupt** PASS: the cancel ended the turn in 0.1 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_eb48de930ffeWLGmzo75uiKBfW -> ses_eb48de930ffeWLGmzo75uiKBfW; resume refusal: none
+- **P-lifecycle** PASS: turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [] (each after marion's end of the node)
+- **P-errors** PASS: 401: ended after 8.6 s, 1 request(s), exit 1; cause Auth { line: "timestamp=2026-10-17T19:59:36.451Z level=ERROR run=f6b9510a message=\"stream error\" providerID=marion modelID=default session.id=ses_eb48d4c3fffeS7PvMsRmhy4IxW small=false agent=build mode=primary error.error=\"AI_APICallError: Incorrect API key provided: dummy.\"" }; stream failure Some("Incorrect API key provided: dummy."); refused credential read off a frame: "Incorrect API key provided: dummy." | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: "timestamp=2026-10-17T19:59:44.496Z level=ERROR run=b1fbc01e message=\"stream error\" providerID=marion modelID=default session.id=ses_eb48d2b6effeOOgdW00GaSQWud small=false agent=build mode=primary error.error=\"AI_APICallError: rate limit exceeded\"" }; stream failure None | 500: still running after 45.0 s, 4 request(s), still running; cause Outage { line: "timestamp=2026-10-17T20:00:31.931Z level=ERROR run=d92b610a message=\"stream error\" providerID=marion modelID=default session.id=ses_eb48c76e1ffeoa6YnC0IFQ5T0a small=false agent=build mode=primary error.error=\"AI_APICallError: internal server error\"" }; stream failure None
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
 ### pi 0.99.1

@@ -1916,13 +1916,9 @@ mod tests {
     fn every_rows_measured_provider_errors_classify_as_the_provider_said() {
         use marion_core::contract::FailureCause;
         let silent: &[(&str, u16)] = &[
-            ("acp:opencode", 429),
-            ("acp:opencode", 500),
             // cline 3.0.66 (conformance, 2026-09-30): five requests, still retrying at 45 s.
             ("cline", 429),
             ("cline", 500),
-            ("opencode", 429),
-            ("opencode", 500),
             ("qwen", 429),
             ("qwen", 500),
         ];
