@@ -407,7 +407,10 @@ marion fingerprints it then, and a continuation, a resume, or a node below that 
 (or finds a link in it) runs as in an untrusted repository. That includes a harness's own writes
 during a run (opencode installing a plugin under `.opencode/`, claude saving an "always allow" to
 `.claude/settings.local.json`), since either can carry code that runs; in a trusted repository
-`marion ls <id>` names the files a node held back. marion decides this as it compiles each launch,
+`marion ls <id>` names the files a node held back, while it runs as well as after, and `marion
+run` says so as the node starts. Where marion could not read the commit to compare with (a root
+launched before marion recorded one, or a commit since lost), every config path the tree holds is
+held back, and the line says it was not compared rather than that each differs. marion decides this as it compiles each launch,
 and the harness reads the files a moment later as it starts: a process already running over the
 same tree (another node in your checkout, or something a node left running) that rewrites them in
 that window is not caught until the next launch is decided.

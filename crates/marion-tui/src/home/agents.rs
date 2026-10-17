@@ -447,4 +447,40 @@ mod tests {
         assert_eq!(list.height, 5);
         assert!(matches!(pane, Pane::None));
     }
+
+    /// A held-back config is one dim fact line in the preview, under the title; a preview without
+    /// it has no such line.
+    #[test]
+    fn a_held_back_config_renders_as_a_dim_fact_line() {
+        use ratatui::style::Modifier;
+        let rows = |p: &Preview| {
+            let area = Rect::new(0, 0, 100, 8);
+            let mut buf = Buffer::empty(area);
+            preview(p, area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    let text: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+                    (text.trim_end().to_string(), buf[(0, y)].style())
+                })
+                .collect::<Vec<_>>()
+        };
+        let base = Preview {
+            who: "codex 91cd".into(),
+            title: "the task".into(),
+            ..Preview::default()
+        };
+        assert!(!rows(&base).iter().any(|(t, _)| t.contains("held back")));
+        let line = "repository config held back: .mcp.json differs from your branch";
+        let held = Preview {
+            facts: vec![vec![(line.into(), Ink::Dim)]],
+            ..base
+        };
+        let shown = rows(&held);
+        assert!(
+            shown
+                .iter()
+                .any(|(t, s)| t == line && s.add_modifier.contains(Modifier::DIM)),
+            "{shown:?}"
+        );
+    }
 }
