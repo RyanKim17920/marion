@@ -500,6 +500,20 @@ fn n_runs_a_task_and_the_list_shows_it_steers_it_and_cancels_it() {
     );
     op.type_in(b"\r");
     op.wait_for("the screen again", |s| status_line(s).contains("running"));
+    // A `^c` stops the command it runs, not the screen: `:ls --follow` on the running root, then
+    // `^c`, then Enter, and the screen is back.
+    op.type_in(b":ls --follow\r");
+    op.wait_for("the follow running", |s| {
+        s.contains(&format!("$ marion ls {} --follow", root.0))
+    });
+    op.type_in(b"\x03");
+    op.wait_for("the follow stopped, the screen waiting", |s| {
+        s.contains("enter returns")
+    });
+    op.type_in(b"\r");
+    op.wait_for("the screen again, after a ^c", |s| {
+        status_line(s).contains("running")
+    });
 
     // Cancel asks first, naming what it ends below; `n` keeps it, `y` ends it.
     op.type_in(b"x");

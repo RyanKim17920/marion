@@ -661,9 +661,15 @@ impl Session {
         self.last_dial = None;
     }
 
-    /// Run `c` with the terminal, and say how it ended if it failed.
+    /// Run `c` with the terminal, and say how it ended if it failed. A `^c` meanwhile is the
+    /// command's: the terminal sends it to this process too, which waits it out rather than
+    /// ending the screen (`:ls <id> --follow` stops on one).
     fn foreground(&mut self, mut c: std::process::Command, what: &str) {
-        match c.status() {
+        let status = {
+            let _held = InterruptHeld::new();
+            c.status()
+        };
+        match status {
             Ok(st) if st.success() => {}
             Ok(st) => self.home.notice = Some(format!("{what} exited {st}")),
             Err(e) => self.home.notice = Some(format!("{what} did not start: {e}")),
@@ -957,6 +963,34 @@ impl Session {
                 }
             }
         }
+    }
+}
+
+/// `SIGINT`: 2 on both Darwin and Linux.
+const SIGINT: std::ffi::c_int = 2;
+
+unsafe extern "C" {
+    fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
+}
+
+extern "C" fn on_interrupt(_sig: std::ffi::c_int) {}
+
+/// **`SIGINT` caught and dropped while it lives**, then given back what it had. Caught by a
+/// handler that does nothing, not ignored: an ignored signal stays ignored across `exec`, and the
+/// command run meanwhile must still stop on `^c`.
+struct InterruptHeld(usize);
+
+impl InterruptHeld {
+    fn new() -> Self {
+        // SAFETY: the handler does nothing, which is async-signal-safe.
+        InterruptHeld(unsafe { signal(SIGINT, on_interrupt as *const () as usize) })
+    }
+}
+
+impl Drop for InterruptHeld {
+    fn drop(&mut self) {
+        // SAFETY: puts back the disposition `new` replaced.
+        unsafe { signal(SIGINT, self.0) };
     }
 }
 
