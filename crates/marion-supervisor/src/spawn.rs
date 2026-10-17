@@ -1119,10 +1119,57 @@ fn config_as_committed(wt: Tree<'_>, reference: &str, rel: &str) -> bool {
     if !plain_files(&at, Path::new(rel), &mut found) || !found.keys().eq(committed.keys()) {
         return false;
     }
-    found.iter().all(|(path, on_disk)| {
-        let blob = git_bytes(wt, &["cat-file", "blob", &committed[path]]);
-        matches!((blob, std::fs::read(on_disk)), (Ok(b), Ok(d)) if b == d)
-    })
+    let oids: Vec<&str> = found.keys().map(|path| committed[path].as_str()).collect();
+    let Some(blobs) = cat_blobs(wt, &oids) else {
+        return false;
+    };
+    found
+        .values()
+        .zip(blobs)
+        .all(|(on_disk, blob)| std::fs::read(on_disk).is_ok_and(|d| d == blob))
+}
+
+/// **The blobs `oids` name, in their order, from one `git cat-file --batch`** rather than a
+/// process per file. `None` on any failure, and where any is missing or is not a blob.
+fn cat_blobs(wt: Tree<'_>, oids: &[&str]) -> Option<Vec<Vec<u8>>> {
+    use std::io::Write;
+    if oids.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut command = crate::gitcmd::command(&wt, &["cat-file", "--batch"]).ok()?;
+    command.stdin(std::process::Stdio::piped());
+    let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let input: Vec<u8> = oids
+        .iter()
+        .flat_map(|o| format!("{o}\n").into_bytes())
+        .collect();
+    // Written beside the read, so a reply larger than the pipe never stalls the request.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let out = child.wait_with_output().ok()?;
+    writer.join().ok()?.ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut rest = out.stdout.as_slice();
+    let mut blobs = Vec::with_capacity(oids.len());
+    for oid in oids {
+        let eol = rest.iter().position(|b| *b == b'\n')?;
+        let header = std::str::from_utf8(&rest[..eol]).ok()?;
+        let [named, "blob", size] = header.split(' ').collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        let size: usize = size.parse().ok()?;
+        let body = rest.get(eol + 1..eol + 1 + size)?;
+        if named != *oid || rest.get(eol + 1 + size) != Some(&b'\n') {
+            return None;
+        }
+        blobs.push(body.to_vec());
+        rest = &rest[eol + 2 + size..];
+    }
+    rest.is_empty().then_some(blobs)
 }
 
 /// Every plain file at or under `at` into `found`, keyed by its path relative to the tree (`rel`
@@ -2933,6 +2980,35 @@ mod tests {
             repo_config_unchanged(child, &base, &common, Some("gone"), &paths),
             "a recorded branch that no longer resolves falls back to the common HEAD"
         );
+    }
+
+    /// **One `cat-file --batch` reads every blob, in the order asked**, bytes exact (a blob
+    /// holding a newline or nothing at all included), and a missing object or a tree among them
+    /// fails the whole read rather than misaligning it.
+    #[test]
+    fn committed_blobs_are_read_in_one_batch_in_order() {
+        let (_dir, repo, _) = committed_repo("spawn-cat-blobs");
+        let blob = |text: &str| {
+            let path = repo.join("blob.tmp");
+            std::fs::write(&path, text).unwrap();
+            tgit(&repo, &["hash-object", "-w", "blob.tmp"])
+        };
+        let (a, b, empty) = (blob("one\ntwo\n"), blob("x"), blob(""));
+        let tree = Tree::Operator(&repo);
+        assert_eq!(
+            cat_blobs(tree, &[&b, &a, &empty, &b]),
+            Some(vec![
+                b"x".to_vec(),
+                b"one\ntwo\n".to_vec(),
+                vec![],
+                b"x".to_vec()
+            ])
+        );
+        assert_eq!(cat_blobs(tree, &[]), Some(vec![]));
+        let missing = "0".repeat(a.len());
+        assert_eq!(cat_blobs(tree, &[&a, &missing]), None);
+        let root_tree = tgit(&repo, &["rev-parse", "HEAD^{tree}"]);
+        assert_eq!(cat_blobs(tree, &[&root_tree]), None, "a tree is not a blob");
     }
 
     /// **A task branch is never the trust reference**, recorded or fallen back to: a node's own
