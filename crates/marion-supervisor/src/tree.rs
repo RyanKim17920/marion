@@ -595,8 +595,10 @@ fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), R
     }
     // No read bound: the subscribe's own reads block until the answer, and a screen that follows
     // the forest waits on [`Subscription::fd`] in its own `poll(2)` with the socket non-blocking.
-    let stream = crate::client_auth::dial(&paths)
-        .map_err(|e| format!("dialling the supervisor for `{}`: {e}", key.display()))?;
+    let stream = crate::client_auth::dial_unless_leaving(&paths)
+        .map_err(|e| format!("dialling the supervisor for `{}`: {e}", key.display()))?
+        // It was on its way out: by now nobody is, as an instant later the check above would say.
+        .ok_or_else(|| nobody_serving(&key, state_dir))?;
     // The status row names the worktree, not its `.git`: §2 keys on the common dir, and an
     // operator with three windows open recognises the directory they ran marion in.
     let shown = match key.file_name().and_then(|f| f.to_str()) {
@@ -2075,6 +2077,52 @@ mod tests {
             JournalView::open(&repo, &state).unwrap().is_none(),
             "the journal answered for a project a supervisor serves"
         );
+    }
+
+    /// **A supervisor on its way out reads as nobody serving, not as a failed dial**: its socket is
+    /// gone while it still holds its lock, as `Serving`'s drop leaves it for an instant. Held here
+    /// for a moment, then let go. Mutation: dial with `client_auth::dial` and the answer is
+    /// `dialling ...: No such file or directory`.
+    #[test]
+    fn a_dial_while_the_supervisor_leaves_waits_and_finds_nobody_serving() {
+        let dir = marion_testsupport::scratch("tree-leaving");
+        let key = dir.join("repo");
+        let state = dir.join("state");
+        let paths = crate::socket::socket_paths(&state, &key, crate::socket::own_uid());
+        let crate::socket::Acquired::Serving(serving) = crate::socket::acquire(&paths).unwrap()
+        else {
+            panic!("nobody else can be serving a scratch project")
+        };
+        std::fs::remove_file(paths.socket()).unwrap();
+        let leaves = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(serving);
+        });
+        let refusal = Subscription::open_at(&key, &state)
+            .err()
+            .expect("nobody serves");
+        leaves.join().unwrap();
+        assert!(refusal.contains("no supervisor is serving"), "{refusal}");
+    }
+
+    /// **A supervisor that keeps its lock is never taken for gone**: with no socket to dial, the
+    /// dial still fails once [`crate::socket::LEAVING`] has passed — a process that unlinks a live
+    /// supervisor's socket is not handed the offline answer.
+    #[test]
+    fn a_socketless_supervisor_that_keeps_its_lock_is_still_a_failed_dial() {
+        let dir = marion_testsupport::scratch("tree-socketless");
+        let key = dir.join("repo");
+        let state = dir.join("state");
+        let paths = crate::socket::socket_paths(&state, &key, crate::socket::own_uid());
+        let crate::socket::Acquired::Serving(_serving) = crate::socket::acquire(&paths).unwrap()
+        else {
+            panic!("nobody else can be serving a scratch project")
+        };
+        std::fs::remove_file(paths.socket()).unwrap();
+        let refusal = Subscription::open_at(&key, &state)
+            .err()
+            .expect("nothing to dial");
+        assert!(refusal.contains("dialling the supervisor"), "{refusal}");
     }
 
     /// **A cancel needs no one — unless its abort was ignored**: a node whose row had an abort and

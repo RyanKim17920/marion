@@ -9,7 +9,7 @@
 use marion_supervisor::{err, out};
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use marion_core::node::NodeState;
 use marion_core::proto::model::NodeSummary;
@@ -17,18 +17,12 @@ use marion_core::search::{Query, State};
 use marion_supervisor::search::digest::{PROMPT_CAP, Run};
 use marion_supervisor::search::open::{Kind, read_agent_file};
 use marion_supervisor::search::{self, Found, Hit, Matcher, Options, Project};
-use marion_supervisor::socket::{self, SocketPaths};
-use marion_supervisor::tree;
+use marion_supervisor::{socket, tree};
 
 use super::cli::{self, Exit, Place, Word, Words};
 
 /// Runs shown when `--limit` is not given.
 pub const DEFAULT_LIMIT: usize = 20;
-
-/// How long a failed dial waits for the supervisor's lock to go. A supervisor that answered a
-/// run's `session/quit` unlinks its socket before it lets its lock go, so a search in that gap
-/// finds the lock held and nobody to dial.
-const LEAVING: Duration = Duration::from_secs(2);
 
 /// What `marion search` was asked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -179,36 +173,14 @@ fn live_nodes(repo: &Path, state: &Path, key: &Path) -> Result<Vec<NodeSummary>,
     if socket::nobody_is_serving(&paths) {
         return Ok(Vec::new());
     }
+    // A supervisor on its way out has let its lock go once the dial gives up on it.
     tree::snapshot(repo, state).or_else(|why| {
-        if left(&paths) {
+        if socket::nobody_is_serving(&paths) {
             Ok(Vec::new())
         } else {
             Err(format!("search stopped: {why}"))
         }
     })
-}
-
-/// Whether the supervisor at `paths` lets its lock go within [`LEAVING`]: it was on its way out,
-/// so nothing of it is live. One still serving keeps the lock, and the failed dial stands — a
-/// node that unlinks the socket under a live supervisor is still refused.
-///
-/// A blocking `flock` on a helper thread, answered over a channel: no wakeups while it waits, and
-/// the answer the instant the lock frees. The lock is let go as soon as it is taken, as
-/// [`socket::nobody_is_serving`]'s probe does. A thread still blocked at the deadline ends with
-/// this process, which is about to print its refusal and exit.
-fn left(paths: &SocketPaths) -> bool {
-    // No file means nothing ever served here.
-    let Ok(lock) = std::fs::File::open(paths.lock()) else {
-        return true;
-    };
-    let (freed, wait) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        if lock.lock().is_ok() {
-            let _ = lock.unlock();
-            let _ = freed.send(());
-        }
-    });
-    wait.recv_timeout(LEAVING).is_ok()
 }
 
 /// **The tripwire for `--all`**: every other project whose root is known and whose supervisor is
@@ -224,11 +196,8 @@ fn hello_every_live(state: &Path, projects: &[Project], current: &Project) -> Re
         if socket::nobody_is_serving(&paths) {
             continue;
         }
-        if let Err(why) = marion_supervisor::client_auth::dial(&paths)
-            && !left(&paths)
-        {
-            return Err(format!("search stopped: {}: {why}", p.name()));
-        }
+        marion_supervisor::client_auth::dial_unless_leaving(&paths)
+            .map_err(|why| format!("search stopped: {}: {why}", p.name()))?;
     }
     Ok(())
 }

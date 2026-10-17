@@ -152,8 +152,35 @@ pub fn identity_for(paths: &SocketPaths) -> Result<Identity, String> {
 /// **Dial `paths`' supervisor and say who the connection speaks for** — the one way a client
 /// opens a connection it will make calls on.
 pub fn dial(paths: &SocketPaths) -> Result<UnixStream, String> {
-    let mut stream = UnixStream::connect(paths.socket())
-        .map_err(|e| format!("dialling {}: {e}", paths.socket().display()))?;
+    let stream = UnixStream::connect(paths.socket()).map_err(|e| dialling(paths, &e))?;
+    hello_on(stream, paths)
+}
+
+/// **[`dial`], or `None` when the supervisor is leaving**: nothing listens on the socket, and its
+/// lock goes within [`crate::socket::LEAVING`] ([`crate::socket::left_within`]). For a caller that
+/// found the lock held, for whom a supervisor that has just gone is nobody serving. Only a socket
+/// with no listener waits; a supervisor that answers and refuses the hello is refused at once.
+pub fn dial_unless_leaving(paths: &SocketPaths) -> Result<Option<UnixStream>, String> {
+    let stream = match UnixStream::connect(paths.socket()) {
+        Ok(stream) => stream,
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) && crate::socket::left_within(paths, crate::socket::LEAVING) =>
+        {
+            return Ok(None);
+        }
+        Err(e) => return Err(dialling(paths, &e)),
+    };
+    hello_on(stream, paths).map(Some)
+}
+
+fn dialling(paths: &SocketPaths, e: &std::io::Error) -> String {
+    format!("dialling {}: {e}", paths.socket().display())
+}
+
+fn hello_on(mut stream: UnixStream, paths: &SocketPaths) -> Result<UnixStream, String> {
     hello(&mut stream, &identity_for(paths)?).map_err(|e| e.to_string())?;
     Ok(stream)
 }

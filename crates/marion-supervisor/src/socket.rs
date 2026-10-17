@@ -524,6 +524,34 @@ pub fn nobody_is_serving(paths: &SocketPaths) -> bool {
     !someone_is_serving(paths.lock())
 }
 
+/// How long a client that found the lock held and no one listening waits for the lock to go.
+/// [`Serving`]'s drop unlinks the socket while it still holds the lock — the order that keeps it
+/// from unlinking a successor's — so a supervisor on its way out (a run's, once it has answered
+/// `session/quit`) holds a lock with no socket for that instant.
+pub const LEAVING: Duration = Duration::from_secs(2);
+
+/// **Whether the supervisor at `paths` lets its lock go within `wait`**: it was on its way out,
+/// and nobody is serving. One still serving keeps the lock, and the answer is `false`.
+///
+/// A blocking `flock` on a helper thread, answered over a channel: no wakeups while it waits, and
+/// the answer the instant the lock frees. The lock is let go as soon as it is taken, as
+/// [`someone_is_serving`]'s probe lets go of its own. A thread still blocked past `wait` ends with
+/// the process; it holds nothing but a descriptor of the lock file until then.
+pub fn left_within(paths: &SocketPaths, wait: Duration) -> bool {
+    // No file means nothing ever served here.
+    let Ok(lock) = std::fs::File::open(paths.lock()) else {
+        return true;
+    };
+    let (freed, freed_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if lock.lock().is_ok() {
+            let _ = lock.unlock();
+            let _ = freed.send(());
+        }
+    });
+    freed_rx.recv_timeout(wait).is_ok()
+}
+
 /// Whether the supervisor lock is held, without ever holding it.
 ///
 /// `create(false)`, deliberately: a *reader* that created a lock file would leave one behind for
