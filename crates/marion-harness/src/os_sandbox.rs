@@ -297,6 +297,23 @@ fn below_checkout(path: &std::path::Path, root: &std::path::Path) -> Result<Gran
     })
 }
 
+/// **No grant holds the agents dir**: `Err` names the first that is it or above it (a checkout with
+/// marion's state dir inside it) and says to move the state dir out. Where the sandbox can deny
+/// nothing inside a write grant (Landlock), such a grant is every other node's agent dir, its
+/// token among it, the node's to read and write.
+fn holds_no_siblings(grants: &[Grant], agents: &std::path::Path) -> Result<(), String> {
+    match grants.iter().find(|g| agents.starts_with(&g.path)) {
+        Some(g) => Err(format!(
+            "the node may write {}, which holds marion's state dir {}; this OS sandbox cannot \
+             keep other nodes' tokens there from it, so refusing to launch: set \
+             MARION_STATE_DIR to a directory outside the checkout",
+            g.path.display(),
+            agents.display()
+        )),
+        None => Ok(()),
+    }
+}
+
 /// The agents dir holding `agent_dir`, as named.
 fn agents_lexical(agent_dir: &std::path::Path) -> &std::path::Path {
     agent_dir.parent().unwrap_or(agent_dir)
@@ -406,6 +423,11 @@ impl SandboxPlan {
         }
         for g in &grants {
             g.check()?;
+        }
+        // Landlock grants whole directories and can deny nothing inside one: a grant holding the
+        // agents dir would hand the node every sibling's token, to read and to write.
+        if cfg!(target_os = "linux") {
+            holds_no_siblings(&grants, &agents)?;
         }
         grants.dedup();
         Ok(SandboxPlan {
@@ -1307,6 +1329,53 @@ mod tests {
             Some("own\n"),
             "the rest is its own"
         );
+    }
+
+    /// **A grant holding the agents dir is named, and on Linux refuses the launch**: Landlock can
+    /// deny nothing inside a write grant, so a node working in a checkout that holds marion's
+    /// state dir would read and write every sibling's token. A grant beside or below the agents
+    /// dir (the node's own agent dir) is not one.
+    ///
+    /// Mutation: drop the `holds_no_siblings` call from `for_launch` and the Linux plan is made.
+    #[test]
+    fn a_grant_holding_the_agents_dir_is_refused_where_landlock_runs() {
+        let dir = marion_testsupport::scratch("osb-state-in-checkout-linux");
+        let checkout = std::fs::canonicalize(dir.join("."))
+            .unwrap()
+            .join("checkout");
+        let agents = checkout.join("state");
+        let grant = |p: &std::path::Path| Grant {
+            base: p.parent().unwrap().to_path_buf(),
+            path: p.to_path_buf(),
+        };
+        let err =
+            holds_no_siblings(&[grant(&agents.join("me")), grant(&checkout)], &agents).unwrap_err();
+        assert!(
+            err.contains("MARION_STATE_DIR") && err.contains(&checkout.display().to_string()),
+            "{err}"
+        );
+        assert!(
+            holds_no_siblings(&[grant(&agents)], &agents).is_err(),
+            "the dir itself"
+        );
+        assert!(
+            holds_no_siblings(
+                &[grant(&agents.join("me")), grant(&dir.join("wt"))],
+                &agents
+            )
+            .is_ok()
+        );
+
+        let (spec, mut inv) = node_in(&agents, Auth::Canned);
+        std::fs::create_dir_all(&checkout).unwrap();
+        inv.cwd = checkout.clone();
+        let planned = SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv);
+        if cfg!(target_os = "linux") {
+            let err = planned.unwrap_err();
+            assert!(err.contains("MARION_STATE_DIR"), "{err}");
+        } else {
+            planned.expect("Seatbelt's sibling rules hold inside the grant");
+        }
     }
 
     /// **A checkout holding marion's state dir opens no sibling's agent dir**: a node working in

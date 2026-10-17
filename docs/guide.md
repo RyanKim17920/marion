@@ -53,7 +53,9 @@ and exits with the checks' verdict; the branch it names is the one to merge.
 (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`,
 else `~/.local/state/marion` (`--state-dir <path>` still says it for one command). Every verb
 follows that rule, so `marion ls` shows a session only when it sees the same value the session
-started with. `MARION_CANNED=1` (or the provider's URL) runs agents on marion's free test provider
+started with. Keep it outside the repository: on Linux a sandboxed node working in a checkout that
+holds the state dir is refused, since the sandbox there cannot keep other nodes' files in it from
+the node. `MARION_CANNED=1` (or the provider's URL) runs agents on marion's free test provider
 (`marion-canned`) instead of your login, for trying marion out; `--canned` and `--base-url` say the
 same for one command. `marion ls --plain` prints the tree as lines even on a terminal (`marion
 list` is its old name).
