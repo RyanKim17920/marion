@@ -1543,8 +1543,9 @@ pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdap
 /// one above the tree — a node's own agent dir among them — is named here as one in it is. Only
 /// the names are read, never the operator's user configuration. Empty where no level has the file
 /// or names no `mcpServers`; `None` where any level's does not read as an object of servers
-/// (unreadable, not JSON, `mcpServers` not an object), which an untrusted launch refuses rather
-/// than rejecting no name ([`spec::Refusal::UnreadableRepoMcp`]).
+/// (unreadable, not JSON, `mcpServers` not an object, or not a small regular file
+/// [`crate::tree_file::read`] takes), which an untrusted launch refuses rather than rejecting no
+/// name ([`spec::Refusal::UnreadableRepoMcp`]).
 fn repo_mcp_servers(cwd: &std::path::Path) -> Option<Vec<String>> {
     let mut names: Vec<String> = Vec::new();
     for dir in cwd.ancestors() {
@@ -1553,7 +1554,7 @@ fn repo_mcp_servers(cwd: &std::path::Path) -> Option<Vec<String>> {
         {
             continue;
         }
-        let text = std::fs::read_to_string(&file).ok()?;
+        let text = crate::tree_file::read_to_string(&file).ok()?;
         let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
         if let Some(servers) = doc.as_object()?.get("mcpServers") {
             names.extend(servers.as_object()?.keys().cloned());
@@ -1575,7 +1576,7 @@ fn repo_mcp_approved(cwd: &std::path::Path, names: &[String]) -> bool {
     }
     let mut approved: Vec<String> = Vec::new();
     for file in ["settings.json", "settings.local.json"] {
-        let Some(doc) = std::fs::read_to_string(cwd.join(".claude").join(file))
+        let Some(doc) = crate::tree_file::read_to_string(&cwd.join(".claude").join(file))
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         else {
@@ -1638,6 +1639,51 @@ mod tests {
         );
         std::fs::write(dir.join("agent/.mcp.json"), "not json").unwrap();
         assert_eq!(repo_mcp_servers(&tree), None);
+    }
+
+    /// **A `.mcp.json` the tree planted as a FIFO, a link or a sparse giant reads as unusable
+    /// (`None`, so the launch treats the repository's servers as unapproved), and promptly**,
+    /// rather than holding the supervisor on an open with no writer or a read with no end. The
+    /// same for the claude settings that would approve them.
+    #[test]
+    fn a_planted_mcp_json_or_settings_file_is_refused_not_read() {
+        let dir = marion_testsupport::scratch("adapter-mcp-planted");
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(tree.join(".claude")).unwrap();
+        let mcp = tree.join(".mcp.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&mcp)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(repo_mcp_servers(&tree), None, "a FIFO");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::fs::remove_file(&mcp).unwrap();
+        std::fs::File::create(&mcp)
+            .unwrap()
+            .set_len(64 << 30)
+            .unwrap();
+        assert_eq!(repo_mcp_servers(&tree), None, "a sparse 64 GiB file");
+        std::fs::remove_file(&mcp).unwrap();
+        let real = dir.join("real.json");
+        std::fs::write(&real, r#"{"mcpServers":{"s":{}}}"#).unwrap();
+        std::os::unix::fs::symlink(&real, &mcp).unwrap();
+        assert_eq!(repo_mcp_servers(&tree), None, "a link");
+
+        let names = vec!["s".to_string()];
+        let approving = dir.join("approving.json");
+        std::fs::write(&approving, r#"{"enableAllProjectMcpServers":true}"#).unwrap();
+        std::os::unix::fs::symlink(&approving, tree.join(".claude/settings.json")).unwrap();
+        assert!(
+            !repo_mcp_approved(&tree, &names),
+            "a linked settings file approves nothing"
+        );
+        std::fs::remove_file(tree.join(".claude/settings.json")).unwrap();
+        std::fs::copy(&approving, tree.join(".claude/settings.json")).unwrap();
+        assert!(repo_mcp_approved(&tree, &names));
     }
 
     /// **Every requirement a row states is refused by name when unmet**, in the row's own words,

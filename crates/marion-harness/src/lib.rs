@@ -38,6 +38,7 @@ pub mod spec;
 pub mod stream;
 pub mod surfaces;
 pub mod sweep;
+pub mod tree_file;
 
 pub use acp::AcpAdapter;
 pub use acp::{AcpError, AgentHandshake};
