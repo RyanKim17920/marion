@@ -177,7 +177,17 @@ pub struct Run {
     pub paths_omitted: usize,
     #[serde(default)]
     pub branch: Option<String>,
+    /// Always [`SEAL`], and always the last field written, so a line that does not end
+    /// [`SEALED`] was cut short. No value can forge it: every quote inside a value is escaped.
+    #[serde(default)]
+    pub end: u8,
 }
+
+/// [`Run::end`]'s value.
+pub const SEAL: u8 = 1;
+
+/// The bytes every whole digest line ends with.
+pub const SEALED: &[u8] = br#","end":1}"#;
 
 /// What a root's end knows of it: a root has no contract (§9), so its owner hands these in.
 #[derive(Debug, Clone)]
@@ -222,6 +232,7 @@ impl Run {
             paths: Vec::new(),
             paths_omitted: 0,
             branch: None,
+            end: SEAL,
         }
     }
 

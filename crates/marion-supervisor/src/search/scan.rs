@@ -301,9 +301,9 @@ pub fn scan(path: &Path, matcher: &Matcher, limit: usize) -> io::Result<Scanned>
         if line.is_empty() || is_header(&line) {
             continue;
         }
-        // A short write leaves a line cut before its closing brace; it names no run, and must not
-        // stand in for the whole line before it.
-        let whole = line.ends_with(b"}");
+        // A short write or a crash leaves a line cut before its seal, perhaps right after some
+        // inner `}`; it names no run, and must not stand in for the whole line before it.
+        let whole = line.ends_with(super::digest::SEALED);
         let Some(id) = value_of(&line, &id_key).filter(|_| whole) else {
             out.skipped.note(UNREADABLE);
             continue;
@@ -609,6 +609,35 @@ mod tests {
         let found = scan(&path, &q("limiter"), 9).unwrap();
         assert_eq!(ids(&found), ["a"]);
         assert_eq!(found.skipped.total(), 2, "{:?}", found.skipped);
+    }
+
+    /// **A line cut right after an inner `}` never hides the run's whole line.** Mutation: test
+    /// for a closing brace instead of the seal and the run vanishes.
+    #[test]
+    fn a_line_cut_after_an_inner_brace_does_not_supersede() {
+        let dir = scratch("scan-cut-brace");
+        let path = dir.join("runs.jsonl");
+        let older = ended_at(run("a"), NOW - 60_000);
+        let mut newer = ended_at(run("a"), NOW);
+        newer.checks = vec![Check {
+            cmd: "x".into(),
+            ok: true,
+        }];
+        let whole = serde_json::to_vec(&newer).unwrap();
+        let cut_at =
+            memchr::memmem::find(&whole, br#""ok":true}"#).unwrap() + br#""ok":true}"#.len();
+        let mut bytes = serde_json::to_vec(&older).unwrap();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&whole[..cut_at]);
+        bytes.push(b'\n');
+        std::fs::write(&path, bytes).unwrap();
+        let found = scan(&path, &q("limiter"), 9).unwrap();
+        assert_eq!(ids(&found), ["a"]);
+        assert_eq!(
+            found.hits[0].run.ended, older.ended,
+            "the whole line is the run"
+        );
+        assert_eq!(found.skipped.total(), 1, "{:?}", found.skipped);
     }
 
     #[test]
