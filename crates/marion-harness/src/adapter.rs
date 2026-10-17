@@ -9325,31 +9325,52 @@ mod tests {
                 | UpdatePolicy::None { note } => note,
             };
             assert!(!note.trim().is_empty(), "{who}: no measurement behind it");
-            let a = AcpAdapter::for_agent(agent);
-            let launches: Vec<Invocation> = [Auth::Inherited, Auth::Canned]
-                .into_iter()
-                .filter_map(|auth| {
-                    let spec = LaunchSpec {
-                        auth,
-                        extra: Extras {
-                            acp_agent: Some(agent.id.into()),
-                            ..Extras::default()
-                        },
-                        ..acp_spec()
-                    };
-                    // Most rows have no canned recipe and refuse a canned launch by name.
-                    a.compile(&spec, &ctx()).ok()
+            // The row by id, and the same binary named as a command: its own argv, and a full
+            // path to its program with one more argument after the row's.
+            let (program, args) = agent.argv.split_first().unwrap();
+            let selectors = [
+                agent.id.to_string(),
+                agent.argv.join(" "),
+                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
+            ];
+            let launches: Vec<(String, Invocation)> = selectors
+                .iter()
+                .flat_map(|selector| {
+                    let a = AcpAdapter::resolve(selector).unwrap();
+                    [Auth::Inherited, Auth::Canned]
+                        .into_iter()
+                        .filter_map(move |auth| {
+                            let spec = LaunchSpec {
+                                auth,
+                                extra: Extras {
+                                    acp_agent: Some(selector.clone()),
+                                    ..Extras::default()
+                                },
+                                ..acp_spec()
+                            };
+                            // Most rows have no canned recipe and refuse a canned launch by name.
+                            let inv = a.compile(&spec, &ctx()).ok()?;
+                            Some((format!("{selector:?} {auth:?}"), inv))
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .collect();
-            assert!(!launches.is_empty(), "{who}: no launch compiled");
+            for selector in &selectors {
+                assert!(
+                    launches
+                        .iter()
+                        .any(|(s, _)| s.starts_with(&format!("{selector:?}"))),
+                    "{who}: no launch of {selector:?} compiled"
+                );
+            }
             match policy {
                 UpdatePolicy::Env { key, value, .. } => {
                     let pair = (key.to_string(), value.to_string());
-                    for inv in &launches {
+                    for (launch, inv) in &launches {
                         assert_eq!(
                             inv.env.iter().filter(|kv| **kv == pair).count(),
                             1,
-                            "{who}: `{key}={value}` exactly once in {:?}",
+                            "{who} {launch}: `{key}={value}` exactly once in {:?}",
                             inv.env
                         );
                     }

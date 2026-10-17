@@ -1197,6 +1197,30 @@ pub fn agent(id: &str) -> Option<Agent> {
     AGENTS.into_iter().find(|a| a.id == id)
 }
 
+/// The row whose measured argv a command line starts with — its program by file name, so a full
+/// path to the same binary counts, then the row's arguments verbatim — the longest where several
+/// do. Only the row's **binary** facts may be read off it (its update switch): the command is not
+/// bound to the row, whose spelling and declaration quirks were measured on its own argv.
+fn same_program(argv: &[String]) -> Option<Agent> {
+    let name = |p: &str| {
+        Path::new(p)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(p)
+            .to_string()
+    };
+    let (program, args) = argv.split_first()?;
+    AGENTS
+        .into_iter()
+        .filter(|a| {
+            let (row_program, row_args) = a.argv.split_first().expect("a row names a program");
+            name(program) == *row_program
+                && args.len() >= row_args.len()
+                && args.iter().zip(row_args).all(|(a, b)| a == b)
+        })
+        .max_by_key(|a| a.argv.len())
+}
+
 /// **What an ACP launch is bound to**: the agent's argv, and whatever refinement marion has for it.
 ///
 /// This is the layering the `acp` row is built on. An operator's selector — an agent type's
@@ -1291,10 +1315,14 @@ impl Binding {
             .unwrap_or(&USAGE)
     }
 
-    /// The agent's no-self-update switch, where a row states one. `None` on the generic path: the
-    /// binary is the operator's command, and nothing about it was measured.
+    /// The agent's no-self-update switch, where a row states one — the bound row's, or, on the
+    /// generic path, the row whose program the command runs ([`same_program`]): the switch is a
+    /// property of the binary, so `copilot --acp` typed as a command updates no differently from
+    /// the `copilot` row. `None` for a command no row's argv starts.
     pub fn updates(&self) -> Option<UpdatePolicy> {
-        self.refinement.map(|a| a.updates.policy())
+        self.refinement
+            .or_else(|| same_program(&self.argv))
+            .map(|a| a.updates.policy())
     }
 
     /// The channel the bridge is declared on: the protocol's, unless a row measured otherwise.
@@ -2054,8 +2082,9 @@ impl AcpAdapter {
     }
 }
 
-/// **The bound agent's no-self-update switch, on every launch of it** — a refinement row's
-/// measurement, so the generic path has none to apply. A variable joins the launch's env; a switch
+/// **The bound agent's no-self-update switch, on every launch of it** — a row's measurement
+/// ([`Binding::updates`]), so a command no row's argv starts has none to apply. A variable joins
+/// the launch's env; a switch
 /// an ACP launch has no channel for ([`AgentUpdates`]) is refused rather than dropped.
 fn apply_updates(binding: &Binding, f: &mut spec::Fields) -> Result<(), HarnessError> {
     match binding.updates() {
@@ -2471,11 +2500,44 @@ mod tests {
             assert!(err.to_string().contains("update switch"), "{err}");
         }
 
-        // The generic path has no row, so nothing to apply.
+        // A command no row's argv starts has nothing to apply.
         let generic = Binding::resolve("some-agent --acp").unwrap();
         let mut f = spec::Fields::default();
         apply_updates(&generic, &mut f).unwrap();
         assert!(f.agent_args.is_empty() && f.extra_env.is_empty());
+    }
+
+    /// **A command that runs a row's binary takes that row's update switch, and only that** — by
+    /// program file name and the row's own arguments, so a full path counts and a different
+    /// argument list, or another package behind the same `npx`, does not. The command is still
+    /// not bound to the row.
+    #[test]
+    fn a_command_running_a_rows_binary_takes_its_update_switch_and_nothing_else() {
+        let copilot = Some(COPILOT.updates.policy());
+        for command in [
+            "copilot --acp",
+            "/opt/homebrew/bin/copilot --acp",
+            "copilot --acp --log-level debug",
+        ] {
+            let b = Binding::resolve(command).unwrap();
+            assert_eq!(b.updates(), copilot, "{command}");
+            assert!(b.refinement().is_none(), "{command}: bound to the row");
+            assert_eq!(b.declaration(), Declaration::Session, "{command}");
+        }
+        for command in [
+            "copilot -p hello",
+            "copilot-acp --acp",
+            "npx -y some-other-agent",
+            "/opt/bin/not-copilot --acp",
+        ] {
+            assert_eq!(
+                Binding::resolve(command).unwrap().updates(),
+                None,
+                "{command}"
+            );
+        }
+        let claude = Binding::resolve(&CLAUDE_ACP.argv.join(" ")).unwrap();
+        assert_eq!(claude.updates(), Some(CLAUDE_ACP.updates.policy()));
     }
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s20");
