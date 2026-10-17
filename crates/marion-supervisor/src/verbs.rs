@@ -1,0 +1,103 @@
+//! **marion's commands, as a table the library can read**: each command's word, the line `marion
+//! --help` lists it under, and whether it acts on one agent.
+//!
+//! The binary's dispatch table (`bin/marion/cli.rs`, `VERBS`) runs them and takes each row's
+//! summary from here; a test there holds the two to the same words in the same order.
+
+/// One command of `marion`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spec {
+    pub name: &'static str,
+    /// The line `marion --help` shows; `None` keeps an old spelling out of the list (and off `:`).
+    pub summary: Option<&'static str>,
+    /// Its first word is an agent `<id>`: the `:` line puts the selected agent's there.
+    pub on_agent: bool,
+}
+
+const fn verb(name: &'static str, summary: &'static str, on_agent: bool) -> Spec {
+    Spec {
+        name,
+        summary: Some(summary),
+        on_agent,
+    }
+}
+
+const fn hidden(name: &'static str) -> Spec {
+    Spec {
+        name,
+        summary: None,
+        on_agent: false,
+    }
+}
+
+/// Every command, in the order `marion --help` lists them.
+pub const SPECS: &[Spec] = &[
+    verb("run", "start an agent on a task and watch it", false),
+    verb("ls", "show the agent tree, or one agent's detail", true),
+    verb(
+        "search",
+        "find past and running agents by what they were asked, said or changed",
+        false,
+    ),
+    verb(
+        "race",
+        "run one task on several agents and keep the one that passes",
+        false,
+    ),
+    verb(
+        "workflow",
+        "list, check, run or cancel the workflows this project defines",
+        false,
+    ),
+    verb(
+        "harness",
+        "list or check the harness rows your own files define",
+        false,
+    ),
+    verb("attach", "open an agent's terminal", true),
+    verb("diff", "show what an agent's branch changed", true),
+    verb("merge", "merge an agent's branch into your checkout", true),
+    verb("shell", "open a shell where an agent worked", true),
+    verb("steer", "send a running agent a message", true),
+    verb("cancel", "stop a running agent", true),
+    verb(
+        "resume",
+        "bring back an ended agent from its recorded session",
+        true,
+    ),
+    verb("mcp", "serve marion's tools to an MCP client", false),
+    verb(
+        "key",
+        "add, list or remove API keys for model providers",
+        false,
+    ),
+    // The old spellings of `key add` and `key rm`, listed nowhere; scripts and docs still use them.
+    hidden("login"),
+    hidden("logout"),
+    verb(
+        "profile",
+        "add, list or choose your logins for a harness",
+        false,
+    ),
+    verb(
+        "export",
+        "write a shareable report of an agent and everything under it",
+        true,
+    ),
+    verb(
+        "trust",
+        "allow the commands a repository's agent types run",
+        false,
+    ),
+    verb(
+        "notify",
+        "turn desktop notices of an agent's end on or off",
+        false,
+    ),
+    verb("doctor", "check each harness is installed and ready", false),
+];
+
+/// The command `name` names, by its word.
+pub fn spec(name: &str) -> Option<&'static Spec> {
+    SPECS.iter().find(|s| s.name == name)
+}

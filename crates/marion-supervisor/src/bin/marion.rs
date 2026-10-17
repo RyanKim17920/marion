@@ -3913,12 +3913,25 @@ mod tests {
         assert!(cli::verb("bogus").is_none());
         let top = cli::top_help();
         for v in cli::VERBS {
-            match v.summary {
+            match v.summary() {
                 Some(_) => assert!(top.contains(&format!("  {:<9}", v.name)), "{}", v.name),
                 None => assert!(!top.contains(&format!("  {} ", v.name)), "{}", v.name),
             }
         }
         assert!(!top.contains("  tree"), "an old spelling is listed:\n{top}");
+    }
+
+    /// **The dispatch table and the library's command table name the same commands in the same
+    /// order**: `marion --help` reads its lines from one and runs the other, and the home
+    /// screen's `:` line completes from the library's.
+    #[test]
+    fn the_dispatch_table_and_the_command_table_agree() {
+        let dispatched: Vec<&str> = cli::VERBS.iter().map(|v| v.name).collect();
+        let specs: Vec<&str> = marion_supervisor::verbs::SPECS
+            .iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(dispatched, specs);
     }
 
     /// **CLI/TUI parity, as one table**: every command `marion --help` lists is a key on the home
@@ -3957,7 +3970,7 @@ mod tests {
             .filter_map(|(_, _, command)| command.strip_prefix("marion "))
             .filter_map(|rest| rest.split_whitespace().next())
             .collect();
-        for v in cli::VERBS.iter().filter(|v| v.summary.is_some()) {
+        for v in cli::VERBS.iter().filter(|v| v.summary().is_some()) {
             let keyed = named.contains(&v.name);
             let gap = GAPS.iter().any(|(g, _)| *g == v.name);
             assert!(
@@ -4216,7 +4229,7 @@ mod tests {
         // Its two old spellings: rows of their own that share its help, listed nowhere.
         let hidden: Vec<&str> = cli::VERBS
             .iter()
-            .filter(|v| v.summary.is_none() && (v.help)() == text)
+            .filter(|v| v.summary().is_none() && (v.help)() == text)
             .map(|v| v.name)
             .collect();
         assert_eq!(hidden.len(), 2, "{hidden:?}");

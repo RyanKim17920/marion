@@ -23,11 +23,17 @@ pub struct Verb {
     pub name: &'static str,
     /// Old spellings that still run this command and are listed nowhere.
     pub aliases: &'static [&'static str],
-    /// The line `marion --help` shows; `None` keeps the command out of the list.
-    pub summary: Option<&'static str>,
     pub help: fn() -> String,
     /// Runs the command on the whole argv, the command's own word first.
     pub main: fn(&[String]) -> Result<ExitCode, Exit>,
+}
+
+impl Verb {
+    /// The line `marion --help` shows, from [`marion_supervisor::verbs::SPECS`]; `None` keeps the
+    /// command out of the list.
+    pub fn summary(&self) -> Option<&'static str> {
+        marion_supervisor::verbs::spec(self.name).and_then(|s| s.summary)
+    }
 }
 
 /// Why a command did not run: `--help` was asked for, or its words did not parse.
@@ -42,7 +48,6 @@ pub const VERBS: &[Verb] = &[
     Verb {
         name: "run",
         aliases: &[],
-        summary: Some("start an agent on a task and watch it"),
         help: run_help,
         main: super::run_main,
     },
@@ -50,98 +55,84 @@ pub const VERBS: &[Verb] = &[
         name: "ls",
         // `list` is `ls --plain`: it prints lines even on a terminal (see `super::ls_main`).
         aliases: &["tree", "list"],
-        summary: Some("show the agent tree, or one agent's detail"),
         help: ls_help,
         main: super::ls_main,
     },
     Verb {
         name: "search",
         aliases: &[],
-        summary: Some("find past and running agents by what they were asked, said or changed"),
         help: search_help,
         main: super::search::main,
     },
     Verb {
         name: "race",
         aliases: &[],
-        summary: Some("run one task on several agents and keep the one that passes"),
         help: race_help,
         main: super::race::main,
     },
     Verb {
         name: "workflow",
         aliases: &[],
-        summary: Some("list, check, run or cancel the workflows this project defines"),
         help: workflow_help,
         main: super::workflow::main,
     },
     Verb {
         name: "harness",
         aliases: &[],
-        summary: Some("list or check the harness rows your own files define"),
         help: harness_help,
         main: super::harness::main,
     },
     Verb {
         name: "attach",
         aliases: &[],
-        summary: Some("open an agent's terminal"),
         help: attach_help,
         main: super::attach_main,
     },
     Verb {
         name: "diff",
         aliases: &[],
-        summary: Some("show what an agent's branch changed"),
         help: diff_help,
         main: super::diff_main,
     },
     Verb {
         name: "merge",
         aliases: &[],
-        summary: Some("merge an agent's branch into your checkout"),
         help: merge_help,
         main: super::merge_main,
     },
     Verb {
         name: "shell",
         aliases: &[],
-        summary: Some("open a shell where an agent worked"),
         help: shell_help,
         main: super::shell_main,
     },
     Verb {
         name: "steer",
         aliases: &[],
-        summary: Some("send a running agent a message"),
         help: steer_help,
         main: super::steer_main,
     },
     Verb {
         name: "cancel",
         aliases: &[],
-        summary: Some("stop a running agent"),
         help: cancel_help,
         main: super::cancel_main,
     },
     Verb {
         name: "resume",
         aliases: &[],
-        summary: Some("bring back an ended agent from its recorded session"),
         help: resume_help,
         main: super::resume_main,
     },
     Verb {
         name: "mcp",
         aliases: &[],
-        summary: Some("serve marion's tools to an MCP client"),
         help: mcp_help,
         main: super::mcp_main,
     },
     Verb {
         name: "key",
         aliases: &[],
-        summary: Some("add, list or remove API keys for model providers"),
         help: login_help,
         main: super::login_main,
     },
@@ -149,49 +140,42 @@ pub const VERBS: &[Verb] = &[
     Verb {
         name: "login",
         aliases: &[],
-        summary: None,
         help: login_help,
         main: super::login_main,
     },
     Verb {
         name: "logout",
         aliases: &[],
-        summary: None,
         help: login_help,
         main: super::login_main,
     },
     Verb {
         name: "profile",
         aliases: &[],
-        summary: Some("add, list or choose your logins for a harness"),
         help: profile_help,
         main: super::profile_main,
     },
     Verb {
         name: "export",
         aliases: &[],
-        summary: Some("write a shareable report of an agent and everything under it"),
         help: export_help,
         main: super::export_main,
     },
     Verb {
         name: "trust",
         aliases: &[],
-        summary: Some("allow the commands a repository's agent types run"),
         help: trust_help,
         main: super::trust_main,
     },
     Verb {
         name: "notify",
         aliases: &[],
-        summary: Some("turn desktop notices of an agent's end on or off"),
         help: notify_help,
         main: super::notify_main,
     },
     Verb {
         name: "doctor",
         aliases: &[],
-        summary: Some("check each harness is installed and ready"),
         help: doctor_help,
         main: super::doctor_main,
     },
@@ -425,7 +409,7 @@ pub fn top_help() -> String {
         .join(", ");
     let commands: String = VERBS
         .iter()
-        .filter_map(|v| v.summary.map(|s| format!("  {:<9}{s}\n", v.name)))
+        .filter_map(|v| v.summary().map(|s| format!("  {:<9}{s}\n", v.name)))
         .collect();
     format!(
         "marion runs coding agents as subagents of one another, and shows you the tree.\n\
