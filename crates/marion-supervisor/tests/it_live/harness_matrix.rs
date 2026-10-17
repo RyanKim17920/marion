@@ -564,7 +564,6 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
             "allow-tool:marion(spawn)",
             "allow-tool:marion(status)",
             "allow-tool:marion(wait)",
-            "allow-tool:marion(list)",
             "allow-tool:marion(steer)",
             "allow-tool:marion(cancel)",
         ],
