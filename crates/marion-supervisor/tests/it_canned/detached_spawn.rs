@@ -165,7 +165,7 @@ impl Drop for Bed {
 /// `git`, run in `dir`, insisting it worked — a silent `git` failure here would turn a worktree
 /// test into a two-plain-directories test that passes for the wrong reason.
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .arg("-C")
         .arg(dir)
         .args(args)

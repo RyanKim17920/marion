@@ -2016,7 +2016,7 @@ fn a_worktrees_boot_dialog_names_the_main_repository() {
     let main = dir.join("main");
     let wt = dir.join("wt");
     let git = |args: &[&str]| {
-        let ok = std::process::Command::new("git")
+        let ok = marion_harness::env_filter::git_command()
             .args(args)
             .current_dir(&dir)
             .output()

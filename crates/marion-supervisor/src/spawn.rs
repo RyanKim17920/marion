@@ -1637,7 +1637,6 @@ mod tests {
     use super::*;
     use marion_core::harness::Harness;
     use marion_harness::adapter_for;
-    use std::process::Command as SysCommand;
 
     /// **The pre-move implementation, preserved verbatim.**
     ///
@@ -2378,7 +2377,7 @@ mod tests {
 
     /// `git` for a unit test's scratch repository, panicking with git's own words on failure.
     fn tgit(dir: &Path, args: &[&str]) -> String {
-        let out = SysCommand::new("git")
+        let out = marion_harness::env_filter::git_command()
             .current_dir(dir)
             .args(args)
             .output()

@@ -38,7 +38,6 @@
 //! criterion which quietly passes on a machine that cannot run it is worth less than no criterion.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use marion_core::contract::Isolation;
@@ -66,7 +65,7 @@ const MODIFY: &str = "*** Begin Patch\n*** Update File: src/keep.txt\n@@\n-keep\
 
 /// `git` for the questions whose honest answer may be "there is no such ref".
 fn git_try(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .current_dir(dir)
         .args(args)
         .output()

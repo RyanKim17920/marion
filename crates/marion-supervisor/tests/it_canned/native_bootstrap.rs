@@ -595,7 +595,7 @@ mod enabled_launch {
     #[test]
     fn the_native_command_runs_in_the_clients_working_directory_not_the_common_dir() {
         let bed = Bed::start("native-launch-cwd", |project| {
-            let status = Command::new("git")
+            let status = marion_harness::env_filter::git_command()
                 .args(["init", "-q"])
                 .current_dir(project)
                 .status()
@@ -662,7 +662,7 @@ mod enabled_launch {
         use marion_core::proto::params::AgentSpawnParams;
 
         let bed = Bed::start("native-launch-delegates", |project| {
-            let status = Command::new("git")
+            let status = marion_harness::env_filter::git_command()
                 .args(["init", "-q"])
                 .current_dir(project)
                 .status()

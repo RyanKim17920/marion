@@ -153,7 +153,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
         .branch
         .as_deref()
         .expect("the child's work landed on a branch");
-    let shown = std::process::Command::new("git")
+    let shown = marion_harness::env_filter::git_command()
         .args(["show", &format!("{branch}:{FILE}")])
         .current_dir(&repo)
         .output()

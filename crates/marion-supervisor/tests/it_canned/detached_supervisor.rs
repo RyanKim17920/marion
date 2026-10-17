@@ -1084,7 +1084,7 @@ fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
     let main = bed.state.join("repo");
     std::fs::create_dir_all(&main).expect("repo dir");
     let git = |dir: &Path, args: &[&str]| {
-        let out = std::process::Command::new("git")
+        let out = marion_harness::env_filter::git_command()
             .current_dir(dir)
             .args(args)
             .output()

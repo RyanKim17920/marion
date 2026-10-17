@@ -222,7 +222,7 @@ fn only_a_caller_in_a_marion_worktree_hands_its_child_its_uncommitted_work() {
         std::fs::read_to_string(repo.join("src/keep.txt")).unwrap(),
         "the operator's edit\n"
     );
-    let log = SysCommand::new("git")
+    let log = marion_harness::env_filter::git_command()
         .current_dir(&repo)
         .args(["rev-list", "--count", "main"])
         .output()
@@ -1468,7 +1468,7 @@ fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
     let repo = fixture_repo(&root);
     let git = |dir: &Path, args: &[&str]| marion_testsupport::git(dir, args);
     let exists = |branch: &str| {
-        SysCommand::new("git")
+        marion_harness::env_filter::git_command()
             .current_dir(&repo)
             .args([
                 "rev-parse",
@@ -1696,7 +1696,7 @@ fn a_worktree_branch_is_the_short_id_and_the_tasks_first_words() {
     for p in ["", "a", "Add a limiter", "x".repeat(100).as_str()] {
         let b = worktree_branch(&agent, p);
         assert!(b.len() <= "marion/433f-".len() + SLUG_CHARS, "{b}");
-        let ok = std::process::Command::new("git")
+        let ok = marion_harness::env_filter::git_command()
             .args(["check-ref-format", "--branch", &b])
             .output()
             .unwrap()
@@ -1761,7 +1761,7 @@ fn fixture_repo(root: &Path) -> PathBuf {
             "fixture",
         ],
     ] {
-        let out = SysCommand::new("git")
+        let out = marion_harness::env_filter::git_command()
             .current_dir(&repo)
             .args(&args)
             .output()
@@ -2790,7 +2790,7 @@ fn a_spawn_past_max_depth_is_refused_by_name_and_creates_nothing() {
         "the gate runs before every side effect there is, so a refused spawn leaves no \
          agent-dir, no config and no contract: {written:?}"
     );
-    let worktrees = SysCommand::new("git")
+    let worktrees = marion_harness::env_filter::git_command()
         .current_dir(repo_of(&root))
         .args(["worktree", "list"])
         .output()
@@ -2801,7 +2801,7 @@ fn a_spawn_past_max_depth_is_refused_by_name_and_creates_nothing() {
         "a refused spawn must not have created a worktree: {}",
         String::from_utf8_lossy(&worktrees.stdout)
     );
-    let branches = SysCommand::new("git")
+    let branches = marion_harness::env_filter::git_command()
         .current_dir(repo_of(&root))
         .args(["branch", "--list", "marion/*"])
         .output()

@@ -148,7 +148,7 @@ fn operator_params(repo: &std::path::Path) -> AgentSpawnParams {
 
 /// The refs under `marion/` in `repo`.
 fn task_branches(repo: &std::path::Path) -> Vec<String> {
-    let out = Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .current_dir(repo)
         .args(["branch", "--list", "marion/*", "--format=%(refname:short)"])
         .output()

@@ -2451,7 +2451,7 @@ fn a_client_cwd_outside_the_project_is_refused() {
 
     // In a repository the key is the common dir: every directory of the working tree resolves to
     // it, and so does the common dir itself, which is refused for lying inside the key.
-    let status = std::process::Command::new("git")
+    let status = marion_harness::env_filter::git_command()
         .args(["init", "-q"])
         .current_dir(&project)
         .status()

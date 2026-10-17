@@ -1427,7 +1427,7 @@ mod tests {
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let git = |cwd: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = marion_harness::env_filter::git_command()
                 .arg("-C")
                 .arg(cwd)
                 .args(args)
@@ -1460,7 +1460,7 @@ mod tests {
         // And the key really is the common dir, not the worktree's own cwd.
         assert_ne!(from_repo, repo.canonicalize().unwrap());
 
-        let _ = std::process::Command::new("git")
+        let _ = marion_harness::env_filter::git_command()
             .arg("-C")
             .arg(&repo)
             .args(["worktree", "remove", "--force", wt.to_str().unwrap()])
@@ -1480,7 +1480,7 @@ mod tests {
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let git = |cwd: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = marion_harness::env_filter::git_command()
                 .arg("-C")
                 .arg(cwd)
                 .args(args)
@@ -1519,7 +1519,7 @@ mod tests {
             git_common_dir(&repo).unwrap().canonicalize().unwrap()
         );
 
-        let _ = std::process::Command::new("git")
+        let _ = marion_harness::env_filter::git_command()
             .arg("-C")
             .arg(&repo)
             .args(["worktree", "remove", "--force", wt.to_str().unwrap()])
@@ -1533,7 +1533,7 @@ mod tests {
         let sub = dir.join("plain");
         std::fs::create_dir_all(&sub).unwrap();
         // Only meaningful if the scratch dir is genuinely not inside a repo; `temp_dir()` is not.
-        if std::process::Command::new("git")
+        if marion_harness::env_filter::git_command()
             .arg("-C")
             .arg(&sub)
             .args(["rev-parse", "--git-common-dir"])

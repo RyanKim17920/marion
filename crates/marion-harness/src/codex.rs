@@ -1405,7 +1405,7 @@ mod tests {
         let main = dir.join("main");
         let wt = dir.join("wt");
         let git = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
+            let ok = crate::env_filter::git_command()
                 .args(args)
                 .current_dir(&dir)
                 .output()

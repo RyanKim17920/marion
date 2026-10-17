@@ -8170,7 +8170,7 @@ mod owns_nodes {
             .expect("the child's worktree is on the branch marion cut for it");
             // Read out of the **main** repository: refs are shared across every worktree of one
             // repository, so this cannot be reading "the tree it was made in".
-            let out = std::process::Command::new("git")
+            let out = marion_harness::env_filter::git_command()
                 .current_dir(&main)
                 .args(["rev-parse", &branch])
                 .output()
@@ -8204,7 +8204,7 @@ mod owns_nodes {
     fn linked_worktree(main: &Path, tag: &str) -> (PathBuf, String) {
         let path = main.parent().expect("the repo has a parent").join(tag);
         let git = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = marion_harness::env_filter::git_command()
                 .current_dir(dir)
                 .args(args)
                 .output()

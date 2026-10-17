@@ -67,7 +67,7 @@ fn plain_dir(root: &Path, name: &str) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/keep.txt"), "keep\n").unwrap();
-    let out = Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .current_dir(&dir)
         .args(["rev-parse", "--git-common-dir"])
         .output()

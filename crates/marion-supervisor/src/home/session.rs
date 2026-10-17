@@ -1250,7 +1250,7 @@ mod tests {
             ]
         );
         assert_eq!(c.get_current_dir(), Some(Path::new("/r")));
-        for redirect in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] {
+        for redirect in marion_harness::env_filter::GIT_REDIRECTING {
             assert!(
                 c.get_envs().any(|(k, v)| k == redirect && v.is_none()),
                 "{redirect} is cleared"
@@ -1265,7 +1265,7 @@ mod tests {
         let dir = marion_testsupport::scratch("tui-merge-driver");
         let git = |args: &[&str]| {
             assert!(
-                std::process::Command::new("git")
+                marion_harness::env_filter::git_command()
                     .current_dir(&dir)
                     .args(args)
                     .status()

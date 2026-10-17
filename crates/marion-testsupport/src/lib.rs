@@ -1023,7 +1023,7 @@ unsafe extern "C" {
 /// Returning the output rather than `()` is the superset: the five copies that discarded it keep
 /// compiling unchanged, and the two that needed it stop being a separate function.
 pub fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .current_dir(dir)
         .args(args)
         .output()

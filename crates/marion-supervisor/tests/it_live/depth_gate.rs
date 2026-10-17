@@ -451,7 +451,7 @@ fn is_terminal(journal: &Path, id: &marion_core::contract::AgentId) -> bool {
 /// other failure is an inability to observe, never absence.
 fn task_ref_exists(repo: &Path, task_id: &str) -> bool {
     let task_ref = format!("refs/heads/marion/{task_id}");
-    let out = std::process::Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .current_dir(repo)
         .args(["show-ref", "--verify", "--quiet", &task_ref])
         .output()

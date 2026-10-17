@@ -10,7 +10,6 @@
 //! its own branch; the race was decided only after every seat had exited, and its scoreboard file
 //! and journal record agree; the tree carries each seat's badge.
 
-use std::process::Command;
 use std::time::Duration;
 
 use marion_core::contract::AgentId;
@@ -311,7 +310,7 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
 
     // Every seat's work is on its own branch, and each branch is the one its row names.
     let branches = String::from_utf8(
-        Command::new("git")
+        marion_harness::env_filter::git_command()
             .current_dir(&repo)
             .args(["branch", "--list", "marion/*", "--format=%(refname:short)"])
             .output()
@@ -420,7 +419,7 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
 
 /// The refs under `marion/` in `repo`.
 fn task_branches(repo: &std::path::Path) -> Vec<String> {
-    let out = Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .current_dir(repo)
         .args(["branch", "--list", "marion/*", "--format=%(refname:short)"])
         .output()

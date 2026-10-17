@@ -123,7 +123,7 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
     let bin = work.join("bin");
     let cwd_record = work.join("vendor-cwd");
     std::fs::create_dir_all(&project).unwrap();
-    let status = Command::new("git")
+    let status = marion_harness::env_filter::git_command()
         .args(["init", "-q"])
         .current_dir(&project)
         .status()
