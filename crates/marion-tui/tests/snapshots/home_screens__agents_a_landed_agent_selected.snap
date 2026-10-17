@@ -1,5 +1,6 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
+assertion_line: 579
 expression: "at_every_size(&screen(Body::Agents(&v), ended_keys()))"
 ---
 --- 80x24 ---
@@ -26,12 +27,12 @@ expression: "at_every_size(&screen(Body::Agents(&v), ended_keys()))"
 
 
 
- enter output  n new  m merge  d diff  u resume  o shell  ? more
+ j/k move  enter output  n new  : command  , setup  q quit  ? help
 --- styles ---
   239  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiterwireth"
    28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
   341  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternmduo?"
+   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kentern:,q?"
    22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addtoken-bucketlimiter"
    18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✓codexgpt-57m197k"
    11  Style::new().green().bg(Color::Reset)  "⠋⠹+84ok4.1s"
@@ -68,12 +69,12 @@ expression: "at_every_size(&screen(Body::Agents(&v), ended_keys()))"
                                                             │
                                                             │
                                                             │
- enter output  n new  m merge  d diff  u resume  o shell  ? more
+ j/k move  enter output  n new  : command  , setup  q quit  ? help
 --- styles ---
   228  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiteraddtok"
    28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
   278  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternmduo?"
+   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kentern:,q?"
    22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addtoken-bucketlimiter"
    18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✓codexgpt-57m197k"
    11  Style::new().green().bg(Color::Reset)  "⠋⠹+84ok4.1s"
@@ -130,12 +131,12 @@ expression: "at_every_size(&screen(Body::Agents(&v), ended_keys()))"
                                                                                                 │
                                                                                                 │
                                                                                                 │
- enter output  n new  m merge  d diff  u resume  o shell  ? more
+ j/k move  enter output  n new  : command  , setup  q quit  ? help
 --- styles ---
   239  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiteraddtok"
    28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
   309  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternmduo?"
+   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kentern:,q?"
    22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addtoken-bucketlimiter"
    18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✓codexgpt-57m197k"
    11  Style::new().green().bg(Color::Reset)  "⠋⠹+84ok4.1s"

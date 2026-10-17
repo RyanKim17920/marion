@@ -499,23 +499,26 @@ fn keys(pairs: &[(&str, &str)]) -> Footer {
 
 fn live_keys() -> Footer {
     keys(&[
+        ("j/k", "move"),
         ("enter", "output"),
         ("n", "new"),
-        ("s", "steer"),
         ("x", "cancel"),
-        ("?", "more"),
+        (":", "command"),
+        (",", "setup"),
+        ("q", "quit"),
+        ("?", "help"),
     ])
 }
 
 fn ended_keys() -> Footer {
     keys(&[
+        ("j/k", "move"),
         ("enter", "output"),
         ("n", "new"),
-        ("m", "merge"),
-        ("d", "diff"),
-        ("u", "resume"),
-        ("o", "shell"),
-        ("?", "more"),
+        (":", "command"),
+        (",", "setup"),
+        ("q", "quit"),
+        ("?", "help"),
     ])
 }
 
@@ -578,7 +581,13 @@ fn agents_a_landed_agent_selected() {
 #[test]
 fn agents_none_yet() {
     let v = AgentsView::default();
-    let footer = keys(&[("n", "new"), (",", "setup"), ("?", "more")]);
+    let footer = keys(&[
+        ("n", "new"),
+        (":", "command"),
+        (",", "setup"),
+        ("q", "quit"),
+        ("?", "help"),
+    ]);
     let s = Screen {
         counts: "",
         ..screen(Body::Agents(&v), footer)
@@ -593,10 +602,13 @@ fn agents_output_full() {
     v.full = true;
     v.preview.as_mut().unwrap().stream = stream(40);
     let footer = keys(&[
+        ("j/k", "move"),
         ("esc", "back"),
-        ("m", "merge"),
-        ("u", "resume"),
-        ("?", "more"),
+        ("n", "new"),
+        (":", "command"),
+        (",", "setup"),
+        ("q", "quit"),
+        ("?", "help"),
     ]);
     insta::assert_snapshot!(report(&screen(Body::Agents(&v), footer), 100, 30));
 }

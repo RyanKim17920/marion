@@ -1,5 +1,6 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
+assertion_line: 614
 expression: "report(&screen(Body::Agents(&v), footer), 100, 30)"
 ---
 --- 100x30 ---
@@ -32,11 +33,11 @@ expression: "report(&screen(Body::Agents(&v), footer), 100, 30)"
  14:28:26  exit 101 3.2s
  14:28:33  read .github/workflows/ci.yml
                                                                                           +19 above
- esc back  m merge  u resume  ? more
+ j/k move  esc back  n new  : command  , setup  q quit  ? help
 --- styles ---
   350  Style::new().fg(Color::Reset).bg(Color::Reset)  "addtoken-bucketlimiterdo"
    28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
-  352  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-    6  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "escmu?"
+  364  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kescn:,q?"
    15  Style::new().green().bg(Color::Reset)  "+84ok4.1sok4.1s"
    36  Style::new().red().bg(Color::Reset)  "-12exit1013.2sexit1013.2"

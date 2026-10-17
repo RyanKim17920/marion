@@ -1,5 +1,6 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
+assertion_line: 627
 expression: "report(&screen(Body::Agents(&v), live_keys()), 120, 32)"
 ---
 --- 120x32 ---
@@ -34,12 +35,12 @@ expression: "report(&screen(Body::Agents(&v), live_keys()), 120, 32)"
                                                                         │ 14:29:36  read src/limits/mod.rs
                                                                         │ 14:29:43  $ cargo test -q limits
                                                                         │                          +24 above  +10 below
- enter output  n new  s steer  x cancel  ? more
+ j/k move  enter output  n new  x cancel  : command  , setup  q quit  ? help
 --- styles ---
   513  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiterwireth"
    15  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cd"
-  498  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternsx?"
+  513  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kenternx:,q?"
    20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "wirethelimiterintoci"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├◐codexgpt-53m41k"
    20  Style::new().green().bg(Color::Reset)  "⠋⠹ok4.1sok4.1sok4.1s"

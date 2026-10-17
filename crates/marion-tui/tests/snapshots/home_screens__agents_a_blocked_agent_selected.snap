@@ -1,5 +1,6 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
+assertion_line: 572
 expression: "at_every_size(&screen(Body::Agents(&v), live_keys()))"
 ---
 --- 80x24 ---
@@ -26,12 +27,12 @@ expression: "at_every_size(&screen(Body::Agents(&v), live_keys()))"
  14:24:56  read src/limits/mod.rs
 
 
- enter output  n new  s steer  x cancel  ? more
+ j/k move  enter output  n new  x cancel  : command  , setup  q quit  ? help
 --- styles ---
   271  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiteraddbuc"
    15  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cd"
-  345  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternsx?"
+  360  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kenternx:,q?"
    20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "wirethelimiterintoci"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├◐codexgpt-53m41k"
     8  Style::new().green().bg(Color::Reset)  "⠋⠹ok4.1s"
@@ -68,12 +69,12 @@ expression: "at_every_size(&screen(Body::Agents(&v), live_keys()))"
                                                             │
                                                             │
                                                             │
- enter output  n new  s steer  x cancel  ? more
+ j/k move  enter output  n new  x cancel  : command  , setup  q quit  ? help
 --- styles ---
   258  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiterwireth"
    15  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cd"
-  282  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternsx?"
+  297  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kenternx:,q?"
    20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "wirethelimiterintoci"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├◐codexgpt-53m41k"
     8  Style::new().green().bg(Color::Reset)  "⠋⠹ok4.1s"
@@ -130,12 +131,12 @@ expression: "at_every_size(&screen(Body::Agents(&v), live_keys()))"
                                                                                                 │
                                                                                                 │
                                                                                                 │
- enter output  n new  s steer  x cancel  ? more
+ j/k move  enter output  n new  x cancel  : command  , setup  q quit  ? help
 --- styles ---
   271  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiterwireth"
    15  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cd"
-  313  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
-    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternsx?"
+  328  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "j/kenternx:,q?"
    20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "wirethelimiterintoci"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├◐codexgpt-53m41k"
     8  Style::new().green().bg(Color::Reset)  "⠋⠹ok4.1s"

@@ -1,5 +1,6 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
+assertion_line: 596
 expression: "report(&s, 100, 30)"
 ---
 --- 100x30 ---
@@ -32,8 +33,8 @@ expression: "report(&s, 100, 30)"
 
 
 
- n new  , setup  ? more
+ n new  : command  , setup  q quit  ? help
 --- styles ---
     6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
-   35  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apinoagentsn"
-    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "n,?"
+   46  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apinoagentsn"
+    5  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "n:,q?"
