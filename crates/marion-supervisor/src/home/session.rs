@@ -882,6 +882,7 @@ impl Session {
                     harness: Some(h),
                     model: None,
                     acp_command: None,
+                    path: None,
                 });
                 if !tx.send(Report::Doctor(rows)) {
                     return;

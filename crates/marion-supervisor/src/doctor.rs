@@ -110,6 +110,9 @@ pub struct Options {
     /// this is how an operator asks doctor about the fifth agent, the way `acp:<command>` asks
     /// `spawn` to run it.
     pub acp_command: Option<acp::Binding>,
+    /// The `PATH` a row's binary is looked up on — `None` is this process's own. A test that
+    /// probes every row states one, so no harness runs only because it happens to be installed.
+    pub path: Option<std::ffi::OsString>,
 }
 
 /// Which of a harness's surfaces a row is keyed on.
@@ -242,6 +245,7 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
         harness,
         model,
         acp_command,
+        path: None,
     })
 }
 
@@ -615,8 +619,12 @@ fn locate_binary(
         .map(|spec| child_shaped(adapter, spec))
         .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok())
         .map(|inv| inv.program);
+    let found = |p: &str| match &opts.path {
+        Some(path) => which_in(p, path),
+        None => which(p),
+    };
     match &program {
-        Some(p) => match which(p) {
+        Some(p) => match found(p) {
             Some(path) => {
                 notes.push(format!("binary: {} ({})", p, path.display()));
                 Some(path)
@@ -2804,13 +2812,34 @@ mod tests {
         );
     }
 
+    /// A sweep of every row finds no binary at all: it asserts what marion publishes, and a
+    /// harness installed on this machine must not run only because a sweep reached its row. A
+    /// test about one harness names it, and probes this process's own `PATH`.
     fn caps_rows(harness: Option<Harness>) -> Vec<Row> {
         run(&Options {
             mode: ProbeMode::Capabilities,
             harness,
             model: None,
             acp_command: None,
+            path: harness.is_none().then(std::ffi::OsString::new),
         })
+    }
+
+    /// A `PATH` of one scratch directory holding a stub that exits 1 under every program a row
+    /// launches, built-in and ACP agent alike: a sweep reaches every step a found binary unlocks
+    /// and runs nothing real.
+    fn stub_path(dir: &Path) -> std::ffi::OsString {
+        use std::os::unix::fs::PermissionsExt;
+        let programs = marion_harness::adapter::every()
+            .into_iter()
+            .filter_map(|h| marion_harness::adapter::harness_spec(h).program)
+            .chain(acp::AGENTS.iter().map(|a| a.argv[0]));
+        for program in programs {
+            let stub = dir.join(program);
+            std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir.as_os_str().to_owned()
     }
 
     fn argv(words: &[&str]) -> Vec<String> {
@@ -2921,6 +2950,7 @@ mod tests {
             harness: Some(Harness::Acp),
             model: None,
             acp_command: Some(acp::Binding::resolve(script.to_str().unwrap()).unwrap()),
+            path: None,
         };
         let started = Instant::now();
         let rows = probe_one(Harness::Acp, &opts, opts.acp_command.as_ref());
@@ -3166,6 +3196,7 @@ mod tests {
             harness: Some(Harness::ClaudeCode),
             model: None,
             acp_command: None,
+            path: None,
         });
         let pane = rows
             .iter()
@@ -3451,15 +3482,17 @@ mod tests {
     }
 
     /// `--try` is §8's CI gate, so a PASS must mean the binary passed and not that no step
-    /// ran. Every harness installed on this machine reaches a verdict, and no verdict is reached
+    /// ran. Every row reaches a verdict against a stub of its binary, and no verdict is reached
     /// by way of a step that failed for want of something marion should have supplied.
     #[test]
     fn no_adapter_verdict_is_decided_by_the_probes_own_missing_input() {
+        let dir = marion_testsupport::scratch("doctor-stub-path");
         for r in run(&Options {
             mode: ProbeMode::Adapter,
             harness: None,
             model: None,
             acp_command: None,
+            path: Some(stub_path(&dir)),
         }) {
             let notes = r.report.notes.join("\n");
             assert!(
@@ -3484,6 +3517,7 @@ mod tests {
             harness: Some(Harness::ClaudeCode),
             model: None,
             acp_command: None,
+            path: None,
         });
         let notes = rows[0].report.notes.join("\n");
         assert!(
