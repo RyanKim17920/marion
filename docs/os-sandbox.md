@@ -25,8 +25,8 @@
 - **What it is not kept from: acting as another node.** A node cannot read another node's files
   on macOS, apart from its contracts and event stream, but on both macOS and Linux it can read the
   environment of any process running as you, including another node's marion bridge, which holds
-  that node's token for most harnesses. On Linux it can also read other nodes' files. Treat nodes
-  in one project as able to act as each other through marion.
+  that node's token for most harnesses. On Linux it can also read other nodes' files. Treat every
+  node you run, in any project, as able to act as any other through marion.
 - **What it may not write in its own agent dir.** Its `contracts/`, `events.jsonl` and
   `events.jsonl.1` are marion's record of it, which a parent's bridge and the operator's view
   read: on macOS the profile refuses the node's writes there (create, replace, remove, rename).

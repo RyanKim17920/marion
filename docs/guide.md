@@ -199,8 +199,8 @@ The sandbox keeps a node from writing what is not its own; it does not keep node
 each other. A node cannot read another node's files on macOS, apart from its contracts and event
 stream, but on both macOS and Linux it can read the environment of any process running as you,
 including another node's marion bridge, which holds that node's token for most harnesses. On Linux
-it can also read other nodes' files. Treat nodes in one project as able to act as each other
-through marion.
+it can also read other nodes' files. Treat every node you run, in any project, as able to act as
+any other through marion.
 
 To let agents start wider ones, opt in for one run with `marion run --allow-wider-children`, or
 for every run in `~/.config/marion/config.toml`:
