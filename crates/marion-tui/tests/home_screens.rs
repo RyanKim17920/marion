@@ -15,9 +15,9 @@
 //! `[symbol, fg, bg, flags]` per cell — for a rasteriser to turn into dark- and light-theme images.
 
 use marion_tui::home::{
-    self, AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, HelpView, Hint,
-    Input, KeyRow, LineKind, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow,
-    ResultView, Screen, SetupView, StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
+    self, AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, Hint, Input,
+    LineKind, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, Screen,
+    SetupView, StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -533,45 +533,6 @@ fn form_view(preview: bool) -> FormView {
         } else {
             Vec::new()
         },
-    }
-}
-
-fn help_view() -> HelpView {
-    let k = |key: &str, verb: &str, cmd: &str| KeyRow {
-        key: s(key),
-        verb: s(verb),
-        command: s(cmd),
-    };
-    HelpView {
-        scroll: 0,
-        sections: vec![
-            (
-                s("Everywhere"),
-                vec![
-                    k("tab", "next screen", ""),
-                    k("?", "this page", ""),
-                    k("q", "quit", ""),
-                ],
-            ),
-            (
-                s("Watch"),
-                vec![
-                    k("enter", "attach", "marion attach <id>"),
-                    k("s", "steer", "marion steer <id> <text>"),
-                    k("x", "cancel", "marion cancel <id>"),
-                    k("c", "copy the merge", "git merge --no-ff -- <branch>"),
-                    k("!", "next attention", "marion ls --attention"),
-                ],
-            ),
-            (
-                s("Start"),
-                vec![
-                    k("enter", "run", "marion run <type> --prompt <text>"),
-                    k("↑↓", "harness", ""),
-                    k("←→", "model", ""),
-                ],
-            ),
-        ],
     }
 }
 
@@ -1325,16 +1286,6 @@ fn setup_form_diff_waits_for_y() {
         command: s("+5 lines"),
     };
     insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "confirm"), 100, 30));
-}
-
-#[test]
-fn help_lists_every_key() {
-    let v = help_view();
-    insta::assert_snapshot!(report(
-        &screen(Body::Help(&v), command("marion --help", ""), "help"),
-        100,
-        30
-    ));
 }
 
 /// The 256-colour fallback changes the accent and nothing else.
