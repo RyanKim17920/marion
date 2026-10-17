@@ -13,8 +13,10 @@
   `/tmp/claude-<uid>/<cwd key>`; goose: `~/.local/state/goose`, which a canned goose's relocated
   home already covers). Reads, exec, the network and the supervisor socket are unchanged.
 - **What it may read of other nodes.** On macOS, nothing in another node's agent dir but its
-  `contracts/` and `events.jsonl` (what a parent's bridge reads of its children): no other node's
-  `config/node-token`, prompt or recording. Its own agent dir and every dir it may write stay
+  `contracts/` and `events.jsonl` (what a parent's bridge reads of its children), and the one tree
+  it was spawned over (a child of a node is cut from its parent's worktree, which its bridge
+  resolves to reach the supervisor): no other node's `config/node-token`, prompt or recording. Its
+  own agent dir and every dir it may write stay
   readable. On Linux, Landlock here restricts writes only, so these reads are not refused.
 - **What it cannot change.** What the node may do and hand down (its tree's agent-types table, the
   scope its caller granted, the operator's opt-ins) is kept at `<state>/<project>/authority/<id>.json`,

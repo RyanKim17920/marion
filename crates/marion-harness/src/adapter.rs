@@ -189,6 +189,12 @@ pub struct Extras {
     /// since marion makes a child's commit itself. `None` for a main checkout (its `.git` is
     /// inside the cwd) and wherever no registration was proven.
     pub git_admin_dir: Option<PathBuf>,
+    /// **The tree the node was spawned over** — its bridge's `MARION_REPO`, which the bridge
+    /// resolves to find its supervisor and reads the tree's agent types from. A child of a node is
+    /// spawned over its parent's worktree, inside the parent's agent dir, so the OS sandbox lets
+    /// the node read this one tree there and nothing else of the parent's. `None` where the
+    /// launch has no parent tree to read.
+    pub parent_tree: Option<PathBuf>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.

@@ -182,6 +182,10 @@ pub struct SandboxPlan {
     /// of its children). The rest — its `config/` with its node token, its prompt, its recording —
     /// is that node's. `None` for a plan that is no node's launch.
     siblings: Option<std::path::PathBuf>,
+    /// The one tree inside the siblings' dir the node may read, resolved: the parent's worktree it
+    /// was spawned over ([`crate::adapter::Extras::parent_tree`]), which its bridge must resolve.
+    /// `None` where there is none.
+    parent_tree: Option<std::path::PathBuf>,
 }
 
 impl SandboxPlan {
@@ -216,6 +220,12 @@ impl SandboxPlan {
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
             .ok_or("the node has no HOME to place its row's paths under")?;
         let siblings = agent_dir.parent().map(canonical).transpose()?;
+        let parent_tree = spec
+            .extra
+            .parent_tree
+            .as_deref()
+            .map(canonical)
+            .transpose()?;
         let mut dirs = vec![canonical(agent_dir)?, cwd.clone()];
         if let Some(admin) = &spec.extra.git_admin_dir {
             dirs.push(canonical(admin)?);
@@ -233,7 +243,11 @@ impl SandboxPlan {
             dirs.push(canonical(&path)?);
         }
         dirs.dedup();
-        Ok(SandboxPlan { dirs, siblings })
+        Ok(SandboxPlan {
+            dirs,
+            siblings,
+            parent_tree,
+        })
     }
 
     /// A plan writing exactly `dirs`, each resolved: for a process marion runs over a node's work
@@ -248,6 +262,7 @@ impl SandboxPlan {
         Ok(SandboxPlan {
             dirs,
             siblings: None,
+            parent_tree: None,
         })
     }
 
@@ -259,12 +274,13 @@ impl SandboxPlan {
     /// **The Seatbelt profile for `n` writable directories**, and with `siblings` the read rule
     /// over other nodes' agent dirs. Writes are denied except to those and to the terminal and null
     /// devices; reads are denied only inside another node's agent dir (`SIB/<id>/…`) but its
-    /// `contracts/` and `events.jsonl`, and every writable directory stays readable, the node's
-    /// own agent dir among them. Everything else — reads, exec, the network, the supervisor's
-    /// socket — is left as it was. Paths arrive only as parameters (`W0`…, `SIB`), quoted into the
-    /// one regex by Seatbelt's own `regex-quote`, never in the profile's text, so no path can
-    /// change what the profile says.
-    pub fn seatbelt_profile(n: usize, siblings: bool) -> String {
+    /// `contracts/` and `events.jsonl`, and, with `parent_tree`, the one tree `PT` the node was
+    /// spawned over; every writable directory stays readable, the node's own agent dir among them.
+    /// Everything else — reads, exec, the network, the supervisor's socket — is left as it was.
+    /// Paths arrive only as parameters (`W0`…, `SIB`, `PT`), quoted into the one regex by
+    /// Seatbelt's own `regex-quote`, never in the profile's text, so no path can change what the
+    /// profile says.
+    pub fn seatbelt_profile(n: usize, siblings: bool, parent_tree: bool) -> String {
         let mut p = String::from(
             "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*\n  \
              (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\")\n  \
@@ -277,6 +293,9 @@ impl SandboxPlan {
                  \"/[^/]+/.\")))\n(allow file-read* (regex (string-append \"^\" \
                  (regex-quote (param \"SIB\")) \"/[^/]+/(contracts(/.*)?|events\\\\.jsonl)$\")))\n",
             );
+            if parent_tree {
+                p.push_str("(allow file-read* (subpath (param \"PT\")))\n");
+            }
         }
         for i in 0..n {
             p.push_str(&format!("(allow file-write* (subpath (param \"W{i}\")))\n"));
@@ -303,7 +322,13 @@ impl SandboxPlan {
         {
             dirs.push(t);
         }
-        platform_command(&dirs, self.siblings.as_deref(), program, args)
+        platform_command(
+            &dirs,
+            self.siblings.as_deref(),
+            self.parent_tree.as_deref(),
+            program,
+            args,
+        )
     }
 }
 
@@ -311,6 +336,7 @@ impl SandboxPlan {
 fn platform_command(
     dirs: &[std::path::PathBuf],
     siblings: Option<&std::path::Path>,
+    parent_tree: Option<&std::path::Path>,
     program: &str,
     args: &[String],
 ) -> std::process::Command {
@@ -318,6 +344,7 @@ fn platform_command(
     cmd.arg("-p").arg(SandboxPlan::seatbelt_profile(
         dirs.len(),
         siblings.is_some(),
+        parent_tree.is_some(),
     ));
     let param = |name: &str, d: &std::path::Path| {
         let mut kv = std::ffi::OsString::from(format!("{name}="));
@@ -326,6 +353,9 @@ fn platform_command(
     };
     if let Some(sib) = siblings {
         cmd.arg("-D").arg(param("SIB", sib));
+        if let Some(pt) = parent_tree {
+            cmd.arg("-D").arg(param("PT", pt));
+        }
     }
     for (i, d) in dirs.iter().enumerate() {
         cmd.arg("-D").arg(param(&format!("W{i}"), d));
@@ -340,6 +370,7 @@ fn platform_command(
     // Landlock here restricts writes only; reads of other nodes' agent dirs are not refused on
     // Linux, which docs/os-sandbox.md states.
     _siblings: Option<&std::path::Path>,
+    _parent_tree: Option<&std::path::Path>,
     program: &str,
     args: &[String],
 ) -> std::process::Command {
@@ -353,6 +384,7 @@ fn platform_command(
 fn platform_command(
     _dirs: &[std::path::PathBuf],
     _siblings: Option<&std::path::Path>,
+    _parent_tree: Option<&std::path::Path>,
     program: &str,
     args: &[String],
 ) -> std::process::Command {
@@ -596,7 +628,7 @@ mod tests {
     /// contains can change what the profile says.
     #[test]
     fn the_seatbelt_profile_names_no_path_only_parameters() {
-        let p = SandboxPlan::seatbelt_profile(3, true);
+        let p = SandboxPlan::seatbelt_profile(3, true, true);
         assert!(p.contains("(deny file-write*)"));
         assert!(p.contains("(regex-quote (param \"SIB\"))"), "{p}");
         for i in 0..3 {
@@ -707,6 +739,42 @@ mod tests {
         let out = inv.command(&tmp).output().expect("the process runs");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(stdout, "contracteventsown-token", "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Operation not permitted"),
+            "{out:?}"
+        );
+    }
+
+    /// **A child of a node reads the parent's worktree it was spawned over, and nothing else of
+    /// the parent's.** That tree is its bridge's `MARION_REPO`, which the bridge must resolve to
+    /// reach its supervisor at all; it sits in the parent's agent dir, beside the parent's token.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_process_under_its_plan_reads_its_parent_tree_and_not_the_parents_token() {
+        assert!(support().available(), "{}", support().describe());
+        let dir = marion_testsupport::scratch("osb-parent-tree");
+        let (mut spec, mut inv) = node_in(&dir, Auth::Canned);
+        let parent = dir.join("parent");
+        std::fs::create_dir_all(parent.join("config")).unwrap();
+        std::fs::create_dir_all(parent.join("worktree/src")).unwrap();
+        std::fs::write(parent.join("config/node-token"), "parent-secret").unwrap();
+        std::fs::write(parent.join("worktree/src/f.txt"), "tree").unwrap();
+        spec.extra.parent_tree = Some(parent.join("worktree"));
+        let p = parent.display();
+        inv.args = vec![
+            "-c".into(),
+            format!(
+                "cd '{p}/worktree' && pwd -P >/dev/null && cat src/f.txt; \
+                 cat '{p}/config/node-token'; true"
+            ),
+        ];
+        inv.sandbox = Some(
+            SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+        );
+        let tmp = dir.join("agent/tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = inv.command(&tmp).output().expect("the process runs");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "tree", "{out:?}");
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("Operation not permitted"),
             "{out:?}"

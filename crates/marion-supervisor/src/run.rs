@@ -3798,6 +3798,9 @@ pub fn child_launch_spec(
             repo_trusted: false,
             // The only admin dir the sandbox writes: proven against the registration.
             git_admin_dir: crate::gitcmd::admin_dir(wt, &env.project_root),
+            // The tree the bridge's `MARION_REPO` names: a parent node's worktree for a child of
+            // a node, which the sandbox otherwise refuses as another node's agent dir.
+            parent_tree: Some(req.repo.clone()),
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
             approval_mode: agent_type.approval_mode.clone(),
