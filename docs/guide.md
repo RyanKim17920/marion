@@ -353,7 +353,7 @@ writes for the test fixture, and [`run-report.html`](examples/run-report.html) i
 
 ## Searching past runs
 
-`marion search <words>` finds this project's runs, newest first, by the task they were given, what they reported, the checks they ran, their review's findings, the paths they changed and their branch; `marion search --help` lists the filters (`harness:`, `state:`, `since:`, `in:` and more), and `--all` searches every project. It reads an index in marion's private state directory and starts no supervisor; `--reindex` rebuilds that index from the journal. Each run's line is masked when the run ends, with the keys its stream was scrubbed of. A rebuild never reads the credential store, so a run that has no line in the index gets only secret-shape and secret-named-environment masking, over a contract that was already scrubbed when it was written.
+`marion search <words>` finds this project's runs, newest first, by the task they were given, what they reported, the checks they ran, their review's findings, the paths they changed and their branch; `marion search --help` lists the filters (`harness:`, `state:`, `since:`, `in:` and more), and `--all` searches every project. It reads an index in marion's private state directory and starts no supervisor; `--reindex` rebuilds that index from the journal. Each run's line is masked when the run ends, with the keys its stream was scrubbed of. A rebuild (`--reindex`, or one search starts after an append failed or the index format changed) re-derives every line from the journal and the saved contracts and never reads the credential store, so rebuilt lines are masked by secret shape and secret-named environment values only, over contracts already scrubbed when they were written.
 
 ## Agent types
 
