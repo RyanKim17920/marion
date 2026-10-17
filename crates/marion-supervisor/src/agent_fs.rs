@@ -111,15 +111,29 @@ impl AgentFs {
         )?)
     }
 
+    /// **A file of the node's own, never a second name for another**: a hard link the node made
+    /// to an operator file is a regular file with more than one link, and truncating, appending
+    /// or chmodding it would reach that file. So it is opened without `O_TRUNC`, refused when
+    /// another name links it, and only then truncated where asked.
     fn open_file(&self, path: &Path, flags: OFlags) -> io::Result<File> {
+        use std::os::unix::fs::MetadataExt;
         let (dir, name) = self.parent_of(path)?;
         let fd = rustix::fs::openat(
             &dir,
             name,
-            flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            flags.difference(OFlags::TRUNC) | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::from_raw_mode(0o600),
         )?;
         let file = regular(File::from(fd), path)?;
+        if file.metadata()?.nlink() != 1 {
+            return Err(io::Error::other(format!(
+                "{} has another name linking it, not a file of the node's own",
+                path.display()
+            )));
+        }
+        if flags.contains(OFlags::TRUNC) {
+            file.set_len(0)?;
+        }
         // `mode` applies only to a file this call created: one that predates the rule is
         // narrowed through the handle.
         rustix::fs::fchmod(&file, Mode::from_raw_mode(0o600))?;
@@ -300,6 +314,12 @@ mod tests {
         assert!(fs.create(&log).is_err());
         assert!(fs.read(&log).is_err());
         outside.untouched();
+        std::fs::remove_file(&log).unwrap();
+        std::fs::hard_link(&outside.file, &log).unwrap();
+        assert!(fs.append(&log).is_err(), "a hard link is not appended to");
+        assert!(fs.create(&log).is_err(), "nor truncated");
+        outside.untouched();
+        std::fs::remove_file(&log).unwrap();
 
         let fifo = agent.join("pty.cast");
         assert!(
