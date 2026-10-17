@@ -2950,6 +2950,45 @@ fn a_continuation_writes_no_config_document_through_a_link_generation_0_left() {
     untouched();
 }
 
+/// **Generation 1 runs on marion's config documents, not on generation 0's edits of them**: every
+/// document a row declares is rewritten on each generation's launch, so a node that loosened its
+/// own config (a wider approval, a server of its own) cannot hand that to its continuation.
+///
+/// Mutation: skip a document that already exists in `declare_and_compile` and generation 1 reads
+/// generation 0's edit.
+#[test]
+fn a_continuation_rewrites_every_config_document_generation_0_edited() {
+    let root = scratch("supervisor-continuation-config-edits");
+    let ctx = launch_ctx();
+    for harness in [Harness::Codex, Harness::OpenCode] {
+        let adapter = adapter_for(harness).unwrap();
+        let mut gen0 = launch_spec(None);
+        gen0.config_dir = root.join(format!("agents/{harness:?}/config"));
+        // opencode takes no model but a stated `provider/model`.
+        gen0.model = Some("openai/gpt-5".into());
+        declare_and_compile(adapter.as_ref(), &gen0, &ctx).unwrap();
+        let gen1 = LaunchSpec {
+            resume: Some("s1".into()),
+            prompt: "go on".into(),
+            ..gen0.clone()
+        };
+        let docs = adapter.launch_documents(&gen1, &ctx).unwrap();
+        assert!(!docs.is_empty(), "{harness:?} declares a document");
+        for (doc, _) in &docs {
+            std::fs::write(doc, "edited by generation 0\n").unwrap();
+        }
+        declare_and_compile(adapter.as_ref(), &gen1, &ctx).unwrap();
+        for (doc, body) in &docs {
+            assert_eq!(
+                &std::fs::read_to_string(doc).unwrap(),
+                body,
+                "{harness:?} {}",
+                doc.display()
+            );
+        }
+    }
+}
+
 /// **A worktree the node swapped for a link is neither committed nor removed**: linked to
 /// another registered tree with work of its own (the operator's linked worktree here),
 /// `commit_child_work` refuses it and `cleanup` leaves it, so that tree's files, untracked and
