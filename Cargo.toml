@@ -33,6 +33,15 @@ thiserror = "2"
 # Parse only; nothing writes TOML.
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 
+# Debug builds carry line tables and nothing more: a panic's backtrace still names file and line,
+# while the 30-odd test binaries and their link steps shrink. Dependencies carry none, since a
+# backtrace through one names the call into it from marion's own code.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # The profile `dist build` compiles release artifacts with (see dist-workspace.toml).
 [profile.dist]
 inherits = "release"
