@@ -1015,7 +1015,9 @@ for line in sys.stdin:
         let orphan = bed.pid();
         let died = marion_testsupport::until(|| dead(orphan));
         let state = marion_testsupport::liveness(orphan);
-        marion_testsupport::kill_hard(orphan);
+        if !died {
+            marion_testsupport::kill_hard(orphan);
+        }
         assert!(run.exit.timed_out, "{run:?}");
         assert!(
             died,
@@ -1033,7 +1035,9 @@ for line in sys.stdin:
         let left = bed.pid();
         let died = marion_testsupport::until(|| dead(left));
         let state = marion_testsupport::liveness(left);
-        marion_testsupport::kill_hard(left);
+        if !died {
+            marion_testsupport::kill_hard(left);
+        }
         assert!(!run.exit.timed_out, "{run:?}");
         assert!(
             died,
