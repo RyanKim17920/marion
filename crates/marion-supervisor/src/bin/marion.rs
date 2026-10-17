@@ -427,8 +427,8 @@ fn parse_list(argv: &[String]) -> Result<ListArgs, Exit> {
 }
 
 /// **The whole of `marion ls`.** With an agent: that agent's detail as text (what marion sent it,
-/// its messages, its tokens, where it works and how it ended), which is what the Watch tab's
-/// expansion shows. Without one, on a terminal: the home screen on its Watch tab. Without one and
+/// its messages, its tokens, where it works and how it ended), which is what the home screen's
+/// preview shows. Without one, on a terminal: the home screen. Without one and
 /// with no terminal — a pipe, a script — or with `--attention`: the forest one node per line,
 /// because there is nobody to press a key or the operator asked for a filtered list. It starts no
 /// supervisor.
@@ -446,14 +446,12 @@ fn ls(args: ListArgs, interactive: bool) -> ExitCode {
     };
     match args.target {
         Some(id) => ls_one(&id, &repo, &state),
-        None if interactive && !args.attention => {
-            home_on(marion_tui::home::Tab::Watch, repo, state)
-        }
+        None if interactive && !args.attention => home_on(repo, state),
         None => list_lines(&repo, &state, args.attention),
     }
 }
 
-/// Bare `marion`: the home screen on Start, for the repository of the working directory.
+/// Bare `marion`: the home screen, for the repository of the working directory.
 fn home_main() -> ExitCode {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         usage()
@@ -461,11 +459,11 @@ fn home_main() -> ExitCode {
     let Some((repo, state)) = resolve_project(&Place::default()) else {
         return ExitCode::FAILURE;
     };
-    home_on(marion_tui::home::Tab::Start, repo, state)
+    home_on(repo, state)
 }
 
-fn home_on(tab: marion_tui::home::Tab, repo: PathBuf, state: PathBuf) -> ExitCode {
-    let opts = marion_supervisor::home::session::Options { repo, state, tab };
+fn home_on(repo: PathBuf, state: PathBuf) -> ExitCode {
+    let opts = marion_supervisor::home::session::Options { repo, state };
     match marion_supervisor::home::session::run(&opts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

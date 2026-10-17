@@ -1,12 +1,10 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
-expression: "report(&screen(Body::Setup(&v), input, \"confirm\"), 100, 30)"
+expression: "report(&setup_screen(&v, input), 100, 30)"
 ---
 --- 100x30 ---
- ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────────────────────────
-
-  NEW AGENT TYPE   .marion/agents.toml
+ marion  setup                                                                         3 of 6 ready
+  New agent type   .marion/agents.toml
 
   name          reviewer
   harness       ‹ codex ›
@@ -15,7 +13,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"confirm\"), 100, 30)"
   tools         ‹ read ›
 ❯ provider      ▏optional: an endpoint provider id
 
-  CHANGE   .marion/agents.toml
+  Change   .marion/agents.toml
     description = "Moves data."
 
   + [[agent]]
@@ -29,16 +27,17 @@ expression: "report(&screen(Body::Setup(&v), input, \"confirm\"), 100, 30)"
 
 
 
- ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ Write reviewer to .marion/agents.toml?   $ +5 lines                         y yes · any key no │
- ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  y yes · any key no                                                                       F1 help
+
+
+
+
+
+ write reviewer to .marion/agents.toml?  $ +5 -0 lines                                  y / any key
 --- styles ---
-   48  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
-   55  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionproviderWriterevie"
-   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPECHANGE"
-  294  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-  200  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏╭─────────────────────"
-    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯y"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   49  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionproviderwriterevie"
+   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NewagenttypeChange"
+  177  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready.marion/ag"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+    2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯y"
    94  Style::new().green().bg(Color::Reset)  "+[[agent]]+name=\"reviewe"
-    2  Style::new().yellow().bg(Color::Reset)  "◐2"

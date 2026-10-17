@@ -1,4 +1,4 @@
-//! The home screen's decisions, without a terminal: which key does what on which tab, and that
+//! The home screen's decisions, without a terminal: which key does what on which page, and that
 //! nothing destructive happens without a `y`.
 
 use super::*;
@@ -7,6 +7,7 @@ use marion_core::encoding::Duration;
 use marion_core::harness::Harness as H;
 use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::result::{ActionKind, ActionLine, ActivityPage, CompletionSummary};
+use marion_tui::home::{Footer, Ink};
 
 fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
     NodeSummary {
@@ -48,6 +49,7 @@ fn harness(name: &str, ready: Ready) -> Harness {
             "too old".into()
         },
         surfaces: "headless".into(),
+        pane: false,
         fix: None,
         detail: vec![],
     }
@@ -63,7 +65,7 @@ fn ty(name: &str, harness: &str, writes: bool) -> AgentType {
 }
 
 fn home() -> Home {
-    let mut h = Home::new(Tab::Start);
+    let mut h = Home::new();
     h.harnesses = vec![
         harness("claude", Ready::Ready),
         harness("copilot", Ready::Broken),
@@ -87,34 +89,95 @@ fn typed(h: &mut Home, text: &str) {
     }
 }
 
-/// **Start says where a type's run edits**: `marion run` starts a root in the operator's own
-/// checkout, so a writing type edits that checkout, never a worktree (a worktree is a child's).
-#[test]
-fn start_says_a_writing_type_edits_this_checkout() {
-    let f = view::frame(&home(), &view::Places::default());
-    assert_eq!(
-        f.start.kinds,
-        [
-            ("claude".to_string(), "edits this checkout".to_string()),
-            (
-                "claude-orchestrator".to_string(),
-                "read-only, delegates".to_string()
-            ),
-        ]
-    );
+fn frame(h: &Home) -> view::Frame {
+    view::frame(h, &view::Places::default())
 }
 
+/// The footer's keys, or nothing when it is a line being typed or a confirm.
+fn footer_keys(h: &Home) -> Vec<String> {
+    match frame(h).footer {
+        Footer::Keys(k) => k.into_iter().map(|x| x.key).collect(),
+        Footer::Input { keys, .. } => keys.into_iter().map(|x| x.key).collect(),
+        Footer::Confirm { .. } => Vec::new(),
+    }
+}
+
+fn footer_has(h: &Home, key: &str, verb: &str) -> bool {
+    match frame(h).footer {
+        Footer::Keys(k) | Footer::Input { keys: k, .. } => {
+            k.iter().any(|x| x.key == key && x.verb == verb)
+        }
+        Footer::Confirm { .. } => false,
+    }
+}
+
+fn row_ids(f: &view::Frame) -> Vec<String> {
+    f.agents.rows.iter().map(|r| r.id.clone()).collect()
+}
+
+fn row<'a>(f: &'a view::Frame, id: &str) -> &'a marion_tui::home::AgentRow {
+    f.agents
+        .rows
+        .iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| panic!("no row {id}: {:?}", row_ids(f)))
+}
+
+/// The selected row's preview facts, each line's spans joined.
+fn facts(h: &Home) -> Vec<(String, Vec<Ink>)> {
+    frame(h)
+        .agents
+        .preview
+        .expect("a preview")
+        .facts
+        .into_iter()
+        .map(|l| {
+            let text = l.iter().map(|(t, _)| t.as_str()).collect::<String>();
+            (text, l.into_iter().map(|(_, i)| i).collect())
+        })
+        .collect()
+}
+
+fn landed(branch: &str) -> NodeDetail {
+    NodeDetail {
+        completion: Some(CompletionSummary {
+            status: ExitStatus::Ok,
+            narrative: None,
+            branch: Some(branch.into()),
+            commit: None,
+            changed_paths: 1,
+            exit: String::new(),
+            diff: None,
+        }),
+        ..Default::default()
+    }
+}
+
+// ------------------------------------------------------------------ the `n` line
+
+/// **`n` opens the input line on the type last used; tab cycles the types and ↑↓ the type's
+/// models**, and Enter runs exactly what the line shows. The choices stay for the next task.
 #[test]
-fn start_types_the_prompt_and_enter_runs_the_chosen_type_and_model() {
+fn n_line_runs_the_chosen_type_on_the_chosen_model() {
     let mut h = home();
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
     typed(&mut h, "add a limiter");
-    assert_eq!(h.start.prompt, "add a limiter");
-    // Implementers first: the plain name is the default choice.
-    assert_eq!(h.kinds()[0].name, "claude");
-    h.key(Key::Right);
-    let run = h.key(Key::Enter);
+    h.key(Key::Tab);
+    assert_eq!(h.new_type().map(|t| t.name.as_str()), Some("claude"));
+    h.key(Key::Down);
+    assert_eq!(h.new_model().as_deref(), Some("opus"));
+    let Footer::Input {
+        target, note, text, ..
+    } = frame(&h).footer
+    else {
+        panic!("the input line")
+    };
     assert_eq!(
-        run,
+        (target.as_str(), note.as_str(), text.as_str()),
+        ("new claude", "opus", "add a limiter")
+    );
+    assert_eq!(
+        h.key(Key::Enter),
         Effect::Run {
             agent_type: "claude".into(),
             model: Some("opus".into()),
@@ -122,16 +185,31 @@ fn start_types_the_prompt_and_enter_runs_the_chosen_type_and_model() {
             pane: false,
         }
     );
-    assert!(
-        h.start.prompt.is_empty(),
-        "the box clears once the run is sent"
+    assert_eq!(h.mode, Mode::Normal, "the line closes once the run is sent");
+    h.key(Key::Char('n'));
+    assert_eq!(
+        (h.new_type().map(|t| t.name.clone()), h.new_model()),
+        (Some("claude".into()), Some("opus".into())),
+        "the next task starts on the same choices"
     );
 }
 
+/// The type's own default model sends no `--model`; shift-tab wraps backwards; another type
+/// starts again on its own default.
 #[test]
-fn ctrl_o_picks_the_read_only_flavour_and_default_model_sends_no_model() {
+fn the_default_model_sends_no_model_and_a_new_type_resets_it() {
     let mut h = home();
-    h.key(Key::Ctrl('o'));
+    h.key(Key::Char('n'));
+    h.key(Key::Up);
+    assert_eq!(
+        h.new_model().as_deref(),
+        Some("sonnet"),
+        "↑ wraps to the last"
+    );
+    h.key(Key::BackTab);
+    assert_eq!(h.new_type().map(|t| t.name.as_str()), Some("copilot"));
+    assert_eq!(h.new.model, 0, "a new type is on its own default");
+    h.key(Key::Tab);
     typed(&mut h, "plan it");
     assert_eq!(
         h.key(Key::Enter),
@@ -144,64 +222,467 @@ fn ctrl_o_picks_the_read_only_flavour_and_default_model_sends_no_model() {
     );
 }
 
+/// **The type's harness decides pane or headless**: one with a measured pane surface runs in a
+/// pane `enter` can attach to, the rest detached. There is no key for it.
 #[test]
-fn ctrl_p_runs_in_a_pane_so_enter_can_attach() {
+fn the_types_harness_decides_pane_or_headless() {
     let mut h = home();
-    h.key(Key::Ctrl('p'));
+    h.harnesses[0].pane = true;
+    h.key(Key::Char('n'));
     typed(&mut h, "x");
-    let Effect::Run { pane, .. } = h.key(Key::Enter) else {
-        panic!("a run")
+    let run = h.key(Key::Enter);
+    let Effect::Run { pane, .. } = &run else {
+        panic!("a run, got {run:?}")
     };
     assert!(pane);
-}
-
-#[test]
-fn a_blank_prompt_or_an_unready_harness_runs_nothing_and_says_why() {
-    let mut h = home();
-    assert_eq!(h.key(Key::Enter), Effect::None);
-    assert!(h.notice.as_deref().unwrap().contains("type what"));
-    h.key(Key::Down);
-    typed(&mut h, "x");
-    assert_eq!(h.key(Key::Enter), Effect::None);
-    assert!(
-        h.notice.as_deref().unwrap().contains("not ready"),
-        "{:?}",
-        h.notice
+    assert_eq!(
+        run.argv().unwrap().last().map(String::as_str),
+        Some("--pane")
     );
-    assert_eq!(h.start.prompt, "x", "a refused run keeps what was typed");
+    let headless = Effect::Run {
+        agent_type: "codex".into(),
+        model: None,
+        prompt: "x".into(),
+        pane: false,
+    };
+    assert_eq!(
+        headless.argv().unwrap(),
+        ["marion", "run", "codex", "--prompt", "x", "--detach"]
+    );
+}
+
+/// **A line that cannot run stays open with the reason**: a blank task, and a type whose harness
+/// is not ready, keep what was typed rather than losing it to the refusal.
+#[test]
+fn the_n_line_refuses_a_blank_task_or_an_unready_type_and_keeps_the_text() {
+    let mut h = home();
+    h.key(Key::Char('n'));
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("type the task"));
+    assert!(matches!(h.mode, Mode::Typing { .. }), "still open");
+    h.key(Key::Tab);
+    h.key(Key::Tab);
+    typed(&mut h, "x");
+    let Footer::Input { note, .. } = frame(&h).footer else {
+        panic!("the input line")
+    };
+    assert_eq!(note, "too old", "the line says why before enter does");
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("copilot: too old"));
+    assert_eq!(
+        h.mode,
+        Mode::Typing {
+            purpose: Purpose::New,
+            text: "x".into()
+        },
+        "a refused run keeps what was typed"
+    );
+    h.types.clear();
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("no agent type to run"));
+}
+
+// ------------------------------------------------------------------ pages
+
+#[test]
+fn comma_opens_setup_and_esc_or_comma_come_back() {
+    let mut h = home();
+    assert_eq!(h.page, Page::Agents, "bare marion opens on the agents");
+    h.key(Key::Char(','));
+    assert_eq!(h.page, Page::Setup);
+    h.key(Key::Esc);
+    assert_eq!(h.page, Page::Agents);
+    h.key(Key::Char(','));
+    h.key(Key::Char(','));
+    assert_eq!(h.page, Page::Agents);
+}
+
+/// **Help opens from wherever the operator is and goes back there**, and a `?` typed into a line
+/// is text.
+#[test]
+fn help_opens_from_any_page_and_returns_to_it() {
+    let mut h = home();
+    for from in [Page::Agents, Page::Setup] {
+        h.page = from;
+        h.key(Key::Char('?'));
+        assert_eq!(h.page, Page::Help);
+        h.key(Key::Esc);
+        assert_eq!(h.page, from, "back where it was opened");
+    }
+    h.page = Page::Agents;
+    h.key(Key::Char('?'));
+    h.key(Key::Char('?'));
+    assert_eq!(h.page, Page::Agents, "`?` closes it too");
+    h.key(Key::Char('n'));
+    typed(&mut h, "why?");
+    assert_eq!(h.page, Page::Agents);
+    assert!(matches!(&h.mode, Mode::Typing { text, .. } if text == "why?"));
+}
+
+/// Help drawn as the operator sees it: the real key table (`view::KEYS`) through `marion_tui`, at
+/// the size a terminal opens at.
+fn help_screen(h: &Home, w: u16, rows: u16) -> String {
+    use ratatui::widgets::Widget as _;
+    let f = frame(h);
+    let screen = marion_tui::home::Screen {
+        theme: marion_tui::home::theme::Theme::from_colorterm(None),
+        title: &f.title,
+        counts: &f.counts,
+        body: f.body(Page::Help),
+        footer: f.footer.clone(),
+        notice: None,
+        frame: 0,
+    };
+    let area = ratatui::layout::Rect::new(0, 0, w, rows);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    (&screen).render(area, &mut buf);
+    (0..rows)
+        .map(|y| {
+            (0..w)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **Help shows every key of the real key table at 80x24**, none clipped, and the section for the
+/// page it was opened from comes first; where it does not fit it scrolls with j/k.
+#[test]
+fn help_shows_every_section_of_the_real_key_table_at_80x24() {
+    let mut h = home();
+    h.key(Key::Char('?'));
+    let screen = help_screen(&h, 80, 24);
+    for (title, keys) in view::KEYS {
+        for (key, _, _) in *keys {
+            assert!(
+                screen.contains(&format!("{key}  ")),
+                "{title}: `{key}` is missing or clipped at 80x24:\n{screen}"
+            );
+        }
+    }
+    insta::assert_snapshot!(screen);
+    let titles = |h: &Home| {
+        frame(h)
+            .help
+            .sections
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(titles(&h), ["agents", "input line", "setup"]);
+    h.key(Key::Esc);
+    h.key(Key::Char(','));
+    h.key(Key::Char('?'));
+    assert_eq!(
+        titles(&h)[0],
+        "setup",
+        "opened from Setup, Setup comes first"
+    );
+    // A screen too short for the page scrolls, and says so.
+    let short = help_screen(&h, 80, 14);
+    assert!(short.contains("j/k scroll"), "{short}");
+    h.key(Key::Char('j'));
+    assert_eq!(h.help_scroll, 1);
+    h.key(Key::Char('k'));
+    h.key(Key::Char('k'));
+    assert_eq!(h.help_scroll, 0);
+}
+
+/// The clock the loop may wake for: only while something on the page moves with time. An idle
+/// forest, an ended one, or a page with nothing animated makes the screen sleep until an event.
+#[test]
+fn only_a_moving_screen_asks_for_a_clock() {
+    let mut h = home();
+    h.set_nodes(vec![]);
+    assert!(!h.animating(), "an empty forest sleeps");
+    h.set_nodes(vec![node("a", None, NodeState::Exited(ExitStatus::Ok))]);
+    assert!(!h.animating(), "an ended forest sleeps");
+    h.set_nodes(vec![node("a", None, NodeState::Running)]);
+    assert!(h.animating(), "a running node's time ticks");
+    h.page = Page::Help;
+    assert!(!h.animating(), "not while another page hides it");
+    h.page = Page::Setup;
+    assert!(!h.animating());
+    h.checking = true;
+    assert!(h.animating(), "a harness still being checked spins");
+}
+
+// ------------------------------------------------------------------ the footer
+
+/// **The footer offers no key the key table does not list**, in every state it can be in: `?`
+/// teaches the whole of what the footer shows a part of.
+#[test]
+fn every_footer_key_is_in_the_key_table() {
+    let table: Vec<&str> = view::KEYS
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().map(|(k, _, _)| *k))
+        .collect();
+    let mut states: Vec<Home> = Vec::new();
+    let mut h = home();
+    states.push(h.clone());
+    h.key(Key::Char('j'));
+    states.push(h.clone());
+    h.absorb_detail(AgentId("child".into()), landed("marion/t-1"));
+    states.push(h.clone());
+    let mut empty = home();
+    empty.set_nodes(vec![]);
+    states.push(empty);
+    for k in ['n', 's'] {
+        let mut h = home();
+        h.key(Key::Char(k));
+        states.push(h);
+    }
+    let mut full = home();
+    full.key(Key::Enter);
+    states.push(full);
+    let mut help = home();
+    help.key(Key::Char('?'));
+    states.push(help);
+    let mut s = profiles_home();
+    for cursor in 0..=6 {
+        s.setup.cursor = cursor;
+        states.push(s.clone());
+    }
+    s.key(Key::Char('a'));
+    states.push(s);
+    for h in &states {
+        for k in footer_keys(h) {
+            assert!(
+                table.contains(&k.as_str()),
+                "`{k}` is on the footer ({:?}, {:?}) but not in the key table",
+                h.page,
+                h.mode
+            );
+        }
+    }
+}
+
+/// **The footer offers only what the selection takes**: a running agent steers and cancels, an
+/// ended one resumes and opens its shell, merge and diff only once a branch has landed, and an
+/// empty list offers a new task and Setup.
+#[test]
+fn the_footer_offers_only_what_the_selection_takes() {
+    let mut h = home();
+    let running = footer_keys(&h);
+    assert!(running.contains(&"x".to_string()), "{running:?}");
+    assert!(!running.contains(&"u".to_string()), "{running:?}");
+    assert!(!running.contains(&"m".to_string()), "{running:?}");
+    assert_eq!(
+        running.last().map(String::as_str),
+        Some("?"),
+        "`? more` last"
+    );
+    h.key(Key::Char('j'));
+    let ended = footer_keys(&h);
+    assert!(ended.contains(&"o".to_string()), "{ended:?}");
+    assert!(!ended.contains(&"x".to_string()), "{ended:?}");
+    assert!(
+        !ended.contains(&"m".to_string()),
+        "nothing landed yet: {ended:?}"
+    );
+    h.absorb_detail(AgentId("child".into()), landed("marion/t-1"));
+    let landed = footer_keys(&h);
+    assert!(
+        landed.contains(&"m".to_string()) && landed.contains(&"d".to_string()),
+        "{landed:?}"
+    );
+    h.lost_supervisor();
+    assert_eq!(footer_keys(&h), ["n", ",", "?"]);
+    h.set_nodes(vec![]);
+    assert_eq!(footer_keys(&h), ["n", ",", "?"]);
+}
+
+// ------------------------------------------------------------------ the list
+
+/// **The list leads with what needs the operator**, and the counts say how many of each.
+#[test]
+fn the_list_leads_with_the_node_that_needs_you() {
+    use marion_core::node::BlockReason;
+    let mut h = home();
+    h.set_nodes(vec![
+        node("a", None, NodeState::Running),
+        node("b", None, NodeState::Blocked(BlockReason::Permission)),
+    ]);
+    let f = frame(&h);
+    assert_eq!(row_ids(&f), ["b", "a"]);
+    assert_eq!(f.counts, "2 running  1 need you");
+    assert_eq!(h.selected().unwrap().agent_id.0, "b");
+}
+
+/// **The order holds while a line is open**: a row must not move under a steer being typed for
+/// it. A node that arrives meanwhile goes to the end, and the order comes back once the line
+/// closes.
+#[test]
+fn set_nodes_holds_the_order_while_a_line_is_open() {
+    use marion_core::node::BlockReason;
+    let mut h = home();
+    h.set_nodes(vec![node("a", None, NodeState::Running)]);
+    h.key(Key::Char('s'));
+    let asks = node("b", None, NodeState::Blocked(BlockReason::Permission));
+    h.set_nodes(vec![asks.clone(), node("a", None, NodeState::Running)]);
+    assert_eq!(row_ids(&frame(&h)), ["a", "b"], "held while typing");
+    assert_eq!(
+        h.selected().unwrap().agent_id.0,
+        "a",
+        "the steer's row stays put"
+    );
+    h.key(Key::Esc);
+    assert_eq!(
+        row_ids(&frame(&h)),
+        ["b", "a"],
+        "released when the line closes"
+    );
+    assert_eq!(
+        h.selected().unwrap().agent_id.0,
+        "a",
+        "the selection follows its node"
+    );
+}
+
+/// **A merge from here takes the node out of what is left to land**: its rank and the count drop.
+#[test]
+fn a_merged_branch_has_nothing_left_to_land() {
+    let mut h = home();
+    let mut root = node("root", None, NodeState::Exited(ExitStatus::Ok));
+    root.changed = Some(9);
+    let mut child = node("child", Some("root"), NodeState::Exited(ExitStatus::Ok));
+    child.changed = Some(2);
+    h.set_nodes(vec![root, child]);
+    assert_eq!(frame(&h).counts, "1 to land", "a root has nothing to land");
+    h.select("child");
+    h.absorb_detail(AgentId("child".into()), landed("marion/t-1"));
+    h.key(Key::Char('m'));
+    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/t-1".into()));
+    h.merged("marion/t-1");
+    assert_eq!(frame(&h).counts, "");
+}
+
+/// **A row's title is its task's first line**, read once per node; a root, whose prompt went to its
+/// harness rather than into a contract, is called by its type. The titles outlive a lost
+/// supervisor: the same nodes come back with it.
+#[test]
+fn a_rows_title_is_its_tasks_first_line_or_its_type() {
+    let mut h = home();
+    assert_eq!(h.untitled().len(), 2);
+    h.absorb_detail(
+        AgentId("child".into()),
+        NodeDetail {
+            task: Some(marion_core::proto::result::TaskSent {
+                prompt: "\n  fix the limiter\x07\n\nand more".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    h.set_title(&AgentId("root".into()), None);
+    assert!(h.untitled().is_empty());
+    let f = frame(&h);
+    let title = &row(&f, "child").title;
+    assert!(
+        title.starts_with("fix the limiter"),
+        "the first line: {title}"
+    );
+    assert!(
+        !title.contains('\x07'),
+        "a control is never drawn raw: {title:?}"
+    );
+    assert_eq!(row(&f, "root").title, "codex");
+    h.lost_supervisor();
+    assert_eq!(h.watch.titles.len(), 2);
+}
+
+/// A row carries its run time and its token total from the summary, for every node, not only
+/// the selected one whose detail was read; unknown is blank, never 0.
+#[test]
+fn every_row_shows_its_run_time_and_tokens() {
+    use marion_core::encoding::SystemTime;
+    let t0 = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+    let mut running = node("a", None, NodeState::Running);
+    running.started_at = Some(SystemTime(t0));
+    running.tokens = Some(88_000);
+    let unstarted = node("b", None, NodeState::Running);
+    let mut h = home();
+    h.set_nodes(vec![running, unstarted]);
+    let now = t0 + std::time::Duration::from_secs(137);
+    let f = view::frame_at(&h, &view::Places::default(), now);
+    let a = row(&f, "a");
+    assert_eq!((a.time.as_str(), a.tokens), ("2m", Some(88_000)));
+    let b = row(&f, "b");
+    assert_eq!((b.time.as_str(), b.tokens), ("", None));
+
+    let mut ended = node("c", None, NodeState::Exited(ExitStatus::Ok));
+    ended.started_at = Some(SystemTime(t0));
+    ended.ended_at = Some(SystemTime(t0 + std::time::Duration::from_secs(3_840)));
+    h.set_nodes(vec![ended]);
+    let f = view::frame_at(
+        &h,
+        &view::Places::default(),
+        now + std::time::Duration::from_secs(9_999),
+    );
+    assert_eq!(
+        row(&f, "c").time,
+        "1h04",
+        "an ended node's time is how long it ran"
+    );
 }
 
 #[test]
-fn tab_cycles_the_screens_both_ways() {
-    let mut h = home();
-    h.key(Key::Tab);
-    assert_eq!(h.tab, Tab::Watch);
-    h.key(Key::Tab);
-    h.key(Key::Tab);
-    assert_eq!(h.tab, Tab::Help);
-    h.key(Key::Tab);
-    assert_eq!(h.tab, Tab::Start);
-    h.key(Key::BackTab);
-    assert_eq!(h.tab, Tab::Help);
+fn run_times_fit_five_columns_in_their_two_largest_units() {
+    use view::run_time;
+    assert_eq!(run_time(45), "45s");
+    assert_eq!(run_time(12 * 60 + 59), "12m");
+    assert_eq!(run_time(3 * 3600 + 4 * 60), "3h04");
+    assert_eq!(run_time(2 * 86_400 + 3 * 3600), "2d03");
+    for s in [0, 59, 3_599, 86_399, 99 * 86_400] {
+        assert!(run_time(s).chars().count() <= 5, "{s}");
+    }
 }
+
+// ------------------------------------------------------------------ the selection's keys
 
 #[test]
 fn cancel_waits_for_y_and_anything_else_keeps_the_node() {
     let mut h = home();
-    h.tab = Tab::Watch;
     assert_eq!(
         h.key(Key::Char('x')),
         Effect::None,
-        "no kill on the first key"
+        "no cancel on the first key"
     );
     assert!(matches!(h.mode, Mode::Confirm(_)));
+    let Footer::Confirm { question, command } = frame(&h).footer else {
+        panic!("a confirm")
+    };
+    assert_eq!(question, "cancel codex root?");
+    assert_eq!(command, "marion cancel root");
     assert_eq!(h.key(Key::Char('n')), Effect::None);
     assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(h.notice.as_deref(), Some("not cancelled"));
     h.key(Key::Char('x'));
     assert_eq!(
         h.key(Key::Char('y')),
         Effect::Cancel(AgentId("root".into()))
     );
+}
+
+/// The cancel line counts what it ends below the node.
+#[test]
+fn the_cancel_line_counts_the_live_agents_below() {
+    let mut h = home();
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        node("a", Some("root"), NodeState::Running),
+        node("b", Some("a"), NodeState::Running),
+        node("c", Some("root"), NodeState::Exited(ExitStatus::Ok)),
+    ]);
+    h.select("root");
+    h.key(Key::Char('x'));
+    let Footer::Confirm { question, .. } = frame(&h).footer else {
+        panic!("a confirm")
+    };
+    assert_eq!(question, "cancel codex root and the 2 below it?");
 }
 
 /// **A second `x` on a node whose cancel is still in its grace asks to kill it** — the
@@ -210,7 +691,6 @@ fn cancel_waits_for_y_and_anything_else_keeps_the_node() {
 #[test]
 fn x_on_a_node_being_cancelled_asks_to_kill_it() {
     let mut h = home();
-    h.tab = Tab::Watch;
     let mut cancelling = node("root", None, NodeState::Running);
     cancelling.cancel = Some(marion_core::proto::NodeCancel {
         by: marion_core::journal::CancelBy::Operator,
@@ -231,121 +711,190 @@ fn x_on_a_node_being_cancelled_asks_to_kill_it() {
     );
 }
 
-/// **No destructive effect is reachable without a `y`**: every key on every tab, from a fresh
+/// **No destructive effect is reachable without a `y`**: every key on every page, from a fresh
 /// state, is pressed once, and none returns a destructive effect.
 #[test]
-fn no_single_key_on_any_tab_is_destructive() {
-    let keys = [
-        Key::Enter,
-        Key::Esc,
-        Key::Tab,
-        Key::Backspace,
-        Key::Up,
-        Key::Down,
-        Key::Left,
-        Key::Right,
-        Key::PageUp,
-        Key::PageDown,
-        Key::Ctrl('o'),
-        Key::Paste("p".into()),
-    ]
-    .into_iter()
-    .chain((b'!'..=b'~').map(|b| Key::Char(b as char)))
-    .collect::<Vec<_>>();
-    for tab in Tab::ALL {
-        for k in &keys {
+fn no_single_key_on_any_page_is_destructive() {
+    for page in [Page::Agents, Page::Setup, Page::Help] {
+        for k in every_key() {
             let mut h = home();
-            h.tab = tab;
+            h.page = page;
             let e = h.key(k.clone());
             assert!(
                 !e.destructive(),
-                "{k:?} on {tab:?} returned {e:?} without a confirm"
+                "{k:?} on {page:?} returned {e:?} without a confirm"
             );
         }
     }
 }
 
 #[test]
-fn steer_composes_in_the_box_and_enter_sends_it_to_the_node_it_began_on() {
+fn steer_types_on_the_line_and_enter_sends_it_to_the_node_it_began_on() {
     let mut h = home();
-    h.tab = Tab::Watch;
     h.key(Key::Char('s'));
+    let Footer::Input { target, .. } = frame(&h).footer else {
+        panic!("the input line")
+    };
+    assert_eq!(target, "steer codex root");
     typed(&mut h, "use a deque");
     h.key(Key::Paste(" please".into()));
     h.key(Key::Char('j'));
     assert!(
-        matches!(&h.mode, Mode::Compose { text, .. } if text == "use a dequej please" || text.ends_with('j'))
+        matches!(&h.mode, Mode::Typing { text, .. } if text == "use a deque pleasej"),
+        "j is text on the line: {:?}",
+        h.mode
     );
     h.key(Key::Backspace);
     assert_eq!(
         h.key(Key::Enter),
         Effect::Steer(AgentId("root".into()), "use a deque please".into())
     );
-    // Esc drops it.
+    // Esc drops it; a blank steer sends nothing.
     h.key(Key::Char('s'));
     typed(&mut h, "never mind");
     assert_eq!(h.key(Key::Esc), Effect::None);
     assert_eq!(h.mode, Mode::Normal);
+    h.key(Key::Char('s'));
+    assert_eq!(h.key(Key::Enter), Effect::None);
 }
 
 #[test]
 fn ended_nodes_resume_and_running_ones_steer() {
     let mut h = home();
-    h.tab = Tab::Watch;
     assert_eq!(h.key(Key::Char('u')), Effect::None, "root is running");
+    assert_eq!(h.notice.as_deref(), Some("still running: s steers it"));
     h.key(Key::Char('j'));
     assert_eq!(
         h.key(Key::Char('u')),
         Effect::Resume(AgentId("child".into()))
     );
     assert_eq!(h.key(Key::Char('s')), Effect::None);
-    assert!(h.notice.as_deref().unwrap().contains("brings it back"));
+    assert_eq!(h.notice.as_deref(), Some("ended: u resumes it"));
     assert_eq!(
         h.key(Key::Char('x')),
         Effect::None,
         "an ended node is not cancelled"
     );
+    assert_eq!(h.mode, Mode::Normal);
 }
 
 #[test]
-fn copy_merge_and_diff_need_a_landed_branch() {
+fn merge_and_diff_need_a_landed_branch() {
     let mut h = home();
-    h.tab = Tab::Watch;
     h.key(Key::Char('j'));
-    assert_eq!(h.key(Key::Char('c')), Effect::None);
+    assert_eq!(h.key(Key::Char('d')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("no branch landed"));
+    assert_eq!(h.key(Key::Char('m')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("no branch to merge"));
+    assert_eq!(h.mode, Mode::Normal);
+    h.absorb_detail(AgentId("child".into()), landed("marion/t-1"));
+    assert_eq!(h.key(Key::Char('d')), Effect::Diff("marion/t-1".into()));
+}
+
+/// **`m` merges an agent's landed branch, and only after a `y` that names the branch and the
+/// command.**
+#[test]
+fn m_merges_a_landed_branch_after_a_y() {
+    let mut h = home();
+    let id = h.selected().unwrap().agent_id.clone();
+    h.absorb_detail(id, landed("marion/t1"));
+    assert_eq!(
+        h.key(Key::Char('m')),
+        Effect::None,
+        "no merge on the first key"
+    );
+    let Footer::Confirm { question, command } = frame(&h).footer else {
+        panic!("a confirm");
+    };
+    assert_eq!(question, "merge marion/t1 into your checkout?");
+    assert_eq!(command, "git merge --no-ff -- marion/t1");
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("not merged"));
+    h.key(Key::Char('m'));
+    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/t1".into()));
+}
+
+#[test]
+fn o_opens_a_shell_in_the_selected_agents_workspace() {
+    use marion_core::contract::Workspace;
+    let mut h = home();
+    assert_eq!(h.key(Key::Char('o')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("no workspace known yet"));
     h.absorb_detail(
-        AgentId("child".into()),
+        AgentId("root".into()),
         NodeDetail {
-            completion: Some(CompletionSummary {
-                status: ExitStatus::Ok,
-                narrative: None,
-                branch: Some("marion/t-1".into()),
-                commit: None,
-                changed_paths: 1,
-                exit: String::new(),
-                diff: None,
+            workspace: Some(Workspace::Worktree {
+                path: "/w/agents/01a0/worktree".into(),
+                branch: "marion/t-3c33".into(),
             }),
             ..Default::default()
         },
     );
     assert_eq!(
-        h.key(Key::Char('c')),
-        Effect::Copy("git merge --no-ff -- marion/t-1".into())
+        h.key(Key::Char('o')),
+        Effect::Shell("/w/agents/01a0/worktree".into())
     );
-    assert_eq!(h.key(Key::Char('d')), Effect::Diff("marion/t-1".into()));
 }
 
+/// **Enter shows a headless agent's output full, and attaches only to a pane agent**; Esc goes
+/// back, and the footer says which Enter does.
 #[test]
-fn bang_jumps_to_the_node_that_needs_you() {
+fn enter_fills_the_body_with_a_headless_agent_and_attaches_a_pane_one() {
     let mut h = home();
-    h.set_nodes(vec![
-        node("a", None, NodeState::Running),
-        node("b", None, NodeState::Exited(ExitStatus::Failed)),
-    ]);
-    h.tab = Tab::Watch;
-    h.key(Key::Char('!'));
-    assert_eq!(h.selected().unwrap().agent_id.0, "b");
+    assert!(footer_has(&h, "enter", "output"));
+    assert_eq!(
+        h.key(Key::Enter),
+        Effect::None,
+        "no attach on a headless agent"
+    );
+    assert!(h.watch.full);
+    assert!(frame(&h).agents.full);
+    assert!(footer_has(&h, "esc", "back"));
+    assert_eq!(h.key(Key::Esc), Effect::None);
+    assert!(!h.watch.full, "Esc goes back to the list");
+
+    let mut paned = node("root", None, NodeState::Running);
+    paned.pane = true;
+    h.set_nodes(vec![paned]);
+    assert!(footer_has(&h, "enter", "attach"));
+    assert_eq!(h.key(Key::Enter), Effect::Attach(AgentId("root".into())));
+    h.set_nodes(vec![]);
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("nothing selected"));
 }
+
+/// **A blocked agent's preview says what it waits on the operator for**: the supervisor's own
+/// words where it gave some, else what its state says; a running agent waits on nobody.
+#[test]
+fn a_blocked_agents_preview_says_what_it_needs() {
+    use marion_core::node::BlockReason;
+    let needs = |n: NodeSummary| {
+        let mut h = home();
+        h.set_nodes(vec![n]);
+        frame(&h).agents.preview.and_then(|p| p.needs)
+    };
+    let blocked = |r| node("root", None, NodeState::Blocked(r));
+    assert_eq!(
+        needs(blocked(BlockReason::Permission)).as_deref(),
+        Some("wants permission")
+    );
+    assert_eq!(
+        needs(blocked(BlockReason::BootDialog)).as_deref(),
+        Some("a dialog is open in its terminal")
+    );
+    assert_eq!(
+        needs(blocked(BlockReason::Descendants)).as_deref(),
+        Some("waits on its agents")
+    );
+    let said = NodeSummary {
+        attention: Some("approve `rm -rf build`?".into()),
+        ..blocked(BlockReason::Permission)
+    };
+    assert_eq!(needs(said).as_deref(), Some("approve `rm -rf build`?"));
+    assert_eq!(needs(node("root", None, NodeState::Running)), None);
+}
+
+// ------------------------------------------------------------------ the preview
 
 #[test]
 fn stream_pages_append_only_where_the_last_one_ended() {
@@ -376,13 +925,17 @@ fn stream_pages_append_only_where_the_last_one_ended() {
     assert_eq!(h.watch.stream.len(), 1);
 }
 
-/// **A call's end is drawn as its outcome, and the row still names the call.** Paged in two, a
-/// command and its end fold to one line each; the row's one line is the command, not `✓ 3.0s`,
-/// and the end is drawn as a success.
+/// **A call's end is drawn as its outcome.** Paged in two, a command and its end fold to one line
+/// each, the end drawn as a success; the preview shows the output only once the detail is read.
 #[test]
-fn an_ended_call_shows_its_outcome_and_the_row_keeps_the_call() {
+fn an_ended_call_shows_its_outcome() {
+    use marion_tui::home::LineKind;
     let mut h = home();
     h.set_nodes(vec![node("root", None, NodeState::Running)]);
+    assert_eq!(
+        frame(&h).agents.preview.unwrap().quiet.as_deref(),
+        Some("reading")
+    );
     let line = |at: &str, kind, text: &str| ActionLine {
         at: at.into(),
         kind,
@@ -412,31 +965,19 @@ fn an_ended_call_shows_its_outcome_and_the_row_keeps_the_call() {
             ],
         ),
     );
-    let f = view::frame(&h, &view::Places::default());
-    let texts: Vec<(&str, marion_tui::home::LineKind)> = f
-        .watch
-        .expanded
-        .as_ref()
-        .unwrap()
-        .stream
-        .iter()
-        .map(|l| (l.text.as_str(), l.kind))
-        .collect();
+    let p = frame(&h).agents.preview.unwrap();
+    let texts: Vec<(&str, LineKind)> = p.stream.iter().map(|l| (l.text.as_str(), l.kind)).collect();
     assert_eq!(
         texts,
-        [
-            ("$ make test", marion_tui::home::LineKind::Call),
-            ("✓ 3.0s", marion_tui::home::LineKind::Done),
-        ]
+        [("$ make test", LineKind::Call), ("✓ 3.0s", LineKind::Done)]
     );
-    assert_eq!(f.watch.rows[0].doing, "$ make test");
+    assert_eq!(p.quiet, None);
 }
 
 #[test]
-fn stream_scrolls_back_and_follows_again() {
+fn the_output_scrolls_back_and_follows_again() {
     let mut h = home();
-    h.tab = Tab::Watch;
-    h.watch.stream = (0..30)
+    h.watch.stream = (0..20)
         .map(|i| ActionLine {
             at: "t".into(),
             kind: ActionKind::Call,
@@ -446,180 +987,345 @@ fn stream_scrolls_back_and_follows_again() {
         .collect();
     h.key(Key::PageUp);
     assert_eq!(h.watch.scroll, PAGE);
-    h.key(Key::Char('J'));
-    assert_eq!(h.watch.scroll, PAGE - 1);
+    h.key(Key::PageUp);
+    h.key(Key::PageUp);
+    assert_eq!(h.watch.scroll, 20, "no further back than the first line");
     h.key(Key::PageDown);
+    assert_eq!(h.watch.scroll, 20 - PAGE);
+    h.key(Key::End);
     assert_eq!(h.watch.scroll, 0, "back at the end: following");
+    h.key(Key::PageUp);
     h.key(Key::Char('j'));
-    assert_eq!(h.watch.scroll, 0);
+    assert_eq!(h.watch.scroll, 0, "another selection starts at its end");
 }
 
-/// **Enter opens a headless agent's stream, and attaches only to a pane agent.** Start runs
-/// agents headless, so Enter on Watch used to attach to a node with no terminal and be refused;
-/// now it toggles the selected agent's stream full-height, Esc goes back, and the hint says which.
+/// An ended agent's preview says how it ended and what it left: its tokens in and out, and its
+/// branch with what the branch changes.
 #[test]
-fn enter_streams_a_headless_agent_and_attaches_only_to_a_pane_one() {
+fn an_ended_agents_preview_shows_its_tokens_and_the_diff_it_landed() {
+    use marion_core::proto::result::DiffStat;
     let mut h = home();
-    h.tab = Tab::Watch;
-    assert_eq!(
-        h.watch_default(),
-        Effect::None,
-        "no attach on a headless agent"
+    h.set_nodes(vec![node("a", None, NodeState::Exited(ExitStatus::Ok))]);
+    h.absorb_detail(
+        AgentId("a".into()),
+        NodeDetail {
+            usage: Some(marion_core::contract::TokenUsage {
+                input: 10,
+                output: 5,
+                cache_read: 0,
+                cache_write: 0,
+                reasoning: None,
+            }),
+            completion: Some(CompletionSummary {
+                status: ExitStatus::Ok,
+                narrative: Some("added the limiter\nand its tests".into()),
+                branch: Some("marion/t-1".into()),
+                commit: None,
+                changed_paths: 3,
+                exit: String::new(),
+                diff: Some(DiffStat {
+                    added: 84,
+                    removed: 12,
+                    files: 3,
+                }),
+            }),
+            ..Default::default()
+        },
     );
-    assert_eq!(h.key(Key::Enter), Effect::None);
-    assert!(h.watch.full_stream, "Enter opens its stream");
-    let f = view::frame(&h, &view::Places::default());
-    assert!(f.watch.full_stream);
-    assert!(f.hints.iter().any(|x| x.key == "esc"), "{:?}", f.hints);
-    assert_eq!(h.key(Key::Esc), Effect::None);
-    assert!(!h.watch.full_stream, "Esc goes back to the forest");
-    let f = view::frame(&h, &view::Places::default());
-    assert!(
-        f.hints
-            .iter()
-            .any(|x| x.key == "enter" && x.verb == "stream"),
-        "{:?}",
-        f.hints
-    );
-
-    let mut paned = node("root", None, NodeState::Running);
-    paned.pane = true;
-    h.set_nodes(vec![paned]);
-    assert_eq!(h.key(Key::Enter), Effect::Attach(AgentId("root".into())));
-    let f = view::frame(&h, &view::Places::default());
-    assert!(
-        f.hints
-            .iter()
-            .any(|x| x.key == "enter" && x.verb == "attach"),
-        "{:?}",
-        f.hints
-    );
+    let lines: Vec<String> = facts(&h).into_iter().map(|(t, _)| t).collect();
+    assert!(lines[0].ends_with("  10 in  5 out"), "{lines:?}");
+    assert_eq!(lines[1], "added the limiter", "the account's first line");
+    assert_eq!(lines[2], "marion/t-1  +84 -12  3 files");
 }
 
-/// **A blocked agent says what the operator can do about it here**: a pane agent's dialog is
-/// answered by attaching, a headless one has no terminal to attach to and is pointed at the keys
-/// that act on it, and one waiting on its own agents points at them.
+/// **An endpoint node says which model it runs on**: `provider:model` on its row, and with the
+/// route in its preview; a node on its harness's own configuration shows neither.
 #[test]
-fn a_blocked_agent_says_what_the_operator_can_do_about_it() {
-    use marion_core::node::BlockReason;
-    let needs = |n: NodeSummary| {
-        let mut h = home();
-        h.tab = Tab::Watch;
-        h.set_nodes(vec![n]);
-        view::frame(&h, &view::Places::default())
-            .watch
-            .expanded
-            .and_then(|e| e.needs)
-            .unwrap_or_default()
-    };
-    let headless = needs(node(
-        "root",
-        None,
-        NodeState::Blocked(BlockReason::Permission),
-    ));
-    assert!(headless.contains("s steers it, x cancels it"), "{headless}");
-    assert!(!headless.contains("attach"), "{headless}");
-    let mut paned = node("root", None, NodeState::Blocked(BlockReason::BootDialog));
-    paned.pane = true;
-    assert!(needs(paned).contains("enter attaches"));
-    let waiting = needs(node(
-        "root",
-        None,
-        NodeState::Blocked(BlockReason::Descendants),
-    ));
-    assert!(waiting.contains("its own agents"), "{waiting}");
-}
-
-/// **Help opens from wherever the operator is and goes back there.** `?` is help on an empty
-/// Start prompt and a question mark in a typed one; F1 opens it from any tab; Esc, `?` or F1 return
-/// to the tab it was opened from, not to Start.
-#[test]
-fn help_opens_from_any_tab_and_returns_to_it() {
+fn an_endpoint_node_shows_its_provider_and_model() {
     let mut h = home();
-    h.key(Key::Char('?'));
-    assert_eq!(h.tab, Tab::Help, "`?` on an empty prompt");
-    h.key(Key::Esc);
-    assert_eq!(h.tab, Tab::Start);
-    typed(&mut h, "why?");
-    assert_eq!(h.tab, Tab::Start);
-    assert_eq!(
-        h.start.prompt, "why?",
-        "a question mark in a prompt is text"
+    let mut root = node("root", None, NodeState::Running);
+    root.endpoint = Some(marion_core::proto::NodeEndpoint {
+        provider: "groq".into(),
+        model: Some("llama-3.3-70b".into()),
+        route: Some("translated".into()),
+    });
+    h.set_nodes(vec![root, node("child", Some("root"), NodeState::Running)]);
+    h.select("root");
+    let f = frame(&h);
+    assert_eq!(row(&f, "root").who, "codex groq:llama-3.3-70b");
+    assert_eq!(row(&f, "child").who, "codex");
+    assert!(
+        facts(&h)
+            .iter()
+            .any(|(t, _)| t == "groq:llama-3.3-70b · translated"),
+        "{:?}",
+        facts(&h)
     );
-    h.key(Key::F1);
-    assert_eq!(h.tab, Tab::Help, "F1 even mid-prompt");
-    h.key(Key::F1);
-    assert_eq!(h.tab, Tab::Start);
-    assert_eq!(h.start.prompt, "why?", "the prompt survives");
-    for from in [Tab::Watch, Tab::Setup] {
-        h.tab = from;
-        h.key(Key::Char('?'));
-        assert_eq!(h.tab, Tab::Help);
-        h.key(Key::Esc);
-        assert_eq!(h.tab, from, "back where it was opened");
+}
+
+/// **A parent's preview carries its subtree, against its tree budget where it has one**, warned
+/// past the budget's line; a leaf's carries nothing, its subtree being itself.
+#[test]
+fn a_parents_preview_shows_its_subtree_against_its_budget() {
+    let mut h = home();
+    let mut root = node("root", None, NodeState::Running);
+    root.tokens = Some(1_000);
+    root.changed = Some(2);
+    root.budget = Some(marion_core::budget::Budget {
+        tree_tokens: Some(1_500),
+        ..Default::default()
+    });
+    let mut child = node("child", Some("root"), NodeState::Exited(ExitStatus::Ok));
+    child.tokens = Some(400);
+    child.changed = Some(3);
+    h.set_nodes(vec![root, child]);
+    h.select("root");
+    let subtree = facts(&h)
+        .into_iter()
+        .find(|(t, _)| t.contains("agents,"))
+        .expect("a subtree line");
+    assert!(
+        subtree.0.starts_with("1.4k tokens  5 files")
+            && subtree.0.contains("2 agents, 1 running")
+            && subtree.0.ends_with("budget 1.4k of 1.5k"),
+        "{}",
+        subtree.0
+    );
+    assert_eq!(subtree.1, [Ink::Warn], "past its tree budget's line");
+    h.select("child");
+    assert!(!facts(&h).iter().any(|(t, _)| t.contains("agents,")));
+}
+
+// ------------------------------------------------------------------ races and workflows
+
+fn seat(
+    id: &str,
+    n: u8,
+    verdict: Option<marion_core::race::SeatVerdict>,
+    tokens: u64,
+) -> NodeSummary {
+    NodeSummary {
+        race: Some(marion_core::proto::model::RaceBadge {
+            race_id: marion_core::race::RaceId("019f0000-1a2b-7000-8000-00000000000a".into()),
+            seat: n,
+            verdict,
+        }),
+        tokens: Some(tokens),
+        ..node(id, Some("root"), NodeState::Exited(ExitStatus::Ok))
     }
 }
 
-/// Help drawn as the operator sees it: the real key table (`view::KEYS`) through `marion_tui`, at
-/// the size a terminal opens at.
-fn help_screen(h: &Home, w: u16, rows: u16) -> String {
-    use ratatui::widgets::Widget as _;
-    let f = view::frame(h, &view::Places::default());
-    let screen = marion_tui::home::Screen {
-        theme: marion_tui::home::theme::Theme::from_colorterm(None),
-        project: "~/code/acme-api",
-        attention: 0,
-        body: f.body(Tab::Help),
-        input: f.input.clone(),
-        hints: f.hints.clone(),
-        notice: None,
-        frame: 0,
-    };
-    let area = ratatui::layout::Rect::new(0, 0, w, rows);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    (&screen).render(area, &mut buf);
-    (0..rows)
-        .map(|y| {
-            (0..w)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+const RACE: &str = "race:019f0000-1a2b-7000-8000-00000000000a";
+
+/// **A race's seats sit under one header row**, placed where their parent put them. The header
+/// sums the seats — their count, how many finished, their tokens — and names the winner once
+/// decided; each seat's row says its seat and verdict. The header is no node.
+#[test]
+fn a_race_is_one_header_row_over_its_seats() {
+    use marion_core::race::SeatVerdict;
+    let mut h = home();
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, None, 100),
+        NodeSummary {
+            state: NodeState::Running,
+            ..seat("s2", 2, None, 50)
+        },
+    ]);
+    let f = frame(&h);
+    let ids = row_ids(&f);
+    assert_eq!(&ids[..2], ["root", RACE]);
+    assert_eq!(ids.len(), 4);
+    let race = row(&f, RACE);
+    assert_eq!(race.who, "race");
+    assert!(
+        race.title.ends_with("2 agents · 1 of 2 done"),
+        "{}",
+        race.title
+    );
+    assert_eq!(race.tokens, Some(150), "the seats' tokens, summed");
+    assert!(
+        row(&f, "s1").title.ends_with("· agent 1"),
+        "{}",
+        row(&f, "s1").title
+    );
+
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, Some(SeatVerdict::Failed), 100),
+        seat("s2", 2, Some(SeatVerdict::Won), 50),
+    ]);
+    let f = frame(&h);
+    assert!(
+        row(&f, RACE).title.ends_with("won"),
+        "{}",
+        row(&f, RACE).title
+    );
+    assert!(row(&f, "s2").title.ends_with("agent 2 ★ won"));
+    assert!(row(&f, "s1").title.ends_with("agent 1 failed"));
+
+    h.watch.tree.select(RACE);
+    assert!(h.selected().is_none());
+    assert!(footer_has(&h, "enter", "winner"));
 }
 
-/// **Help shows every section of the real key table at 80x24** — two columns, the commands left
-/// for a wider screen — and the section for the tab it was opened from comes first; where it does
-/// not fit it scrolls with j/k. Mutation: draw one column, or drop the first section. It fails.
+/// **A race row acts on its winner**: Enter goes to it, `m` goes to it and, once its detail says
+/// which branch it landed, asks to merge that branch; before a winner, or for keys that act on one
+/// agent, it says what does work there.
 #[test]
-fn help_shows_every_section_of_the_real_key_table_at_80x24() {
+fn a_race_row_goes_to_its_winner_and_merges_it() {
+    use marion_core::race::SeatVerdict;
     let mut h = home();
-    h.tab = Tab::Watch;
-    h.key(Key::Char('?'));
-    let screen = help_screen(&h, 80, 24);
-    for (title, _) in view::KEYS {
-        assert!(
-            screen.contains(&title.to_uppercase()),
-            "{title} is missing at 80x24:\n{screen}"
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, None, 100),
+        NodeSummary {
+            state: NodeState::Running,
+            ..seat("s2", 2, None, 50)
+        },
+    ]);
+    h.watch.tree.select(RACE);
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("no winner yet"));
+    h.key(Key::Char('s'));
+    assert!(h.notice.as_deref().unwrap_or("").starts_with("a race"));
+    assert_eq!(h.mode, Mode::Normal, "no steer for a header");
+
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, Some(SeatVerdict::Failed), 100),
+        seat("s2", 2, Some(SeatVerdict::Won), 50),
+    ]);
+    h.watch.tree.select(RACE);
+    h.key(Key::Enter);
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
+    h.watch.tree.select(RACE);
+    assert_eq!(h.key(Key::Char('m')), Effect::None);
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
+    h.absorb_detail(AgentId("s2".into()), landed("marion/s2"));
+    assert_eq!(h.mode, Mode::Confirm(Effect::Merge("marion/s2".into())));
+    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/s2".into()));
+}
+
+const WF: &str = "019f0000-1a2b-7000-8000-00000000000b";
+
+/// A node that ran step `step` (round `round`) of the run `ship`, four steps, 2M budget.
+fn step(
+    id: &str,
+    step: u8,
+    round: u8,
+    step_id: &str,
+    state: NodeState,
+    tokens: u64,
+) -> NodeSummary {
+    NodeSummary {
+        workflow: Some(marion_core::proto::model::WorkflowBadge {
+            wf_id: marion_core::workflow::WorkflowId(WF.into()),
+            step,
+            round,
+            verdict: None,
+            closed: None,
+            name: "ship".into(),
+            steps: 4,
+            step_id: step_id.into(),
+            budget_tokens: Some(2_000_000),
+        }),
+        tokens: Some(tokens),
+        ..node(id, None, state)
+    }
+}
+
+/// **A workflow run is one header row over its steps**: the header says the run and the step it
+/// is on of how many (and the review round), its tokens and its clock in the row's columns; each
+/// step node says its step. Enter on the header goes to the step running now.
+#[test]
+fn a_workflow_is_one_header_row_over_its_steps() {
+    let twelve_minutes_ago = marion_core::encoding::SystemTime(
+        std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60 + 5),
+    );
+    let mut h = home();
+    h.set_nodes(vec![
+        NodeSummary {
+            started_at: Some(twelve_minutes_ago),
+            ..step(
+                "plan",
+                0,
+                0,
+                "plan",
+                NodeState::Exited(ExitStatus::Ok),
+                400_000,
+            )
+        },
+        step("gate1", 2, 0, "gate", NodeState::Exited(ExitStatus::Ok), 0),
+        step("gate2", 2, 1, "gate", NodeState::Running, 1_000_000),
+    ]);
+    let f = frame(&h);
+    let header = format!("workflow:{WF}");
+    assert_eq!(row_ids(&f)[0], header);
+    assert_eq!(row_ids(&f).len(), 4);
+    let head = row(&f, &header);
+    assert_eq!(head.who, "workflow");
+    assert_eq!(head.title, "workflow ship · 3/4 gate r2");
+    assert_eq!((head.time.as_str(), head.tokens), ("12m", Some(1_400_000)));
+    assert!(row(&f, "plan").title.ends_with("step plan"));
+    assert!(row(&f, "gate2").title.ends_with("step gate r2"));
+    h.watch.tree.select(&header);
+    assert!(
+        facts(&h).iter().any(|(t, _)| t == "budget 1.4M of 2M"),
+        "{:?}",
+        facts(&h)
+    );
+
+    assert!(h.selected().is_none(), "the header is no node");
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(
+        h.selected().map(|n| n.agent_id.0.as_str()),
+        Some("gate2"),
+        "Enter on the header goes to the step running now"
+    );
+}
+
+// ------------------------------------------------------------------ effects and their words
+
+#[test]
+fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
+    let id = AgentId("0199-abc".into());
+    let all = [
+        Effect::Run {
+            agent_type: "codex".into(),
+            model: Some("o3".into()),
+            prompt: "p q".into(),
+            pane: true,
+        },
+        Effect::Attach(id.clone()),
+        Effect::Steer(id.clone(), "-x".into()),
+        Effect::Cancel(id.clone()),
+        Effect::Kill(id.clone()),
+        Effect::Resume(id.clone()),
+        Effect::Shell("/w".into()),
+        Effect::Diff("b".into()),
+        Effect::Merge("marion/t1".into()),
+        Effect::Recheck,
+        Effect::EditTypes,
+    ];
+    for e in &all {
+        assert!(e.argv().is_some_and(|a| !a.is_empty()), "{e:?}");
+        assert_eq!(
+            e.destructive(),
+            matches!(e, Effect::Cancel(_) | Effect::Kill(_) | Effect::Merge(_)),
+            "{e:?}"
         );
     }
-    let watch = screen.find("WATCH").unwrap();
-    let start = screen.find("START").unwrap();
-    assert!(
-        watch < start,
-        "opened from Watch, Watch comes first:\n{screen}"
+    assert_eq!(
+        Effect::Merge("marion/t1".into()).argv(),
+        Some(
+            ["git", "merge", "--no-ff", "--", "marion/t1"]
+                .map(String::from)
+                .to_vec()
+        )
     );
-    insta::assert_snapshot!(screen);
-    // A screen too short for the page scrolls, and says so.
-    let short = help_screen(&h, 80, 14);
-    assert!(short.contains("j/k scroll"), "{short}");
-    h.key(Key::Char('j'));
-    assert_eq!(h.help_scroll, 1);
-    h.key(Key::Char('k'));
-    h.key(Key::Char('k'));
-    assert_eq!(h.help_scroll, 0);
+    assert_eq!(Effect::None.argv(), None);
+    assert_eq!(Effect::Quit.argv(), None);
 }
 
 /// **A failed run's notice names the cause**: marion's own `marion <verb>: …` line, not the usage
@@ -645,149 +1351,6 @@ fn a_failed_runs_notice_is_its_marion_verb_line() {
         "prose that begins with marion is not a refusal"
     );
 }
-
-/// **`m` merges an agent's landed branch, and only after a `y` that names the branch and the
-/// command**; `c` still copies it. An agent that landed nothing says so.
-#[test]
-fn m_merges_a_landed_branch_after_a_y() {
-    let mut h = home();
-    h.tab = Tab::Watch;
-    assert_eq!(h.key(Key::Char('m')), Effect::None);
-    assert!(h.notice.as_deref().unwrap_or("").contains("no branch"));
-    let id = h.selected().unwrap().agent_id.clone();
-    h.absorb_detail(
-        id,
-        NodeDetail {
-            completion: Some(CompletionSummary {
-                status: ExitStatus::Ok,
-                narrative: None,
-                branch: Some("marion/t1".into()),
-                commit: None,
-                changed_paths: 1,
-                exit: String::new(),
-                diff: None,
-            }),
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        h.key(Key::Char('m')),
-        Effect::None,
-        "no merge on the first key"
-    );
-    let f = view::frame(&h, &view::Places::default());
-    let marion_tui::home::Input::Confirm { question, command } = f.input else {
-        panic!("a confirm");
-    };
-    assert!(question.contains("marion/t1"), "{question}");
-    assert_eq!(command, "git merge --no-ff -- marion/t1");
-    assert_eq!(h.key(Key::Char('n')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("not merged"));
-    h.key(Key::Char('m'));
-    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/t1".into()));
-    assert!(matches!(h.key(Key::Char('c')), Effect::Copy(_)));
-}
-
-/// **Setup's hints are the keys of the section under the cursor**: a harness offers details, the
-/// re-check and the agent-type keys (with `e`); a key row offers add and remove; a login row add,
-/// use and remove. Enter expands only a harness, and on the other rows says what does work.
-#[test]
-fn setup_hints_follow_the_section_under_the_cursor() {
-    let mut h = setup_home();
-    let keys = |h: &Home| {
-        view::frame(h, &view::Places::default())
-            .hints
-            .into_iter()
-            .map(|x| x.key)
-            .collect::<Vec<_>>()
-    };
-    h.setup.cursor = 0;
-    let on_harness = keys(&h);
-    assert!(
-        ["enter", "r", "e", "n"]
-            .iter()
-            .all(|k| on_harness.contains(&k.to_string())),
-        "{on_harness:?}"
-    );
-    h.key(Key::Enter);
-    assert!(h.setup.expanded, "Enter shows a harness's details");
-    h.setup.expanded = false;
-    h.setup.cursor = h.harnesses.len();
-    assert!(h.selected_login().is_some());
-    let on_key = keys(&h);
-    assert_eq!(on_key, ["j/k", "a", "x"]);
-    h.key(Key::Enter);
-    assert!(!h.setup.expanded, "a key has no details");
-    assert!(h.notice.as_deref().unwrap_or("").contains("a adds a key"));
-}
-
-/// **Watch's hint row keeps `!` where a narrow screen cannot drop it**, second; and with nothing
-/// to act on it offers only the key that leads to Start.
-#[test]
-fn watch_hints_put_needs_you_second_and_an_empty_forest_offers_only_start() {
-    let mut h = home();
-    h.tab = Tab::Watch;
-    let keys = |h: &Home| {
-        view::frame(h, &view::Places::default())
-            .hints
-            .into_iter()
-            .map(|x| x.key)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(keys(&h)[1], "!");
-    h.lost_supervisor();
-    assert_eq!(keys(&h), ["tab"]);
-    h.set_nodes(vec![]);
-    assert_eq!(keys(&h), ["tab"]);
-}
-
-#[test]
-fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
-    let id = AgentId("0199-abc".into());
-    let all = [
-        Effect::Run {
-            agent_type: "codex".into(),
-            model: Some("o3".into()),
-            prompt: "p q".into(),
-            pane: true,
-        },
-        Effect::Attach(id.clone()),
-        Effect::Steer(id.clone(), "-x".into()),
-        Effect::Cancel(id.clone()),
-        Effect::Kill(id.clone()),
-        Effect::Resume(id.clone()),
-        Effect::Shell("/w".into()),
-        Effect::Diff("b".into()),
-        Effect::Copy("git merge b".into()),
-        Effect::Recheck,
-        Effect::EditTypes,
-    ];
-    for e in &all {
-        assert!(e.argv().is_some_and(|a| !a.is_empty()), "{e:?}");
-        assert_eq!(
-            e.destructive(),
-            matches!(e, Effect::Cancel(_) | Effect::Kill(_)),
-            "{e:?}"
-        );
-    }
-    let merge = Effect::Merge("marion/t1".into());
-    assert_eq!(
-        merge.argv(),
-        Some(
-            ["git", "merge", "--no-ff", "--", "marion/t1"]
-                .map(String::from)
-                .to_vec()
-        )
-    );
-    assert!(
-        merge.destructive(),
-        "a merge changes the checkout: after a y"
-    );
-    assert_eq!(Effect::None.argv(), None);
-    assert_eq!(Effect::Quit.argv(), None);
-}
-
-// ------------------------------------------------------------------------ the view's words
 
 #[test]
 fn the_project_reads_as_home_relative_or_its_name_and_branch() {
@@ -828,156 +1391,6 @@ fn clocks_are_shown_in_the_operators_local_time() {
     assert_eq!(clock_in("not a time", 3600, true), "not a time");
 }
 
-fn detail_with_workspace(w: marion_core::contract::Workspace) -> NodeDetail {
-    NodeDetail {
-        workspace: Some(w),
-        ..Default::default()
-    }
-}
-
-#[test]
-fn a_workspace_reads_as_its_branch_not_its_state_path() {
-    use marion_core::contract::Workspace;
-    let mut h = home();
-    h.set_nodes(vec![node("root", None, NodeState::Running)]);
-    h.absorb_detail(
-        AgentId("root".into()),
-        detail_with_workspace(Workspace::Worktree {
-            path: "/private/tmp/state/ea39/agents/01a0/worktree".into(),
-            branch: "marion/t-3c33".into(),
-        }),
-    );
-    let f = view::frame(&h, &view::Places::default());
-    let ws = f.watch.expanded.unwrap().workspace.unwrap();
-    assert_eq!(ws, "worktree marion/t-3c33");
-
-    h.absorb_detail(
-        AgentId("root".into()),
-        detail_with_workspace(Workspace::SharedCwd {
-            path: "/private/tmp/run/repo".into(),
-        }),
-    );
-    let f = view::frame(&h, &view::Places::default());
-    let ws = f.watch.expanded.unwrap().workspace.unwrap();
-    assert_eq!(ws, "the checkout repo");
-}
-
-#[test]
-fn can_names_only_the_few_things_the_home_keys_do() {
-    let mut h = home();
-    h.set_nodes(vec![node("root", None, NodeState::Running)]);
-    let f = view::frame(&h, &view::Places::default());
-    let caps = f.watch.expanded.unwrap().caps;
-    let names: Vec<&str> = caps.iter().map(|(n, _)| n.as_str()).collect();
-    assert!(
-        (1..=3).contains(&names.len()),
-        "a few words, not every capability field: {names:?}"
-    );
-    assert!(
-        names
-            .iter()
-            .all(|n| ["steer", "resume", "interrupt"].contains(n)),
-        "{names:?}"
-    );
-}
-
-/// The clock the loop may wake for: only while something on the tab moves with time. An idle
-/// forest, an ended one, or a tab with nothing animated makes the screen sleep until an event.
-#[test]
-fn only_a_moving_screen_asks_for_a_clock() {
-    let mut h = home();
-    h.tab = Tab::Watch;
-    h.set_nodes(vec![]);
-    assert!(!h.animating(), "an empty forest sleeps");
-    h.set_nodes(vec![node("a", None, NodeState::Exited(ExitStatus::Ok))]);
-    assert!(!h.animating(), "an ended forest sleeps");
-    h.set_nodes(vec![node("a", None, NodeState::Running)]);
-    assert!(h.animating(), "a running node's elapsed time ticks");
-    h.tab = Tab::Help;
-    assert!(!h.animating(), "not while another tab hides it");
-    h.tab = Tab::Setup;
-    assert!(!h.animating());
-    h.checking = true;
-    assert!(h.animating(), "a harness still being checked spins");
-    h.tab = Tab::Start;
-    assert!(h.animating());
-}
-
-/// A row carries its elapsed time and its token total from the summary — for every node, not
-/// only the selected one whose detail was read.
-#[test]
-fn every_row_shows_its_elapsed_time_and_tokens() {
-    use marion_core::encoding::SystemTime;
-    let t0 = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
-    let mut running = node("a", None, NodeState::Running);
-    running.started_at = Some(SystemTime(t0));
-    running.tokens = Some(88_000);
-    let mut unstarted = node("b", None, NodeState::Running);
-    unstarted.started_at = None;
-    let mut h = home();
-    h.set_nodes(vec![running, unstarted]);
-    let now = t0 + std::time::Duration::from_secs(137);
-    let f = view::frame_at(&h, &view::Places::default(), now);
-    let a = &f.watch.rows[0];
-    assert_eq!((a.elapsed.as_str(), a.tokens), ("2m17s", Some(88_000)));
-    let b = &f.watch.rows[1];
-    assert_eq!(
-        (b.elapsed.as_str(), b.tokens),
-        ("", None),
-        "unknown is blank, never 0"
-    );
-
-    let mut ended = node("c", None, NodeState::Exited(ExitStatus::Ok));
-    ended.started_at = Some(SystemTime(t0));
-    ended.ended_at = Some(SystemTime(t0 + std::time::Duration::from_secs(60)));
-    h.set_nodes(vec![ended]);
-    let later = t0 + std::time::Duration::from_secs(60 + 3840);
-    let f = view::frame_at(&h, &view::Places::default(), later);
-    assert_eq!(f.watch.rows[0].elapsed, "1h ago", "fits the 7-column time");
-}
-
-#[test]
-fn the_expanded_node_draws_per_turn_tokens_and_the_diff_it_landed() {
-    use marion_core::proto::result::DiffStat;
-    let mut h = home();
-    h.set_nodes(vec![node("a", None, NodeState::Exited(ExitStatus::Ok))]);
-    h.absorb_detail(
-        AgentId("a".into()),
-        NodeDetail {
-            usage: Some(marion_core::contract::TokenUsage {
-                input: 10,
-                output: 5,
-                cache_read: 0,
-                cache_write: 0,
-                reasoning: None,
-            }),
-            turns: vec![3, 12],
-            completion: Some(CompletionSummary {
-                status: ExitStatus::Ok,
-                narrative: None,
-                branch: Some("marion/t-1".into()),
-                commit: None,
-                changed_paths: 3,
-                exit: String::new(),
-                diff: Some(DiffStat {
-                    added: 84,
-                    removed: 12,
-                    files: 3,
-                }),
-            }),
-            ..Default::default()
-        },
-    );
-    let e = view::frame(&h, &view::Places::default())
-        .watch
-        .expanded
-        .unwrap();
-    let t = e.tokens.unwrap();
-    assert_eq!((t.rate, t.window.as_str()), (vec![3, 12], "turn"));
-    let r = e.result.unwrap();
-    assert_eq!((r.added, r.removed, r.files), (84, 12, 3));
-}
-
 // ------------------------------------------------------------------ Setup: logins and the form
 
 fn every_key() -> Vec<Key> {
@@ -991,6 +1404,10 @@ fn every_key() -> Vec<Key> {
         Key::Down,
         Key::Left,
         Key::Right,
+        Key::PageUp,
+        Key::PageDown,
+        Key::End,
+        Key::F1,
         Key::Paste("p".into()),
     ]
     .into_iter()
@@ -998,9 +1415,11 @@ fn every_key() -> Vec<Key> {
     .collect()
 }
 
+/// Setup, reached the way the operator does: `,` from the agents.
 fn setup_home() -> Home {
     let mut h = home();
-    h.tab = Tab::Setup;
+    h.key(Key::Char(','));
+    assert_eq!(h.page, Page::Setup);
     h.setup.providers = vec!["anthropic".into(), "openrouter".into()];
     h.setup.logins = vec![
         StoredLogin {
@@ -1015,6 +1434,30 @@ fn setup_home() -> Home {
         },
     ];
     h
+}
+
+/// **Setup's footer is the keys of the section under the cursor**: a harness offers details, the
+/// re-check and the agent-type keys; a key row offers add and remove. Enter expands only a
+/// harness.
+#[test]
+fn setup_footer_follows_the_section_under_the_cursor() {
+    let mut h = setup_home();
+    h.setup.cursor = 0;
+    let on_harness = footer_keys(&h);
+    assert!(
+        ["enter", "r", "e", "n"]
+            .iter()
+            .all(|k| on_harness.contains(&k.to_string())),
+        "{on_harness:?}"
+    );
+    h.key(Key::Enter);
+    assert!(h.setup.expanded, "Enter shows a harness's details");
+    h.setup.expanded = false;
+    h.setup.cursor = h.harnesses.len();
+    assert!(h.selected_login().is_some());
+    assert_eq!(footer_keys(&h), ["a", "x", "esc"]);
+    h.key(Key::Enter);
+    assert!(!h.setup.expanded, "a key has no details");
 }
 
 #[test]
@@ -1059,25 +1502,28 @@ fn removing_a_key_waits_for_y_and_names_the_credential_id() {
     let mut h = setup_home();
     assert_eq!(h.key(Key::Char('x')), Effect::None);
     assert_eq!(h.mode, Mode::Normal, "x on a harness row removes nothing");
-    assert!(h.notice.is_some());
+    assert_eq!(h.notice.as_deref(), Some("select a key or a profile"));
+}
+
+fn typing(purpose: Purpose, text: &str) -> Mode {
+    Mode::Typing {
+        purpose,
+        text: text.into(),
+    }
 }
 
 #[test]
 fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_key_add() {
     let mut h = setup_home();
     assert_eq!(h.key(Key::Char('a')), Effect::None);
-    assert_eq!(
-        h.mode,
-        Mode::Login {
-            text: String::new()
-        }
-    );
+    assert_eq!(h.mode, typing(Purpose::Key, ""));
     typed(&mut h, "openrouter:personal");
     assert_eq!(
         h.key(Key::Enter),
         Effect::Login("openrouter:personal".into())
     );
-    // A provider marion does not know is refused here, before the terminal changes hands.
+    // A provider marion does not know is refused here, before the terminal changes hands, and
+    // the line stays open with what was typed.
     h.key(Key::Char('a'));
     typed(&mut h, "nope");
     assert_eq!(h.key(Key::Enter), Effect::None);
@@ -1087,15 +1533,12 @@ fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_key_add() {
             .unwrap_or("")
             .contains("marion key list")
     );
-    // On a key's row, the box starts with that key's provider.
+    assert_eq!(h.mode, typing(Purpose::Key, "nope"));
+    h.key(Key::Esc);
+    // On a key's row, the line starts with that key's provider.
     h.setup.cursor = 3;
     h.key(Key::Char('a'));
-    assert_eq!(
-        h.mode,
-        Mode::Login {
-            text: "openrouter".into()
-        }
-    );
+    assert_eq!(h.mode, typing(Purpose::Key, "openrouter"));
     assert_eq!(h.key(Key::Esc), Effect::None);
     assert_eq!(h.mode, Mode::Normal);
 }
@@ -1172,7 +1615,7 @@ fn u_makes_the_selected_profile_its_harness_default_and_says_so_when_it_already_
     assert_eq!(h.notice.as_deref(), Some("claude already runs on work"));
     h.setup.cursor = 0;
     assert_eq!(h.key(Key::Char('u')), Effect::None, "u off the profiles");
-    assert!(h.notice.is_some());
+    assert_eq!(h.notice.as_deref(), Some("select a profile"));
 }
 
 #[test]
@@ -1212,10 +1655,8 @@ fn adding_a_profile_asks_for_harness_and_name_and_hands_off_to_marion_profile_ad
     assert_eq!(h.key(Key::Char('a')), Effect::None);
     assert_eq!(
         h.mode,
-        Mode::Profile {
-            text: "codex ".into()
-        },
-        "on a profile's row the box starts with its harness"
+        typing(Purpose::Profile, "codex "),
+        "on a profile's row the line starts with its harness"
     );
     typed(&mut h, "personal");
     assert_eq!(
@@ -1226,50 +1667,45 @@ fn adding_a_profile_asks_for_harness_and_name_and_hands_off_to_marion_profile_ad
         }
     );
     // Refused here, before the terminal changes hands: a harness with no carrier, a name that is
-    // not one, a name taken, and a box without both words.
+    // not one, a name taken, and a line without both words. Each keeps the line open.
     for (text, says) in [
         ("copilot gh", "takes no profiles"),
         ("claude ../x", "not a profile name"),
         ("claude work", "already exists"),
         ("claude", "a harness and a name"),
     ] {
-        h.key(Key::Char('a'));
-        h.mode = Mode::Profile { text: text.into() };
+        h.mode = typing(Purpose::Profile, text);
         assert_eq!(h.key(Key::Enter), Effect::None, "{text}");
         assert!(
             h.notice.as_deref().unwrap_or("").contains(says),
             "{text}: {:?}",
             h.notice
         );
+        assert_eq!(h.mode, typing(Purpose::Profile, text));
     }
-    // Off the profiles, `a` is still the key box.
+    h.key(Key::Esc);
+    // Off the profiles, `a` is still the key line.
     h.setup.cursor = 3;
     h.key(Key::Char('a'));
-    assert!(matches!(h.mode, Mode::Login { .. }));
-    // On the row that adds the first, the box starts empty.
+    assert!(matches!(
+        h.mode,
+        Mode::Typing {
+            purpose: Purpose::Key,
+            ..
+        }
+    ));
+    // On the row that adds the first, the line starts empty.
     let mut h = setup_home();
     h.setup.cursor = 4;
     h.key(Key::Char('a'));
-    assert_eq!(
-        h.mode,
-        Mode::Profile {
-            text: String::new()
-        }
-    );
+    assert_eq!(h.mode, typing(Purpose::Profile, ""));
     assert_eq!(h.key(Key::Esc), Effect::None);
     assert_eq!(h.mode, Mode::Normal);
 }
 
 #[test]
 fn no_single_key_on_a_profile_is_destructive() {
-    let keys = (b'!'..=b'~').map(|b| Key::Char(b as char)).chain([
-        Key::Enter,
-        Key::Esc,
-        Key::Backspace,
-        Key::Up,
-        Key::Down,
-    ]);
-    for k in keys {
+    for k in every_key() {
         let mut h = profiles_home();
         h.setup.cursor = 4;
         let e = h.key(k.clone());
@@ -1308,7 +1744,7 @@ fn profile_verbs_echo_the_commands_they_run_and_only_remove_asks_first() {
 }
 
 /// The echoed commands are the verbs `marion profile` runs: each one, handed to the verb's own
-/// dispatcher over a scratch profile store, does what the pane says — and `add` only **prints**
+/// dispatcher over a scratch profile store, does what the screen says — and `add` only **prints**
 /// the login command, which nothing runs.
 #[test]
 fn the_profile_echoes_run_through_marion_profiles_own_verbs() {
@@ -1473,32 +1909,6 @@ fn setup_shows_long_paths_by_their_ends() {
     assert_eq!(view::short_place(keychain), keychain);
 }
 
-#[test]
-fn recent_runs_say_when_they_started() {
-    let mut started = node(
-        "0199aaaa-1111-7000-8000-000000000001",
-        None,
-        NodeState::Running,
-    );
-    started.started_at = Some(marion_core::encoding::SystemTime(
-        std::time::SystemTime::now(),
-    ));
-    let unknown = node(
-        "0199aaaa-2222-7000-8000-000000000002",
-        None,
-        NodeState::Running,
-    );
-    let mut h = home();
-    h.set_nodes(vec![started, unknown]);
-    let f = view::frame(&h, &view::Places::default());
-    let whens: Vec<&str> = f.start.recent.iter().map(|r| r.when.as_str()).collect();
-    assert_eq!(whens[0], "2222", "no start: the short id");
-    assert!(
-        whens[1].len() == 5 && whens[1].as_bytes()[2] == b':',
-        "a start: hh:mm, {whens:?}"
-    );
-}
-
 /// A profile's row says what its probe said, and shows the login command only while it is logged
 /// out or the probe could not tell — the command for the operator to run, never marion.
 #[test]
@@ -1507,7 +1917,7 @@ fn a_logged_out_profile_shows_its_login_command_and_a_logged_in_one_does_not() {
     let mut h = profiles_home();
     h.setup.profiles[0].login = Some(LoginState::LoggedIn);
     h.setup.profiles[1].login = Some(LoginState::LoggedOut);
-    let f = view::frame(&h, &view::Places::default());
+    let f = frame(&h);
     let rows = &f.setup.profiles;
     assert_eq!(
         (rows[0].note.as_str(), rows[0].login.as_deref()),
@@ -1520,23 +1930,15 @@ fn a_logged_out_profile_shows_its_login_command_and_a_logged_in_one_does_not() {
     );
     assert!(rows[0].default && !rows[1].default);
     h.setup.profiles[1].login = Some(LoginState::Unknown("timed out".into()));
-    let f = view::frame(&h, &view::Places::default());
     assert!(
-        f.setup.profiles[1].login.is_some(),
+        frame(&h).setup.profiles[1].login.is_some(),
         "an unknown login offers the command too"
     );
     h.setup.profiles[1].login = None;
-    let f = view::frame(&h, &view::Places::default());
-    assert_eq!(f.setup.profiles[1].note, "checking…");
+    assert_eq!(frame(&h).setup.profiles[1].note, "checking…");
     assert!(h.animating(), "a probe still out keeps the spinner turning");
-    // On a profile the box echoes `use`; on the add row, `add`.
     h.setup.cursor = 5;
-    let f = view::frame(&h, &view::Places::default());
-    assert!(
-        matches!(&f.input, marion_tui::home::Input::Command { line, .. } if line == "marion profile use codex cx"),
-        "{:?}",
-        f.input
-    );
+    assert!(footer_has(&h, "u", "use"));
 }
 
 #[test]
@@ -1557,212 +1959,11 @@ fn a_new_listing_selects_the_profile_just_added_and_keeps_the_cursor_on_a_real_r
     assert!(h.on_profiles() && h.selected_profile().is_none());
 }
 
-/// **An endpoint node says which model it runs on**: `provider:model` on its row, and with the route
-/// in its expansion; a node on its harness's own configuration shows neither.
-#[test]
-fn an_endpoint_node_shows_its_provider_and_model_on_its_row_and_its_route_when_expanded() {
-    let mut h = home();
-    let mut root = node("root", None, NodeState::Running);
-    root.endpoint = Some(marion_core::proto::NodeEndpoint {
-        provider: "groq".into(),
-        model: Some("llama-3.3-70b".into()),
-        route: Some("translated".into()),
-    });
-    h.set_nodes(vec![root, node("child", Some("root"), NodeState::Running)]);
-    let f = view::frame(&h, &view::Places::default());
-    assert!(
-        f.watch.rows[0].kind.ends_with("groq:llama-3.3-70b"),
-        "{:?}",
-        f.watch.rows[0]
-    );
-    assert!(!f.watch.rows[1].kind.contains(':'), "{:?}", f.watch.rows[1]);
-    let expanded = f.watch.expanded.unwrap();
-    assert_eq!(
-        expanded.endpoint.as_deref(),
-        Some("groq:llama-3.3-70b · translated")
-    );
-}
-
-fn seat(
-    id: &str,
-    n: u8,
-    verdict: Option<marion_core::race::SeatVerdict>,
-    tokens: u64,
-) -> NodeSummary {
-    NodeSummary {
-        race: Some(marion_core::proto::model::RaceBadge {
-            race_id: marion_core::race::RaceId("019f0000-1a2b-7000-8000-00000000000a".into()),
-            seat: n,
-            verdict,
-        }),
-        tokens: Some(tokens),
-        ..node(id, Some("root"), NodeState::Exited(ExitStatus::Ok))
-    }
-}
-
-/// **A race's seats sit under one header row on Watch**, placed where their parent put them. The
-/// header sums the seats — their count, how many finished, their tokens so far — and names the
-/// winner once decided; each seat's row says its seat and verdict. The header is no node, so the
-/// cursor on it selects nothing to attach to.
-#[test]
-fn a_race_is_one_header_row_over_its_seats() {
-    use marion_core::race::SeatVerdict;
-    let mut h = home();
-    h.set_nodes(vec![
-        node("root", None, NodeState::Running),
-        seat("s1", 1, None, 100),
-        NodeSummary {
-            state: NodeState::Running,
-            ..seat("s2", 2, None, 50)
-        },
-    ]);
-    let f = view::frame(&h, &view::Places::default());
-    let ids: Vec<&str> = f.watch.rows.iter().map(|r| r.id.as_str()).collect();
-    let header = "race:019f0000-1a2b-7000-8000-00000000000a";
-    assert_eq!(ids, ["root", header, "s1", "s2"]);
-    let race = &f.watch.rows[1];
-    assert_eq!(race.harness, "race");
-    assert!(
-        race.kind.contains("2 agents · 1 of 2 done"),
-        "{}",
-        race.kind
-    );
-    assert_eq!(race.tokens, Some(150), "the seats' tokens, summed");
-    assert!(
-        f.watch.rows[2].kind.ends_with("· agent 1"),
-        "{}",
-        f.watch.rows[2].kind
-    );
-
-    h.set_nodes(vec![
-        node("root", None, NodeState::Running),
-        seat("s1", 1, Some(SeatVerdict::Failed), 100),
-        seat("s2", 2, Some(SeatVerdict::Won), 50),
-    ]);
-    let f = view::frame(&h, &view::Places::default());
-    assert!(
-        f.watch.rows[1].kind.contains("#2 codex won"),
-        "{}",
-        f.watch.rows[1].kind
-    );
-    assert!(
-        f.watch.rows[3].kind.ends_with("agent 2 ★ won"),
-        "{}",
-        f.watch.rows[3].kind
-    );
-    assert!(
-        f.watch.rows[2].kind.ends_with("agent 1 failed"),
-        "{}",
-        f.watch.rows[2].kind
-    );
-
-    // Down from root lands on the header, which is no node.
-    h.tab = Tab::Watch;
-    h.watch.tree.select(header);
-    assert!(h.selected().is_none());
-    assert_eq!(h.watch_default(), Effect::None);
-}
-
-/// **A parent's row carries its subtree, against its tree budget where it has one, and the
-/// header the forest's total** — the leaf's row carries nothing, its subtree being itself.
-#[test]
-fn a_parent_row_shows_its_subtree_against_its_budget_and_the_header_the_forest() {
-    let mut h = home();
-    h.tab = Tab::Watch;
-    let mut root = node("root", None, NodeState::Running);
-    root.tokens = Some(1_000);
-    root.changed = Some(2);
-    root.budget = Some(marion_core::budget::Budget {
-        tree_tokens: Some(1_500),
-        ..Default::default()
-    });
-    let mut child = node("child", Some("root"), NodeState::Exited(ExitStatus::Ok));
-    child.tokens = Some(400);
-    child.changed = Some(3);
-    h.set_nodes(vec![root, child]);
-    let f = view::frame(&h, &view::Places::default());
-    assert_eq!(f.watch.total.as_deref(), Some("Σ1.4k"));
-    let rows = &f.watch.rows;
-    assert_eq!(
-        rows[0].subtree,
-        Some(("Σ1.4k/1.5k".to_string(), true)),
-        "past 80% of its tree budget"
-    );
-    assert_eq!(rows[1].subtree, None);
-    let (line, over) = f.watch.expanded.unwrap().subtree.unwrap();
-    assert!(over);
-    assert!(
-        line.starts_with("Σ1.4k tokens · 5 Σ files")
-            && line.contains("2 nodes (1 running)")
-            && line.ends_with("budget 1.4k / 1.5k"),
-        "{line}"
-    );
-}
-
-/// **A race row acts on its winner**: Enter goes to it, `m` goes to it and, once its detail says
-/// which branch it landed, asks to merge that branch; before a winner, or for keys that act on one
-/// agent, it says what does work there.
-#[test]
-fn a_race_row_goes_to_its_winner_and_merges_it() {
-    use marion_core::race::SeatVerdict;
-    let mut h = home();
-    h.tab = Tab::Watch;
-    let header = "race:019f0000-1a2b-7000-8000-00000000000a";
-    h.set_nodes(vec![
-        node("root", None, NodeState::Running),
-        seat("s1", 1, None, 100),
-        NodeSummary {
-            state: NodeState::Running,
-            ..seat("s2", 2, None, 50)
-        },
-    ]);
-    h.watch.tree.select(header);
-    assert_eq!(h.key(Key::Enter), Effect::None);
-    assert!(
-        h.notice
-            .as_deref()
-            .unwrap_or("")
-            .contains("no agent has won")
-    );
-    h.key(Key::Char('s'));
-    assert!(h.notice.as_deref().unwrap_or("").contains("a race row"));
-
-    h.set_nodes(vec![
-        node("root", None, NodeState::Running),
-        seat("s1", 1, Some(SeatVerdict::Failed), 100),
-        seat("s2", 2, Some(SeatVerdict::Won), 50),
-    ]);
-    h.watch.tree.select(header);
-    h.key(Key::Enter);
-    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
-    h.watch.tree.select(header);
-    assert_eq!(h.key(Key::Char('m')), Effect::None);
-    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("s2"));
-    h.absorb_detail(
-        AgentId("s2".into()),
-        NodeDetail {
-            completion: Some(CompletionSummary {
-                status: ExitStatus::Ok,
-                narrative: None,
-                branch: Some("marion/s2".into()),
-                commit: None,
-                changed_paths: 1,
-                exit: String::new(),
-                diff: None,
-            }),
-            ..Default::default()
-        },
-    );
-    assert_eq!(h.mode, Mode::Confirm(Effect::Merge("marion/s2".into())));
-    assert_eq!(h.key(Key::Char('y')), Effect::Merge("marion/s2".into()));
-}
-
 /// **Setup's last row turns notifications on or off**: past the profiles, Enter runs the `marion
-/// notify` that flips it, the box echoes that command, and the hints say which way it goes.
+/// notify` that flips it, and the footer says which way it goes.
 #[test]
 fn setup_notifications_row_flips_them_with_enter() {
-    let mut h = home();
-    h.tab = Tab::Setup;
+    let mut h = setup_home();
     h.setup.notify = Some(false);
     h.setup.notify_shown_by = "osascript".into();
     for _ in 0..10 {
@@ -1770,124 +1971,12 @@ fn setup_notifications_row_flips_them_with_enter() {
     }
     assert!(h.on_notify(), "the cursor stops on the last row");
     assert!(!h.on_profiles(), "which is not a profile row");
-    let f = view::frame(&h, &view::Places::default());
-    assert!(
-        f.hints
-            .iter()
-            .any(|x| x.key == "enter" && x.verb == "turn on"),
-        "{:?}",
-        f.hints
-    );
-    let marion_tui::home::Input::Command { line, .. } = &f.input else {
-        panic!("the box echoes a command");
-    };
-    assert_eq!(line, "marion notify on");
+    assert!(footer_has(&h, "enter", "turn on"));
     assert_eq!(h.key(Key::Enter), Effect::Notify(true));
+    assert_eq!(
+        Effect::Notify(true).argv().unwrap(),
+        ["marion", "notify", "on"]
+    );
     h.setup.notify = None;
     assert!(!h.on_notify(), "no row until the setting has been read");
-}
-
-const WF: &str = "019f0000-1a2b-7000-8000-00000000000b";
-
-/// A node that ran step `step` (round `round`) of the run `ship`, four steps, 2M budget.
-fn step(
-    id: &str,
-    step: u8,
-    round: u8,
-    step_id: &str,
-    state: NodeState,
-    tokens: u64,
-) -> NodeSummary {
-    NodeSummary {
-        workflow: Some(marion_core::proto::model::WorkflowBadge {
-            wf_id: marion_core::workflow::WorkflowId(WF.into()),
-            step,
-            round,
-            verdict: None,
-            closed: None,
-            name: "ship".into(),
-            steps: 4,
-            step_id: step_id.into(),
-            budget_tokens: Some(2_000_000),
-        }),
-        tokens: Some(tokens),
-        ..node(id, None, state)
-    }
-}
-
-/// **A workflow run is one header row over its steps on Watch**: the header says the run, the step
-/// it is on of how many (and the review round), its spend against its budget and its clock; each
-/// step node says its step; a race step's header nests under the run's. Enter on the header goes to
-/// the step running now.
-#[test]
-fn a_workflow_is_one_header_row_over_its_steps() {
-    let twelve_minutes_ago = marion_core::encoding::SystemTime(
-        std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60 + 5),
-    );
-    let seat_of = |id: &str, n: u8| {
-        let s = seat(id, n, None, 100);
-        NodeSummary {
-            parent_id: None,
-            workflow: step(id, 1, 0, "impl", NodeState::Exited(ExitStatus::Ok), 0).workflow,
-            ..s
-        }
-    };
-    let mut h = home();
-    h.set_nodes(vec![
-        NodeSummary {
-            started_at: Some(twelve_minutes_ago),
-            ..step(
-                "plan",
-                0,
-                0,
-                "plan",
-                NodeState::Exited(ExitStatus::Ok),
-                400_000,
-            )
-        },
-        seat_of("s1", 1),
-        seat_of("s2", 2),
-        step("gate1", 2, 0, "gate", NodeState::Exited(ExitStatus::Ok), 0),
-        step("gate2", 2, 1, "gate", NodeState::Running, 1_000_000),
-    ]);
-    let f = view::frame(&h, &view::Places::default());
-    let ids: Vec<&str> = f.watch.rows.iter().map(|r| r.id.as_str()).collect();
-    let header = format!("workflow:{WF}");
-    let race = "race:019f0000-1a2b-7000-8000-00000000000a";
-    assert_eq!(
-        ids,
-        [header.as_str(), "plan", race, "s1", "s2", "gate1", "gate2"]
-    );
-    let head = &f.watch.rows[0];
-    assert_eq!(head.harness, "workflow");
-    assert!(
-        head.kind
-            .starts_with("workflow ship · 3/4 gate r2 · Σ1.4M/2M · 12m"),
-        "{}",
-        head.kind
-    );
-    assert!(
-        f.watch.rows[1].kind.contains("step plan"),
-        "{}",
-        f.watch.rows[1].kind
-    );
-    assert!(
-        f.watch.rows[6].kind.contains("step gate r2"),
-        "{}",
-        f.watch.rows[6].kind
-    );
-    assert!(
-        crate::tree::label_of(&h.watch.nodes[4]).contains("step gate r2"),
-        "the tree's label says the step too"
-    );
-
-    h.tab = Tab::Watch;
-    h.watch.tree.select(&header);
-    assert!(h.selected().is_none(), "the header is no node");
-    assert_eq!(h.key(Key::Enter), Effect::None);
-    assert_eq!(
-        h.selected().map(|n| n.agent_id.0.as_str()),
-        Some("gate2"),
-        "Enter on the header goes to the step running now"
-    );
 }

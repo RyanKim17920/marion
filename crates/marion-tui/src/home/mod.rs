@@ -1,71 +1,53 @@
-//! The home screen bare `marion` opens: **Start** (run a task), **Watch** (the forest, the
-//! selected node expanded in place), **Setup** (what `marion doctor` found, agent types, logins)
-//! and **?** (every key).
+//! The home screen bare `marion` opens: a terminal agent manager. The agents in a list on the
+//! left, the selected one previewed on the right, one status line above and one footer line below.
+//! Setup (`,`) and help (`?`) take the body's place; nothing else is a screen of its own.
 //!
 //! # Layout, top to bottom
 //!
-//! A [`widgets::TopBar`] — `◆ marion  <project>` and the tabs — then the tab's body, then a rounded
-//! [`widgets::InputBox`] and a [`widgets::HintRow`]. The box is the one place an operator types:
-//! the prompt on Start, a steer message on Watch, a `y` to confirm something destructive. When
-//! nothing is being typed it shows **the CLI command the selected action is**, so every key on this
-//! screen teaches the command that does the same thing without it.
+//! The status line (`marion  <project>`, then the counts on the right), the body, and the footer.
+//! The footer is the one place an operator types: it shows the keys the selection takes, and turns
+//! into the input line (a new task, a steer) or the confirm line (anything destructive) while one
+//! is open. The confirm line shows the command the action is, so the screen still teaches the CLI.
 //!
 //! # What this module is not
 //!
-//! Like [`crate::tree`], it decides nothing. Every view here is plain, already-rendered data — a
-//! state word and a [`crate::tree::Tone`], a readiness and its note, token counts — projected by
-//! the supervisor, which is the only crate that can read a `NodeState` or a doctor row. What this
-//! module owns is the look: one accent ([`theme`]), status as glyph plus ANSI-16 colour, dim for
-//! context, and column arithmetic ([`text`]) that loses the least important words first. It never
-//! shows a price: marion reports tokens, and a dollar figure would be a guess about the operator's
-//! plan.
+//! Like [`crate::tree`], it decides nothing. Every view here is plain, already-worded data — a state
+//! [`crate::tree::Tone`], a title, token counts — projected by the supervisor, which is the only
+//! crate that can read a `NodeState` or a doctor row. What this module owns is the look: one accent
+//! ([`theme`]), status as glyph plus ANSI-16 colour, dim for context, and column arithmetic
+//! ([`text`]) that loses the least important words first. It never shows a price: marion reports
+//! tokens, and a dollar figure would be a guess about the operator's plan.
 
+pub mod agents;
 pub mod help;
 pub mod keys;
 pub mod setup;
-pub mod start;
 pub mod text;
 pub mod theme;
-pub mod watch;
 pub mod widgets;
 
+pub use agents::{AgentRow, AgentsView, Ink, LineKind, Preview, StreamLine};
 pub use help::{HelpView, KeyRow};
-pub use setup::{AgentTypeRow, FormField, FormView, LoginRow, ProfileRow, SetupView};
-pub use start::{HarnessRow, RecentRow, StartView};
+pub use setup::{AgentTypeRow, FormField, FormView, HarnessRow, LoginRow, ProfileRow, SetupView};
 pub use theme::{Ready, Theme};
-pub use watch::{
-    Expanded, LineKind, MessageView, NodeRow, ResultView, StreamLine, TaskView, TokenView,
-    WatchView,
-};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
-use widgets::{HintRow, InputBox, TopBar};
+use widgets::{FooterLine, StatusLine};
 
-/// The four tabs, in the order the top bar shows them.
+/// Columns between the screen edge and a page's content, where Setup puts its selection caret.
+pub const GUTTER: u16 = 2;
+
+/// What the body shows: the agents, Setup, or every key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    Start,
-    Watch,
+pub enum Page {
+    Agents,
     Setup,
     Help,
 }
 
-impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Start, Tab::Watch, Tab::Setup, Tab::Help];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Tab::Start => "Start",
-            Tab::Watch => "Watch",
-            Tab::Setup => "Setup",
-            Tab::Help => "?",
-        }
-    }
-}
-
-/// One `key verb` pair on the hint row.
+/// One `key verb` pair on the footer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hint {
     pub key: String,
@@ -81,127 +63,97 @@ impl Hint {
     }
 }
 
-/// What the bottom box holds.
+/// What the footer row holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Input {
-    /// Start's task prompt. `placeholder` shows, dim, while `text` is empty.
-    Prompt {
+pub enum Footer {
+    /// The keys the selection takes, `? more` kept last when the row is too narrow for them all.
+    Keys(Vec<Hint>),
+    /// A line being typed: `target` names what it is for (`new claude-orchestrator`, `steer codex
+    /// 91cd`), `note` is a dim word after the target (the model, or why the type cannot run), and
+    /// `keys` are the line's own keys on the right.
+    Input {
+        target: String,
+        note: String,
         text: String,
-        placeholder: String,
-        focused: bool,
+        keys: Vec<Hint>,
     },
-    /// The command the selected action is, and a short dim note on the right.
-    Command { line: String, note: String },
-    /// A message being written for a node: `target` names it (`steer 3c33`).
-    Compose { target: String, text: String },
-    /// A destructive action waiting for `y`: the question and the command it would run.
+    /// Something destructive waiting for `y`: the question and the command it would run.
     Confirm { question: String, command: String },
 }
 
-/// The tab's body.
+/// The body.
 #[derive(Debug, Clone, Copy)]
 pub enum Body<'a> {
-    Start(&'a StartView),
-    Watch(&'a WatchView),
+    Agents(&'a AgentsView),
     Setup(&'a SetupView),
     Help(&'a HelpView),
-}
-
-impl Body<'_> {
-    pub fn tab(&self) -> Tab {
-        match self {
-            Body::Start(_) => Tab::Start,
-            Body::Watch(_) => Tab::Watch,
-            Body::Setup(_) => Tab::Setup,
-            Body::Help(_) => Tab::Help,
-        }
-    }
 }
 
 /// The whole screen, one frame of it.
 #[derive(Debug, Clone)]
 pub struct Screen<'a> {
     pub theme: Theme,
-    /// The project, as the operator would recognise it (`~/code/acme-api`).
-    pub project: &'a str,
-    /// Nodes that need the operator, forest-wide: the top bar's `◐N` beside Watch.
-    pub attention: usize,
+    /// What the status line names after `marion`: the project, or the page (`setup`).
+    pub title: &'a str,
+    /// The status line's right side, already worded (`2 running  2 need you  1 to land`).
+    pub counts: &'a str,
     pub body: Body<'a>,
-    pub input: Input,
-    pub hints: Vec<Hint>,
-    /// Shown on the hint row in place of the hints: see [`widgets::HintRow::notice`].
+    pub footer: Footer,
+    /// Shown on the footer in place of its keys: what the last key did, or why it did nothing.
     pub notice: Option<String>,
     /// Animation tick: spinners advance one frame per tick.
     pub frame: usize,
 }
 
-/// Columns between the screen edge and a body's content: the selection caret lives here.
-pub const GUTTER: u16 = 2;
-
-/// The rectangles a [`Screen`] is drawn into, for a caller that needs them (a mouse click, a
-/// cursor position) and for the tests.
+/// The rectangles a [`Screen`] is drawn into, for the tests and for a caller placing a cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
-    pub top: Rect,
+    pub status: Rect,
     pub body: Rect,
-    pub input: Rect,
-    pub hints: Rect,
+    pub footer: Rect,
 }
 
 impl Layout {
-    /// Top bar and a blank row, the body, a blank row, the box, the hint row. The bottom rows are
-    /// claimed first, so a short window costs body rows rather than the box that says what a key
-    /// will do. The body spans the full width; screens indent their content by [`GUTTER`] and
-    /// put the selection caret in it.
-    pub fn of(area: Rect, input: &Input) -> Layout {
-        let hints_h = area.height.min(1);
-        let box_h = InputBox::height(input, area.width).min(area.height - hints_h);
-        let top_h = TopBar::HEIGHT.min(area.height - hints_h - box_h);
-        let hints = Rect::new(area.x, area.bottom() - hints_h, area.width, hints_h);
-        let input_r = Rect::new(
-            area.x + 1.min(area.width),
-            hints.y - box_h,
-            area.width.saturating_sub(2),
-            box_h,
+    /// The status line, the body, the footer. The footer is claimed first, so a window one row
+    /// tall still says what a key will do.
+    pub fn of(area: Rect) -> Layout {
+        let footer_h = area.height.min(1);
+        let status_h = area.height.saturating_sub(footer_h).min(1);
+        let footer = Rect::new(area.x, area.bottom() - footer_h, area.width, footer_h);
+        let status = Rect::new(area.x, area.y, area.width, status_h);
+        let body = Rect::new(
+            area.x,
+            area.y + status_h,
+            area.width,
+            area.height - status_h - footer_h,
         );
-        let body_y = area.y + top_h + 1;
-        let body_h = input_r.y.saturating_sub(body_y + 1);
-        let body = Rect::new(area.x, body_y, area.width, body_h);
         Layout {
-            top: Rect::new(area.x, area.y, area.width, top_h),
+            status,
             body,
-            input: input_r,
-            hints,
+            footer,
         }
     }
 }
 
 impl Widget for &Screen<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let layout = Layout::of(area, &self.input);
-        TopBar {
-            project: self.project,
-            tab: self.body.tab(),
-            attention: self.attention,
-            theme: self.theme,
+        let layout = Layout::of(area);
+        StatusLine {
+            title: self.title,
+            counts: self.counts,
         }
-        .render(layout.top, buf);
+        .render(layout.status, buf);
         match self.body {
-            Body::Start(v) => start::render(v, self.theme, self.frame, layout.body, buf),
-            Body::Watch(v) => watch::render(v, self.theme, self.frame, layout.body, buf),
+            Body::Agents(v) => agents::render(v, self.theme, self.frame, layout.body, buf),
             Body::Setup(v) => setup::render(v, self.theme, self.frame, layout.body, buf),
             Body::Help(v) => help::render(v, self.theme, layout.body, buf),
         }
-        InputBox {
-            input: &self.input,
+        FooterLine {
+            footer: &self.footer,
+            notice: self.notice.as_deref(),
             theme: self.theme,
         }
-        .render(layout.input, buf);
-        HintRow {
-            hints: &self.hints,
-            notice: self.notice.as_deref(),
-        }
-        .render(layout.hints, buf);
+        .render(layout.footer, buf);
         self.theme.decolour(area, buf);
     }
 }

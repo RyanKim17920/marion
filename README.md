@@ -91,7 +91,7 @@ git merge --no-ff marion/<branch>
 
 ```sh
 marion claude                 # Claude Code's own TUI, with marion's tools; ^] d detaches
-marion                        # the home screen: Start a task, Watch the tree, Setup
+marion                        # the home screen: your agents, previewed; n starts one
 marion run codex --prompt "…" --detach
 marion ls                     # watch it
 marion steer <id> "use the v2 API, not v1"

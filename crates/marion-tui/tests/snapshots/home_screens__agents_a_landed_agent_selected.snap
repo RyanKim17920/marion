@@ -1,0 +1,143 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Agents(&v), ended_keys()))"
+---
+--- 80x24 ---
+ marion  ~/code/acme-api                       2 running  2 need you  1 to land
+  ⠋ ship the rate limiter                           claude opus       12m  312k
+  ├ ◐ wire the limiter into ci                      codex gpt-5        3m   41k
+  ├ ✗ add bucket tests                              codex gpt-5        5m  120k
+  ├ ✓ add token-bucket limiter                      codex gpt-5        7m  197k
+  └ ⠹ implement the bucket                          codex gpt-5        2m   88k
+  ✓ review the orders api                           claude sonnet      9m   54k
+  ○ port invoices to the new schema                 opencode           4m   63k
+────────────────────────────────────────────────────────────────────────────────
+ codex 3c33  add token-bucket limiter
+
+ done in 6m41s  184k in  12.9k out
+ limiter in, tests green
+ marion/t-3c33  +84 -12  3 files
+
+ 14:24:00  read src/limits/mod.rs
+ 14:24:07  $ cargo test -q limits
+ 14:24:14  ok 4.1s
+ 14:24:21  I'll add a token bucket keyed by API key.
+ 14:24:28  ~ crates/api/src/limits/bucket.rs
+
+
+
+ enter output  n new  m merge  d diff  u resume  o shell  ? more
+--- styles ---
+  239  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiterwireth"
+   28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
+  341  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternmduo?"
+   22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addtoken-bucketlimiter"
+   18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✓codexgpt-57m197k"
+   11  Style::new().green().bg(Color::Reset)  "⠋⠹+84ok4.1s"
+    4  Style::new().red().bg(Color::Reset)  "✗-12"
+    1  Style::new().yellow().bg(Color::Reset)  "◐"
+
+--- 100x30 ---
+ marion  ~/code/acme-api                                           2 running  2 need you  1 to land
+  ⠋ ship the rate limiter       claude opus       12m  312k │ codex 3c33  add token-bucket limiter
+  ├ ◐ wire the limiter into ci  codex gpt-5        3m   41k │
+  ├ ✗ add bucket tests          codex gpt-5        5m  120k │ done in 6m41s  184k in  12.9k out
+  ├ ✓ add token-bucket limiter  codex gpt-5        7m  197k │ limiter in, tests green
+  └ ⠹ implement the bucket      codex gpt-5        2m   88k │ marion/t-3c33  +84 -12  3 files
+  ✓ review the orders api       claude sonnet      9m   54k │
+  ○ port invoices to the new …  opencode           4m   63k │ 14:24:00  read src/limits/mod.rs
+                                                            │ 14:24:07  $ cargo test -q limits
+                                                            │ 14:24:14  ok 4.1s
+                                                            │ 14:24:21  I'll add a token bucket ke…
+                                                            │ 14:24:28  ~ …api/src/limits/bucket.rs
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+ enter output  n new  m merge  d diff  u resume  o shell  ? more
+--- styles ---
+  228  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiteraddtok"
+   28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
+  278  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternmduo?"
+   22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addtoken-bucketlimiter"
+   18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✓codexgpt-57m197k"
+   11  Style::new().green().bg(Color::Reset)  "⠋⠹+84ok4.1s"
+    4  Style::new().red().bg(Color::Reset)  "✗-12"
+    1  Style::new().yellow().bg(Color::Reset)  "◐"
+
+--- 160x50 ---
+ marion  ~/code/acme-api                                                                                                       2 running  2 need you  1 to land
+  ⠋ ship the rate limiter                                           claude opus       12m  312k │ codex 3c33  add token-bucket limiter
+  ├ ◐ wire the limiter into ci                                      codex gpt-5        3m   41k │
+  ├ ✗ add bucket tests                                              codex gpt-5        5m  120k │ done in 6m41s  184k in  12.9k out
+  ├ ✓ add token-bucket limiter                                      codex gpt-5        7m  197k │ limiter in, tests green
+  └ ⠹ implement the bucket                                          codex gpt-5        2m   88k │ marion/t-3c33  +84 -12  3 files
+  ✓ review the orders api                                           claude sonnet      9m   54k │
+  ○ port invoices to the new schema                                 opencode           4m   63k │ 14:24:00  read src/limits/mod.rs
+                                                                                                │ 14:24:07  $ cargo test -q limits
+                                                                                                │ 14:24:14  ok 4.1s
+                                                                                                │ 14:24:21  I'll add a token bucket keyed by API key.
+                                                                                                │ 14:24:28  ~ crates/api/src/limits/bucket.rs
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+ enter output  n new  m merge  d diff  u resume  o shell  ? more
+--- styles ---
+  239  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiteraddtok"
+   28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
+  309  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enternmduo?"
+   22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addtoken-bucketlimiter"
+   18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✓codexgpt-57m197k"
+   11  Style::new().green().bg(Color::Reset)  "⠋⠹+84ok4.1s"
+    4  Style::new().red().bg(Color::Reset)  "✗-12"
+    1  Style::new().yellow().bg(Color::Reset)  "◐"

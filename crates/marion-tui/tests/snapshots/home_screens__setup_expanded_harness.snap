@@ -1,123 +1,121 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
-expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
+expression: "at_every_size(&setup_screen(&v, input))"
 ---
 --- 80x24 ---
- ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────
-
-  HARNESSES   3 of 6 ready
+ marion  setup                                                     3 of 6 ready
+  Harnesses   3 of 6 ready
 
   ● claude       2.1.268   ready                       headless · pane · chan…
   ● codex        0.61.0    ready                       headless · pane · ACP
 ❯ ◐ qwen         0.9.1     sign-in needed              headless · pane
-    └ BINARY   /usr/local/bin/qwen
-      VERSION  0.9.1
-      AUTH     not signed in
-      FIX      run qwen once and sign in
+    └ binary   /usr/local/bin/qwen
+      version  0.9.1
+      auth     not signed in
+      fix      run qwen once and sign in
                marion uses your login, never its own
   ● opencode     1.2.3     ready                       headless · pane · ACP
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
   ○ agy          —         not installed               —
 
-  PROJECT
+  Project
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.…
 
- ╭────────────────────────────────────────────────────────────────────────────╮
- │ ❯ qwen                                                     sign in, then r │
- ╰────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter details · r re-check · e edit types · n new type    F1 help
---- styles ---
-  145  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
-   10  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionqwen"
-   36  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  517  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
-   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯qwen❯"
-    3  Style::new().green().bg(Color::Reset)  "●●●"
-   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
-   16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"
-
---- 100x30 ---
- ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────────────────────────
-
-  HARNESSES   3 of 6 ready
-
-  ● claude       2.1.268   ready                       headless · pane · channel push
-  ● codex        0.61.0    ready                       headless · pane · ACP
-❯ ◐ qwen         0.9.1     sign-in needed              headless · pane
-    └ BINARY   /usr/local/bin/qwen
-      VERSION  0.9.1
-      AUTH     not signed in
-      FIX      run qwen once and sign in
-               marion uses your login, never its own
-  ● opencode     1.2.3     ready                       headless · pane · ACP
-  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
-  ○ agy          —         not installed               —
-
-  PROJECT
-  repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
-
-  AGENT TYPES   7 · custom ones come from .marion/agents.toml
-  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
+  Agent types   7 · custom ones come from .marion/agents.toml
+  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode
+  ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  API KEYS   3 keys
-
- ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ qwen                                                                         sign in, then r │
- ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter details · r re-check · e edit types · n new type · a add key            F1 help
+ enter details  r re-check  e edit types  n new type  a add key  esc back
 --- styles ---
-  191  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  174  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    10  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionqwen"
-   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  666  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
-   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯qwen❯"
+   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "Harnessesbinaryversionau"
+  322  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready3of6ready2"
+   16  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "reviewermigrator"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯qwenenterrenaesc"
    10  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓"
    21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
-   17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"
+   15  Style::new().yellow().bg(Color::Reset)  "◐sign-inneeded◐"
 
---- 160x50 ---
- ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  HARNESSES   3 of 6 ready
+--- 100x30 ---
+ marion  setup                                                                         3 of 6 ready
+  Harnesses   3 of 6 ready
 
   ● claude       2.1.268   ready                       headless · pane · channel push
   ● codex        0.61.0    ready                       headless · pane · ACP
 ❯ ◐ qwen         0.9.1     sign-in needed              headless · pane
-    └ BINARY   /usr/local/bin/qwen
-      VERSION  0.9.1
-      AUTH     not signed in
-      FIX      run qwen once and sign in
+    └ binary   /usr/local/bin/qwen
+      version  0.9.1
+      auth     not signed in
+      fix      run qwen once and sign in
                marion uses your login, never its own
   ● opencode     1.2.3     ready                       headless · pane · ACP
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
   ○ agy          —         not installed               —
 
-  PROJECT
+  Project
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
 
-  AGENT TYPES   7 · custom ones come from .marion/agents.toml
+  Agent types   7 · custom ones come from .marion/agents.toml
   ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  API KEYS   3 keys
+  API keys   3 keys
   ● anthropic   anthropic
   ● openrouter  openrouter
   ● openrouter  openrouter:work
   keys in the macOS Keychain · a adds one · x removes the selected
 
-  LOGINS   3 logins
+  Logins   3 logins
+ enter details  r re-check  e edit types  n new type  a add key  esc back
+--- styles ---
+  206  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+   10  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionqwen"
+   59  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "Harnessesbinaryversionau"
+  423  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready3of6ready2"
+   16  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "reviewermigrator"
+   19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯qwenaxenterrenaesc"
+   13  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   15  Style::new().yellow().bg(Color::Reset)  "◐sign-inneeded◐"
+
+--- 160x50 ---
+ marion  setup                                                                                                                                     3 of 6 ready
+  Harnesses   3 of 6 ready
+
+  ● claude       2.1.268   ready                       headless · pane · channel push
+  ● codex        0.61.0    ready                       headless · pane · ACP
+❯ ◐ qwen         0.9.1     sign-in needed              headless · pane
+    └ binary   /usr/local/bin/qwen
+      version  0.9.1
+      auth     not signed in
+      fix      run qwen once and sign in
+               marion uses your login, never its own
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ agy          —         not installed               —
+
+  Project
+  repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
+
+  Agent types   7 · custom ones come from .marion/agents.toml
+  ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
+  ✓ .marion/agents.toml: 2 types, valid
+
+  API keys   3 keys
+  ● anthropic   anthropic
+  ● openrouter  openrouter
+  ● openrouter  openrouter:work
+  keys in the macOS Keychain · a adds one · x removes the selected
+
+  Logins   3 logins
   ● claude    work      default · logged in
   ◐ codex     cx        logged out
   ⠹ opencode  oc        checking…
   a adds one · u makes the selected the default · x removes it, keeping its directory · marion never logs in for you
 
-  NOTIFICATIONS
+  Notifications
   ● on   when an agent ends or needs you · shown by osascript
 
 
@@ -127,17 +125,19 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 
 
 
- ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ qwen                                                                                                                                     sign in, then r │
- ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter details · r re-check · e edit types · n new type · a add key                                                                        F1 help
+
+
+
+
+
+ enter details  r re-check  e edit types  n new type  a add key  esc back
 --- styles ---
-  230  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  216  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    10  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionqwen"
-   72  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
- 1102  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-   26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
-   16  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯qwenaxaux❯"
+   72  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "Harnessesbinaryversionau"
+  589  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready3of6ready2"
+   25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "reviewermigratordefault·"
+   22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯qwenaxauxenterrenaesc"
    15  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●●"
    21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
-   27  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐◐logged"
+   25  Style::new().yellow().bg(Color::Reset)  "◐sign-inneeded◐◐loggedou"

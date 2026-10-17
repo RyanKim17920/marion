@@ -1,0 +1,41 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&sc, 100, 30)"
+---
+--- 100x30 ---
+ marion  keys
+  agents                                           input line
+  enter  attach a pane agent                       tab    next agent type
+  n      new task
+  s      steer a running agent
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ esc back  j/k scroll
+--- styles ---
+   54  Style::new().fg(Color::Reset).bg(Color::Reset)  "attachapaneagentnextagen"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+   15  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "agentsinputline"
+   14  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "keysbackscroll"
+   16  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "entertabnsescj/k"

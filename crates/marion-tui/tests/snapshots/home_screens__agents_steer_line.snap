@@ -1,0 +1,48 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&screen(Body::Agents(&v), footer), 120, 32)"
+---
+--- 120x32 ---
+ marion  ~/code/acme-api                                                               2 running  2 need you  1 to land
+  ⠋ ship the rate limiter                   claude opus       12m  312k │ codex 91cd  wire the limiter into ci
+  ├ ◐ wire the limiter into ci              codex gpt-5        3m   41k │ wants to write .github/workflows/ci.yml
+  ├ ✗ add bucket tests                      codex gpt-5        5m  120k │
+  ├ ✓ add token-bucket limiter              codex gpt-5        7m  197k │ 14:24:00  read src/limits/mod.rs
+  └ ⠹ implement the bucket                  codex gpt-5        2m   88k │ 14:24:07  $ cargo test -q limits
+  ✓ review the orders api                   claude sonnet      9m   54k │ 14:24:14  ok 4.1s
+  ○ port invoices to the new schema         opencode           4m   63k │ 14:24:21  I'll add a token bucket keyed by A…
+                                                                        │ 14:24:28  ~ crates/api/src/limits/bucket.rs
+                                                                        │ 14:24:35  $ cargo build -q
+                                                                        │ 14:24:42  exit 101 3.2s
+                                                                        │ 14:24:49  read .github/workflows/ci.yml
+                                                                        │ 14:24:56  read src/limits/mod.rs
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+                                                                        │
+ steer codex 91cd › use the shared limiter crate▏                                               enter send  esc cancel
+--- styles ---
+  295  Style::new().fg(Color::Reset).bg(Color::Reset)  "shiptheratelimiterwireth"
+   29  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cdsteercode"
+  276  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "›enteresc"
+   20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "wirethelimiterintoci"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├◐codexgpt-53m41k"
+    8  Style::new().green().bg(Color::Reset)  "⠋⠹ok4.1s"
+   12  Style::new().red().bg(Color::Reset)  "✗exit1013.2s"
+   36  Style::new().yellow().bg(Color::Reset)  "wantstowrite.github/work"

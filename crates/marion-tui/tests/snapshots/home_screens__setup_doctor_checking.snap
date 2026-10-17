@@ -1,44 +1,44 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
-expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
+expression: "report(&setup_screen(&v, input), 100, 30)"
 ---
 --- 100x30 ---
- ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────────────────────────
-
-  HARNESSES   2 of 6 ready · checking…
+ marion  setup                                                                         3 of 6 ready
+  Harnesses   2 of 6 ready · checking…
 
   ● claude       2.1.268   ready                       headless · pane · channel push
   ● codex        0.61.0    ready                       headless · pane · ACP
 ❯ ◐ qwen         0.9.1     sign-in needed              headless · pane
-    └ BINARY   /usr/local/bin/qwen
-      VERSION  0.9.1
-      AUTH     not signed in
-      FIX      run qwen once and sign in
+    └ binary   /usr/local/bin/qwen
+      version  0.9.1
+      auth     not signed in
+      fix      run qwen once and sign in
                marion uses your login, never its own
   ⠸ opencode     —         checking…                   headless · pane · ACP
   ⠼ copilot      —         checking…                   headless · ACP
   ⠴ agy          —         checking…                   —
 
-  PROJECT
+  Project
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
 
-  AGENT TYPES   7 · custom ones come from .marion/agents.toml
+  Agent types   7 · custom ones come from .marion/agents.toml
   ● claude   ● claude-orchestrator   ● codex   ◐ qwen   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  API KEYS   3 keys
+  API keys   3 keys
+  ● anthropic   anthropic
+  ● openrouter  openrouter
+  ● openrouter  openrouter:work
+  keys in the macOS Keychain · a adds one · x removes the selected
 
- ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ marion doctor                                                                      checking… │
- ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter details · r re-check · e edit types · n new type · a add key            F1 help
+  Logins   3 logins
+ enter details  r re-check  e edit types  n new type  a add key  esc back
 --- styles ---
-  191  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  206  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    10  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionqwen"
-   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  680  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-   20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠸⠼⠴reviewermigrator"
-   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯qwen❯"
-    9  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓"
-   17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"
+   59  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "Harnessesbinaryversionau"
+  432  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready2of6ready·"
+   19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "⠸⠼⠴reviewermigrator"
+   19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯qwenaxenterrenaesc"
+   12  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓●●●"
+   15  Style::new().yellow().bg(Color::Reset)  "◐sign-inneeded◐"

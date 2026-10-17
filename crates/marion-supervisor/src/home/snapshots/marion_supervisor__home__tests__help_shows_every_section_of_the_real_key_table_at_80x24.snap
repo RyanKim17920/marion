@@ -2,27 +2,27 @@
 source: crates/marion-supervisor/src/home/tests.rs
 expression: screen
 ---
- ◆ marion  ~/code/acme-api                           Start   Watch   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────
+ marion  keys
+  agents                                 input line
+  j/k      move                          tab      next agent type
+  enter    attach (pane); ^] d back      ↑↓       the type's models
+  enter    full output (headless)        enter    run, send or add
+  n        new task                      esc      close it
+  s        steer a running agent
+  x        cancel, asks; again kills     setup
+  u        resume an ended agent         enter    a harness's detail and fix
+  o        shell in its workspace        r        re-check
+  d        what its branch changed       e        edit agent types
+  m        merge its branch, asks        n        new agent type, previewed
+  pgup/dn  scroll output; end follows    a        add a key, or a login
+  ,        setup                         u        use a login
+  ?        this page                     x        remove key or login, asks
+  q        quit                          esc      back
 
-  WATCH                                  EVERYWHERE
-  j/k    move                            tab    next screen
-  enter  its stream full-screen; a pan…  ?      help (Start: empty prompt)
-  esc    back from the stream            F1     help, from anywhere
-  s      steer                           ^c     quit
-  x      cancel, asks first              q      quit, off Start
-  u      bring back an ended agent fro…  START
-  o      shell in its workspace          enter  run
-  d      what its branch changed         ↑↓     harness
-  m      merge its branch, asks first    ←→     model
-  c      copy the merge                  ^o     next agent type
-  !      next that needs you             ^p     headless or pane
-  J/K    scroll its stream               esc    clear the prompt
-                                         SETUP
-                                         enter  on Harnesses: details and its…
-  ↓ 8 below  j/k scroll
 
- ╭────────────────────────────────────────────────────────────────────────────╮
- │ ❯ marion --help                                                            │
- ╰────────────────────────────────────────────────────────────────────────────╯
-  esc back · j/k scroll · tab next screen                              F1 help
+
+
+
+
+
+ esc back  j/k scroll

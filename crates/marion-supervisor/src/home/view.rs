@@ -1,17 +1,16 @@
 //! A [`Home`] as `marion_tui::home`'s views: every word the screen shows is decided here, from the
 //! wire types only the supervisor can read, and `marion-tui` only draws it.
 
-use super::{AgentType, Effect, Field, Home, Mode};
+use super::{Effect, Field, Home, Mode, Purpose};
 use crate::tree::{attention_of, short_id};
-use marion_core::contract::{AgentId, ExitStatus, Workspace};
+use marion_core::contract::{AgentId, ExitStatus};
 use marion_core::proto::NodeSummary;
-use marion_core::proto::result::{ActionKind, ActionLine, NodeDetail};
+use marion_core::proto::result::{ActionKind, NodeDetail};
 use marion_tui::home::help::KeyRow;
-use marion_tui::home::text::shell_line;
+use marion_tui::home::text::{elapsed, shell_line, tokens};
 use marion_tui::home::{
-    AgentTypeRow, Body, Expanded, FormField, FormView, HarnessRow, HelpView, Hint, Input, LineKind,
-    LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, SetupView, StartView,
-    StreamLine, Tab, TaskView, TokenView, WatchView,
+    AgentRow, AgentTypeRow, AgentsView, Body, Footer, FormField, FormView, HarnessRow, HelpView,
+    Hint, Ink, LineKind, LoginRow, Page, Preview, ProfileRow, Ready, SetupView, StreamLine,
 };
 use marion_tui::tree::Tone;
 
@@ -26,22 +25,20 @@ pub struct Places {
 /// Every view a frame needs, owned, so the caller can borrow them into a
 /// [`marion_tui::home::Screen`].
 pub struct Frame {
-    pub start: StartView,
-    pub watch: WatchView,
+    pub title: String,
+    pub counts: String,
+    pub agents: AgentsView,
     pub setup: SetupView,
     pub help: HelpView,
-    pub input: Input,
-    pub hints: Vec<Hint>,
-    pub attention: usize,
+    pub footer: Footer,
 }
 
 impl Frame {
-    pub fn body(&self, tab: Tab) -> Body<'_> {
-        match tab {
-            Tab::Start => Body::Start(&self.start),
-            Tab::Watch => Body::Watch(&self.watch),
-            Tab::Setup => Body::Setup(&self.setup),
-            Tab::Help => Body::Help(&self.help),
+    pub fn body(&self, page: Page) -> Body<'_> {
+        match page {
+            Page::Agents => Body::Agents(&self.agents),
+            Page::Setup => Body::Setup(&self.setup),
+            Page::Help => Body::Help(&self.help),
         }
     }
 }
@@ -51,17 +48,44 @@ pub fn frame(home: &Home, places: &Places) -> Frame {
     frame_at(home, places, std::time::SystemTime::now())
 }
 
-/// One frame of `home` as of `now`, which elapsed times are worded against.
+/// One frame of `home` as of `now`, which run times are worded against.
 pub fn frame_at(home: &Home, places: &Places, now: std::time::SystemTime) -> Frame {
+    let (title, counts) = match home.page {
+        Page::Agents => (places.project.clone(), counts(home)),
+        Page::Setup => (
+            "setup".to_string(),
+            marion_tui::home::setup::readiness(
+                &home.harnesses.iter().map(harness_row).collect::<Vec<_>>(),
+                home.checking,
+            ),
+        ),
+        Page::Help => ("keys".to_string(), String::new()),
+    };
     Frame {
-        start: start(home),
-        watch: watch(home, now),
+        title,
+        counts,
+        agents: agents(home, now),
         setup: setup(home, places),
         help: help(home),
-        input: input(home),
-        hints: hints(home),
-        attention: crate::tree::attention_count(&home.watch.nodes),
+        footer: footer(home),
     }
+}
+
+/// The status line's counts: what runs, what needs the operator, what is ready to land. A count of
+/// zero is left out rather than shown.
+fn counts(home: &Home) -> String {
+    let w = &home.watch;
+    let land = w.nodes.iter().filter(|n| w.lands(n)).count();
+    [
+        (crate::tree::running(&w.nodes), "running"),
+        (crate::tree::attention_count(&w.nodes), "need you"),
+        (land, "to land"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{n} {what}"))
+    .collect::<Vec<_>>()
+    .join("  ")
 }
 
 /// `~/…` for a path under `$HOME`, which is how an operator reads their own paths.
@@ -91,377 +115,366 @@ pub fn project_label(path: &str, home: Option<&str>, branch: Option<&str>) -> St
     }
 }
 
-// ---------------------------------------------------------------------------------- Start
+// ---------------------------------------------------------------------------------- agents
 
-fn harness_row(h: &super::Harness) -> HarnessRow {
-    HarnessRow {
-        name: h.name.clone(),
-        version: h.version.clone(),
-        ready: h.ready,
-        note: h.note.clone(),
-        surfaces: h.surfaces.clone(),
-        fix: h.fix.clone(),
-        detail: h.detail.clone(),
-    }
-}
-
-/// What a type does where Start runs it: `marion run <type>` starts a **root**, whose directory is
-/// the operator's own checkout (`root::RootSpec::repo`) — a worktree is what marion makes for the
-/// children a root spawns, never for the root.
-fn grant(t: &AgentType) -> &'static str {
-    if t.writes {
-        "edits this checkout"
-    } else {
-        "read-only, delegates"
-    }
-}
-
-fn start(home: &Home) -> StartView {
-    let echo = match home.pending_run() {
-        Some(Effect::Run {
-            agent_type,
-            model,
-            prompt,
-            pane,
-        }) => Effect::Run {
-            agent_type,
-            model,
-            pane,
-            prompt: if prompt.trim().is_empty() {
-                "<text>".into()
-            } else {
-                prompt
-            },
-        }
-        .argv()
-        .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    StartView {
-        harnesses: home
-            .start_harnesses()
-            .into_iter()
-            .map(harness_row)
-            .collect(),
-        checking: home.checking,
-        cursor: home.start.cursor,
-        kinds: home
-            .kinds()
-            .into_iter()
-            .map(|t| (t.name.clone(), grant(t).to_string()))
-            .collect(),
-        kind: home.start.kind,
-        models: home.models(),
-        model: home.start.model,
-        options: vec![(
-            "surface".into(),
-            if home.start.pane { "pane" } else { "headless" }.into(),
-        )],
-        recent: recent(&home.watch.nodes),
-        echo,
-    }
-}
-
-/// The top-level runs this supervisor holds — roots and the contracted nodes the operator asked
-/// for directly — most recent first.
-fn recent(nodes: &[NodeSummary]) -> Vec<RecentRow> {
-    nodes
-        .iter()
-        .rev()
-        .filter(|n| n.parent_id.is_none())
-        .map(|n| RecentRow {
-            // When it started, in local time; its short id where no start was recorded.
-            when: n
-                .started_at
-                .map_or_else(|| short_id(&n.agent_id.0).to_string(), |t| local_clock(t.0)),
-            tone: crate::tree::row(n).tone,
-            who: n.agent_type.clone(),
-            prompt: n.name.clone().unwrap_or_default(),
-            outcome: outcome_word(n),
-        })
-        .collect()
-}
-
-fn outcome_word(n: &NodeSummary) -> String {
-    use marion_core::node::NodeState;
-    match n.state {
-        NodeState::Exited(s) => s.word().into(),
-        NodeState::Blocked(_) => "blocked".into(),
-        _ => "running".into(),
-    }
-}
-
-// ---------------------------------------------------------------------------------- Watch
-
-fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
+fn agents(home: &Home, now: std::time::SystemTime) -> AgentsView {
     let w = &home.watch;
     let mut rows = Vec::new();
-    let mut cursor = 0;
     for i in 0..w.tree.rows() {
         let Some((prefix, tnode)) = w.tree.row(i) else {
             break;
         };
+        let row = |title: String, who: &str, tokens: Option<u64>| AgentRow {
+            id: tnode.id.clone(),
+            prefix: prefix.to_string(),
+            tone: tnode.tone,
+            title,
+            who: who.to_string(),
+            time: String::new(),
+            tokens,
+        };
         if let Some(race) = crate::tree::race_of_row(&tnode.id) {
-            if i == w.tree.cursor() {
-                cursor = rows.len();
-            }
-            rows.push(race_row(prefix, tnode, race, &w.nodes));
+            let s = race_summary(race, &w.nodes);
+            rows.push(row(s.label(), "race", s.tokens));
             continue;
         }
         if let Some(run) = crate::tree::workflow_of_row(&tnode.id) {
-            if i == w.tree.cursor() {
-                cursor = rows.len();
-            }
-            rows.push(workflow_row(prefix, tnode, run, &w.nodes, now));
+            let s = workflow_summary(run, &w.nodes, now);
+            rows.push(AgentRow {
+                time: s.elapsed_secs.map(run_time).unwrap_or_default(),
+                ..row(workflow_title(&s), "workflow", s.tokens)
+            });
             continue;
         }
         let Some(n) = w.nodes.iter().find(|n| n.agent_id.0 == tnode.id) else {
             continue;
         };
-        let selected = i == w.tree.cursor();
-        if selected {
-            cursor = rows.len();
+        let detail = detail_of(home, n);
+        let mut title = title_of(home, n);
+        if let Some(note) = crate::tree::review_note(n)
+            .or_else(|| crate::tree::race_note(n))
+            .or_else(|| crate::tree::workflow_note(n))
+        {
+            title = format!("{title} · {note}");
         }
-        let detail = match &w.detail {
-            Some((id, d)) if *id == n.agent_id => Some(d),
-            _ => None,
-        };
-        rows.push(NodeRow {
-            id: n.agent_id.0.clone(),
-            prefix: prefix.to_string(),
-            harness: n.harness.cli_name().to_string(),
-            // An endpoint node's `provider:model` rides the kind, which is what gives way first on
-            // a narrow window.
-            kind: {
-                let kind = n
-                    .name
-                    .clone()
-                    .or_else(|| crate::tree::review_note(n))
-                    .or_else(|| {
-                        crate::tree::race_note(n).map(|seat| format!("{} · {seat}", kind_of(n)))
-                    })
-                    .unwrap_or_else(|| kind_of(n));
-                let kind = match crate::tree::workflow_note(n) {
-                    Some(step) if kind.is_empty() => step,
-                    Some(step) => format!("{kind} · {step}"),
-                    None => kind,
-                };
-                match &n.endpoint {
-                    Some(e) => format!("{kind} {}", e.label()).trim().to_string(),
-                    None => kind,
-                }
-            },
-            short: short_id(&n.agent_id.0).to_string(),
-            tone: tnode.tone,
-            elapsed: row_time(n, now),
-            tokens: n
-                .tokens
-                .or_else(|| detail.and_then(|d| d.usage).map(|u| u.total())),
-            subtree: w
-                .rollup
-                .get(&n.agent_id)
-                .and_then(|t| subtree_cell(n, t, w.rollup.has_children(&n.agent_id))),
-            doing: doing(n, detail, selected.then_some(&w.stream[..])),
+        rows.push(AgentRow {
+            tone: tone_of(n, tnode.tone),
+            time: node_time(n, now),
+            ..row(
+                title,
+                &who_of(n),
+                n.tokens
+                    .or_else(|| detail.and_then(|d| d.usage).map(|u| u.total())),
+            )
         });
     }
-    let forest = w.rollup.forest(&w.nodes);
-    WatchView {
-        total: (forest.claimed > 0)
-            .then(|| format!("Σ{}", marion_tui::home::text::tokens(forest.tokens))),
-        supervisor: w.supervisor,
+    let cursor = w.tree.cursor().min(rows.len().saturating_sub(1));
+    AgentsView {
         rows,
         cursor,
-        expanded: home.selected().map(|n| expanded(home, n)),
-        running: crate::tree::running(&w.nodes),
-        attention: crate::tree::attention_count(&w.nodes),
-        attention_note: w
-            .nodes
+        preview: preview(home, now),
+        full: w.full && home.selected().is_some(),
+    }
+}
+
+/// The row's glyph: the tree's own tone, except that an orphan — whose tone is the unmeasured grey
+/// — needs the operator, and says so with the needs-you glyph.
+fn tone_of(n: &NodeSummary, tone: Tone) -> Tone {
+    if tone == Tone::Unknown && attention_of(n).is_some() {
+        Tone::Blocked
+    } else {
+        tone
+    }
+}
+
+fn detail_of<'a>(home: &'a Home, n: &NodeSummary) -> Option<&'a NodeDetail> {
+    match &home.watch.detail {
+        Some((id, d)) if *id == n.agent_id => Some(d),
+        _ => None,
+    }
+}
+
+/// What the row and the preview call a node: its task's first line once read, else its name,
+/// else its agent type.
+fn title_of(home: &Home, n: &NodeSummary) -> String {
+    home.watch
+        .titles
+        .get(&n.agent_id.0)
+        .cloned()
+        .or_else(|| n.name.clone())
+        .unwrap_or_else(|| n.agent_type.clone())
+}
+
+/// `codex`, or `codex groq:llama-3.3-70b` for an endpoint node: the harness, and the model where
+/// marion knows which one it asked for.
+fn who_of(n: &NodeSummary) -> String {
+    match &n.endpoint {
+        Some(e) => format!("{} {}", n.harness.cli_name(), e.label()),
+        None => n.harness.cli_name().to_string(),
+    }
+}
+
+/// How long a node has run, or ran: from its start to its end, or to now while it runs. Blank
+/// where no start was recorded.
+fn node_time(n: &NodeSummary, now: std::time::SystemTime) -> String {
+    let Some(started) = n.started_at else {
+        return String::new();
+    };
+    let until = if n.state.is_exited() {
+        match n.ended_at {
+            Some(e) => e.0,
+            None => return String::new(),
+        }
+    } else {
+        now
+    };
+    until
+        .duration_since(started.0)
+        .map(|d| run_time(d.as_secs()))
+        .unwrap_or_default()
+}
+
+/// A run time in a five-column cell, in its two largest units: `45s`, `12m`, `3h04`, `2d03`.
+pub fn run_time(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h{:02}", secs / 3600, secs % 3600 / 60),
+        _ => format!("{}d{:02}", secs / 86_400, secs % 86_400 / 3600),
+    }
+}
+
+fn race_summary(race: &str, nodes: &[NodeSummary]) -> crate::tree::RaceSummary {
+    crate::tree::RaceSummary::of(&marion_core::race::RaceId(race.to_string()), nodes)
+}
+
+fn workflow_summary(
+    run: &str,
+    nodes: &[NodeSummary],
+    now: std::time::SystemTime,
+) -> crate::tree::WorkflowSummary {
+    crate::tree::WorkflowSummary::of(
+        &marion_core::workflow::WorkflowId(run.to_string()),
+        nodes,
+        now,
+    )
+}
+
+/// A workflow header's title: the run and the step it is on (`workflow ship · 3/4 gate r2`), or
+/// how it closed. Its tokens and time are the row's columns, so they are not repeated here.
+fn workflow_title(s: &crate::tree::WorkflowSummary) -> String {
+    let at = match (s.closed, &s.current) {
+        (Some(outcome), _) => outcome.word().to_string(),
+        (None, Some((step, round, id))) => {
+            let mut at = format!("{}/{} {id}", u16::from(*step) + 1, s.steps);
+            if *round > 0 {
+                at.push_str(&format!(" r{}", u16::from(*round) + 1));
+            }
+            at
+        }
+        (None, None) => "starting".into(),
+    };
+    format!("workflow {} · {at}", s.name)
+}
+
+/// What a node waits on the operator for, in a few words: the supervisor's own words where it
+/// gave some, else what its state says. `None` for a node that is not waiting on anyone.
+fn needs(n: &NodeSummary) -> Option<String> {
+    use marion_core::node::{BlockReason, NodeState, ReapState};
+    let what = match (n.state, n.reap_state) {
+        (NodeState::Exited(_), _) => return None,
+        (_, ReapState::Orphaned) => "orphaned: marion has no record of it ending",
+        (NodeState::Blocked(BlockReason::Permission), _) => "wants permission",
+        (NodeState::Blocked(BlockReason::Elicitation), _) => "asks a question",
+        (NodeState::Blocked(BlockReason::Descendants), _) => "waits on its agents",
+        (NodeState::Blocked(BlockReason::BootDialog), _) => "a dialog is open in its terminal",
+        _ => return None,
+    };
+    Some(match &n.attention {
+        Some(said) => marion_core::text::visible(said).into_owned(),
+        None => what.to_string(),
+    })
+}
+
+/// The selected row, previewed.
+fn preview(home: &Home, now: std::time::SystemTime) -> Option<Preview> {
+    let w = &home.watch;
+    let row = w.tree.selected()?;
+    if let Some(race) = crate::tree::race_of_row(&row.id) {
+        let s = race_summary(race, &w.nodes);
+        let outcome = match &s.decided {
+            Some(Some(winner)) => format!("{winner} won; every branch is kept"),
+            Some(None) => "no agent won; every branch is kept".into(),
+            None => format!("{} of {} agents finished", s.ended, s.seats),
+        };
+        return Some(Preview {
+            who: format!("race {}", short_id(race)),
+            title: s.label(),
+            facts: vec![vec![(outcome, Ink::Plain)]],
+            quiet: Some("enter goes to the winner".into()),
+            ..Preview::default()
+        });
+    }
+    if let Some(run) = crate::tree::workflow_of_row(&row.id) {
+        let s = workflow_summary(run, &w.nodes, now);
+        let mut facts = Vec::new();
+        if let Some(b) = s.budget {
+            let spent = s.tokens.unwrap_or(0);
+            let ink = if spent >= b { Ink::Warn } else { Ink::Plain };
+            facts.push(vec![(
+                format!("budget {} of {}", tokens(spent), tokens(b)),
+                ink,
+            )]);
+        }
+        return Some(Preview {
+            who: format!("workflow {}", short_id(run)),
+            title: workflow_title(&s),
+            facts,
+            quiet: Some("enter goes to the step it is on".into()),
+            ..Preview::default()
+        });
+    }
+    let n = home.selected()?;
+    let detail = detail_of(home, n);
+    let mut facts = Vec::new();
+    if let Some(d) = detail {
+        facts.extend(ended_facts(n, d));
+    }
+    if let Some(note) = crate::tree::review_note(n) {
+        facts.push(vec![(note, Ink::Plain)]);
+    }
+    if let Some(e) = &n.endpoint {
+        let route = e
+            .route
+            .as_deref()
+            .map_or(String::new(), |r| format!(" · {r}"));
+        facts.push(vec![(format!("{}{route}", e.label()), Ink::Dim)]);
+    }
+    if let Some((line, over)) = subtree_line(home, n, now) {
+        facts.push(vec![(line, if over { Ink::Warn } else { Ink::Dim })]);
+    }
+    Some(Preview {
+        who: format!("{} {}", n.harness.cli_name(), short_id(&n.agent_id.0)),
+        title: title_of(home, n),
+        needs: needs(n),
+        facts,
+        stream: if detail.is_some() {
+            stream(home)
+        } else {
+            Vec::new()
+        },
+        scroll: w.scroll,
+        quiet: match detail {
+            None => Some("reading".into()),
+            Some(d) => d.stream.as_ref().and_then(|p| p.unread.clone()),
+        },
+    })
+}
+
+/// How an ended node ended, and what it left: its status and run time with its tokens, the first
+/// line of its own account, and its branch with what the branch changes.
+fn ended_facts(n: &NodeSummary, d: &NodeDetail) -> Vec<Vec<(String, Ink)>> {
+    let Some(c) = &d.completion else {
+        return d
+            .failure
             .iter()
-            .filter(|n| attention_of(n).is_some())
-            .find_map(|n| n.attention.clone()),
-        filter: None,
-        full_stream: w.full_stream && home.selected().is_some(),
+            .map(|f| vec![(f.clone(), Ink::Bad)])
+            .collect();
+    };
+    let ink = match c.status {
+        ExitStatus::Ok => Ink::Plain,
+        ExitStatus::Cancelled | ExitStatus::Unreported => Ink::Dim,
+        _ => Ink::Bad,
+    };
+    let ran = match (n.started_at, n.ended_at) {
+        (Some(s), Some(e)) => {
+            e.0.duration_since(s.0)
+                .map(|d| format!(" in {}", elapsed(d.as_secs())))
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    let mut first = vec![(format!("{}{ran}", c.status.word()), ink)];
+    if let Some(u) = d.usage {
+        first.push((
+            format!("  {} in  {} out", tokens(u.input), tokens(u.output)),
+            Ink::Dim,
+        ));
     }
+    let mut facts = vec![first];
+    if let Some(line) = c.narrative.as_deref().and_then(|t| t.lines().next()) {
+        facts.push(vec![(
+            marion_core::text::visible(line).into_owned(),
+            Ink::Plain,
+        )]);
+    }
+    if let Some(b) = &c.branch {
+        let mut l = vec![(b.clone(), Ink::Bold)];
+        if let Some(diff) = c.diff {
+            l.push((format!("  +{}", diff.added), Ink::Good));
+            l.push((format!(" -{}", diff.removed), Ink::Bad));
+            let s = if diff.files == 1 { "" } else { "s" };
+            l.push((format!("  {} file{s}", diff.files), Ink::Dim));
+        }
+        facts.push(l);
+    }
+    facts
 }
 
-/// **A row's subtree cell**: a parent's subtree spend (`Σ184k`), and against its tree budget
-/// where it has one (`Σ1.2M/5M`, flagged past the warn line). `None` for a leaf with no budget —
-/// its subtree is itself, already in the tokens column — and where nothing reported a figure.
-fn subtree_cell(
+/// The selected node's output, as the preview draws it.
+fn stream(home: &Home) -> Vec<StreamLine> {
+    home.watch
+        .stream
+        .iter()
+        .map(|l| StreamLine {
+            clock: clock(&l.at, true),
+            kind: match l.kind {
+                ActionKind::Call => LineKind::Call,
+                ActionKind::Files => LineKind::Files,
+                ActionKind::Ended if crate::activity::succeeded(l) => LineKind::Done,
+                ActionKind::Ended => LineKind::Failed,
+                ActionKind::Said => LineKind::Said,
+            },
+            text: l.text.clone(),
+        })
+        .collect()
+}
+
+/// **A parent's subtree, in one line**: its tokens, files, agents and how many run, and its tree
+/// budget where it has one — whether it is past the budget's warn line beside it. `None` for a
+/// leaf without a budget, whose figures are its own row's.
+fn subtree_line(
+    home: &Home,
     n: &NodeSummary,
-    t: &crate::rollup::Totals,
-    has_children: bool,
+    now: std::time::SystemTime,
 ) -> Option<(String, bool)> {
-    use marion_tui::home::text::tokens;
-    match crate::rollup::budget_of(n, t) {
-        Some((spent, limit, over)) => Some((format!("Σ{}/{}", tokens(spent), tokens(limit)), over)),
-        None if has_children && t.claimed > 0 => Some((format!("Σ{}", tokens(t.tokens)), false)),
-        None => None,
-    }
-}
-
-/// **The expanded node's subtree line**: tokens, files, wall clock, nodes and how many run, and
-/// its tree budget where it has one — for a node with children or a budget.
-fn subtree_line(home: &Home, n: &NodeSummary) -> Option<(String, bool)> {
-    use marion_tui::home::text::{elapsed, tokens};
     let t = home.watch.rollup.get(&n.agent_id)?;
     let budget = crate::rollup::budget_of(n, t);
     if !home.watch.rollup.has_children(&n.agent_id) && budget.is_none() {
         return None;
     }
     let mut parts = vec![if t.claimed > 0 {
-        format!("Σ{} tokens", tokens(t.tokens))
+        format!("{} tokens", tokens(t.tokens))
     } else {
         "tokens not reported".to_string()
     }];
-    parts.push(format!("{} Σ files", t.changed));
-    if let Some(wall) = t.wall_to(std::time::SystemTime::now()) {
-        parts.push(format!("{} wall", elapsed(wall.as_secs())));
+    let s = if t.changed == 1 { "" } else { "s" };
+    parts.push(format!("{} file{s}", t.changed));
+    if let Some(wall) = t.wall_to(now) {
+        parts.push(elapsed(wall.as_secs()));
     }
-    parts.push(format!("{} nodes ({} running)", t.nodes, t.live));
+    parts.push(format!("{} agents, {} running", t.nodes, t.live));
     let over = budget.is_some_and(|(_, _, over)| over);
     if let Some((spent, limit, _)) = budget {
-        parts.push(format!("budget {} / {}", tokens(spent), tokens(limit)));
+        parts.push(format!("budget {} of {}", tokens(spent), tokens(limit)));
     }
-    Some((parts.join(" · "), over))
-}
-
-/// The row's time: how long a live node has been running, or how long ago an ended one ended.
-/// Blank where no start (or end) was recorded.
-fn row_time(n: &NodeSummary, now: std::time::SystemTime) -> String {
-    let Some(started) = n.started_at else {
-        return String::new();
-    };
-    if n.state.is_exited() {
-        // How long ago it ended, where the end was recorded.
-        return n
-            .ended_at
-            .and_then(|e| now.duration_since(e.0).ok())
-            .map(|d| ago(d.as_secs()))
-            .unwrap_or_default();
-    }
-    now.duration_since(started.0)
-        .map(|d| marion_tui::home::text::elapsed(d.as_secs()))
-        .unwrap_or_default()
-}
-
-/// How long ago, in its largest unit only (`12m ago`, `1h ago`): an ended node's time needs no
-/// seconds, and it fits the row's time column.
-fn ago(secs: u64) -> String {
-    match secs {
-        0..=59 => format!("{secs}s ago"),
-        60..=3599 => format!("{}m ago", secs / 60),
-        3600..=86_399 => format!("{}h ago", secs / 3600),
-        _ => format!("{}d ago", secs / 86_400),
-    }
-}
-
-/// What the row says after the harness: the agent type with the harness's own name taken off —
-/// nothing for a plain type (`codex` on codex), `orchestrator` for `claude-orchestrator`, the whole
-/// type for a custom one.
-/// **A race's header row**, summed from its seats: no node stands behind it, so it has no harness,
-/// no elapsed time of its own and nothing to attach to. Its tokens are the seats' so far, live.
-fn race_row(
-    prefix: &str,
-    tnode: &marion_tui::tree::Node,
-    race: &str,
-    nodes: &[NodeSummary],
-) -> NodeRow {
-    let summary = crate::tree::RaceSummary::of(&marion_core::race::RaceId(race.to_string()), nodes);
-    NodeRow {
-        id: tnode.id.clone(),
-        prefix: prefix.to_string(),
-        harness: "race".into(),
-        kind: summary.label(),
-        short: short_id(race).to_string(),
-        tone: tnode.tone,
-        elapsed: String::new(),
-        tokens: summary.tokens,
-        doing: match &summary.decided {
-            Some(Some(winner)) => format!("{winner} won; every agent's branch is kept"),
-            Some(None) => "no agent won; every agent's branch is kept".into(),
-            None => format!("{} of {} agents finished", summary.ended, summary.seats),
-        },
-        // The header's figures are already its seats' sum; it heads no subtree of its own.
-        subtree: None,
-    }
-}
-
-/// **A workflow run's header row**, summed from its step nodes: no node stands behind it. Its tokens
-/// are the steps' so far; Enter on it goes to the step running now.
-fn workflow_row(
-    prefix: &str,
-    tnode: &marion_tui::tree::Node,
-    run: &str,
-    nodes: &[NodeSummary],
-    now: std::time::SystemTime,
-) -> NodeRow {
-    let summary = crate::tree::WorkflowSummary::of(
-        &marion_core::workflow::WorkflowId(run.to_string()),
-        nodes,
-        now,
-    );
-    NodeRow {
-        id: tnode.id.clone(),
-        prefix: prefix.to_string(),
-        harness: "workflow".into(),
-        kind: summary.label(),
-        short: short_id(run).to_string(),
-        tone: tnode.tone,
-        elapsed: String::new(),
-        tokens: summary.tokens,
-        doing: match (summary.closed, &summary.current) {
-            (Some(outcome), _) => format!("the run {}", outcome.word()),
-            (None, Some(_)) => "enter goes to the step running now".into(),
-            (None, None) => "starting".into(),
-        },
-        subtree: None,
-    }
-}
-
-fn kind_of(n: &NodeSummary) -> String {
-    let harness = n.harness.cli_name().to_string();
-    let t = n.agent_type.as_str();
-    let head = t.split('-').next().unwrap_or(t);
-    if !harness.starts_with(head) {
-        return t.to_string();
-    }
-    t.strip_prefix(head)
-        .map(|rest| rest.trim_start_matches('-').to_string())
-        .unwrap_or_default()
-}
-
-/// The row's one line: what needs the operator, else what it landed, else the last thing it did,
-/// else its state.
-fn doing(n: &NodeSummary, detail: Option<&NodeDetail>, stream: Option<&[ActionLine]>) -> String {
-    if let Some(why) = attention_of(n) {
-        return why;
-    }
-    if let Some(b) = detail
-        .and_then(|d| d.completion.as_ref())
-        .and_then(|c| c.branch.as_ref())
-    {
-        return format!("landed {b}");
-    }
-    // The last thing it started, not an end: `✓ 3.2s` alone says nothing about what ran.
-    if let Some(last) = stream.and_then(|s| s.iter().rev().find(|l| l.kind != ActionKind::Ended)) {
-        return last.text.clone();
-    }
-    crate::tree::row(n).state
+    Some((parts.join("  "), over))
 }
 
 /// `hh:mm[:ss]` out of a recorded RFC3339 timestamp, in the operator's local time.
 fn clock(at: &str, with_seconds: bool) -> String {
     let offset = epoch_secs(at).map_or(0, local_offset);
     clock_in(at, offset, with_seconds)
-}
-
-/// `hh:mm` of a moment, in local time.
-fn local_clock(at: std::time::SystemTime) -> String {
-    let secs = at
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    clock_of(secs, local_offset(secs), false)
 }
 
 /// `hh:mm[:ss]` of `at` shifted by `offset` seconds east of UTC; `at` itself when it is not a
@@ -520,157 +533,19 @@ fn local_offset(epoch: i64) -> i64 {
     offset
 }
 
-/// The capabilities Watch's keys stand on, in the order the keys are offered (`s`, `u`), each
-/// with whether marion measured it for this node: the full list is `marion doctor`'s to print.
-const HOME_CAPS: &[&str] = &["steer", "resume", "interrupt"];
-
-fn home_caps(n: &NodeSummary) -> Vec<(String, bool)> {
-    let actions = crate::tree::actions_for(n);
-    HOME_CAPS
-        .iter()
-        .filter_map(|want| actions.iter().find(|a| a.name == *want))
-        .map(|a| (a.name.clone(), a.available))
-        .collect()
-}
-
-/// `provider:model · route` for an endpoint node's expansion.
-fn endpoint_of(n: &NodeSummary) -> Option<String> {
-    n.endpoint.as_ref().map(|e| match &e.route {
-        Some(r) => format!("{} · {r}", e.label()),
-        None => e.label(),
-    })
-}
-
-/// What the operator can do about a blocked agent, in plain words and keys this screen has. A pane
-/// agent's dialog is answered in its terminal; a headless agent has no terminal and no question
-/// waiting on anyone: marion answers a headless agent's permission asks itself, from its grant.
-fn direction(n: &NodeSummary) -> &'static str {
-    use marion_core::node::{BlockReason, NodeState};
-    match n.state {
-        NodeState::Blocked(BlockReason::Descendants) => {
-            "it waits for its own agents to end; select one below to see it"
-        }
-        NodeState::Blocked(_) if n.pane => "enter attaches: answer it in its terminal",
-        NodeState::Blocked(BlockReason::Permission) => {
-            "s steers it, x cancels it; marion answers a headless agent's asks from its grant"
-        }
-        NodeState::Blocked(_) => "s steers it with what it needs, x cancels it",
-        _ => "",
-    }
-}
-
-fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
-    let live = !n.state.is_exited();
-    let needs = matches!(n.state, marion_core::node::NodeState::Blocked(_))
-        .then(|| attention_of(n))
-        .flatten()
-        .map(|what| format!("{what} · {}", direction(n)));
-    let caps = home_caps(n);
-    let Some(d) = (match &home.watch.detail {
-        Some((id, d)) if *id == n.agent_id => Some(d),
-        _ => None,
-    }) else {
-        return Expanded {
-            live,
-            needs,
-            stream_unread: Some("reading…".into()),
-            caps,
-            endpoint: endpoint_of(n),
-            subtree: subtree_line(home, n),
-            ..Default::default()
-        };
-    };
-    Expanded {
-        live,
-        endpoint: endpoint_of(n),
-        subtree: subtree_line(home, n),
-        task: d.task.as_ref().map(|t| TaskView {
-            // The task as the operator wrote it: what marion appended (its report instruction, the
-            // same on every agent) is marion's plumbing, not the task, and is not shown.
-            prompt: t.prompt.clone(),
-            acceptance: t.acceptance.clone(),
-            verification: t.verification.clone(),
-        }),
-        messages: d
-            .messages
-            .iter()
-            .map(|m| MessageView {
-                clock: clock(&m.at, false),
-                text: format!("{} · {} bytes · {}", m.from, m.len, m.outcome),
-            })
-            .collect(),
-        stream: home
-            .watch
-            .stream
-            .iter()
-            .map(|l| StreamLine {
-                clock: clock(&l.at, true),
-                kind: match l.kind {
-                    ActionKind::Call => LineKind::Call,
-                    ActionKind::Files => LineKind::Files,
-                    ActionKind::Ended if crate::activity::succeeded(l) => LineKind::Done,
-                    ActionKind::Ended => LineKind::Failed,
-                    ActionKind::Said => LineKind::Said,
-                },
-                text: l.text.clone(),
-            })
-            .collect(),
-        stream_scroll: home.watch.scroll,
-        stream_unread: d.stream.as_ref().and_then(|p| p.unread.clone()),
-        needs,
-        tokens: d.usage.map(|u| TokenView {
-            input: u.input,
-            output: u.output,
-            cached: u.cache_read,
-            // Per turn where the harness reports usage per turn; empty draws no sparkline.
-            rate: d.turns.clone(),
-            window: "turn".into(),
-            context_permille: None,
-        }),
-        result: d.completion.as_ref().map(|c| {
-            let tone = match c.status {
-                ExitStatus::Ok => Tone::Done,
-                ExitStatus::Cancelled | ExitStatus::Unreported => Tone::Unknown,
-                _ => Tone::Failed,
-            };
-            let status = c.status.word().to_string();
-            let summary = match &c.narrative {
-                Some(n) => format!("{status}: {}", n.lines().next().unwrap_or("")),
-                None => status,
-            };
-            ResultView {
-                summary,
-                tone: Some(tone),
-                branch: c.branch.clone(),
-                added: c.diff.map_or(0, |d| d.added),
-                removed: c.diff.map_or(0, |d| d.removed),
-                files: c.diff.map_or_else(
-                    || u32::try_from(c.changed_paths).unwrap_or(u32::MAX),
-                    |d| d.files,
-                ),
-                merge: c
-                    .branch
-                    .as_deref()
-                    .map(marion_core::contract::merge_command),
-            }
-        }),
-        caps,
-        // Its branch, not the long state path its worktree sits at: `o` opens a shell there.
-        workspace: d.workspace.as_ref().map(|w| match w {
-            Workspace::Worktree { branch, .. } => format!("worktree {branch}"),
-            Workspace::SharedCwd { path } => format!(
-                "the checkout {}",
-                project_label(
-                    &path.to_string_lossy(),
-                    std::env::var("HOME").ok().as_deref(),
-                    None
-                )
-            ),
-        }),
-    }
-}
-
 // ---------------------------------------------------------------------------------- Setup
+
+fn harness_row(h: &super::Harness) -> HarnessRow {
+    HarnessRow {
+        name: h.name.clone(),
+        version: h.version.clone(),
+        ready: h.ready,
+        note: h.note.clone(),
+        surfaces: h.surfaces.clone(),
+        fix: h.fix.clone(),
+        detail: h.detail.clone(),
+    }
+}
 
 fn setup(home: &Home, places: &Places) -> SetupView {
     let ready_of = |harness: &str| {
@@ -845,97 +720,65 @@ fn form_view(home: &Home) -> Option<FormView> {
 
 // ---------------------------------------------------------------------------------- keys
 
-/// Every key, by screen, with the command it stands for: the `?` page reads this, and
-/// [`super::Home::key`] is what it describes — the state machine's tests press each one.
 /// One key: what to press, what it does, the command it stands for (empty when none).
 pub type KeyRow3 = (&'static str, &'static str, &'static str);
 
+/// **Every key, by page, with the command it stands for**: the `?` page reads this, and
+/// [`super::Home::key`] is what it describes — the state machine's tests press each one, and the
+/// footer offers no key this table does not list.
 pub const KEYS: &[(&str, &[KeyRow3])] = &[
     (
-        "Everywhere",
-        &[
-            ("tab", "next screen", ""),
-            ("?", "help (Start: empty prompt)", ""),
-            ("F1", "help, from anywhere", ""),
-            ("^c", "quit", ""),
-            ("q", "quit, off Start", ""),
-        ],
-    ),
-    (
-        "Start",
-        &[
-            ("enter", "run", "marion run <type> --prompt <text> --detach"),
-            ("↑↓", "harness", ""),
-            ("←→", "model", ""),
-            ("^o", "next agent type", ""),
-            ("^p", "headless or pane", "--pane"),
-            ("esc", "clear the prompt", ""),
-        ],
-    ),
-    (
-        "Watch",
+        "agents",
         &[
             ("j/k", "move", ""),
-            (
-                "enter",
-                "its stream full-screen; a pane agent: attach",
-                "marion attach <id>",
-            ),
-            ("esc", "back from the stream", ""),
-            ("s", "steer", "marion steer <id> <text>"),
-            ("x", "cancel, asks first", "marion cancel <id>"),
-            (
-                "u",
-                "bring back an ended agent from its session",
-                "marion resume <id>",
-            ),
+            ("enter", "attach (pane); ^] d back", "marion attach <id>"),
+            ("enter", "full output (headless)", "marion ls <id>"),
+            ("n", "new task", "marion run <type> --prompt <text>"),
+            ("s", "steer a running agent", "marion steer <id> <text>"),
+            ("x", "cancel, asks; again kills", "marion cancel <id>"),
+            ("u", "resume an ended agent", "marion resume <id>"),
             ("o", "shell in its workspace", ""),
             ("d", "what its branch changed", "git log -p HEAD..<branch>"),
             (
                 "m",
-                "merge its branch, asks first",
+                "merge its branch, asks",
                 "git merge --no-ff -- <branch>",
             ),
-            ("c", "copy the merge", ""),
-            ("!", "next that needs you", "marion ls --attention"),
-            ("J/K", "scroll its stream", ""),
+            ("pgup/dn", "scroll output; end follows", ""),
+            (",", "setup", ""),
+            ("?", "this page", ""),
+            ("q", "quit", ""),
         ],
     ),
     (
-        "Setup",
+        "input line",
         &[
-            ("enter", "on Harnesses: details and its fix", ""),
+            ("tab", "next agent type", ""),
+            ("↑↓", "the type's models", "--model <m>"),
+            ("enter", "run, send or add", ""),
+            ("esc", "close it", ""),
+        ],
+    ),
+    (
+        "setup",
+        &[
+            ("enter", "a harness's detail and fix", ""),
             ("r", "re-check", "marion doctor"),
             ("e", "edit agent types", "$EDITOR .marion/agents.toml"),
             ("n", "new agent type, previewed", ".marion/agents.toml"),
-            ("a", "on API keys: add one", "marion key add <provider>"),
-            (
-                "x",
-                "on API keys: remove one, asks first",
-                "marion key rm <id>",
-            ),
-            (
-                "a",
-                "on Logins: add one",
-                "marion profile add <harness> <name>",
-            ),
-            ("u", "use a profile", "marion profile use <harness> <name>"),
-            (
-                "x",
-                "on Logins: remove one, asks first",
-                "marion profile rm <harness> <name>",
-            ),
+            ("a", "add a key, or a login", "marion key add <provider>"),
+            ("u", "use a login", "marion profile use <harness> <name>"),
+            ("x", "remove key or login, asks", "marion key rm <id>"),
+            ("esc", "back", ""),
         ],
     ),
 ];
 
-/// The key table, the section for the tab help was opened from first.
+/// The key table, the page help was opened from first.
 fn help(home: &Home) -> HelpView {
     let first = match home.help_from {
-        Tab::Start => "Start",
-        Tab::Watch => "Watch",
-        Tab::Setup => "Setup",
-        Tab::Help => "Everywhere",
+        Page::Setup => "setup",
+        _ => "agents",
     };
     let mut order: Vec<&(&str, &[KeyRow3])> = KEYS.iter().collect();
     order.sort_by_key(|(title, _)| *title != first);
@@ -959,205 +802,193 @@ fn help(home: &Home) -> HelpView {
     }
 }
 
-fn hints(home: &Home) -> Vec<Hint> {
-    let h = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| Hint::new(*k, *v)).collect();
-    match (&home.mode, home.tab) {
-        (Mode::Compose { .. }, _) => h(&[("enter", "send"), ("esc", "cancel")]),
-        (Mode::Confirm(_), _) => h(&[("y", "yes"), ("any key", "no")]),
-        (Mode::Login { .. }, _) => h(&[("enter", "log in"), ("esc", "cancel")]),
-        (Mode::Profile { .. }, _) => h(&[("enter", "add"), ("esc", "cancel")]),
-        (Mode::Form(_), _) => h(&[
+/// The footer: the line being typed, the confirm, or the keys the selection takes — each offered
+/// only where it does something, so a key the footer shows is never refused.
+fn footer(home: &Home) -> Footer {
+    let h = |pairs: &[(&str, &str)]| -> Vec<Hint> {
+        pairs.iter().map(|(k, v)| Hint::new(*k, *v)).collect()
+    };
+    match &home.mode {
+        Mode::Typing { purpose, text } => {
+            let (target, note, keys) = match purpose {
+                Purpose::New => {
+                    let target = match home.new_type() {
+                        Some(t) => format!("new {}", t.name),
+                        None => "new".to_string(),
+                    };
+                    let note = home
+                        .new_blocked()
+                        .or_else(|| home.new_model())
+                        .unwrap_or_default();
+                    (
+                        target,
+                        note,
+                        h(&[("tab", "type"), ("↑↓", "model"), ("enter", "run")]),
+                    )
+                }
+                Purpose::Steer(id) => (
+                    format!("steer {}", who_short(home, id)),
+                    String::new(),
+                    h(&[("enter", "send"), ("esc", "cancel")]),
+                ),
+                Purpose::Key => (
+                    "key add".to_string(),
+                    String::new(),
+                    h(&[("enter", "add"), ("esc", "cancel")]),
+                ),
+                Purpose::Profile => (
+                    "profile add".to_string(),
+                    String::new(),
+                    h(&[("enter", "add"), ("esc", "cancel")]),
+                ),
+            };
+            Footer::Input {
+                target,
+                note,
+                text: text.clone(),
+                keys,
+            }
+        }
+        Mode::Confirm(effect) => confirm(home, effect),
+        Mode::Form(_) => Footer::Keys(h(&[
             ("tab", "next field"),
             ("←→", "choose"),
             ("enter", "preview"),
             ("esc", "close"),
-        ]),
-        (_, Tab::Start) => h(&[
-            ("enter", "run"),
-            ("↑↓", "harness"),
-            ("←→", "model"),
-            ("^o", "type"),
-            ("^p", "pane"),
-            ("tab", "screens"),
-        ]),
-        (_, Tab::Watch) if home.watch.full_stream => h(&[
-            ("J/K", "scroll"),
-            ("esc", "back"),
-            ("s", "steer"),
-            ("x", "cancel"),
-        ]),
-        // Nothing to act on: the one key that leads somewhere.
-        (_, Tab::Watch) if home.watch.nodes.is_empty() => h(&[("tab", "Start")]),
-        (_, Tab::Watch) if home.selected_race().is_some() => h(&[
-            ("j/k", "move"),
-            ("!", "needs you"),
-            ("enter", "winner"),
-            ("m", "merge winner"),
-        ]),
-        // `!` second: a narrow row drops hints from its end, and what needs the operator is the
-        // one a narrow screen must keep.
-        (_, Tab::Watch) => h(&[
-            ("j/k", "move"),
-            ("!", "needs you"),
-            (
-                "enter",
-                if home.selected().is_some_and(|n| n.pane) {
-                    "attach"
-                } else {
-                    "stream"
-                },
-            ),
-            ("s", "steer"),
-            ("x", "cancel"),
-            ("u", "resume"),
-            ("m", "merge"),
-        ]),
-        // One set per section: what the keys do on the row under the cursor, and nothing that
-        // does something else there.
-        (_, Tab::Setup) if home.on_notify() => h(&[
-            ("j/k", "move"),
-            (
-                "enter",
-                if home.setup.notify == Some(true) {
-                    "turn off"
-                } else {
-                    "turn on"
-                },
-            ),
-        ]),
-        (_, Tab::Setup) if home.on_profiles() => h(&[
-            ("j/k", "move"),
+        ])),
+        Mode::Normal => Footer::Keys(match home.page {
+            Page::Agents => agent_keys(home),
+            Page::Setup => setup_keys(home),
+            Page::Help => h(&[("esc", "back"), ("j/k", "scroll")]),
+        }),
+    }
+}
+
+/// `codex 91cd`: a node as the input and confirm lines name it.
+fn who_short(home: &Home, id: &AgentId) -> String {
+    home.watch
+        .nodes
+        .iter()
+        .find(|n| n.agent_id == *id)
+        .map_or_else(
+            || short_id(&id.0).to_string(),
+            |n| format!("{} {}", n.harness.cli_name(), short_id(&n.agent_id.0)),
+        )
+}
+
+fn can(n: &NodeSummary, action: &str) -> bool {
+    crate::tree::actions_for(n)
+        .iter()
+        .any(|a| a.name == action && a.available)
+}
+
+/// The agents page's keys for the selection.
+fn agent_keys(home: &Home) -> Vec<Hint> {
+    let mut k: Vec<(&str, &str)> = Vec::new();
+    let more = ("?", "more");
+    if home.watch.nodes.is_empty() {
+        return [("n", "new"), (",", "setup"), more]
+            .iter()
+            .map(|(a, b)| Hint::new(*a, *b))
+            .collect();
+    }
+    if home.selected_race().is_some() {
+        k.extend([("enter", "winner"), ("m", "merge"), ("n", "new")]);
+    } else if home.selected_workflow().is_some() {
+        k.extend([("enter", "step"), ("n", "new")]);
+    } else if let Some(n) = home.selected() {
+        let landed = home.branch().is_some();
+        if home.watch.full {
+            k.push(("esc", "back"));
+        } else {
+            k.push(("enter", if n.pane { "attach" } else { "output" }));
+            k.push(("n", "new"));
+        }
+        if n.state.is_exited() {
+            if landed {
+                k.extend([("m", "merge"), ("d", "diff")]);
+            }
+            if can(n, "resume") {
+                k.push(("u", "resume"));
+            }
+            k.push(("o", "shell"));
+        } else {
+            if can(n, "steer") {
+                k.push(("s", "steer"));
+            }
+            k.push(("x", "cancel"));
+        }
+    }
+    k.push(more);
+    k.into_iter().map(|(a, b)| Hint::new(a, b)).collect()
+}
+
+/// Setup's keys for the row under the cursor, and nothing that does something else there.
+fn setup_keys(home: &Home) -> Vec<Hint> {
+    let pairs: &[(&str, &str)] = if home.on_notify() {
+        if home.setup.notify == Some(true) {
+            &[("enter", "turn off"), ("esc", "back")]
+        } else {
+            &[("enter", "turn on"), ("esc", "back")]
+        }
+    } else if home.on_profiles() {
+        &[
             ("a", "add login"),
             ("u", "use"),
             ("x", "remove"),
-        ]),
-        (_, Tab::Setup) if home.selected_login().is_some() => {
-            h(&[("j/k", "move"), ("a", "add key"), ("x", "remove key")])
-        }
-        (_, Tab::Setup) => h(&[
-            ("j/k", "move"),
+            ("esc", "back"),
+        ]
+    } else if home.selected_login().is_some() {
+        &[("a", "add key"), ("x", "remove key"), ("esc", "back")]
+    } else {
+        &[
             ("enter", "details"),
             ("r", "re-check"),
             ("e", "edit types"),
             ("n", "new type"),
             ("a", "add key"),
-        ]),
-        (_, Tab::Help) => h(&[("esc", "back"), ("j/k", "scroll"), ("tab", "next screen")]),
-    }
+            ("esc", "back"),
+        ]
+    };
+    pairs.iter().map(|(a, b)| Hint::new(*a, *b)).collect()
 }
 
-fn input(home: &Home) -> Input {
+/// The confirm line for `effect`: the question in a few words, and the command it runs.
+fn confirm(home: &Home, effect: &Effect) -> Footer {
     let line = |e: &Effect| {
         e.argv()
             .map(|a| shell_line(&a, usize::MAX))
             .unwrap_or_default()
     };
-    match &home.mode {
-        Mode::Compose { target, text } => Input::Compose {
-            target: format!("steer {}", short_id(&target.0)),
-            text: text.clone(),
-        },
-        Mode::Login { text } => Input::Compose {
-            target: "marion key add".into(),
-            text: text.clone(),
-        },
-        Mode::Profile { text } => Input::Compose {
-            target: "marion profile add".into(),
-            text: text.clone(),
-        },
-        Mode::Form(_) => Input::Command {
-            line: crate::run::AGENT_TYPES_FILE.into(),
-            note: "enter previews".into(),
-        },
-        Mode::Confirm(Effect::WriteTypes { draft, .. }) => {
+    let (question, command) = match effect {
+        Effect::WriteTypes { draft, .. } => {
             let added = home.setup.preview.iter().filter(|(t, _)| *t == '+').count();
             let removed = home.setup.preview.iter().filter(|(t, _)| *t == '-').count();
-            Input::Confirm {
-                question: format!("Write {} to {}?", draft.name, crate::run::AGENT_TYPES_FILE),
-                command: format!("+{added} −{removed} lines"),
-            }
+            (
+                format!("write {} to {}?", draft.name, crate::run::AGENT_TYPES_FILE),
+                format!("+{added} -{removed} lines"),
+            )
         }
-        Mode::Confirm(effect @ Effect::Logout(id)) => Input::Confirm {
-            question: format!("Remove the key {id}?"),
-            command: line(effect),
-        },
-        Mode::Confirm(effect @ Effect::Merge(branch)) => Input::Confirm {
-            question: format!("Merge {branch} into your checkout?"),
-            command: line(effect),
-        },
-        Mode::Confirm(effect @ Effect::ProfileRemove { name, .. }) => Input::Confirm {
-            question: format!("Remove the profile {name}?"),
-            command: line(effect),
-        },
-        Mode::Confirm(effect) => {
-            let target = match effect {
-                Effect::Cancel(id) | Effect::Kill(id) => Some(id),
-                _ => None,
+        Effect::Logout(id) => (format!("remove the key {id}?"), line(effect)),
+        Effect::Merge(branch) => (format!("merge {branch} into your checkout?"), line(effect)),
+        Effect::ProfileRemove { name, .. } => (format!("remove the profile {name}?"), line(effect)),
+        Effect::Kill(id) => (
+            format!("cancel pending; kill {} now?", who_short(home, id)),
+            line(effect),
+        ),
+        Effect::Cancel(id) => {
+            let below = live_below(&home.watch.nodes, id);
+            let who = who_short(home, id);
+            let q = if below > 0 {
+                format!("cancel {who} and the {below} below it?")
+            } else {
+                format!("cancel {who}?")
             };
-            let who = home
-                .watch
-                .nodes
-                .iter()
-                .find(|n| target == Some(&n.agent_id))
-                .map_or_else(String::new, |n| {
-                    format!(" {} {}", n.agent_type, short_id(&n.agent_id.0))
-                });
-            let below = target.map_or(0, |id| live_below(&home.watch.nodes, id));
-            let question = match effect {
-                Effect::Kill(_) => format!("Kill{who} now? Its cancel is still waiting on it"),
-                _ if below > 0 => format!("Cancel{who} and the {below} below it?"),
-                _ => format!("Cancel{who}?"),
-            };
-            Input::Confirm {
-                question,
-                command: line(effect),
-            }
+            (q, line(effect))
         }
-        Mode::Normal => match home.tab {
-            Tab::Start => Input::Prompt {
-                text: home.start.prompt.clone(),
-                placeholder: "describe the task; enter runs it".into(),
-                focused: true,
-            },
-            Tab::Watch => Input::Command {
-                line: line(&home.watch_default()),
-                note: if home.selected().is_some() {
-                    "enter".into()
-                } else {
-                    String::new()
-                },
-            },
-            Tab::Setup => match (home.selected_login(), home.selected_profile()) {
-                (Some(l), _) => Input::Command {
-                    line: line(&Effect::Logout(l.id.clone())),
-                    note: "x".into(),
-                },
-                (_, Some(p)) => Input::Command {
-                    line: line(&Effect::ProfileUse {
-                        harness: p.harness.clone(),
-                        name: p.name.clone(),
-                    }),
-                    note: "u".into(),
-                },
-                _ if home.on_notify() => Input::Command {
-                    line: line(&Effect::Notify(home.setup.notify != Some(true))),
-                    note: "enter".into(),
-                },
-                _ if home.on_profiles() => Input::Command {
-                    line: "marion profile add <harness> <name>".into(),
-                    note: "a".into(),
-                },
-                _ => Input::Command {
-                    line: line(&Effect::Recheck),
-                    note: "r".into(),
-                },
-            },
-            Tab::Help => Input::Command {
-                line: "marion --help".into(),
-                note: String::new(),
-            },
-        },
-    }
+        other => ("go ahead?".to_string(), line(other)),
+    };
+    Footer::Confirm { question, command }
 }
 
 /// How many live nodes are below `id` — what a cancel of `id` ends with it.

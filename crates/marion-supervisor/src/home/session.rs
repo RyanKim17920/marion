@@ -22,10 +22,9 @@ use crate::tree::Subscription;
 use marion_core::contract::AgentId;
 use marion_core::proto::params::ActivityCursor;
 use marion_tui::home::keys::{self, Key};
-use marion_tui::home::{Ready, Screen as HomeScreen, Tab, Theme};
+use marion_tui::home::{Page, Ready, Screen as HomeScreen, Theme};
 use marion_tui::{Screen, ScreenBackend, Sticky};
 use ratatui::Terminal;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -62,8 +61,6 @@ const TICK: Duration = Duration::from_secs(1);
 pub struct Options {
     pub repo: PathBuf,
     pub state: PathBuf,
-    /// The tab it opens on: Start for bare `marion`, Watch for `marion ls`.
-    pub tab: Tab,
 }
 
 /// What needs the whole terminal, so the loop leaves the screen for it.
@@ -101,6 +98,8 @@ enum Report {
     },
     /// A cancel or its escalation answered, in one line.
     Ended(String),
+    /// A node's task, as `node/get` read it for the row's title; `None` where it has none.
+    Title(AgentId, Option<String>),
 }
 
 /// Run the home screen until the operator quits.
@@ -138,6 +137,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
                     s.foreground(c, "git merge");
                     if s.home.notice.is_none() {
                         s.home.notice = Some(format!("merged {branch}"));
+                        s.home.merged(&branch);
                     }
                 }
             },
@@ -159,7 +159,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 s.foreground(c, "marion profile add");
                 if s.home.notice.is_none() {
                     s.home.notice = Some(format!(
-                        "profile {name} added · log in to it yourself with the command under it"
+                        "profile {name} added; log in with the command under it"
                     ));
                 }
                 s.added_profile = Some(name);
@@ -206,6 +206,8 @@ struct Session {
     profiles_asked: bool,
     /// A profile `marion profile add` just made, to select once the listing shows it.
     added_profile: Option<String>,
+    /// Nodes whose task has been asked for, for their row's title: each is asked once.
+    titles_asked: std::collections::HashSet<AgentId>,
 }
 
 impl Session {
@@ -229,7 +231,7 @@ impl Session {
             waker: wake.waker(),
         };
         let mut s = Session {
-            home: Home::new(opts.tab),
+            home: Home::new(),
             places: Places {
                 project: view::project_label(
                     &shown.to_string_lossy(),
@@ -258,13 +260,11 @@ impl Session {
             dirty: true,
             profiles_asked: false,
             added_profile: None,
+            titles_asked: std::collections::HashSet::new(),
         };
         s.load_types();
         s.recheck();
         s.load_logins();
-        if opts.tab == Tab::Setup {
-            s.load_profiles();
-        }
         s
     }
 
@@ -340,8 +340,9 @@ impl Session {
                         leave(&terminal);
                         return Ok(handoff);
                     }
-                    // A key may have moved the selection or come to Watch: read what it shows.
-                    self.detail_stale |= self.home.tab == Tab::Watch;
+                    // A key may have moved the selection or come back to the agents: read what
+                    // the preview shows.
+                    self.detail_stale |= self.home.page == Page::Agents;
                 }
             }
         }
@@ -375,8 +376,8 @@ impl Session {
             if self.home.animating() {
                 self.tick = self.tick.wrapping_add(1);
                 self.dirty = true;
-                // A running selected node's stream moves with it.
-                self.detail_stale |= self.home.tab == Tab::Watch;
+                // A running selected node's output moves with it.
+                self.detail_stale |= self.home.page == Page::Agents;
             }
         }
         let due = match self.last_dial {
@@ -398,7 +399,7 @@ impl Session {
             self.home.notice_sticky = false;
         }
         let handoff = self.effect(key);
-        if self.home.tab == Tab::Setup && !self.profiles_asked {
+        if self.home.page == Page::Setup && !self.profiles_asked {
             self.load_profiles();
             self.load_notify();
         }
@@ -464,9 +465,9 @@ impl Session {
                 let (socket, tx) = (self.sock.clone(), self.reporter.clone());
                 let short = crate::tree::short_id(&id.0).to_string();
                 self.home.notice = Some(if force {
-                    format!("killing {short}…")
+                    format!("killing {short}")
                 } else {
-                    format!("cancelling {short}…")
+                    format!("cancelling {short}")
                 });
                 std::thread::spawn(move || {
                     let line = if force {
@@ -482,11 +483,6 @@ impl Session {
                     };
                     tx.send(Report::Ended(line));
                 });
-                None
-            }
-            Effect::Copy(text) => {
-                copy(&text);
-                self.home.notice = Some(format!("copied: {text}"));
                 None
             }
             Effect::Recheck => {
@@ -516,7 +512,7 @@ impl Session {
         let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
         let mut c = self.marion(&args);
         let tx = self.reporter.clone();
-        self.home.notice = Some("starting…".into());
+        self.home.notice = Some("starting".into());
         std::thread::spawn(move || {
             let report = match c.stdin(std::process::Stdio::null()).output() {
                 Ok(out) => {
@@ -591,13 +587,39 @@ impl Session {
         {
             self.pending_select = None;
         }
+        self.load_titles();
+    }
+
+    /// Ask, on a thread, for the task of every node whose row has no title yet: one `node/get`
+    /// per node, once — a task does not change. The answers arrive as [`Report::Title`].
+    fn load_titles(&mut self) {
+        let ids: Vec<AgentId> = self
+            .home
+            .untitled()
+            .into_iter()
+            .filter(|id| self.titles_asked.insert(id.clone()))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let (sock, tx) = (self.sock.clone(), self.reporter.clone());
+        std::thread::spawn(move || {
+            for id in ids {
+                let task = crate::courier::node_get(&sock, &id)
+                    .ok()
+                    .and_then(|r| r.detail.task.map(|t| t.prompt));
+                if !tx.send(Report::Title(id, task)) {
+                    return;
+                }
+            }
+        });
     }
 
     /// Read the selected node's detail and the next page of its stream, while Watch shows it:
     /// when it is stale (a new selection, a forest change, a tick over a running node), never on a
     /// timer of its own.
     fn follow_selection(&mut self) {
-        if !self.detail_stale || self.home.tab != Tab::Watch || self.sub.is_none() {
+        if !self.detail_stale || self.home.page != Page::Agents || self.sub.is_none() {
             return;
         }
         self.detail_stale = false;
@@ -618,11 +640,10 @@ impl Session {
         let frame = view::frame(&self.home, &self.places);
         let screen = HomeScreen {
             theme: self.theme,
-            project: &self.places.project,
-            attention: frame.attention,
-            body: frame.body(self.home.tab),
-            input: frame.input.clone(),
-            hints: frame.hints.clone(),
+            title: &frame.title,
+            counts: &frame.counts,
+            body: frame.body(self.home.page),
+            footer: frame.footer.clone(),
             notice: self.home.notice.clone(),
             frame: self.tick,
         };
@@ -891,8 +912,9 @@ impl Session {
                 name: h.cli_name().to_string(),
                 version: None,
                 ready: Ready::Checking,
-                note: "checking…".into(),
+                note: "checking".into(),
                 surfaces: String::new(),
+                pane: false,
                 fix: None,
                 detail: Vec::new(),
             })
@@ -964,15 +986,12 @@ impl Session {
                     }
                 }
                 Report::Ended(line) => self.home.notice = Some(line),
+                Report::Title(id, task) => self.home.set_title(&id, task.as_deref()),
                 Report::Ran { ok, line, root } => {
-                    self.home.notice = Some(if ok {
-                        line
-                    } else {
-                        format!("{line} · esc dismisses")
-                    });
+                    self.home.notice = Some(if ok { line } else { format!("{line}  (esc)") });
                     self.home.notice_sticky = !ok;
                     if ok {
-                        self.home.tab = Tab::Watch;
+                        self.home.page = Page::Agents;
                         self.detail_stale = true;
                         // Look again now: the run may have just started this project's supervisor.
                         self.last_dial = None;
@@ -1070,15 +1089,6 @@ fn started_root(out: &str) -> Option<String> {
     })
 }
 
-/// Put `text` on the clipboard with OSC 52, which most terminals honour and none execute.
-fn copy(text: &str) {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(text);
-    let mut out = std::io::stdout();
-    let _ = write!(out, "\x1b]52;c;{b64}\x07");
-    let _ = out.flush();
-}
-
 /// The name a harness is shown and matched under — the one doctor's rows carry (`doctor::label`):
 /// its command name, followed by the agent a type names where it names one (`acp opencode`). Read
 /// off the type's data, as doctor reads its row's, never off which harness it is.
@@ -1127,7 +1137,8 @@ fn harnesses_of(rows: &[doctor::Row]) -> Vec<Harness> {
                 version: r.report.harness_version.clone(),
                 ready,
                 note,
-                surfaces: if pane { "headless · pane" } else { "headless" }.into(),
+                surfaces: if pane { "headless, pane" } else { "headless" }.into(),
+                pane,
                 fix,
                 detail,
             }

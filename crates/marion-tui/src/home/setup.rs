@@ -3,7 +3,6 @@
 //! `marion login` has stored; and profiles. `n` opens the agent-type form in place of all that.
 
 use super::GUTTER;
-use super::start::{HarnessRow, harness_line, name_col, readiness};
 use super::text::{clip, fit, pad, width};
 use super::theme::{CARET, Ready, Theme, bad, bold, dim, good};
 use super::widgets::{code_spans, expansion, section, span};
@@ -11,6 +10,23 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+
+/// One harness as `marion doctor` found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessRow {
+    pub name: String,
+    /// The version it reported, or `None` when it is not installed or has not answered.
+    pub version: Option<String>,
+    pub ready: Ready,
+    /// One short phrase: `ready`, `sign-in needed`, `too old, needs ≥ 0.0.350`.
+    pub note: String,
+    /// The surfaces marion can drive it on, worded (`headless · pane · ACP`).
+    pub surfaces: String,
+    /// What to do about it, with the command in backticks: ``run `qwen` once and sign in``.
+    pub fix: Option<String>,
+    /// Setup's detail rows, label then value: `binary`, `version`, `auth`.
+    pub detail: Vec<(String, String)>,
+}
 
 /// One agent type this project can spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +122,64 @@ pub struct SetupView {
     pub notify: Option<(bool, String)>,
     /// The agent-type form, drawn in place of everything else while it is open.
     pub form: Option<FormView>,
+}
+
+/// The harness name and version columns.
+const NAME_W: usize = 13;
+/// The widest the name column grows for a long harness name (`acp claude-agent-acp`).
+const NAME_MAX: usize = 26;
+
+/// The harness name column for `rows`: wide enough for the longest name and a gap, within
+/// [`NAME_W`]..=[`NAME_MAX`], so a long name is never clipped against its version.
+pub fn name_col(rows: &[HarnessRow]) -> usize {
+    rows.iter()
+        .map(|h| width(&h.name) + 2)
+        .max()
+        .unwrap_or(0)
+        .clamp(NAME_W, NAME_MAX)
+}
+const VERSION_W: usize = 10;
+/// `3 of 6 ready`, or `checking…` while the probe runs.
+pub fn readiness(rows: &[HarnessRow], checking: bool) -> String {
+    let ok = rows.iter().filter(|h| h.ready == Ready::Ready).count();
+    if checking {
+        format!("{ok} of {} ready · checking…", rows.len())
+    } else {
+        format!("{ok} of {} ready", rows.len())
+    }
+}
+
+/// A harness row: caret, glyph, name, version, note, and — when `surfaces_at` is given — the
+/// surfaces from that column on. Shared with Setup, which shows the surfaces.
+#[allow(clippy::too_many_arguments)]
+pub fn harness_line<'a>(
+    h: &HarnessRow,
+    name_w: usize,
+    sel: bool,
+    frame: usize,
+    theme: Theme,
+    w: usize,
+    surfaces_at: Option<usize>,
+) -> Line<'a> {
+    let mut l = vec![
+        span(if sel { CARET } else { " " }, theme.key()),
+        Span::raw(" "),
+        span(h.ready.glyph(frame), h.ready.style(theme)),
+        Span::raw(" "),
+        span(
+            pad(&h.name, name_w),
+            if sel { bold() } else { Style::default() },
+        ),
+        span(pad(h.version.as_deref().unwrap_or("—"), VERSION_W), dim()),
+    ];
+    match surfaces_at {
+        Some(col) => {
+            l.push(span(pad(&h.note, col), h.ready.note_style()));
+            l.push(span(h.surfaces.clone(), dim()));
+        }
+        None => l.push(span(h.note.clone(), h.ready.note_style())),
+    }
+    Line::from(fit(l, w))
 }
 
 /// The note column's width, so the surfaces line up after it.
@@ -480,4 +554,36 @@ fn form_lines<'a>(f: &FormView, theme: Theme, w: usize) -> Vec<(u16, Line<'a>)> 
         }
     }
     out
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    fn row(name: &str) -> HarnessRow {
+        HarnessRow {
+            name: name.into(),
+            version: None,
+            ready: Ready::Absent,
+            note: String::new(),
+            surfaces: String::new(),
+            fix: None,
+            detail: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_name_column_fits_the_longest_name_within_bounds() {
+        assert_eq!(
+            name_col(&[row("codex")]),
+            NAME_W,
+            "short names keep the floor"
+        );
+        assert_eq!(
+            name_col(&[row("codex"), row("acp claude-agent-acp")]),
+            "acp claude-agent-acp".len() + 2,
+            "a long name gets its width and a gap, never clipped against its version"
+        );
+        assert_eq!(name_col(&[row(&"x".repeat(60))]), NAME_MAX);
+    }
 }

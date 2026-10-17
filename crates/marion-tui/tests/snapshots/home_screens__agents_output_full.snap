@@ -1,0 +1,42 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&screen(Body::Agents(&v), footer), 100, 30)"
+---
+--- 100x30 ---
+ marion  ~/code/acme-api                                           2 running  2 need you  1 to land
+ codex 3c33  add token-bucket limiter
+
+ done in 6m41s  184k in  12.9k out
+ limiter in, tests green
+ marion/t-3c33  +84 -12  3 files
+
+ 14:26:13  I'll add a token bucket keyed by API key.
+ 14:26:20  ~ crates/api/src/limits/bucket.rs
+ 14:26:27  $ cargo build -q
+ 14:26:34  exit 101 3.2s
+ 14:26:41  read .github/workflows/ci.yml
+ 14:26:48  read src/limits/mod.rs
+ 14:26:55  $ cargo test -q limits
+ 14:27:02  ok 4.1s
+ 14:27:09  I'll add a token bucket keyed by API key.
+ 14:27:16  ~ crates/api/src/limits/bucket.rs
+ 14:27:23  $ cargo build -q
+ 14:27:30  exit 101 3.2s
+ 14:27:37  read .github/workflows/ci.yml
+ 14:27:44  read src/limits/mod.rs
+ 14:27:51  $ cargo test -q limits
+ 14:27:58  ok 4.1s
+ 14:28:05  I'll add a token bucket keyed by API key.
+ 14:28:12  ~ crates/api/src/limits/bucket.rs
+ 14:28:19  $ cargo build -q
+ 14:28:26  exit 101 3.2s
+ 14:28:33  read .github/workflows/ci.yml
+                                                                                          +19 above
+ esc back  m merge  u resume  ? more
+--- styles ---
+  350  Style::new().fg(Color::Reset).bg(Color::Reset)  "addtoken-bucketlimiterdo"
+   28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex3c33marion/t-"
+  352  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+    6  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "escmu?"
+   15  Style::new().green().bg(Color::Reset)  "+84ok4.1sok4.1s"
+   36  Style::new().red().bg(Color::Reset)  "-12exit1013.2sexit1013.2"

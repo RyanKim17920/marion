@@ -1,12 +1,10 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
-expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
+expression: "at_every_size(&setup_screen(&v, input))"
 ---
 --- 80x24 ---
- ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────
-
-  NEW AGENT TYPE   .marion/agents.toml
+ marion  setup                                                     3 of 6 ready
+  New agent type   .marion/agents.toml
 
   name          reviewer
   harness       ‹ codex ›
@@ -23,24 +21,23 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
 
 
 
- ╭────────────────────────────────────────────────────────────────────────────╮
- │ ❯ .marion/agents.toml                                       enter previews │
- ╰────────────────────────────────────────────────────────────────────────────╯
-  tab next field · ←→ choose · enter preview · esc close               F1 help
+
+
+
+
+
+ enter details  r re-check  e edit types  n new type  a add key  esc back
 --- styles ---
-   54  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
-   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPE"
-  428  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-    2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
-    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
-    2  Style::new().yellow().bg(Color::Reset)  "◐2"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "Newagenttype"
+  155  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready.marion/ag"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯enterrenaesc"
 
 --- 100x30 ---
- ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────────────────────────
-
-  NEW AGENT TYPE   .marion/agents.toml
+ marion  setup                                                                         3 of 6 ready
+  New agent type   .marion/agents.toml
 
   name          reviewer
   harness       ‹ codex ›
@@ -63,24 +60,23 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
 
 
 
- ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ .marion/agents.toml                                                           enter previews │
- ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  tab next field · ←→ choose · enter preview · esc close                                   F1 help
+
+
+
+
+
+ enter details  r re-check  e edit types  n new type  a add key  esc back
 --- styles ---
-   54  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
-   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPE"
-  488  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-    2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
-    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
-    2  Style::new().yellow().bg(Color::Reset)  "◐2"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "Newagenttype"
+  155  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready.marion/ag"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯enterrenaesc"
 
 --- 160x50 ---
- ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
- ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  NEW AGENT TYPE   .marion/agents.toml
+ marion  setup                                                                                                                                     3 of 6 ready
+  New agent type   .marion/agents.toml
 
   name          reviewer
   harness       ‹ codex ›
@@ -123,15 +119,16 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
 
 
 
- ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ .marion/agents.toml                                                                                                                       enter previews │
- ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  tab next field · ←→ choose · enter preview · esc close                                                                                               F1 help
+
+
+
+
+
+ enter details  r re-check  e edit types  n new type  a add key  esc back
 --- styles ---
-   54  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
-   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPE"
-  668  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-    2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
-    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
-    2  Style::new().yellow().bg(Color::Reset)  "◐2"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "Newagenttype"
+  155  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6ready.marion/ag"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "❯enterrenaesc"

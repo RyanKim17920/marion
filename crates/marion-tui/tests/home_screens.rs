@@ -3,8 +3,8 @@
 //!
 //! # Why a census and not just the characters
 //!
-//! Half of what this screen says is style: the selected row is the accent, a blocked node's line is
-//! yellow, a destructive confirm has an accent border. A text-only snapshot would pass a screen
+//! Half of what this screen says is style: the selected row is a reversed bar in the accent, a
+//! blocked agent's glyph is yellow. A text-only snapshot would pass a screen
 //! that lost every colour. The census is one line per distinct style with the number of cells that
 //! wear it and the first few characters of them, so a style that moves, appears or disappears is a
 //! diff a reviewer can read.
@@ -14,10 +14,10 @@
 //! With `MARION_HOME_DUMP=<dir>` set, every screen is also written there as `<name>.json` — one
 //! `[symbol, fg, bg, flags]` per cell — for a rasteriser to turn into dark- and light-theme images.
 
+use marion_tui::home::setup::AgentTypeRow;
 use marion_tui::home::{
-    self, AgentTypeRow, Body, Expanded, FormField, FormView, HarnessRow, Hint, Input, LineKind,
-    LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, Screen, SetupView,
-    StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
+    self, AgentRow, AgentsView, Body, Footer, FormField, FormView, HarnessRow, HelpView, Hint, Ink,
+    KeyRow, LineKind, LoginRow, Preview, ProfileRow, Ready, Screen, SetupView, StreamLine, Theme,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -110,265 +110,6 @@ fn harnesses() -> Vec<HarnessRow> {
             Some("install agy, then r to re-check"),
         ),
     ]
-}
-
-fn start_view() -> StartView {
-    StartView {
-        harnesses: harnesses(),
-        checking: false,
-        cursor: 0,
-        kinds: vec![
-            (s("claude"), s("edits this checkout")),
-            (s("claude-orchestrator"), s("read-only, delegates")),
-        ],
-        kind: 0,
-        models: vec![s("default"), s("opus"), s("sonnet")],
-        model: 1,
-        options: vec![(s("timeout"), s("20m")), (s("change record"), s("on"))],
-        recent: vec![
-            RecentRow {
-                when: s("14:24"),
-                tone: Tone::Live,
-                who: s("claude opus"),
-                prompt: s("Add rate limiting to /v1/orders"),
-                outcome: s("running"),
-            },
-            RecentRow {
-                when: s("13:02"),
-                tone: Tone::Done,
-                who: s("claude sonnet"),
-                prompt: s("Review the pagination PR for off-by-one errors"),
-                outcome: s("landed"),
-            },
-            RecentRow {
-                when: s("11:47"),
-                tone: Tone::Done,
-                who: s("codex default"),
-                prompt: s("Port the CSV exporter to streaming writes"),
-                outcome: s("landed"),
-            },
-            RecentRow {
-                when: s("10:15"),
-                tone: Tone::Failed,
-                who: s("qwen default"),
-                prompt: s("Summarise open TODOs in src/billing"),
-                outcome: s("failed"),
-            },
-        ],
-        echo: vec![
-            s("marion"),
-            s("run"),
-            s("claude"),
-            s("--model"),
-            s("opus"),
-            s("--prompt"),
-            s(PROMPT),
-        ],
-    }
-}
-
-/// The forest's rows, with connectors from `tree::Tree` itself so the fixture draws the prefixes
-/// the real screen will.
-fn rows() -> Vec<NodeRow> {
-    // id, parent, harness, kind, tone, elapsed, tokens, doing
-    type Spec<'a> = (
-        &'a str,
-        Option<&'a str>,
-        &'a str,
-        &'a str,
-        Tone,
-        &'a str,
-        Option<u64>,
-        &'a str,
-    );
-    let spec: [Spec; 6] = [
-        (
-            "01a093dc-5e1a",
-            None,
-            "claude",
-            "orchestrator",
-            Tone::Live,
-            "12m04s",
-            Some(312_400),
-            "waiting on 2 children",
-        ),
-        (
-            "01a093dc-a1f0",
-            Some("01a093dc-5e1a"),
-            "codex",
-            "impl",
-            Tone::Live,
-            "2m17s",
-            Some(88_000),
-            "editing src/limits/bucket.rs",
-        ),
-        (
-            "01a093dc-91cd",
-            Some("01a093dc-5e1a"),
-            "codex",
-            "impl",
-            Tone::Blocked,
-            "3m02s",
-            Some(41_000),
-            "asks to write .github/workflows/ci.yml",
-        ),
-        (
-            "01a093dc-7b2e",
-            Some("01a093dc-5e1a"),
-            "codex",
-            "impl",
-            Tone::Failed,
-            "4m50s",
-            Some(120_000),
-            "exit 101: 3 tests failed",
-        ),
-        (
-            "01a093dc-3c33",
-            Some("01a093dc-5e1a"),
-            "codex",
-            "impl",
-            Tone::Done,
-            "6m41s",
-            Some(197_100),
-            "landed marion/t-3c33",
-        ),
-        (
-            "01a093dc-88f2",
-            None,
-            "claude",
-            "review",
-            Tone::Done,
-            "1h ago",
-            Some(54_000),
-            "landed marion/t-88f2",
-        ),
-    ];
-    let t = tree::Tree::new(
-        spec.iter()
-            .map(|(id, parent, ..)| tree::Node {
-                id: s(id),
-                parent: parent.map(s),
-                label: String::new(),
-                state: String::new(),
-                tone: Tone::Live,
-                actions: vec![],
-                note: None,
-            })
-            .collect(),
-    );
-    spec.iter()
-        .enumerate()
-        .map(|(i, (id, _, h, kind, tone, el, tok, doing))| NodeRow {
-            id: s(id),
-            prefix: {
-                let (prefix, node) = t.row(i).expect("a row per node");
-                assert_eq!(node.id, *id, "the fixture is listed in render order");
-                prefix.to_string()
-            },
-            harness: s(h),
-            kind: s(kind),
-            short: id[id.len() - 4..].to_string(),
-            tone: *tone,
-            elapsed: s(el),
-            tokens: *tok,
-            // The root's subtree, measured against its tree budget.
-            subtree: (i == 0).then(|| (s("Σ1.3M/5M"), false)),
-            doing: s(doing),
-        })
-        .collect()
-}
-
-fn landed() -> Expanded {
-    Expanded {
-        live: false,
-        task: Some(task_view("Add token-bucket limiter to /v1/orders")),
-        messages: vec![MessageView {
-            clock: s("14:27"),
-            text: s("operator · 41 bytes · delivered via turn"),
-        }],
-        stream: stream(9),
-        stream_scroll: 0,
-        stream_unread: None,
-        needs: None,
-        subtree: None,
-        tokens: Some(TokenView {
-            input: 184_210,
-            output: 12_900,
-            cached: 151_000,
-            rate: vec![
-                2_000, 5_000, 9_000, 14_000, 11_000, 8_000, 12_000, 19_000, 23_000, 17_000, 9_000,
-                6_000, 11_000, 15_000, 21_000, 26_000, 18_000, 12_000, 9_000, 13_000, 16_000,
-                11_000, 7_000, 4_000, 2_000, 1_000,
-            ],
-            window: s("30s"),
-            context_permille: Some(410),
-        }),
-        result: Some(ResultView {
-            summary: String::new(),
-            tone: Some(Tone::Done),
-            branch: Some(s("marion/t-3c33")),
-            added: 84,
-            removed: 12,
-            files: 3,
-            merge: Some(s("git merge --no-ff -- marion/t-3c33")),
-        }),
-        workspace: Some(s("worktree marion/t-3c33")),
-        endpoint: None,
-        caps: [("steer", true), ("resume", true), ("interrupt", false)]
-            .iter()
-            .map(|(c, on)| (s(c), *on))
-            .collect(),
-    }
-}
-
-fn task_view(prompt: &str) -> TaskView {
-    TaskView {
-        prompt: s(prompt),
-        acceptance: vec![s("cargo test passes"), s("100 req/min per key, 429 after")],
-        verification: vec![s("cargo test -q limits")],
-    }
-}
-
-/// `n` lines of a child working, oldest first: calls in the default colour, words dim.
-fn stream(n: usize) -> Vec<StreamLine> {
-    use LineKind::{Call, Files, Said};
-    let all = [
-        (Call, "read_file src/limits/mod.rs"),
-        (Call, "read_file Cargo.toml"),
-        (Said, "I'll add a token bucket keyed by API key."),
-        (Files, "~ src/limits/bucket.rs"),
-        (Files, "~ src/routes/orders.rs +1 more"),
-        (Call, "$ cargo build -q"),
-        (Call, "$ cargo test -q limits"),
-        (Said, "142 passed; committing."),
-        (Call, "$ git commit -am limiter"),
-        (Call, "report \"limiter in, tests green\""),
-    ];
-    (0..n)
-        .map(|i| {
-            let (kind, text) = all[i % all.len()];
-            StreamLine {
-                clock: format!("14:{:02}:{:02}", 24 + i / 6, (i * 7) % 60),
-                kind,
-                text: s(text),
-            }
-        })
-        .collect()
-}
-
-fn watch_view(cursor: usize, expanded: Option<Expanded>) -> WatchView {
-    WatchView {
-        total: Some(s("Σ2.1M")),
-        supervisor: true,
-        rows: rows(),
-        cursor,
-        expanded,
-        running: 2,
-        attention: 2,
-        attention_note: None,
-        filter: None,
-        full_stream: false,
-    }
 }
 
 fn setup_view(checking: bool) -> SetupView {
@@ -502,67 +243,7 @@ fn form_view(preview: bool) -> FormView {
     }
 }
 
-fn hints(tab: &str) -> Vec<Hint> {
-    let h = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| Hint::new(*k, *v)).collect();
-    match tab {
-        "start" => h(&[
-            ("enter", "run"),
-            ("↑↓", "harness"),
-            ("←→", "model"),
-            ("^o", "type"),
-            ("^p", "pane"),
-            ("tab", "screens"),
-        ]),
-        "watch" => h(&[
-            ("j/k", "move"),
-            ("!", "needs you"),
-            ("enter", "stream"),
-            ("s", "steer"),
-            ("x", "cancel"),
-            ("m", "merge"),
-        ]),
-        "watch-empty" => h(&[("tab", "Start")]),
-        "setup" => h(&[
-            ("j/k", "move"),
-            ("enter", "details"),
-            ("r", "re-check"),
-            ("e", "edit types"),
-            ("n", "new type"),
-            ("a", "add key"),
-        ]),
-        "profiles" => h(&[
-            ("j/k", "move"),
-            ("a", "add login"),
-            ("u", "use"),
-            ("x", "remove"),
-        ]),
-        "confirm" => h(&[("y", "yes"), ("any key", "no")]),
-        "form" => h(&[
-            ("tab", "next field"),
-            ("←→", "choose"),
-            ("enter", "preview"),
-            ("esc", "close"),
-        ]),
-        _ => h(&[("tab", "back")]),
-    }
-}
-
-fn prompt(text: &str) -> Input {
-    Input::Prompt {
-        text: s(text),
-        placeholder: s("describe the task, enter runs it"),
-        focused: true,
-    }
-}
-
-fn command(line: &str, note: &str) -> Input {
-    Input::Command {
-        line: s(line),
-        note: s(note),
-    }
-}
-
-// ------------------------------------------------------------------------------ rendering
+// ------------------------------------------------------------------------------ drawing
 
 fn draw(screen: &Screen, w: u16, h: u16) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(w, h)).expect("TestBackend");
@@ -706,16 +387,205 @@ fn dump(buf: &Buffer, w: u16, h: u16) {
     std::fs::write(path, doc.to_string()).expect("dump");
 }
 
-fn screen<'a>(body: Body<'a>, input: Input, tab: &str) -> Screen<'a> {
+fn row(prefix: &str, tone: Tone, title: &str, who: &str, time: &str, tokens: u64) -> AgentRow {
+    AgentRow {
+        id: format!("01a093dc-{}", title.len()),
+        prefix: s(prefix),
+        tone,
+        title: s(title),
+        who: s(who),
+        time: s(time),
+        tokens: Some(tokens),
+    }
+}
+
+/// The forest of the design's mockups: a root whose children need the operator sorted first.
+fn rows() -> Vec<AgentRow> {
+    vec![
+        row(
+            "",
+            Tone::Live,
+            "ship the rate limiter",
+            "claude opus",
+            "12m",
+            312_000,
+        ),
+        row(
+            "├ ",
+            Tone::Blocked,
+            "wire the limiter into ci",
+            "codex gpt-5",
+            "3m",
+            41_000,
+        ),
+        row(
+            "├ ",
+            Tone::Failed,
+            "add bucket tests",
+            "codex gpt-5",
+            "5m",
+            120_000,
+        ),
+        row(
+            "├ ",
+            Tone::Done,
+            "add token-bucket limiter",
+            "codex gpt-5",
+            "7m",
+            197_000,
+        ),
+        row(
+            "└ ",
+            Tone::Live,
+            "implement the bucket",
+            "codex gpt-5",
+            "2m",
+            88_000,
+        ),
+        row(
+            "",
+            Tone::Done,
+            "review the orders api",
+            "claude sonnet",
+            "9m",
+            54_000,
+        ),
+        row(
+            "",
+            Tone::Unknown,
+            "port invoices to the new schema",
+            "opencode",
+            "4m",
+            63_000,
+        ),
+    ]
+}
+
+fn stream(n: usize) -> Vec<StreamLine> {
+    use LineKind::{Call, Done, Failed, Files, Said};
+    let all = [
+        (Call, "read src/limits/mod.rs"),
+        (Call, "$ cargo test -q limits"),
+        (Done, "ok 4.1s"),
+        (Said, "I'll add a token bucket keyed by API key."),
+        (Files, "~ crates/api/src/limits/bucket.rs"),
+        (Call, "$ cargo build -q"),
+        (Failed, "exit 101 3.2s"),
+        (Call, "read .github/workflows/ci.yml"),
+    ];
+    (0..n)
+        .map(|i| {
+            let (kind, text) = all[i % all.len()];
+            StreamLine {
+                clock: format!("14:{:02}:{:02}", 24 + i * 7 / 60, (i * 7) % 60),
+                kind,
+                text: s(text),
+            }
+        })
+        .collect()
+}
+
+fn live_preview() -> Preview {
+    Preview {
+        who: s("codex 91cd"),
+        title: s("wire the limiter into ci"),
+        needs: Some(s("wants to write .github/workflows/ci.yml")),
+        facts: Vec::new(),
+        stream: stream(9),
+        scroll: 0,
+        quiet: None,
+    }
+}
+
+fn landed_preview() -> Preview {
+    Preview {
+        who: s("codex 3c33"),
+        title: s("add token-bucket limiter"),
+        needs: None,
+        facts: vec![
+            vec![
+                (s("done in 6m41s"), Ink::Plain),
+                (s("  184k in  12.9k out"), Ink::Dim),
+            ],
+            vec![(s("limiter in, tests green"), Ink::Plain)],
+            vec![
+                (s("marion/t-3c33"), Ink::Bold),
+                (s("  +84"), Ink::Good),
+                (s(" -12"), Ink::Bad),
+                (s("  3 files"), Ink::Dim),
+            ],
+        ],
+        stream: stream(5),
+        scroll: 0,
+        quiet: None,
+    }
+}
+
+fn agents_view(cursor: usize, preview: Preview) -> AgentsView {
+    AgentsView {
+        rows: rows(),
+        cursor,
+        preview: Some(preview),
+        full: false,
+    }
+}
+
+fn keys(pairs: &[(&str, &str)]) -> Footer {
+    Footer::Keys(pairs.iter().map(|(k, v)| Hint::new(*k, *v)).collect())
+}
+
+fn live_keys() -> Footer {
+    keys(&[
+        ("enter", "output"),
+        ("n", "new"),
+        ("s", "steer"),
+        ("x", "cancel"),
+        ("?", "more"),
+    ])
+}
+
+fn ended_keys() -> Footer {
+    keys(&[
+        ("enter", "output"),
+        ("n", "new"),
+        ("m", "merge"),
+        ("d", "diff"),
+        ("u", "resume"),
+        ("o", "shell"),
+        ("?", "more"),
+    ])
+}
+
+fn setup_keys() -> Footer {
+    keys(&[
+        ("enter", "details"),
+        ("r", "re-check"),
+        ("e", "edit types"),
+        ("n", "new type"),
+        ("a", "add key"),
+        ("esc", "back"),
+    ])
+}
+
+const COUNTS: &str = "2 running  2 need you  1 to land";
+
+fn screen<'a>(body: Body<'a>, footer: Footer) -> Screen<'a> {
     Screen {
         theme: Theme::TRUECOLOR,
-        project: PROJECT,
-        attention: 2,
+        title: PROJECT,
+        counts: COUNTS,
         body,
-        input,
-        hints: hints(tab),
+        footer,
         notice: None,
         frame: 0,
+    }
+}
+
+fn setup_screen(v: &SetupView, footer: Footer) -> Screen<'_> {
+    Screen {
+        title: "setup",
+        counts: "3 of 6 ready",
+        ..screen(Body::Setup(v), footer)
     }
 }
 
@@ -729,311 +599,178 @@ fn at_every_size(screen: &Screen) -> String {
 
 // ------------------------------------------------------------------------------ the snapshots
 
+/// The main screen: the list, sorted by what needs the operator, and the selected agent's preview
+/// beside it from 100 columns, under it below that.
 #[test]
-fn start_typing_a_prompt() {
-    let v = start_view();
-    insta::assert_snapshot!(at_every_size(&screen(
-        Body::Start(&v),
-        prompt(PROMPT),
-        "start"
-    )));
+fn agents_a_blocked_agent_selected() {
+    let v = agents_view(1, live_preview());
+    insta::assert_snapshot!(at_every_size(&screen(Body::Agents(&v), live_keys())));
 }
 
-/// The cursor on a blocked harness shows its fix line, with the command lifted out in the accent.
+/// A finished agent previews how it ended and the branch it left.
 #[test]
-fn start_blocked_harness_shows_its_fix() {
-    let mut v = start_view();
-    v.cursor = 4;
-    // The choices are the selected harness's: copilot has no read-only flavour, and no history.
-    v.kinds = vec![(s("copilot"), s("edits this checkout"))];
-    v.kind = 0;
-    v.models = vec![s("default")];
-    v.model = 0;
-    v.echo = vec![
-        s("marion"),
-        s("run"),
-        s("copilot"),
-        s("--prompt"),
-        s("<text>"),
-    ];
-    insta::assert_snapshot!(at_every_size(&screen(Body::Start(&v), prompt(""), "start")));
+fn agents_a_landed_agent_selected() {
+    let v = agents_view(3, landed_preview());
+    insta::assert_snapshot!(at_every_size(&screen(Body::Agents(&v), ended_keys())));
 }
 
 #[test]
-fn watch_done_node_with_landed_branch_and_tokens() {
-    let v = watch_view(4, Some(landed()));
-    let input = command("marion attach 01a093dc-3c33", "same as enter");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
-}
-
-/// **A parent opens on its subtree**: tokens, files, wall clock and nodes added up, with its
-/// tree budget — flagged once past its warn line.
-#[test]
-fn watch_parent_shows_its_subtree_and_its_budget() {
-    let e = Expanded {
-        live: true,
-        task: Some(task_view("Ship the rate limiter")),
-        stream: stream(3),
-        subtree: Some((
-            s("Σ1.3M tokens · 14 Σ files · 12m04s wall · 6 nodes (2 running) · budget 1.3M / 1.5M"),
-            true,
-        )),
-        ..Default::default()
+fn agents_none_yet() {
+    let v = AgentsView::default();
+    let footer = keys(&[("n", "new"), (",", "setup"), ("?", "more")]);
+    let s = Screen {
+        counts: "",
+        ..screen(Body::Agents(&v), footer)
     };
-    let v = watch_view(0, Some(e));
-    let input = command("marion attach 01a093dc-5e1a", "same as enter");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
+    insta::assert_snapshot!(report(&s, 100, 30));
 }
 
+/// `enter` on a headless agent: its output takes the whole body, and `esc` is the way back.
 #[test]
-fn watch_blocked_node_says_what_it_needs() {
-    let e = Expanded {
-        live: true,
-        task: Some(task_view("Wire the limiter into CI")),
-        stream: stream(4),
-        needs: Some(s(
-            "blocked: permission to write .github/workflows/ci.yml · s steers it, x cancels it; \
-             marion answers a headless agent's asks from its grant",
-        )),
-        tokens: Some(TokenView {
-            input: 38_000,
-            output: 3_100,
-            cached: 30_000,
-            rate: vec![],
-            window: s("30s"),
-            context_permille: None,
-        }),
-        ..Default::default()
-    };
-    let v = watch_view(2, Some(e));
-    let input = command("", "");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
+fn agents_output_full() {
+    let mut v = agents_view(3, landed_preview());
+    v.full = true;
+    v.preview.as_mut().unwrap().stream = stream(40);
+    let footer = keys(&[
+        ("esc", "back"),
+        ("m", "merge"),
+        ("u", "resume"),
+        ("?", "more"),
+    ]);
+    insta::assert_snapshot!(report(&screen(Body::Agents(&v), footer), 100, 30));
 }
 
+/// Scrolled back, the preview says how much is above what it shows.
 #[test]
-fn watch_empty_forest() {
-    let v = WatchView {
-        supervisor: true,
-        ..Default::default()
-    };
-    let input = command("marion run <type> --prompt <text>", "");
-    let mut sc = screen(Body::Watch(&v), input, "watch-empty");
-    sc.attention = 0;
-    insta::assert_snapshot!(report(&sc, 80, 24));
-}
-
-#[test]
-fn watch_no_supervisor() {
-    let v = WatchView::default();
-    let input = command("marion run <type> --prompt <text>", "");
-    let mut sc = screen(Body::Watch(&v), input, "watch-empty");
-    sc.attention = 0;
-    insta::assert_snapshot!(report(&sc, 80, 24));
-}
-
-/// A running child's live stream, longer than its window and scrolled back: the window, and the
-/// line saying what is above and below it.
-#[test]
-fn watch_running_stream_scrolled_back() {
-    let e = Expanded {
-        live: true,
-        task: Some(task_view(
-            "Implement the bucket and wire it into /v1/orders; keep the existing middleware order and add a regression test for burst traffic",
-        )),
-        stream: stream(30),
-        stream_scroll: 6,
-        ..Default::default()
-    };
-    let v = watch_view(1, Some(e));
-    let input = command("marion attach 01a093dc-a1f0", "same as enter");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
-}
-
-/// **Enter on a headless agent: its stream, full-height.** The forest gives way to the selected
-/// agent's action stream, as many lines as the screen has.
-#[test]
-fn watch_full_stream_fills_the_screen() {
-    let e = Expanded {
-        live: true,
-        stream: stream(30),
-        ..Default::default()
-    };
-    let v = WatchView {
-        full_stream: true,
-        ..watch_view(1, Some(e))
-    };
-    let input = command("", "");
-    insta::assert_snapshot!(report(&screen(Body::Watch(&v), input, "watch"), 80, 24));
-}
-
-/// The TASK block by itself: the prompt ellipsised at three rows, never marion's own instruction,
-/// then the criteria and the checks.
-#[test]
-fn watch_task_block_shows_what_marion_sent() {
-    let e = Expanded {
-        live: true,
-        task: Some(task_view(
-            &"Add a token-bucket limiter to /v1/orders. ".repeat(8),
-        )),
-        ..Default::default()
-    };
-    let v = watch_view(1, Some(e));
-    let buf = draw(&screen(Body::Watch(&v), command("x", ""), "watch"), 100, 30);
+fn agents_output_scrolled_back() {
+    let mut p = live_preview();
+    p.stream = stream(60);
+    p.scroll = 10;
+    let v = agents_view(1, p);
+    let buf = draw(&screen(Body::Agents(&v), live_keys()), 120, 32);
     let text = rows_of(&buf).join("\n");
-    let task_rows: Vec<&str> = text
-        .lines()
-        .skip_while(|l| !l.contains("TASK"))
-        .take_while(|l| !l.contains("RAN") && !l.contains("RUNNING"))
-        .collect();
-    assert_eq!(task_rows.len(), 3 + 2 + 1, "{text}");
-    assert!(task_rows[2].trim_end().ends_with('…'), "{text}");
-    assert!(
-        !text.contains("report"),
-        "marion's instruction is not the task: {text}"
-    );
-    assert!(task_rows[3].contains("✓ cargo test passes"), "{text}");
-    assert!(task_rows[5].contains("$ cargo test -q limits"), "{text}");
+    assert!(text.contains("above"), "{text}");
+    insta::assert_snapshot!(report(&screen(Body::Agents(&v), live_keys()), 120, 32));
 }
 
-/// **The stream as the dry run drew it, fixed**: a command's end is one line saying how it went
-/// and how long it took — never the command again — and a changed file deep in the worktree keeps
-/// its name in view at the demo's 92 columns.
+/// `n`: the new-task line takes the footer, naming the type, its model, and the line's own keys.
 #[test]
-fn watch_stream_shows_each_end_once_and_every_changed_file_name() {
-    let line = |clock: &str, kind: LineKind, text: &str| StreamLine {
-        clock: s(clock),
-        kind,
-        text: s(text),
-    };
-    let e = Expanded {
-        live: true,
-        task: Some(task_view("Add a --top N option to wordfreq.py")),
-        stream: vec![
-            line(
-                "23:38:14",
-                LineKind::Call,
-                "$ cat AGENTS.md tests/test_wordfreq.py; git branch --show-current",
-            ),
-            line("23:38:14", LineKind::Done, "✓ 22ms"),
-            line(
-                "23:38:24",
-                LineKind::Files,
-                "~ src/wordfreq/cli/options/parsing/arguments/limits/top_n_argument.py",
-            ),
-            line("23:38:24", LineKind::Done, "✓ 52ms"),
-            line(
-                "23:38:25",
-                LineKind::Call,
-                "$ python3 -m unittest -q; git diff --check; git diff --stat",
-            ),
-            line("23:38:27", LineKind::Failed, "exit 1 · 2.1s"),
+fn agents_new_task_line() {
+    let v = agents_view(1, live_preview());
+    let footer = Footer::Input {
+        target: s("new claude-orchestrator"),
+        note: s("opus"),
+        text: s(PROMPT),
+        keys: vec![
+            Hint::new("tab", "type"),
+            Hint::new("↑↓", "model"),
+            Hint::new("enter", "run"),
         ],
-        ..Default::default()
     };
-    let v = watch_view(1, Some(e));
-    let screen = screen(
-        Body::Watch(&v),
-        command("marion attach 01a0e64e-433f", "enter"),
-        "watch",
-    );
-    let text = rows_of(&draw(&screen, 92, 36)).join("\n");
-    assert!(
-        text.lines()
-            .any(|l| l.contains("~ …/") && l.trim_end().ends_with("/top_n_argument.py")),
-        "{text}"
-    );
+    insta::assert_snapshot!(at_every_size(&screen(Body::Agents(&v), footer)));
+}
+
+#[test]
+fn agents_steer_line() {
+    let v = agents_view(1, live_preview());
+    let footer = Footer::Input {
+        target: s("steer codex 91cd"),
+        note: String::new(),
+        text: s("use the shared limiter crate"),
+        keys: vec![Hint::new("enter", "send"), Hint::new("esc", "cancel")],
+    };
+    insta::assert_snapshot!(report(&screen(Body::Agents(&v), footer), 120, 32));
+}
+
+#[test]
+fn agents_confirm_cancel() {
+    let v = agents_view(4, live_preview());
+    let footer = Footer::Confirm {
+        question: s("cancel codex a1f0?"),
+        command: s("marion cancel 01a093dc-a1f0"),
+    };
+    insta::assert_snapshot!(report(&screen(Body::Agents(&v), footer), 120, 32));
+}
+
+#[test]
+fn help_page() {
+    let k = |key: &str, verb: &str, cmd: &str| KeyRow {
+        key: s(key),
+        verb: s(verb),
+        command: s(cmd),
+    };
+    let v = HelpView {
+        scroll: 0,
+        sections: vec![
+            (
+                s("agents"),
+                vec![
+                    k("enter", "attach a pane agent", "marion attach <id>"),
+                    k("n", "new task", "marion run <type> --prompt <text>"),
+                    k("s", "steer a running agent", "marion steer <id> <text>"),
+                ],
+            ),
+            (s("input line"), vec![k("tab", "next agent type", "")]),
+        ],
+    };
+    let sc = Screen {
+        title: "keys",
+        counts: "",
+        ..screen(Body::Help(&v), keys(&[("esc", "back"), ("j/k", "scroll")]))
+    };
+    insta::assert_snapshot!(report(&sc, 100, 30));
+}
+
+/// The selection is one reversed bar in the accent, across the whole list column, and only on the
+/// selected row.
+#[test]
+fn the_selection_is_one_reversed_bar() {
+    let v = agents_view(2, live_preview());
+    let buf = draw(&screen(Body::Agents(&v), live_keys()), 120, 32);
+    let reversed = |y: u16| {
+        (1..70)
+            .filter(|&x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+            .count()
+    };
+    assert_eq!(reversed(3), 69, "the bar spans the list");
+    assert_eq!(reversed(2), 0);
+    assert_eq!(reversed(4), 0);
     assert_eq!(
-        text.matches("python3 -m unittest").count(),
-        1,
-        "the command once; its end does not repeat it: {text}"
-    );
-    insta::assert_snapshot!(report(&screen, 92, 36));
-}
-
-/// One token sample is no trend: TOKENS keeps its totals and draws no sparkline until a second
-/// sample arrives.
-#[test]
-fn a_lone_token_sample_draws_no_sparkline() {
-    let tokens_rows = |rate: Vec<u64>| {
-        let e = Expanded {
-            live: true,
-            tokens: Some(TokenView {
-                input: 24_300,
-                output: 643,
-                cached: 111_000,
-                rate,
-                window: s("turn"),
-                context_permille: None,
-            }),
-            ..Default::default()
-        };
-        let v = watch_view(1, Some(e));
-        let text = rows_of(&draw(
-            &screen(Body::Watch(&v), command("x", ""), "watch"),
-            100,
-            30,
-        ))
-        .join("\n");
-        let rows: Vec<String> = text
-            .lines()
-            .skip_while(|l| !l.contains("TOKENS"))
-            .take(2)
-            .map(str::to_string)
-            .collect();
-        (rows, text)
-    };
-    let (one, text) = tokens_rows(vec![136_000]);
-    assert!(one[0].contains("24.3k in"), "{text}");
-    assert!(!text.contains("peak") && !text.contains('█'), "{text}");
-    let (two, text) = tokens_rows(vec![136_000, 40_000]);
-    assert!(
-        two[1].contains('█') && two[1].contains("peak 136k / turn"),
-        "{text}"
+        buf[(4, 3)].fg,
+        home::theme::ACCENT_RGB,
+        "the failed glyph on the bar takes the bar's colour"
     );
 }
 
-/// **The greying survives the move from the tree screen**: an unmeasured capability is drawn in
-/// the tree's own grey, a measured one is not, and both are on screen.
+/// The list is ordered for a check-in; `+N below` says rows are past the bottom, and the cursor's
+/// row is always on screen.
 #[test]
-fn unmeasured_capabilities_are_greyed_not_hidden() {
-    let v = watch_view(4, Some(landed()));
-    let buf = draw(&screen(Body::Watch(&v), command("x", ""), "watch"), 160, 50);
-    let grey = tree::greyed().fg.unwrap();
+fn a_long_list_keeps_the_cursor_on_screen() {
+    let mut v = agents_view(0, live_preview());
+    let base = v.rows[4].clone();
+    for i in 0..30 {
+        let mut r = base.clone();
+        r.title = format!("bucket shard {i}");
+        v.rows.insert(5, r);
+    }
+    v.cursor = v.rows.len() - 1;
+    let buf = draw(&screen(Body::Agents(&v), live_keys()), 80, 24);
     let text = rows_of(&buf).join("\n");
-    let (y, row) = text
-        .lines()
-        .enumerate()
-        .find(|(_, l)| l.contains("CAN"))
-        .unwrap_or_else(|| panic!("no capability row:\n{text}"));
-    let x_of = |word: &str| {
-        row.find(word)
-            .map(|i| row[..i].chars().count() as u16)
-            .unwrap()
-    };
-    assert_ne!(
-        buf[(x_of("steer"), y as u16)].fg,
-        grey,
-        "steer is measured: {row}"
-    );
-    assert_eq!(
-        buf[(x_of("interrupt"), y as u16)].fg,
-        grey,
-        "interrupt is not: {row}"
-    );
+    assert!(text.contains("port invoices"), "{text}");
+    v.cursor = 0;
+    let buf = draw(&screen(Body::Agents(&v), live_keys()), 80, 24);
+    assert!(rows_of(&buf).join("\n").contains("below"));
 }
 
-/// **`NO_COLOR` leaves no colour on the screen**, only weight, dimness and the glyphs that carry
-/// every status by themselves: a watch screen full of states, drawn mono, has every cell's colours
-/// reset and still shows each status glyph.
 #[test]
 fn no_color_draws_every_cell_without_colour_and_keeps_the_glyphs() {
-    let v = watch_view(1, None);
-    let mut sc = screen(Body::Watch(&v), command("x", ""), "watch");
+    let v = agents_view(1, live_preview());
+    let mut sc = screen(Body::Agents(&v), live_keys());
     sc.theme = Theme {
         mono: true,
         ..Theme::TRUECOLOR
     };
-    let buf = draw(&sc, 100, 30);
+    let buf = draw(&sc, 120, 32);
     for cell in buf.content() {
         assert_eq!(
             (cell.fg, cell.bg),
@@ -1043,102 +780,79 @@ fn no_color_draws_every_cell_without_colour_and_keeps_the_glyphs() {
         );
     }
     let text = rows_of(&buf).join("\n");
-    for glyph in ["●", "◐", "✗", "✓"] {
+    for glyph in ["◐", "✗", "✓", "○"] {
         assert!(text.contains(glyph), "{glyph} is gone:\n{text}");
     }
 }
 
-/// A notice replaces the hints until the next key, and says so in bold.
+/// A notice replaces the keys until the next key.
 #[test]
-fn a_notice_takes_the_hint_row() {
-    let v = watch_view(1, None);
-    let mut sc = screen(Body::Watch(&v), command("x", ""), "watch");
+fn a_notice_takes_the_footer() {
+    let v = agents_view(1, live_preview());
+    let mut sc = screen(Body::Agents(&v), live_keys());
     sc.notice = Some(s(
-        "queued as m-1; reaches codex a1f0 at its next tool round or turn",
+        "queued as m-1; reaches codex 91cd at its next tool round",
     ));
-    let buf = draw(&sc, 100, 30);
+    let buf = draw(&sc, 120, 32);
     let last = rows_of(&buf).pop().unwrap();
     assert!(
-        last.contains("queued as m-1") && !last.contains("enter attach"),
+        last.contains("queued as m-1") && !last.contains("enter output"),
         "{last}"
     );
-    assert!(last.ends_with("F1 help"), "{last}");
 }
 
-/// Following the end: a new line appears at the bottom of the window without any key pressed.
+/// The 256-colour fallback changes the accent and nothing else.
 #[test]
-fn a_following_stream_shows_the_newest_line() {
-    let mut e = Expanded {
-        live: true,
-        stream: stream(20),
-        ..Default::default()
-    };
-    let draw_text = |e: &Expanded| {
-        let v = watch_view(1, Some(e.clone()));
-        rows_of(&draw(
-            &screen(Body::Watch(&v), command("x", ""), "watch"),
-            100,
-            30,
-        ))
-        .join("\n")
-    };
-    let before = draw_text(&e);
-    e.stream.push(StreamLine {
-        clock: s("14:59:59"),
-        kind: LineKind::Call,
-        text: s("command_execution(echo newest)"),
-    });
-    let after = draw_text(&e);
-    assert!(
-        !before.contains("echo newest") && after.contains("echo newest"),
-        "{after}"
-    );
-    e.stream_scroll = 3;
-    assert!(
-        !draw_text(&e).contains("echo newest"),
-        "scrolled back, the newest is below the window"
-    );
+fn the_indexed_theme_swaps_only_the_accent() {
+    let v = agents_view(3, landed_preview());
+    let mut sc = screen(Body::Agents(&v), ended_keys());
+    let rgb = draw(&sc, 120, 32);
+    sc.theme = Theme::INDEXED;
+    let idx = draw(&sc, 120, 32);
+    let mut swapped = 0;
+    for (a, b) in rgb.content.iter().zip(&idx.content) {
+        assert_eq!(a.symbol(), b.symbol());
+        assert_eq!(a.modifier, b.modifier);
+        if a.fg != b.fg {
+            assert_eq!(
+                (a.fg, b.fg),
+                (home::theme::ACCENT_RGB, home::theme::ACCENT_256)
+            );
+            swapped += 1;
+        }
+    }
+    assert!(swapped > 0, "the accent never appeared");
 }
 
+/// Every row carries its state glyph: a colour never stands for a state alone.
 #[test]
-fn watch_compose_open() {
-    let v = watch_view(
-        1,
-        Some(Expanded {
-            live: true,
-            task: Some(task_view("Implement the bucket")),
-            ..Default::default()
-        }),
-    );
-    let input = Input::Compose {
-        target: s("steer a1f0"),
-        text: s("use a VecDeque, not a Vec, for the window"),
-    };
-    insta::assert_snapshot!(report(&screen(Body::Watch(&v), input, "watch"), 100, 30));
-}
-
-#[test]
-fn watch_confirm_open() {
-    let v = watch_view(
-        1,
-        Some(Expanded {
-            live: true,
-            task: Some(task_view("Implement the bucket")),
-            ..Default::default()
-        }),
-    );
-    let input = Input::Confirm {
-        question: s("Cancel codex impl a1f0?"),
-        command: s("marion cancel 01a093dc-a1f0"),
-    };
-    insta::assert_snapshot!(report(&screen(Body::Watch(&v), input, "watch"), 100, 30));
+fn every_row_carries_its_state_glyph() {
+    let v = agents_view(0, live_preview());
+    let buf = draw(&screen(Body::Agents(&v), live_keys()), 120, 32);
+    let text = rows_of(&buf).join("\n");
+    for r in rows() {
+        let line = text
+            .lines()
+            .find(|l| {
+                l.split('│')
+                    .next()
+                    .is_some_and(|list| list.contains(&r.title))
+            })
+            .unwrap_or_else(|| panic!("{} missing:\n{text}", r.title));
+        let glyph = match r.tone {
+            Tone::Live => continue,
+            Tone::Unknown => "○",
+            t => t.glyph(),
+        };
+        assert!(line.contains(glyph), "{} has no glyph: {line}", r.title);
+    }
 }
 
 #[test]
 fn setup_expanded_harness() {
     let v = setup_view(false);
-    let input = command("qwen", "sign in, then r");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "setup")));
+    let input = setup_keys();
+    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
 }
 
 /// A machine with most harnesses missing: the missing ones fold into one line, so the sections
@@ -1165,15 +879,15 @@ fn setup_folds_the_harnesses_that_are_not_installed() {
         ));
     }
     v.cursor = v.harnesses.len() - 2;
-    let input = command("marion doctor", "r");
-    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "setup"), 100, 30));
+    let input = setup_keys();
+    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
 }
 
 #[test]
 fn setup_doctor_checking() {
     let v = setup_view(true);
-    let input = command("marion doctor", "checking…");
-    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "setup"), 100, 30));
+    let input = setup_keys();
+    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
 }
 
 #[test]
@@ -1181,8 +895,8 @@ fn setup_logins_listed() {
     let mut v = setup_view(false);
     v.expanded = false;
     v.cursor = v.harnesses.len() + 2;
-    let input = command("marion logout openrouter:work", "x");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "setup")));
+    let input = setup_keys();
+    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
 }
 
 /// The profiles, by harness: the selected one is logged out, so its row shows the command that
@@ -1193,8 +907,8 @@ fn setup_profiles_listed_with_the_login_command_shown() {
     v.expanded = false;
     v.cursor = v.harnesses.len() + v.logins.len() + 1;
     v.profiles[0].limit = Some(s("last limit allowed_warning (five_hour)"));
-    let input = command("marion profile use codex cx", "u");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "profiles")));
+    let input = setup_keys();
+    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
 }
 
 /// **The notifications row, last on Setup**: on or off and how a notice is shown here, and the
@@ -1204,8 +918,8 @@ fn setup_notifications_row_turns_them_off_on_enter() {
     let mut v = setup_view(false);
     v.expanded = false;
     v.cursor = v.harnesses.len() + v.logins.len() + v.profiles.len();
-    let input = command("marion notify off", "enter");
-    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "notify"), 100, 40));
+    let input = setup_keys();
+    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 40));
 }
 
 #[test]
@@ -1219,8 +933,8 @@ fn setup_no_profiles_offers_to_add_one_and_no_keys() {
         "each harness uses its own login · `a` runs `marion profile add`, then you run the login it prints",
     );
     v.cursor = v.harnesses.len();
-    let input = command("marion profile add <harness> <name>", "a");
-    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "profiles"), 100, 30));
+    let input = setup_keys();
+    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
 }
 
 #[test]
@@ -1228,104 +942,28 @@ fn setup_profile_remove_waits_for_y() {
     let mut v = setup_view(false);
     v.expanded = false;
     v.cursor = v.harnesses.len() + v.logins.len();
-    let input = Input::Confirm {
-        question: s("Remove the profile work?"),
-        command: s("marion profile remove work"),
+    let input = Footer::Confirm {
+        question: s("remove the profile work?"),
+        command: s("marion profile rm codex work"),
     };
-    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "confirm"), 100, 30));
+    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
 }
 
 #[test]
 fn setup_form_open() {
     let mut v = setup_view(false);
     v.form = Some(form_view(false));
-    let input = command(".marion/agents.toml", "enter previews");
-    insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "form")));
+    let input = setup_keys();
+    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
 }
 
 #[test]
 fn setup_form_diff_waits_for_y() {
     let mut v = setup_view(false);
     v.form = Some(form_view(true));
-    let input = Input::Confirm {
-        question: s("Write reviewer to .marion/agents.toml?"),
-        command: s("+5 lines"),
+    let input = Footer::Confirm {
+        question: s("write reviewer to .marion/agents.toml?"),
+        command: s("+5 -0 lines"),
     };
-    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "confirm"), 100, 30));
-}
-
-/// The 256-colour fallback changes the accent and nothing else.
-#[test]
-fn the_indexed_theme_swaps_only_the_accent() {
-    let v = watch_view(4, Some(landed()));
-    let input = command("marion attach 01a093dc-3c33", "same as enter");
-    let mut sc = screen(Body::Watch(&v), input, "watch");
-    let rgb = draw(&sc, 100, 30);
-    sc.theme = Theme::INDEXED;
-    let idx = draw(&sc, 100, 30);
-    let mut swapped = 0;
-    for (a, b) in rgb.content.iter().zip(&idx.content) {
-        assert_eq!(a.symbol(), b.symbol());
-        assert_eq!(a.modifier, b.modifier);
-        if a.fg != b.fg {
-            assert_eq!(
-                (a.fg, b.fg),
-                (home::theme::ACCENT_RGB, home::theme::ACCENT_256)
-            );
-            swapped += 1;
-        }
-    }
-    assert!(swapped > 0, "the accent never appeared");
-}
-
-/// Every status on screen carries its glyph: a colour never stands for a state alone.
-#[test]
-fn every_coloured_status_cell_is_a_glyph_or_its_own_words() {
-    let v = watch_view(4, Some(landed()));
-    let buf = draw(&screen(Body::Watch(&v), command("x", ""), "watch"), 100, 30);
-    let text = rows_of(&buf).join("\n");
-    for n in rows() {
-        let row = text
-            .lines()
-            .find(|l| l.contains(&format!("{} {}", n.harness, n.kind)) && l.contains(&n.short));
-        let row = row.unwrap_or_else(|| panic!("{} missing:\n{text}", n.short));
-        assert!(
-            row.contains(n.tone.glyph()),
-            "{} has no glyph: {row}",
-            n.short
-        );
-    }
-}
-
-/// A forest taller than the screen scrolls to keep the selected node and its expansion in view.
-#[test]
-fn a_long_forest_keeps_the_selection_on_screen() {
-    let mut v = watch_view(0, None);
-    let base = v.rows.clone();
-    for i in 0..30 {
-        let mut r = base[1].clone();
-        r.short = format!("{i:04}");
-        v.rows.insert(1, r);
-    }
-    v.cursor = v.rows.len() - 1;
-    v.expanded = Some(landed());
-    let buf = draw(&screen(Body::Watch(&v), command("x", ""), "watch"), 80, 24);
-    let text = rows_of(&buf).join("\n");
-    assert!(text.contains("claude review 88f2"), "{text}");
-    assert!(text.contains("RESULT"), "{text}");
-}
-
-/// The Nodes header names what the first held node needs, after the count, where the supervisor
-/// gave its words — the operator reads the one action without selecting the node.
-#[test]
-fn watch_names_what_the_first_held_node_needs() {
-    let mut v = watch_view(0, None);
-    v.attention = 1;
-    v.attention_note = Some("trust ~/r in claude once; worktrees inherit it".into());
-    let sc = screen(Body::Watch(&v), command("", ""), "watch");
-    let text = report(&sc, 200, 30);
-    assert!(
-        text.contains("1 need you: trust ~/r in claude once; worktrees inherit it"),
-        "{text}"
-    );
+    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
 }

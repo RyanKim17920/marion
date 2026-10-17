@@ -1,25 +1,24 @@
-//! **The home screen**: what bare `marion` opens on a terminal, and what `marion ls` opens on its
-//! Watch tab.
+//! **The home screen**: what bare `marion` and `marion ls` open on a terminal — the agents in a
+//! list, the selected one previewed beside them, Setup on `,` and every key on `?`.
 //!
 //! # Three layers, and only the last one does I/O
 //!
 //! * This module is the **state machine**: [`Home`] holds what the operator is looking at, and
 //!   [`Home::key`] turns one key into the next state and at most one [`Effect`]. It reads no file,
-//!   dials no socket and draws nothing, so every decision here — which key does what on which tab,
-//!   that nothing destructive happens without a `y` — is a plain unit test.
+//!   dials no socket and draws nothing, so every decision here — which key does what, that nothing
+//!   destructive happens without a `y` — is a plain unit test.
 //! * [`view`] projects a [`Home`] onto `marion_tui::home`'s views, which only draw.
 //! * [`session`] runs the loop: it paints, reads the keyboard, keeps the forest current from
 //!   `tree/subscribe`, and carries each [`Effect`] out **through a command or an RPC marion already
-//!   has** — a run is `marion run … --detach`, a steer is `node/steer`, a cancel is `node/kill`, an
-//!   attach is [`crate::attach::run`] after leaving the screen, exactly as the old tree screen did.
-//!   There is no second spawn path here.
+//!   has** — a run is `marion run …`, a steer is `node/steer`, a cancel is `node/cancel`, an attach
+//!   is [`crate::attach::run`] after leaving the screen. There is no second spawn path here.
 //!
 //! # Every effect is a command
 //!
-//! [`Effect::argv`] is the command line the effect stands for, and the bottom box shows it before a
-//! key is pressed: the home screen teaches the CLI rather than hiding it. `marion`'s own tests parse
-//! each of those lines back through the binary's argument parser and compare, so an effect and its
-//! echo cannot drift apart.
+//! [`Effect::argv`] is the command line the effect stands for, and the confirm line and `?` show
+//! it: the home screen teaches the CLI rather than hiding it. `marion`'s own tests parse each of
+//! those lines back through the binary's argument parser and compare, so an effect and its echo
+//! cannot drift apart.
 //!
 //! [`Home`]: crate::home::Home
 //! [`Home::key`]: crate::home::Home::key
@@ -37,8 +36,9 @@ use marion_core::contract::AgentId;
 use marion_core::proto::NodeSummary;
 use marion_core::proto::result::{ActionLine, NodeDetail};
 use marion_tui::home::keys::Key;
-use marion_tui::home::{Ready, Tab};
+use marion_tui::home::{Page, Ready};
 use marion_tui::tree::Tree;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// What a key asks the session to do. [`Effect::None`] is by far the most common answer.
@@ -47,8 +47,8 @@ pub enum Effect {
     None,
     Quit,
     /// `marion run <type> [--model <m>] --prompt <text> --detach`, or `--pane` in place of
-    /// `--detach` for a root in a terminal marion owns (which returns at once too, and is the kind
-    /// Enter can attach to).
+    /// `--detach` when the type's harness has a pane surface: either way it returns once the root
+    /// exists, and a pane root is one `enter` can attach to.
     Run {
         agent_type: String,
         model: Option<String>,
@@ -71,8 +71,6 @@ pub enum Effect {
     Shell(PathBuf),
     /// Leave the screen, show what the branch changed, come back.
     Diff(String),
-    /// Put this text on the operator's clipboard (OSC 52).
-    Copy(String),
     /// Leave the screen, run `git merge --no-ff -- <branch>` in the project, come back. It changes the
     /// operator's checkout: only ever after a `y`.
     Merge(String),
@@ -117,9 +115,9 @@ pub enum Effect {
 }
 
 impl Effect {
-    /// The command line this effect is, for the box to show and for the operator to learn. `None`
-    /// for [`Effect::None`] and [`Effect::Quit`], which are not commands, and for the form's
-    /// preview and write, which the box and the diff describe instead.
+    /// The command line this effect is, for the confirm line and `?` to show and for the operator
+    /// to learn. `None` for [`Effect::None`] and [`Effect::Quit`], which are not commands, and for
+    /// the form's preview and write, which the diff describes instead.
     pub fn argv(&self) -> Option<Vec<String>> {
         let v = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
         Some(match self {
@@ -167,7 +165,6 @@ impl Effect {
                 "--no-ext-diff",
                 &format!("HEAD..{branch}"),
             ]),
-            Effect::Copy(text) => vec![text.clone()],
             // `--` so a branch name cannot be read as a flag.
             Effect::Merge(branch) => v(&["git", "merge", "--no-ff", "--", branch]),
             Effect::Recheck => v(&["marion", "doctor"]),
@@ -202,6 +199,8 @@ pub struct Harness {
     pub ready: Ready,
     pub note: String,
     pub surfaces: String,
+    /// Doctor measured a pane surface for it: a root of its types runs in a terminal marion owns.
+    pub pane: bool,
     pub fix: Option<String>,
     pub detail: Vec<(String, String)>,
 }
@@ -222,23 +221,28 @@ pub struct AgentType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Normal,
-    /// Writing a steer for a node.
-    Compose {
-        target: AgentId,
+    /// Typing on the footer's input line, for `purpose`.
+    Typing {
+        purpose: Purpose,
         text: String,
     },
     /// A destructive effect waiting for `y`.
     Confirm(Effect),
-    /// Typing the credential id (`<provider>[:<label>]`) to hand to `marion login`.
-    Login {
-        text: String,
-    },
-    /// Typing `<harness> <name>` to hand to `marion profile add`.
-    Profile {
-        text: String,
-    },
     /// Filling in the agent-type form.
     Form(Form),
+}
+
+/// What the input line is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Purpose {
+    /// A new task, for [`Home::new_type`] on [`Home::new_model`].
+    New,
+    /// A steer for this node.
+    Steer(AgentId),
+    /// The credential id (`<provider>[:<label>]`) to hand to `marion key add`.
+    Key,
+    /// `<harness> <name>`, to hand to `marion profile add`.
+    Profile,
 }
 
 /// The agent-type form: the draft, the field being edited, and why the last preview was refused.
@@ -312,42 +316,42 @@ pub struct StoredProfile {
     pub limit: Option<String>,
 }
 
-/// Start's choices.
+/// The `n` line's choices, kept between one task and the next.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Start {
-    /// Into [`Home::start_harnesses`].
-    pub cursor: usize,
-    /// Into [`Home::kinds`] for the selected harness.
+pub struct NewTask {
+    /// Into [`Home::types`].
     pub kind: usize,
-    /// Into [`Home::models`] for the selected harness; 0 is `default`.
+    /// Into [`Home::models`] for the chosen type; 0 is its own default.
     pub model: usize,
-    pub prompt: String,
-    /// Run in a terminal marion owns (`--pane`) rather than headless: attachable with Enter, but
-    /// with no action stream to show, since a terminal emits bytes rather than frames.
-    pub pane: bool,
 }
 
-/// Watch's state: the forest, the selection, and the selected node's detail and stream.
+/// The agents page's state: the forest, the selection, and the selected node's detail and output.
 #[derive(Debug, Clone)]
 pub struct Watch {
     /// A supervisor is serving this project.
     pub supervisor: bool,
+    /// The forest, in the order the list shows it ([`crate::tree::by_urgency`]).
     pub nodes: Vec<NodeSummary>,
     pub tree: Tree,
     /// The selected node's last `node/get` detail.
     pub detail: Option<(AgentId, NodeDetail)>,
-    /// The selected node's action stream so far, and where the next page starts.
+    /// The selected node's output so far, and where the next page starts.
     pub stream: Vec<ActionLine>,
     pub next: Option<u64>,
-    /// Lines up from the newest the stream window is scrolled; 0 follows.
+    /// Lines up from the newest the output is scrolled; 0 follows.
     pub scroll: usize,
     /// Every node's subtree totals, rebuilt with the forest ([`crate::rollup`]).
     pub rollup: crate::rollup::Rollup,
-    /// The selected agent's stream fills the screen: Enter on a headless agent, Esc back.
-    pub full_stream: bool,
-    /// `m` or `c` pressed on a race row: done to its winner once the winner's detail (and branch)
-    /// arrives.
-    pub pending: Option<(AgentId, char)>,
+    /// The selected agent's output fills the body: `enter` on a headless agent, `esc` back.
+    pub full: bool,
+    /// `m` pressed on a race row: the winner's branch is merged once its detail arrives.
+    pub pending: Option<AgentId>,
+    /// Each node's task, first line, once a `node/get` has read it: the row's title.
+    pub titles: HashMap<String, String>,
+    /// Each node's landed branch, once a `node/get` has read it.
+    pub branches: HashMap<String, String>,
+    /// Branches merged from this screen: their nodes have nothing left to land.
+    pub merged: HashSet<String>,
 }
 
 impl Default for Watch {
@@ -361,9 +365,24 @@ impl Default for Watch {
             next: None,
             scroll: 0,
             rollup: crate::rollup::Rollup::default(),
-            full_stream: false,
+            full: false,
             pending: None,
+            titles: HashMap::new(),
+            branches: HashMap::new(),
+            merged: HashSet::new(),
         }
+    }
+}
+
+impl Watch {
+    /// Whether `n` still has work to land: it has, by [`crate::tree::to_land`], and its branch has
+    /// not been merged from here.
+    pub fn lands(&self, n: &NodeSummary) -> bool {
+        crate::tree::to_land(n)
+            && !self
+                .branches
+                .get(&n.agent_id.0)
+                .is_some_and(|b| self.merged.contains(b))
     }
 }
 
@@ -403,9 +422,9 @@ pub struct Setup {
 /// The whole home screen's state.
 #[derive(Debug, Clone)]
 pub struct Home {
-    pub tab: Tab,
+    pub page: Page,
     pub mode: Mode,
-    pub start: Start,
+    pub new: NewTask,
     pub watch: Watch,
     pub setup: Setup,
     /// Every harness doctor knows, as probed so far.
@@ -420,21 +439,21 @@ pub struct Home {
     /// The notice is an error that stays until Esc, rather than until the next key: a failed run's
     /// reason is read after the keys that follow it, not before.
     pub notice_sticky: bool,
-    /// The tab help was opened from, and goes back to.
-    pub help_from: Tab,
+    /// The page help was opened from, and goes back to.
+    pub help_from: Page,
     /// Rows help is scrolled down, where it does not fit the screen.
     pub help_scroll: usize,
 }
 
-/// How many stream lines a Page Up / Page Down moves.
+/// How many output lines a Page Up / Page Down moves.
 pub const PAGE: usize = 8;
 
 impl Home {
-    pub fn new(tab: Tab) -> Self {
+    pub fn new() -> Self {
         Home {
-            tab,
+            page: Page::Agents,
             mode: Mode::Normal,
-            start: Start::default(),
+            new: NewTask::default(),
             watch: Watch::default(),
             setup: Setup::default(),
             harnesses: Vec::new(),
@@ -443,82 +462,82 @@ impl Home {
             recent_models: Vec::new(),
             notice: None,
             notice_sticky: false,
-            help_from: tab,
+            help_from: Page::Agents,
             help_scroll: 0,
         }
     }
 
-    /// Open help, remembering the tab to go back to; from help itself, go back.
+    /// Open help, remembering the page to go back to; from help itself, go back.
     fn toggle_help(&mut self) {
-        if self.tab == Tab::Help {
-            self.tab = self.help_from;
+        if self.page == Page::Help {
+            self.page = self.help_from;
         } else {
-            self.help_from = self.tab;
+            self.help_from = self.page;
             self.help_scroll = 0;
-            self.tab = Tab::Help;
+            self.page = Page::Help;
         }
     }
 
     // ------------------------------------------------------------------ derived facts
 
-    /// The harnesses Start offers: those that have at least one agent type, in doctor's order.
-    pub fn start_harnesses(&self) -> Vec<&Harness> {
-        self.harnesses
-            .iter()
-            .filter(|h| self.types.iter().any(|t| t.harness == h.name))
-            .collect()
+    /// The harness `t` runs on, as doctor found it.
+    pub fn harness_of(&self, t: &AgentType) -> Option<&Harness> {
+        self.harnesses.iter().find(|h| h.name == t.harness)
     }
 
-    fn start_harness(&self) -> Option<&Harness> {
-        self.start_harnesses().get(self.start.cursor).copied()
+    /// The type the `n` line runs.
+    pub fn new_type(&self) -> Option<&AgentType> {
+        self.types.get(self.new.kind)
     }
 
-    /// The agent types of the harness under Start's cursor: implementers first, then read-only.
-    pub fn kinds(&self) -> Vec<&AgentType> {
-        let Some(h) = self.start_harness() else {
-            return Vec::new();
-        };
-        let mut ts: Vec<&AgentType> = self.types.iter().filter(|t| t.harness == h.name).collect();
-        ts.sort_by_key(|t| (!t.writes, t.custom));
-        ts
-    }
-
-    /// `default`, then the models the selected harness was last run on.
+    /// The models the `n` line cycles for its type: `default` (the type's own), then the models
+    /// the type's harness was last run on.
     pub fn models(&self) -> Vec<String> {
         let mut out = vec!["default".to_string()];
-        if let Some(h) = self.start_harness()
-            && let Some((_, ms)) = self.recent_models.iter().find(|(n, _)| *n == h.name)
+        if let Some(t) = self.new_type()
+            && let Some((_, ms)) = self.recent_models.iter().find(|(n, _)| *n == t.harness)
         {
             out.extend(ms.iter().cloned());
         }
         out
     }
 
-    /// The run Start's choices add up to, whether or not a prompt has been typed.
-    pub fn pending_run(&self) -> Option<Effect> {
-        let kind = self.kinds().get(self.start.kind)?.name.clone();
-        let model = self
-            .models()
-            .get(self.start.model)
+    /// The model the `n` line runs on, `None` for the type's own default.
+    pub fn new_model(&self) -> Option<String> {
+        self.models()
+            .get(self.new.model)
             .filter(|m| *m != "default")
-            .cloned();
-        Some(Effect::Run {
-            agent_type: kind,
-            model,
-            prompt: self.start.prompt.clone(),
-            pane: self.start.pane,
-        })
+            .cloned()
     }
 
-    /// The node under Watch's cursor.
+    /// Why the `n` line's type cannot run now, in a few words, or `None` when it can.
+    pub fn new_blocked(&self) -> Option<String> {
+        let t = self.new_type()?;
+        match self.harness_of(t) {
+            Some(h) if h.ready == Ready::Ready => None,
+            Some(h) if h.ready == Ready::Checking => Some("checking".into()),
+            Some(h) => Some(match &h.fix {
+                Some(fix) => format!("{}: {}", h.note, fix.replace('`', "")),
+                None => h.note.clone(),
+            }),
+            None => Some(format!("{} is not installed", t.harness)),
+        }
+    }
+
+    /// The node under the cursor.
     pub fn selected(&self) -> Option<&NodeSummary> {
         let id = &self.watch.tree.selected()?.id;
         self.watch.nodes.iter().find(|n| n.agent_id.0 == *id)
     }
 
-    /// The race whose header row is under Watch's cursor.
+    /// The race whose header row is under the cursor.
     pub fn selected_race(&self) -> Option<String> {
         crate::tree::race_of_row(&self.watch.tree.selected()?.id).map(str::to_string)
+    }
+
+    /// The workflow run whose header row is under the cursor.
+    pub fn selected_workflow(&self) -> Option<String> {
+        crate::tree::workflow_of_row(&self.watch.tree.selected()?.id).map(str::to_string)
     }
 
     /// A race's winning agent, once one has won.
@@ -534,33 +553,25 @@ impl Home {
             .map(|n| n.agent_id.clone())
     }
 
-    /// A key on a race's header row, which has no agent of its own: Enter goes to the winner, and
-    /// `m`/`c` act on the winner's branch once its detail is read. Anything else says what does.
+    /// A key on a race's header row, which has no agent of its own: `enter` goes to the winner,
+    /// and `m` merges the winner's branch once its detail is read. Anything else says what does.
     fn race_key(&mut self, race: &str, key: &Key) -> Effect {
         let winner = self.race_winner(race);
         match (key, winner) {
             (Key::Enter, Some(w)) => {
                 self.select(&w.0);
             }
-            (Key::Char(c @ ('m' | 'c')), Some(w)) => {
-                self.watch.pending = Some((w.clone(), *c));
+            (Key::Char('m'), Some(w)) => {
+                self.watch.pending = Some(w.clone());
                 self.select(&w.0);
             }
-            (Key::Enter | Key::Char('m' | 'c'), None) => {
-                self.notice = Some("no agent has won this race yet; its agents are below".into())
-            }
-            _ => {
-                self.notice = Some(
-                    "a race row: enter goes to its winner, m merges it; select an agent below to \
-                     steer or cancel it"
-                        .into(),
-                )
-            }
+            (Key::Enter | Key::Char('m'), None) => self.notice = Some("no winner yet".into()),
+            _ => self.notice = Some("a race: enter goes to its winner, m merges it".into()),
         }
         Effect::None
     }
 
-    fn selected_detail(&self) -> Option<&NodeDetail> {
+    pub fn selected_detail(&self) -> Option<&NodeDetail> {
         let sel = self.selected()?;
         match &self.watch.detail {
             Some((id, d)) if *id == sel.agent_id => Some(d),
@@ -568,45 +579,63 @@ impl Home {
         }
     }
 
-    /// Whether anything the current tab shows moves with time — a running node's elapsed time and
-    /// spinner on Watch, a harness still being checked on Start or Setup — and so needs a clock.
-    /// `false` is the idle screen, which sleeps until something happens.
+    /// Whether anything the page shows moves with time — a running node's time and spinner, a
+    /// harness still being checked — and so needs a clock. `false` is the idle screen, which sleeps
+    /// until something happens.
     pub fn animating(&self) -> bool {
-        match self.tab {
-            Tab::Watch => self.watch.nodes.iter().any(|n| !n.state.is_exited()),
-            Tab::Start => self.checking,
-            Tab::Setup => self.checking || self.setup.profiles.iter().any(|p| p.login.is_none()),
-            Tab::Help => false,
-        }
-    }
-
-    /// What Enter would do on Watch: the effect the box echoes before it is pressed. Only a pane
-    /// agent has a terminal to attach to; Enter on a headless one opens its stream instead, which
-    /// is no command.
-    pub fn watch_default(&self) -> Effect {
-        match self.selected() {
-            Some(n) if n.pane => Effect::Attach(n.agent_id.clone()),
-            _ => Effect::None,
+        match self.page {
+            Page::Agents => self.watch.nodes.iter().any(|n| !n.state.is_exited()),
+            Page::Setup => self.checking || self.setup.profiles.iter().any(|p| p.login.is_none()),
+            Page::Help => false,
         }
     }
 
     // ------------------------------------------------------------------ the forest
 
-    /// A new snapshot of the forest, keeping the selection where the node survives.
+    /// A new snapshot of the forest, keeping the selection where the node survives. The list is
+    /// re-ordered by urgency, except while a line is open: a row must not move under a steer being
+    /// typed for it, so the order is held and new nodes go to the end until the line closes.
     pub fn set_nodes(&mut self, nodes: Vec<NodeSummary>) {
         let keep = self.watch.tree.selected().map(|n| n.id.clone());
+        let nodes = if matches!(self.mode, Mode::Normal) {
+            crate::tree::by_urgency(&nodes, &|n| self.watch.lands(n))
+        } else {
+            let at = |n: &NodeSummary| {
+                self.watch
+                    .nodes
+                    .iter()
+                    .position(|o| o.agent_id == n.agent_id)
+                    .unwrap_or(usize::MAX)
+            };
+            let mut held = nodes;
+            held.sort_by_key(at);
+            held
+        };
         self.watch.tree = crate::tree::build(&nodes, keep.as_deref());
         self.watch.rollup = crate::rollup::Rollup::build(&nodes);
         self.watch.nodes = nodes;
         self.watch.supervisor = true;
     }
 
-    /// The supervisor went away (or was never there).
-    pub fn lost_supervisor(&mut self) {
-        self.watch = Watch::default();
+    /// The order again, now that nothing holds it.
+    fn reorder(&mut self) {
+        if self.watch.supervisor {
+            let nodes = std::mem::take(&mut self.watch.nodes);
+            self.set_nodes(nodes);
+        }
     }
 
-    /// Select `id` on Watch, if the forest has it.
+    /// The supervisor went away (or was never there). The titles are kept: a task's first line
+    /// does not change, and the same nodes come back with the supervisor.
+    pub fn lost_supervisor(&mut self) {
+        let titles = std::mem::take(&mut self.watch.titles);
+        self.watch = Watch {
+            titles,
+            ..Watch::default()
+        };
+    }
+
+    /// Select `id`, if the forest has it.
     pub fn select(&mut self, id: &str) -> bool {
         let found = self.watch.tree.select(id);
         if found {
@@ -615,7 +644,33 @@ impl Home {
         found
     }
 
-    /// A `node/get` answer for `id`: its detail, and the page of its stream appended.
+    /// The nodes whose title has not been read: what the session asks `node/get` for.
+    pub fn untitled(&self) -> Vec<AgentId> {
+        self.watch
+            .nodes
+            .iter()
+            .filter(|n| !self.watch.titles.contains_key(&n.agent_id.0))
+            .map(|n| n.agent_id.clone())
+            .collect()
+    }
+
+    /// A node's title, read: its task's first line, or its agent type where it has no task (a
+    /// root, whose prompt went to its harness rather than into a contract).
+    pub fn set_title(&mut self, id: &AgentId, task: Option<&str>) {
+        let line = task
+            .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
+            .map(|l| marion_core::text::visible(l).into_owned());
+        let title = line.unwrap_or_else(|| {
+            self.watch
+                .nodes
+                .iter()
+                .find(|n| n.agent_id == *id)
+                .map_or_else(String::new, |n| n.agent_type.clone())
+        });
+        self.watch.titles.insert(id.0.clone(), title);
+    }
+
+    /// A `node/get` answer for `id`: its detail, and the page of its output appended.
     pub fn absorb_detail(&mut self, id: AgentId, mut detail: NodeDetail) {
         let same = matches!(&self.watch.detail, Some((d, _)) if *d == id);
         if !same {
@@ -635,19 +690,26 @@ impl Home {
                 });
             }
         }
+        if !self.watch.titles.contains_key(&id.0) {
+            let task = detail.task.as_ref().map(|t| t.prompt.clone());
+            self.set_title(&id, task.as_deref());
+        }
         let branch = detail.completion.as_ref().and_then(|c| c.branch.clone());
-        let pending = self.watch.pending.take();
-        match (pending, branch) {
-            (Some((p, 'm')), Some(b)) if p == id => self.mode = Mode::Confirm(Effect::Merge(b)),
-            (Some((p, _)), Some(b)) if p == id => {
-                self.notice = Some(marion_core::contract::merge_command(&b))
-            }
-            (Some((p, _)), None) if p == id => {
-                self.notice = Some("the winner landed no branch to merge".into())
-            }
+        if let Some(b) = &branch {
+            self.watch.branches.insert(id.0.clone(), b.clone());
+        }
+        match (self.watch.pending.take(), branch) {
+            (Some(p), Some(b)) if p == id => self.mode = Mode::Confirm(Effect::Merge(b)),
+            (Some(p), None) if p == id => self.notice = Some("the winner landed no branch".into()),
             (other, _) => self.watch.pending = other,
         }
         self.watch.detail = Some((id, detail));
+    }
+
+    /// A merge of `branch` went through: its node has nothing left to land.
+    pub fn merged(&mut self, branch: &str) {
+        self.watch.merged.insert(branch.to_string());
+        self.reorder();
     }
 
     fn selection_moved(&mut self) {
@@ -658,126 +720,119 @@ impl Home {
 
     /// One key: the next state, and what (if anything) the session should do.
     pub fn key(&mut self, key: Key) -> Effect {
-        match std::mem::replace(&mut self.mode, Mode::Normal) {
-            Mode::Confirm(effect) => {
-                if key == Key::Char('y') {
-                    self.setup.preview.clear();
-                    return effect;
-                }
-                match effect {
-                    Effect::WriteTypes { draft, .. } => {
-                        self.setup.preview.clear();
-                        self.mode = Mode::Form(Form {
-                            draft,
-                            field: 0,
-                            error: None,
-                        });
-                        self.notice = Some("not written; still editing".into());
-                    }
-                    Effect::Logout(_) => self.notice = Some("key kept".into()),
-                    Effect::Merge(_) => self.notice = Some("not merged".into()),
-                    Effect::ProfileRemove { .. } => self.notice = Some("profile kept".into()),
-                    _ => self.notice = Some("not cancelled".into()),
-                }
-                Effect::None
-            }
-            Mode::Login { mut text } => match key {
-                Key::Enter => self.login(text),
-                Key::Esc | Key::Ctrl('c') => Effect::None,
-                Key::Backspace => {
-                    text.pop();
-                    self.mode = Mode::Login { text };
-                    Effect::None
-                }
-                Key::Char(c) => {
-                    push_bounded(&mut text, &c.to_string());
-                    self.mode = Mode::Login { text };
-                    Effect::None
-                }
-                Key::Paste(p) => {
-                    push_bounded(&mut text, p.trim());
-                    self.mode = Mode::Login { text };
-                    Effect::None
-                }
-                _ => {
-                    self.mode = Mode::Login { text };
-                    Effect::None
-                }
-            },
-            Mode::Profile { mut text } => match key {
-                Key::Enter => self.profile_add(text),
-                Key::Esc | Key::Ctrl('c') => Effect::None,
-                Key::Backspace => {
-                    text.pop();
-                    self.mode = Mode::Profile { text };
-                    Effect::None
-                }
-                Key::Char(c) => {
-                    push_bounded(&mut text, &c.to_string());
-                    self.mode = Mode::Profile { text };
-                    Effect::None
-                }
-                Key::Paste(p) => {
-                    push_bounded(&mut text, p.trim());
-                    self.mode = Mode::Profile { text };
-                    Effect::None
-                }
-                _ => {
-                    self.mode = Mode::Profile { text };
-                    Effect::None
-                }
-            },
+        let was_normal = matches!(self.mode, Mode::Normal);
+        let effect = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Confirm(effect) => self.confirm_key(effect, key),
+            Mode::Typing { purpose, text } => self.typing_key(purpose, text, key),
             Mode::Form(form) => self.form_key(form, key),
-            Mode::Compose { target, mut text } => match key {
-                Key::Enter if !text.trim().is_empty() => Effect::Steer(target, text),
-                Key::Enter | Key::Esc | Key::Ctrl('c') => Effect::None,
-                Key::Backspace => {
-                    text.pop();
-                    self.mode = Mode::Compose { target, text };
-                    Effect::None
-                }
-                Key::Char(c) => {
-                    push_bounded(&mut text, &c.to_string());
-                    self.mode = Mode::Compose { target, text };
-                    Effect::None
-                }
-                Key::Paste(p) => {
-                    push_bounded(&mut text, &p);
-                    self.mode = Mode::Compose { target, text };
-                    Effect::None
-                }
-                _ => {
-                    self.mode = Mode::Compose { target, text };
-                    Effect::None
-                }
-            },
             Mode::Normal => self.normal(key),
+        };
+        // A line that just closed releases the order it held.
+        if !was_normal && matches!(self.mode, Mode::Normal) {
+            self.reorder();
+        }
+        effect
+    }
+
+    fn confirm_key(&mut self, effect: Effect, key: Key) -> Effect {
+        if key == Key::Char('y') {
+            self.setup.preview.clear();
+            return effect;
+        }
+        match effect {
+            Effect::WriteTypes { draft, .. } => {
+                self.setup.preview.clear();
+                self.mode = Mode::Form(Form {
+                    draft,
+                    field: 0,
+                    error: None,
+                });
+                self.notice = Some("not written".into());
+            }
+            Effect::Logout(_) => self.notice = Some("key kept".into()),
+            Effect::Merge(_) => self.notice = Some("not merged".into()),
+            Effect::ProfileRemove { .. } => self.notice = Some("profile kept".into()),
+            _ => self.notice = Some("not cancelled".into()),
+        }
+        Effect::None
+    }
+
+    fn typing_key(&mut self, purpose: Purpose, mut text: String, key: Key) -> Effect {
+        match key {
+            Key::Esc | Key::Ctrl('c') => return Effect::None,
+            Key::Enter => return self.submit(purpose, text),
+            Key::Backspace => {
+                text.pop();
+            }
+            Key::Char(c) => push_bounded(&mut text, &c.to_string()),
+            Key::Paste(p) => push_bounded(&mut text, &p),
+            Key::Tab | Key::BackTab if purpose == Purpose::New => {
+                let n = self.types.len().max(1);
+                let by = if key == Key::Tab { 1 } else { n - 1 };
+                self.new.kind = (self.new.kind + by) % n;
+                self.new.model = 0;
+            }
+            Key::Down if purpose == Purpose::New => {
+                let n = self.models().len();
+                self.new.model = (self.new.model + 1) % n;
+            }
+            Key::Up if purpose == Purpose::New => {
+                let n = self.models().len();
+                self.new.model = (self.new.model + n - 1) % n;
+            }
+            _ => {}
+        }
+        self.mode = Mode::Typing { purpose, text };
+        Effect::None
+    }
+
+    /// Enter on the input line. A line that cannot be acted on stays open with the reason, so the
+    /// text is not lost to a typo.
+    fn submit(&mut self, purpose: Purpose, text: String) -> Effect {
+        let refused = |home: &mut Home, why: String, purpose: Purpose, text: String| {
+            home.notice = Some(why);
+            home.mode = Mode::Typing { purpose, text };
+            Effect::None
+        };
+        match purpose {
+            Purpose::Steer(target) if !text.trim().is_empty() => Effect::Steer(target, text),
+            Purpose::Steer(_) => Effect::None,
+            Purpose::New => {
+                if text.trim().is_empty() {
+                    return refused(self, "type the task".into(), purpose, text);
+                }
+                let Some(t) = self.new_type().cloned() else {
+                    return refused(self, "no agent type to run".into(), purpose, text);
+                };
+                if let Some(why) = self.new_blocked() {
+                    return refused(self, format!("{}: {why}", t.name), purpose, text);
+                }
+                Effect::Run {
+                    pane: self.harness_of(&t).is_some_and(|h| h.pane),
+                    agent_type: t.name,
+                    model: self.new_model(),
+                    prompt: text,
+                }
+            }
+            Purpose::Key => match self.login(&text) {
+                Ok(e) => e,
+                Err(why) => refused(self, why, purpose, text),
+            },
+            Purpose::Profile => match self.profile_add(&text) {
+                Ok(e) => e,
+                Err(why) => refused(self, why, purpose, text),
+            },
         }
     }
 
     fn normal(&mut self, key: Key) -> Effect {
-        // Keys that mean the same on every tab.
-        match key {
-            Key::Ctrl('c') => return Effect::Quit,
-            Key::Tab => {
-                self.tab = next_tab(self.tab, 1);
-                return Effect::None;
-            }
-            Key::BackTab => {
-                self.tab = next_tab(self.tab, -1);
-                return Effect::None;
-            }
-            Key::F1 => {
-                self.toggle_help();
-                return Effect::None;
-            }
-            _ => {}
+        if key == Key::Ctrl('c') {
+            return Effect::Quit;
         }
-        match self.tab {
-            Tab::Start => self.start_key(key),
-            Tab::Watch => self.watch_key(key),
-            Tab::Setup => self.setup_key(key),
-            Tab::Help => match key {
+        match self.page {
+            Page::Agents => self.agents_key(key),
+            Page::Setup => self.setup_key(key),
+            Page::Help => match key {
                 Key::Char('q') => Effect::Quit,
                 Key::Esc | Key::Char('?') => {
                     self.toggle_help();
@@ -797,89 +852,23 @@ impl Home {
         }
     }
 
-    /// Start: the box is always typing, so letters are text; the choices move on arrows and `^o`.
-    fn start_key(&mut self, key: Key) -> Effect {
-        let s = &mut self.start;
-        match key {
-            // `?` is a question mark in a prompt, and help on an empty one.
-            Key::Char('?') if s.prompt.is_empty() => self.toggle_help(),
-            Key::Char(c) => push_bounded(&mut s.prompt, &c.to_string()),
-            Key::Paste(p) => push_bounded(&mut s.prompt, &p),
-            Key::Backspace => {
-                s.prompt.pop();
-            }
-            Key::Esc => s.prompt.clear(),
-            Key::Up => {
-                s.cursor = s.cursor.saturating_sub(1);
-                s.kind = 0;
-                s.model = 0;
-            }
-            Key::Down => {
-                let n = self.start_harnesses().len();
-                let s = &mut self.start;
-                s.cursor = (s.cursor + 1).min(n.saturating_sub(1));
-                s.kind = 0;
-                s.model = 0;
-            }
-            Key::Left => s.model = s.model.saturating_sub(1),
-            Key::Right => {
-                let n = self.models().len();
-                self.start.model = (self.start.model + 1).min(n.saturating_sub(1));
-            }
-            Key::Ctrl('p') => self.start.pane = !self.start.pane,
-            Key::Ctrl('o') => {
-                let n = self.kinds().len().max(1);
-                self.start.kind = (self.start.kind + 1) % n;
-            }
-            Key::Enter => return self.start_run(),
-            _ => {}
-        }
-        Effect::None
-    }
-
-    fn start_run(&mut self) -> Effect {
-        if self.start.prompt.trim().is_empty() {
-            self.notice = Some("type what the agent should do, then enter".into());
-            return Effect::None;
-        }
-        match self.start_harness() {
-            Some(h) if matches!(h.ready, Ready::Ready) => {}
-            Some(h) if matches!(h.ready, Ready::Checking) => {
-                self.notice = Some(format!("{} is still being checked", h.name));
-                return Effect::None;
-            }
-            Some(h) => {
-                self.notice = Some(format!("{} is not ready: {}", h.name, h.note));
-                return Effect::None;
-            }
-            None => {
-                self.notice = Some("no harness to run on".into());
-                return Effect::None;
-            }
-        }
-        let run = self.pending_run().unwrap_or(Effect::None);
-        if run != Effect::None {
-            self.start.prompt.clear();
-        }
-        run
-    }
-
-    fn watch_key(&mut self, key: Key) -> Effect {
-        if let Some(race) = self.selected_race()
-            && !matches!(
-                key,
-                Key::Char('q' | '?' | 'j' | 'k' | '!' | 'J' | 'K')
-                    | Key::Up
-                    | Key::Down
-                    | Key::PageUp
-                    | Key::PageDown
-            )
-        {
+    fn agents_key(&mut self, key: Key) -> Effect {
+        let anywhere = matches!(
+            key,
+            Key::Char('q' | '?' | ',' | 'n' | 'j' | 'k')
+                | Key::Up
+                | Key::Down
+                | Key::PageUp
+                | Key::PageDown
+                | Key::End
+        );
+        if !anywhere && let Some(race) = self.selected_race() {
             return self.race_key(&race, &key);
         }
         match key {
             Key::Char('q') => return Effect::Quit,
             Key::Char('?') => self.toggle_help(),
+            Key::Char(',') => self.page = Page::Setup,
             Key::Char('j') | Key::Down => {
                 self.watch.tree.move_by(1);
                 self.selection_moved();
@@ -888,65 +877,28 @@ impl Home {
                 self.watch.tree.move_by(-1);
                 self.selection_moved();
             }
-            Key::Char('K') | Key::PageUp => {
-                let step = if key == Key::PageUp { PAGE } else { 1 };
+            Key::PageUp => {
                 let max = self.watch.stream.len();
-                self.watch.scroll = (self.watch.scroll + step).min(max);
+                self.watch.scroll = (self.watch.scroll + PAGE).min(max);
             }
-            Key::Char('J') | Key::PageDown => {
-                let step = if key == Key::PageDown { PAGE } else { 1 };
-                self.watch.scroll = self.watch.scroll.saturating_sub(step);
-            }
-            Key::Char('!') => {
-                let nodes = self.watch.nodes.clone();
-                let hit = self.watch.tree.cycle_to(|id| {
-                    nodes
-                        .iter()
-                        .any(|n| n.agent_id.0 == id && crate::tree::attention_of(n).is_some())
-                });
-                self.notice = (!hit).then(|| "nothing needs you".to_string());
-                self.selection_moved();
-            }
-            Key::Enter => {
-                // A workflow run's header is no node: Enter goes to the step it is on.
-                let run = self
-                    .watch
-                    .tree
-                    .selected()
-                    .and_then(|r| crate::tree::workflow_of_row(&r.id))
-                    .map(|wf| marion_core::workflow::WorkflowId(wf.to_string()));
-                if let Some(wf) = run {
-                    let now = std::time::SystemTime::now();
-                    match crate::tree::WorkflowSummary::of(&wf, &self.watch.nodes, now).current_node
-                    {
-                        Some(id) => {
-                            self.select(&id);
-                        }
-                        None => self.notice = Some("the run has no step node yet".into()),
-                    }
-                    return Effect::None;
-                }
-                match self.selected() {
-                    Some(n) if n.pane => return Effect::Attach(n.agent_id.clone()),
-                    Some(_) => {
-                        self.watch.full_stream = !self.watch.full_stream;
-                        self.watch.scroll = 0;
-                    }
-                    None => self.notice = Some("nothing selected".into()),
+            Key::PageDown => self.watch.scroll = self.watch.scroll.saturating_sub(PAGE),
+            Key::End => self.watch.scroll = 0,
+            Key::Char('n') => {
+                self.mode = Mode::Typing {
+                    purpose: Purpose::New,
+                    text: String::new(),
                 }
             }
-            Key::Esc if self.watch.full_stream => self.watch.full_stream = false,
+            Key::Enter => return self.enter(),
+            Key::Esc if self.watch.full => self.watch.full = false,
             Key::Char('s') => match self.selected() {
                 Some(n) if !n.state.is_exited() => {
-                    self.mode = Mode::Compose {
-                        target: n.agent_id.clone(),
+                    self.mode = Mode::Typing {
+                        purpose: Purpose::Steer(n.agent_id.clone()),
                         text: String::new(),
                     }
                 }
-                Some(_) => {
-                    self.notice =
-                        Some("it has ended; u brings it back from its recorded session".into())
-                }
+                Some(_) => self.notice = Some("ended: u resumes it".into()),
                 None => self.notice = Some("nothing selected".into()),
             },
             Key::Char('x') => match self.selected() {
@@ -957,31 +909,52 @@ impl Home {
                 Some(n) if !n.state.is_exited() => {
                     self.mode = Mode::Confirm(Effect::Cancel(n.agent_id.clone()))
                 }
-                Some(_) => self.notice = Some("it has already ended".into()),
+                Some(_) => self.notice = Some("already ended".into()),
                 None => self.notice = Some("nothing selected".into()),
             },
             Key::Char('u') => match self.selected() {
                 Some(n) if n.state.is_exited() => return Effect::Resume(n.agent_id.clone()),
-                Some(_) => self.notice = Some("it is still running; steer it with s".into()),
+                Some(_) => self.notice = Some("still running: s steers it".into()),
                 None => self.notice = Some("nothing selected".into()),
             },
             Key::Char('o') => match self.workspace() {
                 Some(dir) => return Effect::Shell(dir),
-                None => self.notice = Some("no workspace known for it yet".into()),
+                None => self.notice = Some("no workspace known yet".into()),
             },
             Key::Char('d') => match self.branch() {
                 Some(b) => return Effect::Diff(b),
-                None => self.notice = Some("it has landed no branch".into()),
-            },
-            Key::Char('c') => match self.branch() {
-                Some(b) => return Effect::Copy(marion_core::contract::merge_command(&b)),
-                None => self.notice = Some("it has landed no branch to merge".into()),
+                None => self.notice = Some("no branch landed".into()),
             },
             Key::Char('m') => match self.branch() {
                 Some(b) => self.mode = Mode::Confirm(Effect::Merge(b)),
-                None => self.notice = Some("it has landed no branch to merge".into()),
+                None => self.notice = Some("no branch to merge".into()),
             },
             _ => {}
+        }
+        Effect::None
+    }
+
+    /// `enter`: a workflow header goes to the step it is on; a pane agent is attached; a headless
+    /// one has its output fill the body, or stop filling it.
+    fn enter(&mut self) -> Effect {
+        if let Some(wf) = self.selected_workflow() {
+            let run = marion_core::workflow::WorkflowId(wf);
+            let now = std::time::SystemTime::now();
+            match crate::tree::WorkflowSummary::of(&run, &self.watch.nodes, now).current_node {
+                Some(id) => {
+                    self.select(&id);
+                }
+                None => self.notice = Some("no step has started".into()),
+            }
+            return Effect::None;
+        }
+        match self.selected() {
+            Some(n) if n.pane => return Effect::Attach(n.agent_id.clone()),
+            Some(_) => {
+                self.watch.full = !self.watch.full;
+                self.watch.scroll = 0;
+            }
+            None => self.notice = Some("nothing selected".into()),
         }
         Effect::None
     }
@@ -993,7 +966,8 @@ impl Home {
         })
     }
 
-    fn branch(&self) -> Option<String> {
+    /// The selected node's landed branch, once its detail has been read.
+    pub fn branch(&self) -> Option<String> {
         self.selected_detail()?.completion.as_ref()?.branch.clone()
     }
 
@@ -1001,6 +975,7 @@ impl Home {
         match key {
             Key::Char('q') => return Effect::Quit,
             Key::Char('?') => self.toggle_help(),
+            Key::Esc | Key::Char(',') => self.page = Page::Agents,
             Key::Char('j') | Key::Down => {
                 // The profiles (or the one row that adds the first), then the notifications row
                 // once it has been read.
@@ -1014,13 +989,6 @@ impl Home {
             }
             Key::Enter if self.on_notify() => {
                 return Effect::Notify(self.setup.notify != Some(true));
-            }
-            Key::Enter => {
-                self.notice = Some(if self.on_profiles() {
-                    "a adds a login · u uses the selected one · x removes it".into()
-                } else {
-                    "a adds a key · x removes the selected one".into()
-                })
             }
             Key::Char('r') => return Effect::Recheck,
             Key::Char('e') => return Effect::EditTypes,
@@ -1038,14 +1006,20 @@ impl Home {
                     .selected_profile()
                     .map(|p| format!("{} ", p.harness))
                     .unwrap_or_default();
-                self.mode = Mode::Profile { text };
+                self.mode = Mode::Typing {
+                    purpose: Purpose::Profile,
+                    text,
+                };
             }
             Key::Char('a') => {
                 let text = self
                     .selected_login()
                     .map(|l| l.provider.clone())
                     .unwrap_or_default();
-                self.mode = Mode::Login { text };
+                self.mode = Mode::Typing {
+                    purpose: Purpose::Key,
+                    text,
+                };
             }
             Key::Char('u') => match self.selected_profile() {
                 Some(p) if p.default => {
@@ -1057,7 +1031,7 @@ impl Home {
                         name: p.name.clone(),
                     };
                 }
-                None => self.notice = Some("select a profile to use it".into()),
+                None => self.notice = Some("select a profile".into()),
             },
             Key::Char('x') => match (self.selected_login(), self.selected_profile()) {
                 (Some(l), _) => self.mode = Mode::Confirm(Effect::Logout(l.id.clone())),
@@ -1067,7 +1041,7 @@ impl Home {
                         name: p.name.clone(),
                     })
                 }
-                _ => self.notice = Some("select a stored key or a profile to remove it".into()),
+                _ => self.notice = Some("select a key or a profile".into()),
             },
             _ => {}
         }
@@ -1140,52 +1114,46 @@ impl Home {
             .collect()
     }
 
-    /// Enter in the login box: `marion login <text>` when its provider is one marion knows.
-    fn login(&mut self, text: String) -> Effect {
-        let text = text.trim().to_string();
+    /// Enter on the key line: `marion key add <text>` when its provider is one marion knows.
+    fn login(&self, text: &str) -> Result<Effect, String> {
+        let text = text.trim();
         let provider = text.split(':').next().unwrap_or("");
         if text.is_empty() {
-            self.notice = Some("type a provider id, then enter".into());
-            return Effect::None;
+            return Err("type a provider id".into());
         }
         if !self.setup.providers.iter().any(|p| p == provider) {
-            self.notice = Some(format!(
-                "no provider named `{provider}`; `marion key list` shows them"
+            return Err(format!(
+                "no provider named `{provider}`; marion key list shows them"
             ));
-            return Effect::None;
         }
-        Effect::Login(text)
+        Ok(Effect::Login(text.to_string()))
     }
 
-    /// Enter in the profile box: `marion profile add <harness> <name>` when the harness takes
+    /// Enter on the profile line: `marion profile add <harness> <name>` when the harness takes
     /// profiles and the name is one — refused here, before the terminal changes hands, otherwise.
-    fn profile_add(&mut self, text: String) -> Effect {
+    fn profile_add(&self, text: &str) -> Result<Effect, String> {
         let words: Vec<&str> = text.split_whitespace().collect();
         let [harness, name] = words.as_slice() else {
-            self.notice = Some("type a harness and a name for the profile, then enter".into());
-            return Effect::None;
+            return Err("type a harness and a name for the profile".into());
         };
         if !self.setup.profile_harnesses.iter().any(|h| h == harness) {
-            self.notice = Some(format!(
+            return Err(format!(
                 "`{harness}` takes no profiles; these do: {}",
                 self.setup.profile_harnesses.join(", ")
             ));
-            return Effect::None;
         }
         if !marion_core::agent_type::is_valid_name(name) {
-            self.notice = Some(format!(
+            return Err(format!(
                 "`{name}` is not a profile name: letters, digits, - and _"
             ));
-            return Effect::None;
         }
         if self.setup.profiles.iter().any(|p| p.name == *name) {
-            self.notice = Some(format!("a profile named `{name}` already exists"));
-            return Effect::None;
+            return Err(format!("a profile named `{name}` already exists"));
         }
-        Effect::ProfileAdd {
+        Ok(Effect::ProfileAdd {
             harness: harness.to_string(),
             name: name.to_string(),
-        }
+        })
     }
 
     fn form_key(&mut self, mut form: Form, key: Key) -> Effect {
@@ -1280,6 +1248,12 @@ impl Home {
     }
 }
 
+impl Default for Home {
+    fn default() -> Self {
+        Home::new()
+    }
+}
+
 /// The text field `field` edits in `d`, or `None` for a field picked with ←→.
 fn text_of(d: &mut types_form::Draft, field: Field) -> Option<&mut String> {
     match field {
@@ -1322,7 +1296,7 @@ pub fn failure_line(stdout: &str, stderr: &str) -> String {
         .to_string()
 }
 
-/// The largest prompt or steer the box takes: `node/steer`'s own bound.
+/// The largest task or steer the input line takes: `node/steer`'s own bound.
 const TEXT_LIMIT: usize = marion_core::proto::params::MAX_STEER_BYTES;
 
 fn push_bounded(text: &mut String, more: &str) {
@@ -1332,12 +1306,6 @@ fn push_bounded(text: &mut String, more: &str) {
         }
         text.push(c);
     }
-}
-
-fn next_tab(tab: Tab, step: isize) -> Tab {
-    let i = Tab::ALL.iter().position(|t| *t == tab).unwrap_or(0) as isize;
-    let n = Tab::ALL.len() as isize;
-    Tab::ALL[(i + step).rem_euclid(n) as usize]
 }
 
 #[cfg(test)]

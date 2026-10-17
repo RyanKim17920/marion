@@ -25,7 +25,7 @@ marion run claude --prompt "…" --model haiku --timeout 600
 marion run codex --prompt "…" --budget-tokens 200000   # cancel the tree past 200k tokens
 marion run codex --prompt "…" --verify "cargo test"     # in its own worktree, checked at the end
 marion race --prompt "…" --on claude,codex --verify "cargo test"  # keep the seat that passes
-marion ls                                 # the home screen on Watch; in a pipe, list's lines
+marion ls                                 # the home screen; in a pipe, list's lines
 marion ls <id>                            # one node's detail
 marion ls --attention                     # only the nodes that need you
 marion attach <id>                        # a pane node's terminal; ^] d comes back
@@ -88,29 +88,33 @@ harness.
 
 ## The home screen
 
-Bare `marion` on a terminal opens it; in a pipe it prints usage and exits non-zero. `Tab` changes
-screen, F1 (or `?` wherever you are not typing) is help and Esc leaves it, `q` or `^c` quits. The
-box at the bottom shows the command each key runs. `NO_COLOR` draws it without colour: every
-status is also a glyph.
+Bare `marion` on a terminal opens it, and so does `marion ls`; in a pipe it prints usage and exits
+non-zero. It is one list of the project's agents with the selected one previewed beside it (under
+it on a screen narrower than 100 columns), a status line above with what runs, what needs you and
+what is ready to land, and one footer line below with the keys the selection takes. `?` lists
+every key with the command it stands for, `,` opens Setup, Esc goes back, `q` or `^c` quits.
+`NO_COLOR` draws it without colour: every status is also a glyph.
 
-- **Start** lists each harness's readiness as `marion doctor` finds it (● ready, ✗ broken with
-  the fix, ○ not installed). `↑↓` picks the harness, `^o` its agent type (the plain name edits in
-  a worktree; `<harness>-orchestrator` is read-only), `←→` a model you last ran it on, `^p`
-  headless or pane. Type the task and press Enter: it runs `marion run … --detach`, and a failed
-  run's reason stays on the hint row until Esc.
-- **Watch** lists the agents. `j/k` move, and the selected agent opens in place with its task,
-  its steers, a live stream of its calls (`J/K` or Page Up/Down scroll), its tokens (never a
-  price), its capabilities with the unmeasured ones greyed, and the branch it landed. Enter shows
-  a headless agent's stream full-screen (Esc goes back) and attaches to a pane agent; `s` steers,
-  `x` cancels after asking, `u` brings back an ended agent, `o` opens a shell in its workspace,
-  `d` shows what its branch changed, `m` merges it after asking (`c` copies the command), `!`
-  jumps to the next agent that needs you. On a race's row, Enter goes to the winner and `m`
-  merges it.
-- **Setup** shows the doctor checks with their fixes (Enter shows a harness's details, `r`
+- **The list** puts what needs you first, then work to land, then what runs, the newest first
+  among equals; a tree is placed by its most urgent agent. Each row is the task's first line, the
+  harness, how long it has run and its tokens (never a price). `j/k` move; the order holds while a
+  line is open, so a row never moves under a steer being typed.
+- **The preview** shows the agent's harness and id, what it needs from you, how it ended (status,
+  tokens in and out, its own first line, the branch it landed with `+added -removed`), its
+  subtree against its budget, and its output, which Page Up/Down scroll and End follows.
+- **Keys on an agent:** Enter attaches to a pane agent (`^] d` comes back) and fills the body with
+  a headless one's output (Esc goes back); `s` steers, `x` cancels after asking (again to kill),
+  `u` resumes an ended agent, `o` opens a shell in its workspace, `d` shows what its branch changed
+  and `m` merges it after asking. On a race's row, Enter goes to the winner and `m` merges it; on
+  a workflow's, Enter goes to the step it is on.
+- **`n` opens the new-task line** on the footer: `tab` picks the agent type, `↑↓` a model you last
+  ran its harness on, and Enter runs `marion run <type> --prompt <text>`. The type's harness
+  decides how: in a pane `enter` can attach to when doctor measured one, else detached. A type
+  that cannot run says why on the line, and keeps what you typed.
+- **Setup** (`,`) shows the doctor checks with their fixes (Enter shows a harness's details, `r`
   re-checks), the agent types (`e` edits `.marion/agents.toml` and validates it, `n` adds one),
-  your API KEYS (`a` adds one, `x` removes one after asking) and your LOGINS, the harness
-  profiles (`a` adds one, `u` uses it, `x` removes it).
-- **Help** lists the keys, in two columns on a wide screen, the tab you came from first.
+  your API keys (`a` adds one, `x` removes one after asking), your logins, the harness profiles
+  (`a` adds one, `u` uses it, `x` removes it), and notifications (Enter turns them on or off).
 
 ## Steering
 
@@ -123,7 +127,7 @@ generation is per harness; see [Harness detail](#harness-detail).
   node may steer any node below it; its parent, siblings and itself are refused with one
   sentence. `wait` and `status` reach only its direct children. Before steering, a parent's `status` on a running
   child shows its last few tool calls and the last line it wrote.
-- **The operator** presses `s` on a node in Watch, or runs `marion steer <id> <text…>`.
+- **The operator** presses `s` on an agent in the home screen, or runs `marion steer <id> <text…>`.
   Exit 0 prints the queued message's id; exit 1 prints the supervisor's refusal (an ended node
   points at `marion resume`).
 
@@ -131,7 +135,7 @@ A message for a pane is typed in as a paste, and never while the pane shows a di
 approval prompt its harness's row names (codex's `Would you like to run the following command?`,
 claude's `Do you want to proceed?`): typed there, its Enter would answer it. The message waits
 until a key dismisses the prompt, however long that is, and the agent shows as needing you in
-Watch while the prompt is up, message or none. marion never answers an approval prompt.
+the home screen while the prompt is up, message or none. marion never answers an approval prompt.
 
 ## marion as an MCP server
 
@@ -317,8 +321,9 @@ marion workflow run ship --task "…" --detach         # return once it has star
 marion workflow cancel <run id>           # start nothing more, cancel what runs, keep its work
 ```
 
-On Watch a run is one header row over its steps, `workflow ship · 3/4 gate r2 · Σ1.4M/2M · 12m04s`:
-the step it is on and the review round, its spend against its budget, its clock. Each step's agent
+In the home screen a run is one header row over its steps, `workflow ship · 3/4 gate r2`, with its
+tokens and its clock in the row's columns and its spend against its budget in the preview. Each
+step's agent
 says its step, a race step's seats sit under the race's own header, and Enter on the run's header
 goes to the step running now. From an MCP client, `marion mcp` offers a `workflow` tool listing the
 workflows that may run; `wait`, `status` and `cancel` take the run's id. An agent marion started is

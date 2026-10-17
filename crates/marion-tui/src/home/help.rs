@@ -1,12 +1,12 @@
-//! Help (`?` or F1): every key, grouped by the screen it works on, each with the command it stands
+//! Help (`?`): every key, grouped by the page it works on, each with the command it stands
 //! for.
 //!
 //! Laid out to fit: two columns wherever the screen is wide enough for them (a section is never split
 //! across the two), the commands only where a column has room for them, and the whole page scrolled
-//! with j/k where even that does not fit. The section for the tab help was opened from comes first.
+//! with j/k where even that does not fit. The section for the page help was opened from comes first.
 
 use super::GUTTER;
-use super::text::{fit, pad};
+use super::text::{fit, pad, width};
 use super::theme::{Theme, dim};
 use super::widgets::{section, span};
 use ratatui::buffer::Buffer;
@@ -30,6 +30,7 @@ pub struct HelpView {
     pub scroll: usize,
 }
 
+/// The narrowest key column: a key and its gap. A wider key widens it, so no key is clipped.
 const KEY_W: usize = 7;
 const VERB_W: usize = 30;
 /// Below this width, one column.
@@ -42,6 +43,7 @@ fn section_lines<'a>(
     title: &str,
     keys: &[KeyRow],
     w: usize,
+    key_w: usize,
     commands: bool,
     theme: Theme,
 ) -> Vec<Line<'a>> {
@@ -53,7 +55,7 @@ fn section_lines<'a>(
             k.verb.clone()
         };
         let mut l: Vec<Span> = vec![
-            span(pad(&k.key, KEY_W), theme.key()),
+            span(pad(&k.key, key_w), theme.key()),
             span(verb, Default::default()),
         ];
         if commands && !k.command.is_empty() {
@@ -72,11 +74,17 @@ pub fn render(v: &HelpView, theme: Theme, area: Rect, buf: &mut Buffer) {
     let w = (area.width - GUTTER * 2) as usize;
     let two = w >= TWO_COLUMNS;
     let col_w = if two { (w - GAP) / 2 } else { w };
-    let commands = col_w >= KEY_W + VERB_W + 20;
+    let key_w = v
+        .sections
+        .iter()
+        .flat_map(|(_, keys)| keys)
+        .map(|k| width(&k.key) + 2)
+        .fold(KEY_W, usize::max);
+    let commands = col_w >= key_w + VERB_W + 20;
     let blocks: Vec<Vec<Line>> = v
         .sections
         .iter()
-        .map(|(t, keys)| section_lines(t, keys, col_w, commands, theme))
+        .map(|(t, keys)| section_lines(t, keys, col_w, key_w, commands, theme))
         .collect();
     // Two columns: fill the first up to half the lines, never splitting a section.
     let total: usize = blocks.iter().map(Vec::len).sum();
@@ -89,6 +97,10 @@ pub fn render(v: &HelpView, theme: Theme, area: Rect, buf: &mut Buffer) {
         if two && first_full {
             columns.push(b);
         } else if let Some(last) = columns.last_mut() {
+            // A blank line between two sections in one column.
+            if !last.is_empty() {
+                last.push(Line::default());
+            }
             last.extend(b);
         }
     }

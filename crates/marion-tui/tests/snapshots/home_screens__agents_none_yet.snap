@@ -1,0 +1,39 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&s, 100, 30)"
+---
+--- 100x30 ---
+ marion  ~/code/acme-api
+
+
+
+
+
+
+
+
+
+                                             no agents
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ n new  , setup  ? more
+--- styles ---
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+   35  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apinoagentsn"
+    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "n,?"

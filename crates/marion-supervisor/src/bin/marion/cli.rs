@@ -388,7 +388,7 @@ pub fn top_help() -> String {
     format!(
         "marion runs coding agents as subagents of one another, and shows you the tree.\n\
          \n\
-         usage: marion                      open the home screen: start, watch and set up agents\n\
+         usage: marion                      open the home screen: start, watch and steer agents\n\
          \x20      marion <harness> [<flags>]  run that harness's own TUI with marion connected\n\
          \x20                                  ({native})\n\
          \x20      marion <command> [<args>]\n\
@@ -527,7 +527,7 @@ fn ls_help() -> String {
     format!(
         "usage: marion ls [<id>] [--attention] [--plain] [--repo <path>]\n\
          \n\
-         Show the agent tree. On a terminal it opens the home screen's Watch view; piped, or\n\
+         Show the agent tree. On a terminal it opens the home screen; piped, or\n\
          with --attention, it prints one agent per line. With an <id> it prints that agent's\n\
          detail: its task, the messages it was sent, its tokens, where it worked and how it\n\
          ended.\n\
