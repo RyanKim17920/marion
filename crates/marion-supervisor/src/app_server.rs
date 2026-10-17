@@ -761,6 +761,17 @@ for line in sys.stdin:
         }
     }
 
+    /// Whether a command marion killed is dead: gone, or a zombie. A zombie can run nothing more,
+    /// and nobody is bound to reap one here: the fake server never waits on its `sleep`, and an
+    /// orphan's adopter (pid 1, a CI runner's subreaper) reaps when it reaps, if ever. Polled all
+    /// the same, since the kill can land after the session returns; `ps` failing is not a death.
+    fn dead(pid: i32) -> bool {
+        matches!(
+            marion_testsupport::liveness(pid),
+            marion_testsupport::Liveness::Gone | marion_testsupport::Liveness::Zombie
+        )
+    }
+
     /// **The first turn waits for marion's server to report ready** (P3), and **an approval is
     /// declined, never cancelled** (P5) — the turn then completes and the session ends cleanly.
     #[test]
@@ -981,7 +992,7 @@ for line in sys.stdin:
         let run = run_app_server(bed.spec(Duration::from_secs(3), None)).expect("a session");
         assert!(run.exit.timed_out, "{run:?}");
         assert!(
-            marion_testsupport::until(|| !marion_testsupport::alive(bed.pid())),
+            marion_testsupport::until(|| dead(bed.pid())),
             "the interrupted turn's command survived"
         );
         let (_, stop) = bed.read("turn/interrupt").expect("an interrupt was sent");
@@ -1001,13 +1012,10 @@ for line in sys.stdin:
         let bed = Bed::new("as-orphan", "orphan");
         let run = run_app_server(bed.spec(Duration::from_secs(3), None)).expect("a session");
         let orphan = bed.pid();
-        let survived = !marion_testsupport::until(|| !marion_testsupport::alive(orphan));
+        let died = marion_testsupport::until(|| dead(orphan));
         marion_testsupport::kill_hard(orphan);
         assert!(run.exit.timed_out, "{run:?}");
-        assert!(
-            !survived,
-            "the orphaned command {orphan} survived the timeout"
-        );
+        assert!(died, "the orphaned command {orphan} survived the timeout");
     }
 
     /// **A finished session leaves no command behind**: the turn completed with a command still
@@ -1018,15 +1026,10 @@ for line in sys.stdin:
         let bed = Bed::new("as-leave", "leave");
         let run = run_app_server(bed.spec(Duration::from_secs(20), None)).expect("a session");
         let left = bed.pid();
-        // Polled, never asked once: a killed command stays a zombie until its new parent reaps it,
-        // and `kill(pid, 0)` cannot tell a zombie from a survivor (Linux's reaper is not instant).
-        let survived = !marion_testsupport::until(|| !marion_testsupport::alive(left));
+        let died = marion_testsupport::until(|| dead(left));
         marion_testsupport::kill_hard(left);
         assert!(!run.exit.timed_out, "{run:?}");
-        assert!(
-            !survived,
-            "the command {left} outlived its finished session"
-        );
+        assert!(died, "the command {left} outlived its finished session");
     }
 
     /// **A refused credential ends the session at once** — no retry heals it — with the reason,
@@ -1068,8 +1071,6 @@ for line in sys.stdin:
             INTERRUPTS,
             "every interrupt went out"
         );
-        assert!(marion_testsupport::until(|| !marion_testsupport::alive(
-            bed.pid()
-        )));
+        assert!(marion_testsupport::until(|| dead(bed.pid())));
     }
 }
