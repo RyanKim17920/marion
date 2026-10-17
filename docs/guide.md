@@ -399,14 +399,18 @@ it until you trust the repository: `marion trust allow --repo [<dir>]` (default:
 directory) records the repository's git directory, which covers every worktree of it, and
 `marion trust deny --repo [<dir>]` declines it; `marion trust list` shows each repository you
 decided about. In a child's worktree the config must also be exactly what your history holds (as
-of where the child's base meets your `HEAD`): a child that edited or added any of it, or carried
-such an edit in from its parent, runs as in an untrusted repository. In your own checkout, which a
+of where the child's base meets the commit your checkout was on when you launched the root, so a
+commit the root makes later is not yours): a child that edited or added any of it, or carried such
+an edit in from its parent, runs as in an untrusted repository. In your own checkout, which a
 root or a `shared-cwd` node can write, the config loads as it stood when you launched the root:
 marion fingerprints it then, and a continuation, a resume, or a node below that finds it changed
 (or finds a link in it) runs as in an untrusted repository. That includes a harness's own writes
 during a run (opencode installing a plugin under `.opencode/`, claude saving an "always allow" to
 `.claude/settings.local.json`), since either can carry code that runs; in a trusted repository
-`marion ls <id>` names the files a node held back.
+`marion ls <id>` names the files a node held back. marion decides this as it compiles each launch,
+and the harness reads the files a moment later as it starts: a process already running over the
+same tree (another node in your checkout, or something a node left running) that rewrites them in
+that window is not caught until the next launch is decided.
 
 When `marion` or `marion run` starts at your terminal, on your own login, in a repository that
 holds any of that config and that you have not decided about, it asks once: `this repository has
