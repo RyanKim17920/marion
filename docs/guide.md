@@ -72,7 +72,7 @@ you when a node needs you, fails, hits a limit or a root finishes, through `osas
 `notify.toml`) in an open `marion` screen. A notice names the node's type, short id, harness and
 state, never a prompt or what the model wrote. `marion notify status` says what is set and where
 notices go; `marion notify test` shows one. `on` and `off` apply at once to this project's
-running supervisor, and to any other when it next starts; Setup's NOTIFICATIONS row does the
+running supervisor, and to any other when it next starts; Setup's notify row does the
 same. `MARION_NOTIFY=on|off` overrides the file.
 
 `marion resume` survives the supervisor's own death: `kill -9` it, and `resume` relaunches the
@@ -111,10 +111,12 @@ every key with the command it stands for, `,` opens Setup, Esc goes back, `q` or
   ran its harness on, and Enter runs `marion run <type> --prompt <text>`. The type's harness
   decides how: in a pane `enter` can attach to when doctor measured one, else detached. A type
   that cannot run says why on the line, and keeps what you typed.
-- **Setup** (`,`) shows the doctor checks with their fixes (Enter shows a harness's details, `r`
-  re-checks), the agent types (`e` edits `.marion/agents.toml` and validates it, `n` adds one),
-  your API keys (`a` adds one, `x` removes one after asking), your logins, the harness profiles
-  (`a` adds one, `u` uses it, `x` removes it), and notifications (Enter turns them on or off).
+- **Setup** (`,`) is one list: each harness as doctor found it with your logins for it indented
+  under it, your API keys, the project's agent types, and notifications. The footer names the keys
+  the selected row takes. Enter shows a harness's details and fix, makes a login the default,
+  opens `.marion/agents.toml` in `$EDITOR` (validated when you close it), or turns notifications
+  on or off. `a` adds a login to a harness, or a key. `del` removes a login or a key after asking.
+  `r` re-checks everything.
 
 ## Steering
 
