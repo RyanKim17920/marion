@@ -657,7 +657,12 @@ impl RegistryHandle {
                 return Err(replay_failure(id, &events_path, &e, sent));
             }
         };
-        let mode = attach_mode(state, reap_state, reader.read_point());
+        // Past the refusal, an unrecorded node is one whose pane was reserved: say the pane is
+        // its record rather than replaying a silence nobody observed.
+        let mode = match attach_mode(state, reap_state, reader.read_point()) {
+            AttachMode::ReplayOnly(point) if unrecorded => AttachMode::PaneOnly(point),
+            mode => mode,
+        };
         if !live {
             if let Some(host) = reserved_host {
                 self.rollback_pane_attach(id, out.conn(), &host);

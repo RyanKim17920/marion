@@ -292,7 +292,7 @@ pub struct ReplayPoint {
 
 /// §7.3.3's re-attach, **split by node rather than by session** — which is the whole finding of
 /// that section, and the reason this is an enum on the per-node result instead of a flag on a
-/// per-session one. One attach across a tree can legitimately answer all three ways.
+/// per-session one. One attach across a tree can legitimately answer every way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachMode {
     /// A live node. §6.2: the supervisor has held the channel since `t=0`, so this is a view
@@ -312,6 +312,11 @@ pub enum AttachMode {
     /// differ: this node can be brought back. An orphan is never `ResubscribeFrom`: the supervisor
     /// answering holds no channel for it, whatever its process may still be doing.
     ReplayResumable(ReplayPoint),
+    /// A node that finished with **no event stream at all**, whose record is its retained pane
+    /// (`NodeAttachResult::pane`): a native node, which writes none. Distinct from `ReplayOnly`
+    /// because a `ReplayOnly` with no records says marion watched a stream and it was silent,
+    /// which nobody observed here. The point is this cursor's own, and delivers nothing.
+    PaneOnly(ReplayPoint),
 }
 
 impl AttachMode {
@@ -319,7 +324,8 @@ impl AttachMode {
         match self {
             AttachMode::ResubscribeFrom(p)
             | AttachMode::ReplayOnly(p)
-            | AttachMode::ReplayResumable(p) => p,
+            | AttachMode::ReplayResumable(p)
+            | AttachMode::PaneOnly(p) => p,
         }
     }
 
@@ -717,12 +723,14 @@ mod tests {
         assert!(AttachMode::ResubscribeFrom(p.clone()).is_live());
         assert!(!AttachMode::ReplayOnly(p.clone()).is_live());
         assert!(!AttachMode::ReplayResumable(p.clone()).is_live());
+        assert!(!AttachMode::PaneOnly(p.clone()).is_live());
         // Every mode carries the seam, because §7.3.3's "both, in one attach" needs it on the
         // live leg too.
         for m in [
             AttachMode::ResubscribeFrom(p.clone()),
             AttachMode::ReplayOnly(p.clone()),
             AttachMode::ReplayResumable(p.clone()),
+            AttachMode::PaneOnly(p.clone()),
         ] {
             assert_eq!(m.replay_point(), &p);
         }

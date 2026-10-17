@@ -4258,6 +4258,15 @@ fn an_exited_pane_node_with_no_event_stream_still_attaches_over_v1() {
             .expect("an ended pane is its own record");
     let pane = attached.pane.expect("the Completed pane is advertised");
     assert!(pane.ended && !pane.writable);
+    assert!(
+        matches!(
+            attached.mode,
+            AttachMode::PaneOnly(ReplayPoint { records: 0, .. })
+        ),
+        "the pane is the record, not an observed silence: {:?}",
+        attached.mode
+    );
+    assert!(!attached.mode.is_live());
 
     let (out, _rx) = crate::serve::capture(ConnId(1_302));
     let refused =
