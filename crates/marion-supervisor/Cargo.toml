@@ -40,7 +40,7 @@ required-features = ["client"]
 # The test targets that need the client half: each runs the `marion` binary
 # (`CARGO_BIN_EXE_marion`), drives a screen, or reads a pane through the terminal emulator. Every
 # other target — the lib's and the daemon's unit tests, `endpoint_matrix`, `repo_trust`,
-# `token_off_argv`, `user_agent_types` — builds and runs with `--no-default-features` too.
+# `token_off_argv`, `user_agent_types`, `git_env_scrub` — builds and runs with `--no-default-features` too.
 [[test]]
 name = "conformance"
 path = "tests/conformance/main.rs"
