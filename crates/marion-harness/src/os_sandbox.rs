@@ -570,10 +570,9 @@ mod landlock {
     const CREATE_RULESET_VERSION: u32 = 1;
     const RULE_PATH_BENEATH: c_int = 1;
     const PR_SET_NO_NEW_PRIVS: c_int = 38;
-    const O_PATH: c_int = 0o10000000;
-    const O_CLOEXEC: c_int = 0o2000000;
-    const O_DIRECTORY: c_int = 0o200000;
-    const O_NOFOLLOW: c_int = 0o400000;
+    // From libc, never spelled here: the numbers differ by architecture (aarch64's O_DIRECTORY
+    // and O_NOFOLLOW are x86_64's O_DIRECT and O_LARGEFILE, which O_PATH ignores).
+    use libc::{O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH};
 
     const WRITE_FILE: u64 = 1 << 1;
     const REMOVE_DIR: u64 = 1 << 4;
