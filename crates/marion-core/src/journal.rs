@@ -440,11 +440,13 @@ pub struct SpawnIntent {
 /// counts the repository's config as the operator's only while it is still exactly that.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustRecord {
-    /// The branch the operator's checkout was on at the root's first launch, where it named a
-    /// commit and was not a task branch (`marion/…`): what a child tree's config is held to, in
-    /// place of the common `HEAD`, which a root running in the checkout can move.
+    /// The commit the operator's checkout's HEAD named at the root's first launch: what a child
+    /// tree's config is held to (where it meets the child's base), never a branch or HEAD as it is
+    /// later, which a root running in the checkout can move. `None` where HEAD named no commit, or
+    /// in an older intent (which recorded a branch name instead): then no child tree's config is
+    /// the operator's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
+    pub head: Option<crate::contract::Oid>,
     /// The operator's checkout's top level (`git rev-parse --show-toplevel`) at the root's first
     /// launch: where a harness's search for repository config up from its cwd stops, so a `.git`
     /// a node plants in a subdirectory does not cut it short.
@@ -459,7 +461,7 @@ pub struct TrustRecord {
 
 impl TrustRecord {
     pub fn is_empty(&self) -> bool {
-        self.branch.is_none() && self.checkout_root.is_none() && self.repo_config.is_none()
+        self.head.is_none() && self.checkout_root.is_none() && self.repo_config.is_none()
     }
 }
 
@@ -1626,7 +1628,7 @@ mod tests {
             race: None,
             workflow: None,
             trust: TrustRecord {
-                branch: Some("main".into()),
+                head: Some(crate::contract::Oid("c0ffee".into())),
                 checkout_root: None,
                 repo_config: Some(was),
             },
@@ -1634,7 +1636,7 @@ mod tests {
         let line = serde_json::to_string(&RecordKind::SpawnIntent(intent.clone())).unwrap();
         assert!(
             line.contains(
-                r#""trust":{"branch":"main","repo_config":{".codex/config.toml":"bb",".mcp.json":"aa",".pi":null}}"#
+                r#""trust":{"head":"c0ffee","repo_config":{".codex/config.toml":"bb",".mcp.json":"aa",".pi":null}}"#
             ),
             "{line}"
         );

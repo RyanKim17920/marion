@@ -2543,7 +2543,7 @@ fn a_root_that_plants_repo_config_in_generation_0_is_untrusted_in_generation_1()
     let dir = marion_testsupport::scratch("root-trust-plant");
     let checkout = dir.to_path_buf();
     let record = TrustRecord {
-        branch: None,
+        head: None,
         checkout_root: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(
             &checkout,
@@ -2567,7 +2567,7 @@ fn a_root_that_plants_repo_config_in_generation_0_is_untrusted_in_generation_1()
     assert!(!now.own && !now.trusted, "{now:?}");
 }
 
-/// **A resumed root keeps the trust record its first launch took**: the branch and the config
+/// **A resumed root keeps the trust record its first launch took**: the commit and the config
 /// fingerprint are read off its intent, not re-read from a checkout the root has since moved and
 /// written, and the resume's own intent records them again unchanged.
 #[test]
@@ -2584,7 +2584,12 @@ fn a_resumed_root_keeps_its_first_launchs_trust_record() {
         tree.get(agent).unwrap().intent.clone().unwrap()
     };
     let recorded = intent(&first.agent_id).trust;
-    assert_eq!(recorded.branch.as_deref(), Some("main"), "{recorded:?}");
+    assert_eq!(
+        recorded.head,
+        crate::spawn::trust_head(crate::spawn::Tree::Operator(&repo)),
+        "the commit the checkout named at launch: {recorded:?}"
+    );
+    assert!(recorded.head.is_some());
     assert!(recorded.repo_config.is_some());
     assert_eq!(
         recorded.checkout_root,

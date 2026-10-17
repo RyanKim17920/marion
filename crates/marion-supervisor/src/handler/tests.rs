@@ -9033,7 +9033,7 @@ fn a_nodes_trust_record_is_kept_for_the_nodes_it_spawns() {
     owner.identified(&id("root"));
     assert_eq!(owner.trust_record(&id("root")), None, "none until recorded");
     let record = marion_core::journal::TrustRecord {
-        branch: None,
+        head: None,
         checkout_root: None,
         repo_config: Some(marion_core::journal::RepoConfigSnapshot(
             [(".mcp.json".to_string(), Some("aa".to_string()))].into(),

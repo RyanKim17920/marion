@@ -1838,7 +1838,7 @@ pub(crate) struct RepoTrust {
 /// config is the operator's only while it is exactly their commit, and loads only then. Asked
 /// again for every generation of a node, never carried from an earlier one: a child that planted
 /// a config in one generation must not have it load in the next as the operator's. A child tree
-/// is held to the branch `record` names, the root's at its launch.
+/// is held to the commit `record` names, the operator's checkout's at the root's first launch.
 ///
 /// The operator's own checkout is theirs, but a root (or a `shared-cwd` node) runs in it and can
 /// write it: there the config is the operator's only while it is exactly what `record` took at
@@ -1856,11 +1856,11 @@ pub(crate) fn repo_trust_of(
     record: &TrustRecord,
 ) -> RepoTrust {
     let paths = crate::trust::repo_config_paths();
-    let branch = record.branch.as_deref();
+    let head = record.head.as_ref();
     let differs = match tree {
         crate::spawn::Tree::Child { wt, .. } => {
             let mut held = match base {
-                Some(b) => crate::spawn::repo_config_held(tree, b, project_root, branch, &paths),
+                Some(b) => crate::spawn::repo_config_held(tree, b, project_root, head, &paths),
                 None => paths.iter().take(1).map(|p| p.to_string()).collect(),
             };
             // The node's agent dir above its worktree, which its sandbox may write and a harness

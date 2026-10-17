@@ -2201,7 +2201,11 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     .expect("the child's worktree");
     let mut first = launch_spec(None);
     first.cwd = wt.clone();
-    let record = TrustRecord::default();
+    // The root's record: the commit the operator's checkout named at its launch.
+    let record = TrustRecord {
+        head: crate::spawn::trust_head(crate::spawn::Tree::Operator(&repo)),
+        ..TrustRecord::default()
+    };
     let trust = repo_trust(&env, &wt, Some(&base), &record);
     (first.extra.repo_config_own, first.extra.repo_trusted) = (trust.own, trust.trusted);
     assert!(
@@ -2259,7 +2263,11 @@ fn config_planted_in_the_agent_dir_above_a_childs_worktree_is_held() {
         None,
     )
     .expect("the child's worktree");
-    let record = TrustRecord::default();
+    // The root's record: the commit the operator's checkout named at its launch.
+    let record = TrustRecord {
+        head: crate::spawn::trust_head(crate::spawn::Tree::Operator(&repo)),
+        ..TrustRecord::default()
+    };
     assert!(repo_trust(&env, &wt, Some(&base), &record).own);
     std::fs::write(
         wt.parent().unwrap().join(".mcp.json"),
@@ -2296,7 +2304,7 @@ fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
     std::fs::write(repo.join(".claude/settings.json"), "{}\n").unwrap();
     let paths = crate::trust::repo_config_paths();
     let record = TrustRecord {
-        branch: None,
+        head: None,
         checkout_root: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(&repo, None, &paths)),
     };
@@ -2386,7 +2394,7 @@ fn a_linked_config_in_the_operator_tree_is_not_the_operators_after_generation_0(
     std::os::unix::fs::symlink(&elsewhere, repo.join(".claude")).unwrap();
     let paths = crate::trust::repo_config_paths();
     let record = TrustRecord {
-        branch: None,
+        head: None,
         checkout_root: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(&repo, None, &paths)),
     };

@@ -721,26 +721,14 @@ pub fn toplevel(wt: Tree<'_>) -> Option<PathBuf> {
         .filter(|t| !t.as_os_str().is_empty())
 }
 
-/// **The branch `wt` has checked out, as a trust reference** ([`repo_config_unchanged`]'s
-/// `branch`): one that names a commit (`rev-parse --verify`), and never a branch under `marion/`,
-/// which is a node's own work.
-pub fn trust_branch(wt: Tree<'_>) -> Option<String> {
-    checked_out_branch(wt).filter(|b| trust_reference(wt, b))
-}
-
-/// Whether the branch `b` may be a trust reference: not a node's (`marion/…`), and naming a commit.
-fn trust_reference(wt: Tree<'_>, b: &str) -> bool {
-    !b.starts_with("marion/")
-        && git(
-            wt,
-            &[
-                "rev-parse",
-                "--verify",
-                "-q",
-                &format!("refs/heads/{b}^{{commit}}"),
-            ],
-        )
-        .is_ok()
+/// **The commit `wt`'s HEAD names, as a trust reference** ([`repo_config_unchanged`]'s `head`):
+/// taken once, at a root's first launch, so nothing the root later does to a branch or to HEAD
+/// moves it. `None` where HEAD names no commit (an unborn branch, no repository).
+pub fn trust_head(wt: Tree<'_>) -> Option<Oid> {
+    git(wt, &["rev-parse", "--verify", "-q", "HEAD^{commit}"])
+        .ok()
+        .map(|h| Oid(h.trim().to_string()))
+        .filter(|h| !h.0.is_empty())
 }
 
 /// **HEAD of the tree at `cwd`, or `None` because there is no commit to name.**
@@ -1002,54 +990,44 @@ pub fn commit_child_work(
 /// the operator's history has them** — the condition for a trusted repository's config to load
 /// in it. Trust is by place, and a child writes its own tree: a `.mcp.json` it edited (or added,
 /// tracked, untracked or ignored), or one it carried in on a parent's commit, is the child's and
-/// not the repository's the operator trusted. The reference is where `base` meets the operator's
-/// own `HEAD` (the common dir's, which no child writes), so a carried or resumed tree is held to
-/// the operator's commit, not to one a parent made. Each path is read as the harness reads it
-/// ([`config_as_committed`]). Any git failure answers `false`.
+/// not the repository's the operator trusted. The reference is where `base` meets `head`, the
+/// commit the operator's checkout named at the root's first launch
+/// ([`marion_core::journal::TrustRecord::head`], by [`trust_head`]) — never a branch or HEAD as
+/// it is now, which a root running in that checkout can move. So a carried or resumed tree, or one
+/// cut from a commit the root made, is held to the operator's commit. Each path is read as the
+/// harness reads it ([`config_as_committed`]). With no `head`, or on any git failure, nothing is
+/// the operator's.
 ///
-/// The reference is only as much the operator's as their `HEAD` is: an operator who merges a
-/// child's branch makes that child's commits theirs, and its config with them. A `HEAD` on a task
-/// branch (`marion/…`) is never the reference, so nothing there is the operator's.
-///
-/// `branch` is the branch the root's checkout was on when the root launched
-/// ([`marion_core::journal::TrustRecord::branch`], by [`trust_branch`]): where it still resolves
-/// and is not a task branch, the reference meets `base` there instead of at the common `HEAD`,
-/// which a root running in the operator's checkout can write.
+/// The reference is only as much the operator's as that commit is: an operator who launched a
+/// root on a child's branch made that child's commits theirs, and its config with them.
 pub fn repo_config_unchanged(
     wt: Tree<'_>,
     base: &Oid,
     common: &Path,
-    branch: Option<&str>,
+    head: Option<&Oid>,
     paths: &[&str],
 ) -> bool {
-    repo_config_held(wt, base, common, branch, paths).is_empty()
+    repo_config_held(wt, base, common, head, paths).is_empty()
 }
 
-/// **The config `paths` the child tree `wt` holds otherwise than the operator's branch**, by
-/// [`repo_config_unchanged`]'s rule: each path that is not as the reference has it. Where the
-/// reference cannot be read at all, every path present in the tree is held, and with none present
-/// the first path stands for the lot, so an unreadable reference never reads as the operator's.
+/// **The config `paths` the child tree `wt` holds otherwise than the operator's commit**, by
+/// [`repo_config_unchanged`]'s rule: each path that is not as the reference has it. Where there is
+/// no reference, every path present in the tree is held, and with none present the first path
+/// stands for the lot, so a missing reference never reads as the operator's.
 pub fn repo_config_held(
     wt: Tree<'_>,
     base: &Oid,
     common: &Path,
-    branch: Option<&str>,
+    head: Option<&Oid>,
     paths: &[&str],
 ) -> Vec<String> {
     if paths.is_empty() {
         return Vec::new();
     }
-    let operator = Tree::Operator(common);
-    let recorded = branch
-        .filter(|b| trust_reference(operator, b))
-        .map(|b| format!("refs/heads/{b}"));
-    // The common HEAD stands in only where it is not on a node's own branch.
-    if recorded.is_none() && checked_out_branch(operator).is_some_and(|b| b.starts_with("marion/"))
-    {
+    let Some(head) = head else {
         return config_held_unverified(wt.dir(), paths);
-    }
-    let against = recorded.as_deref().unwrap_or("HEAD");
-    let Ok(reference) = git(operator, &["merge-base", against, &base.0]) else {
+    };
+    let Ok(reference) = git(Tree::Operator(common), &["merge-base", &head.0, &base.0]) else {
         return config_held_unverified(wt.dir(), paths);
     };
     let reference = reference.trim();
@@ -1234,12 +1212,12 @@ fn plain_files(
 }
 
 /// **What a node launched in the operator's checkout `dir` is held to**, taken now, before it
-/// runs ([`marion_core::journal::TrustRecord`]): the checkout's branch ([`trust_branch`]), its
+/// runs ([`marion_core::journal::TrustRecord`]): the commit its HEAD names ([`trust_head`]), its
 /// top level, and its repository config at every level from `dir` up to that top level.
 pub fn trust_record_taken(dir: &Path) -> marion_core::journal::TrustRecord {
     let checkout_root = toplevel(Tree::Operator(dir));
     marion_core::journal::TrustRecord {
-        branch: trust_branch(Tree::Operator(dir)),
+        head: trust_head(Tree::Operator(dir)),
         repo_config: Some(repo_config_snapshot(
             dir,
             checkout_root.as_deref(),
@@ -2974,16 +2952,22 @@ mod tests {
             wt: &wt,
             repo: &repo,
         };
-        let same = |w: Tree<'_>, b: &Oid| repo_config_unchanged(w, b, &common, None, &paths);
+        let same = |w: Tree<'_>, b: &Oid| repo_config_unchanged(w, b, &common, Some(&base), &paths);
         assert!(
             same(child, &base),
             "a fresh tree holds the operator's config"
         );
-        assert!(repo_config_unchanged(child, &base, &common, None, &[]));
+        assert!(repo_config_unchanged(
+            child,
+            &base,
+            &common,
+            Some(&base),
+            &[]
+        ));
         std::fs::write(wt.join(".mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
         assert!(!same(child, &base), "an edit");
         assert_eq!(
-            repo_config_held(child, &base, &common, None, &paths),
+            repo_config_held(child, &base, &common, Some(&base), &paths),
             [".mcp.json"],
             "and the held paths name it alone"
         );
@@ -3037,7 +3021,7 @@ mod tests {
             wt: &wt,
             repo: &repo,
         };
-        let same = || repo_config_unchanged(child, &base, &common, None, &paths);
+        let same = || repo_config_unchanged(child, &base, &common, Some(&base), &paths);
         let digest =
             |d: &Path| repo_config_snapshot(d, None, &[".mcp.json"]).0[".mcp.json"].clone();
         assert!(same());
@@ -3093,46 +3077,73 @@ mod tests {
             repo: &repo,
         };
         assert_eq!(
-            repo_config_held(child2, &base2, &common, None, &paths),
+            repo_config_held(child2, &base2, &common, Some(&base2), &paths),
             [".pi"],
             "a committed blob past the cap is held, never read"
         );
     }
 
-    /// **The reference is the branch the root's checkout was on at its launch, not the common
-    /// HEAD as it is now**: a root in the operator's checkout can write that HEAD, so one that
-    /// points it at a commit carrying a planted config, and cuts a child from there, does not make
-    /// the config the operator's. With no recorded branch, or one that no longer resolves, the
-    /// common HEAD is the reference as before.
+    /// **The reference is the commit the operator's checkout named at the root's first launch,
+    /// never a ref as it is now**: a root runs in that checkout and can move its branch or its
+    /// HEAD, so config it commits after the record (on the recorded branch, or on a branch it
+    /// makes from a detached launch) and a child cut from there is not the operator's. With no
+    /// recorded commit nothing is.
     #[test]
-    fn the_trust_reference_is_the_roots_recorded_branch_not_a_moved_head() {
-        let (dir, repo, _) = committed_repo("spawn-config-recorded-branch");
+    fn the_trust_reference_is_the_commit_recorded_at_the_roots_launch_not_a_ref() {
+        let (dir, repo, _) = committed_repo("spawn-config-recorded-head");
         std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
         tgit(&repo, &["add", "-A"]);
         tgit(&repo, &["commit", "-qm", "config"]);
-        tgit(&repo, &["checkout", "-qb", "planted"]);
-        std::fs::write(repo.join(".mcp.json"), "{\"mcpServers\":{\"x\":{}}}\n").unwrap();
-        tgit(&repo, &["commit", "-qam", "planted"]);
+        let recorded = trust_head(Tree::Operator(&repo)).expect("a commit to record");
+        assert_eq!(recorded.0, tgit(&repo, &["rev-parse", "HEAD"]));
         let common = crate::socket::project_root(&repo);
         let paths = [".mcp.json"];
-        let wt = dir.join("child-wt");
-        let (base, _) = make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
-            .expect("the child's worktree, cut from the moved HEAD");
-        let child = Tree::Child {
-            wt: &wt,
-            repo: &repo,
+        let child_from = |name: &str| {
+            let wt = dir.join(name);
+            let (base, _) = make_worktree(
+                Tree::Operator(&repo),
+                &wt,
+                &[format!("marion/{name}")],
+                None,
+            )
+            .expect("a child worktree");
+            (wt, base)
         };
+        let same = |wt: &Path, base: &Oid, head: Option<&Oid>| {
+            let child = Tree::Child { wt, repo: &repo };
+            repo_config_unchanged(child, base, &common, head, &paths)
+        };
+        let (wt, base) = child_from("fresh");
+        assert!(same(&wt, &base, Some(&recorded)), "the operator's config");
+        assert!(!same(&wt, &base, None), "no recorded commit: nothing is");
+
+        // The root commits a planted config on the branch it was launched on.
+        std::fs::write(repo.join(".mcp.json"), "{\"mcpServers\":{\"x\":{}}}\n").unwrap();
+        tgit(&repo, &["commit", "-qam", "planted on main"]);
+        let (wt, base) = child_from("after-commit");
         assert!(
-            repo_config_unchanged(child, &base, &common, None, &paths),
-            "against the moved HEAD the planted config looks committed"
+            !same(&wt, &base, Some(&recorded)),
+            "a commit on the recorded branch after the record is not the operator's"
         );
+
+        // Launched detached; the root makes a branch and commits there.
+        tgit(&repo, &["checkout", "-q", "--detach", &recorded.0]);
+        let detached = trust_head(Tree::Operator(&repo)).expect("a detached HEAD names a commit");
+        assert_eq!(detached, recorded);
+        tgit(&repo, &["checkout", "-qb", "made-later"]);
+        std::fs::write(repo.join(".mcp.json"), "{\"mcpServers\":{\"y\":{}}}\n").unwrap();
+        tgit(&repo, &["commit", "-qam", "planted on a new branch"]);
+        let (wt, base) = child_from("after-branch");
         assert!(
-            !repo_config_unchanged(child, &base, &common, Some("main"), &paths),
-            "against the branch recorded at the root's launch it is not"
+            !same(&wt, &base, Some(&detached)),
+            "a branch made after a detached launch is not the operator's"
         );
-        assert!(
-            repo_config_unchanged(child, &base, &common, Some("gone"), &paths),
-            "a recorded branch that no longer resolves falls back to the common HEAD"
+
+        tgit(&repo, &["checkout", "-q", "--orphan", "unborn"]);
+        assert_eq!(
+            trust_head(Tree::Operator(&repo)),
+            None,
+            "no commit to record"
         );
     }
 
@@ -3165,49 +3176,6 @@ mod tests {
         assert_eq!(cat_blobs(tree, &[&root_tree]), None, "a tree is not a blob");
     }
 
-    /// **A task branch is never the trust reference**, recorded or fallen back to: a node's own
-    /// commits are on it, and a root that pointed the checkout's HEAD at one would have them read
-    /// as the operator's. Nor is a branch with no commit recorded.
-    #[test]
-    fn a_task_branch_is_never_the_trust_reference() {
-        let (dir, repo, _) = committed_repo("spawn-config-task-branch");
-        std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
-        tgit(&repo, &["add", "-A"]);
-        tgit(&repo, &["commit", "-qm", "config"]);
-        assert_eq!(trust_branch(Tree::Operator(&repo)).as_deref(), Some("main"));
-        tgit(&repo, &["checkout", "-qb", "marion/planted"]);
-        std::fs::write(repo.join(".mcp.json"), "{\"mcpServers\":{\"x\":{}}}\n").unwrap();
-        tgit(&repo, &["commit", "-qam", "planted"]);
-        assert_eq!(
-            trust_branch(Tree::Operator(&repo)),
-            None,
-            "a task branch is not recorded"
-        );
-        let common = crate::socket::project_root(&repo);
-        let paths = [".mcp.json"];
-        let wt = dir.join("child-wt");
-        let (base, _) = make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
-            .expect("the child's worktree, cut from the task branch");
-        let child = Tree::Child {
-            wt: &wt,
-            repo: &repo,
-        };
-        assert!(
-            !repo_config_unchanged(child, &base, &common, Some("marion/planted"), &paths),
-            "a task branch recorded is refused"
-        );
-        assert!(
-            !repo_config_unchanged(child, &base, &common, None, &paths),
-            "and so is a common HEAD on one"
-        );
-        tgit(&repo, &["checkout", "-q", "--orphan", "unborn"]);
-        assert_eq!(
-            trust_branch(Tree::Operator(&repo)),
-            None,
-            "a branch with no commit is not recorded"
-        );
-    }
-
     /// **A config reached through a link, or under another spelling, is never the operator's**:
     /// git's pathspecs stop at an untracked `.claude -> elsewhere/` and at `.CLAUDE/`, but a
     /// harness opening `.claude/settings.json` reads through the one, and on a case-insensitive
@@ -3228,7 +3196,7 @@ mod tests {
             wt: &wt,
             repo: &repo,
         };
-        let same = || repo_config_unchanged(child, &base, &common, None, &paths);
+        let same = || repo_config_unchanged(child, &base, &common, Some(&base), &paths);
         assert!(same(), "a fresh tree holds the operator's config");
 
         let elsewhere = dir.join("elsewhere");
