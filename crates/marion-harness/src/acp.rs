@@ -842,8 +842,10 @@ pub const CLAUDE_ACP: Agent = Agent {
     // second prompt is folded or queued into the running loop, both responses at the drain.
     mid_turn: Some(MidTurn::Fold),
     reasoning: None,
-    // A shim over the claude-code row's binary, which it starts with its own env: that row's switch
-    // reaches the wrapped binary that way (inherited, not measured through the shim).
+    // The shim runs the claude build its SDK bundles (`claudeCliPath`, 0.81.2 acp-agent.js:515),
+    // not the operator's `claude`, unless CLAUDE_CODE_EXECUTABLE names one. It is a sibling build
+    // with the same updater, and the shim spreads its own process environment into the child's
+    // (~6359), so the claude-code row's variable reaches it.
     updates: AgentUpdates::Twin(Harness::ClaudeCode),
     agent_info: "@agentclientprotocol/claude-agent-acp",
     install: "npm i -g @agentclientprotocol/claude-agent-acp",
@@ -882,8 +884,10 @@ pub const CODEX_ACP: Agent = Agent {
     // the latter).
     reasoning: Some(Reasoning::Within(THOUGHT_TOKENS)),
     updates: AgentUpdates::Own(UpdatePolicy::None {
-        note: "no updater was searched for in the `codex-acp` bin; codex's own switch is a `-c` \
-               pair on codex's argv, which this binary has no measured channel for",
+        note: "no updater was searched for in codex-acp 1.13.1, which runs its own bundled \
+               `codex app-server` (@openai/codex ^0.156.1), not the operator's codex; codex's \
+               `-c check_for_update_on_startup` pair is a TUI startup check, so it is not \
+               inherited",
     }),
     agent_info: "@agentclientprotocol/codex-acp",
     install: "npm i -g @agentclientprotocol/codex-acp",
