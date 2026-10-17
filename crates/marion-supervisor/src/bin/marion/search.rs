@@ -191,17 +191,24 @@ fn live_nodes(repo: &Path, state: &Path, key: &Path) -> Result<Vec<NodeSummary>,
 /// Whether the supervisor at `paths` lets its lock go within [`LEAVING`]: it was on its way out,
 /// so nothing of it is live. One still serving keeps the lock, and the failed dial stands — a
 /// node that unlinks the socket under a live supervisor is still refused.
+///
+/// A blocking `flock` on a helper thread, answered over a channel: no wakeups while it waits, and
+/// the answer the instant the lock frees. The lock is let go as soon as it is taken, as
+/// [`socket::nobody_is_serving`]'s probe does. A thread still blocked at the deadline ends with
+/// this process, which is about to print its refusal and exit.
 fn left(paths: &SocketPaths) -> bool {
-    let deadline = Instant::now() + LEAVING;
-    loop {
-        if socket::nobody_is_serving(paths) {
-            return true;
+    // No file means nothing ever served here.
+    let Ok(lock) = std::fs::File::open(paths.lock()) else {
+        return true;
+    };
+    let (freed, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if lock.lock().is_ok() {
+            let _ = lock.unlock();
+            let _ = freed.send(());
         }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    });
+    wait.recv_timeout(LEAVING).is_ok()
 }
 
 /// **The tripwire for `--all`**: every other project whose root is known and whose supervisor is
