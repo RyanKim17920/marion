@@ -1307,8 +1307,10 @@ impl crate::rpc::Peer for ProbeClient {
 /// dir, created — as a real node's agent dir exists before its launch. A row whose environment
 /// points under that dir (opencode's `OPENCODE_DB`) otherwise meets a directory that was never
 /// made: measured 2026-09-30, `opencode acp` on 1.18.33 exited `unable to open database file`
-/// before answering `initialize`, on a fresh HOME and in the canary alike. Both go when the
-/// returned [`NodeTmp`] drops, after the probe's process.
+/// before answering `initialize`, on a fresh HOME and in the canary alike. The launch's own
+/// documents are written there too, as a spawn writes them: a row's switch can live in one
+/// (Hermes' borrowed-login guard), and a probe that ran without it would run a launch no node
+/// ever does. Both go when the returned [`NodeTmp`] drops, after the probe's process.
 fn probe_launch(
     adapter: &dyn HarnessAdapter,
     mut spec: LaunchSpec,
@@ -1332,6 +1334,11 @@ fn probe_launch(
     let inv = adapter
         .compile(&spec, &ctx)
         .map_err(|e| format!("compile: {e}"))?;
+    let documents = adapter
+        .launch_documents(&spec, &ctx)
+        .map_err(|e| format!("compile: {e}"))?;
+    crate::run::write_config_documents(&spec.config_dir, documents)
+        .map_err(|e| format!("could not write the probe's launch documents: {e}"))?;
     Ok((inv, tmp))
 }
 
@@ -2965,6 +2972,32 @@ mod tests {
                 && n.contains("exited before answering")
                 && n.contains("integration is disabled; set X=1")),
             "{notes:?}"
+        );
+    }
+
+    /// **A probe runs the launch a node runs, documents included**: Hermes' borrowed-login switch
+    /// lives in the managed document its variable names, so a probe that compiled the variable and
+    /// wrote no document would run Hermes unguarded on the operator's login.
+    #[test]
+    fn a_probe_launch_writes_the_documents_its_launch_reads() {
+        let adapter = adapter_for_type(Harness::Hermes, None).unwrap();
+        let spec = probe_spec(None, McpDeclaration::None, None)
+            .map(|spec| child_shaped(adapter.as_ref(), spec))
+            .unwrap();
+        let (inv, tmp) = probe_launch(adapter.as_ref(), spec).unwrap();
+        let dir = tmp.path().join("agent").join("managed");
+        assert!(
+            inv.env
+                .contains(&("HERMES_MANAGED_DIR".into(), dir.display().to_string())),
+            "{:?}",
+            inv.env
+        );
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("config.yaml")).unwrap())
+                .unwrap();
+        assert_eq!(
+            doc["auth"]["adopt_external_logins"],
+            serde_json::json!(false)
         );
     }
 
