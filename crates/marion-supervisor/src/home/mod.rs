@@ -27,6 +27,7 @@
 //! [`session`]: crate::home::session
 //! [`Effect::argv`]: crate::home::Effect::argv
 
+pub mod options;
 pub mod session;
 pub mod view;
 pub mod wake;
@@ -45,12 +46,14 @@ use std::path::PathBuf;
 pub enum Effect {
     None,
     Quit,
-    /// `marion run <type> [--model <m>] --prompt <text> --detach`, or `--pane` in place of
-    /// `--detach` when the type's harness has a pane surface: either way it returns once the root
-    /// exists, and a pane root is one `enter` can attach to.
+    /// `marion run <type> [--model <m>] [options] --prompt <text> --detach`, or `--pane` in place
+    /// of `--detach` when the type's harness has a pane surface and the options do not say
+    /// otherwise: either way it returns once the root exists, and a pane root is one `enter` can
+    /// attach to. `options` are the words typed before the task, for `marion run` to parse.
     Run {
         agent_type: String,
         model: Option<String>,
+        options: Vec<String>,
         prompt: String,
         pane: bool,
     },
@@ -122,6 +125,7 @@ impl Effect {
             Effect::Run {
                 agent_type,
                 model,
+                options,
                 prompt,
                 pane,
             } => {
@@ -129,6 +133,8 @@ impl Effect {
                 if let Some(m) = model {
                     a.extend(v(&["--model", m]));
                 }
+                // After the picked model, so a `--model` typed on the line is the one that counts.
+                a.extend(options.iter().cloned());
                 a.extend(v(&["--prompt", prompt]));
                 a.push(if *pane { "--pane" } else { "--detach" }.to_string());
                 a
@@ -228,6 +234,15 @@ pub enum Purpose {
     Key,
     /// A login's name, to hand to `marion profile add <harness> <name>`.
     Profile(String),
+}
+
+/// The `n` line read: the options for `marion run`, how it runs where they say (`Some(true)` in a
+/// pane, `Some(false)` headless), and the task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewLine {
+    pub options: Vec<String>,
+    pub pane: Option<bool>,
+    pub task: String,
 }
 
 /// One row of Setup the cursor can rest on, in the order Setup shows them.
@@ -746,6 +761,40 @@ impl Home {
         Effect::None
     }
 
+    /// **The `n` line's options and its task.** `--detach` and `--pane` choose how it runs and are
+    /// taken out (the run adds the one chosen); `--worktree` and `--verify` run it in a worktree,
+    /// which is headless (`marion run` refuses `--pane` with them); `None` leaves it to the type.
+    /// `--prompt` is refused: the task is the text after the options.
+    pub fn new_options(&self, text: &str) -> Result<NewLine, String> {
+        let (mut words, task) = options::split(text)?;
+        if words
+            .iter()
+            .any(|w| w == "--prompt" || w.starts_with("--prompt="))
+        {
+            return Err("the task is the text after the options; leave out --prompt".into());
+        }
+        let mut take = |flag: &str| {
+            let had = words.iter().any(|w| w == flag);
+            words.retain(|w| w != flag);
+            had
+        };
+        let (detach, pane) = (take("--detach"), take("--pane"));
+        let surface = match (detach, pane) {
+            (true, true) => return Err("--pane or --detach, not both".into()),
+            (true, false) => Some(false),
+            (false, true) => Some(true),
+            (false, false) => words
+                .iter()
+                .any(|w| w == "--worktree" || w == "--verify" || w.starts_with("--verify="))
+                .then_some(false),
+        };
+        Ok(NewLine {
+            options: words,
+            pane: surface,
+            task,
+        })
+    }
+
     /// Enter on the input line. A line that cannot be acted on stays open with the reason, so the
     /// text is not lost to a typo.
     fn submit(&mut self, purpose: Purpose, text: String) -> Effect {
@@ -758,7 +807,11 @@ impl Home {
             Purpose::Steer(target) if !text.trim().is_empty() => Effect::Steer(target, text),
             Purpose::Steer(_) => Effect::None,
             Purpose::New => {
-                if text.trim().is_empty() {
+                let line = match self.new_options(&text) {
+                    Ok(line) => line,
+                    Err(why) => return refused(self, why, purpose, text),
+                };
+                if line.task.is_empty() {
                     return refused(self, "type the task".into(), purpose, text);
                 }
                 let Some(t) = self.new_type().cloned() else {
@@ -768,10 +821,13 @@ impl Home {
                     return refused(self, format!("{}: {why}", t.name), purpose, text);
                 }
                 Effect::Run {
-                    pane: self.harness_of(&t).is_some_and(|h| h.pane),
+                    pane: line
+                        .pane
+                        .unwrap_or_else(|| self.harness_of(&t).is_some_and(|h| h.pane)),
                     agent_type: t.name,
                     model: self.new_model(),
-                    prompt: text,
+                    options: line.options,
+                    prompt: line.task,
                 }
             }
             Purpose::Key => match self.login(&text) {

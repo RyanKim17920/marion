@@ -4894,20 +4894,32 @@ mod tests {
             a[1..].to_vec()
         };
         let id = AgentId("01a093dc-0e28-7854-bffe-f07bc4483c33".into());
-        for (model, prompt, pane) in [
-            (None, "add a limiter", false),
-            (Some("opus"), "--looks like a flag, and \"quotes\"", true),
+        for (model, options, prompt, pane) in [
+            (None, &[][..], "add a limiter", false),
+            (
+                Some("opus"),
+                &["--timeout", "1200", "--model", "sonnet"][..],
+                "--looks like a flag, and \"quotes\"",
+                true,
+            ),
         ] {
             let run = Effect::Run {
                 agent_type: "claude-orchestrator".into(),
                 model: model.map(str::to_string),
+                options: options.iter().map(|o| o.to_string()).collect(),
                 prompt: prompt.into(),
                 pane,
             };
             let a = parse_args(&verb(&run)).expect("the run echo parses");
             assert_eq!(a.agent_type, "claude-orchestrator");
             assert_eq!(a.prompt, prompt);
-            assert_eq!(a.model.as_deref(), model);
+            // A `--model` typed among the options comes after the picked one, and wins.
+            let typed_model = options
+                .iter()
+                .position(|o| *o == "--model")
+                .map(|i| options[i + 1]);
+            assert_eq!(a.model.as_deref(), typed_model.or(model));
+            assert_eq!(a.timeout_secs, options.contains(&"1200").then_some(1200));
             assert_eq!(a.pane, pane);
             // Either way it returns once the root exists: home never watches a run itself.
             assert!(a.detach || a.pane);

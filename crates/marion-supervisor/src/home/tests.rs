@@ -181,6 +181,7 @@ fn n_line_runs_the_chosen_type_on_the_chosen_model() {
         Effect::Run {
             agent_type: "claude".into(),
             model: Some("opus".into()),
+            options: vec![],
             prompt: "add a limiter".into(),
             pane: false,
         }
@@ -241,6 +242,7 @@ fn the_default_model_sends_no_model_and_a_new_type_resets_it() {
         Effect::Run {
             agent_type: "claude-orchestrator".into(),
             model: None,
+            options: vec![],
             prompt: "plan it".into(),
             pane: false,
         }
@@ -267,6 +269,7 @@ fn the_types_harness_decides_pane_or_headless() {
     let headless = Effect::Run {
         agent_type: "codex".into(),
         model: None,
+        options: vec![],
         prompt: "x".into(),
         pane: false,
     };
@@ -274,6 +277,80 @@ fn the_types_harness_decides_pane_or_headless() {
         headless.argv().unwrap(),
         ["marion", "run", "codex", "--prompt", "x", "--detach"]
     );
+}
+
+/// **Options go before the task, as on the CLI**: `--detach` runs a pane-capable type headless,
+/// which is the screen's way to `marion run --detach`; other options reach `marion run` as typed,
+/// after the picked model so a typed `--model` wins; `--worktree`/`--verify` run headless.
+#[test]
+fn options_typed_before_the_task_reach_marion_run_and_detach_runs_headless() {
+    let mut h = home();
+    h.harnesses[0].pane = true;
+    h.key(Key::Char('n'));
+    typed(&mut h, "--detach --timeout 1200 add a limiter");
+    let Footer::Input { note, .. } = frame(&h).footer else {
+        panic!("the input line")
+    };
+    assert_eq!(
+        note, "headless",
+        "the line says how it will run once an option chooses"
+    );
+    let run = h.key(Key::Enter);
+    assert_eq!(
+        run,
+        Effect::Run {
+            agent_type: "claude-orchestrator".into(),
+            model: None,
+            options: vec!["--timeout".into(), "1200".into()],
+            prompt: "add a limiter".into(),
+            pane: false,
+        }
+    );
+    assert_eq!(
+        run.argv().unwrap(),
+        [
+            "marion",
+            "run",
+            "claude-orchestrator",
+            "--timeout",
+            "1200",
+            "--prompt",
+            "add a limiter",
+            "--detach"
+        ]
+    );
+    for (line, pane) in [
+        ("--verify 'cargo test' fix it", false),
+        ("--worktree fix it", false),
+        ("--pane fix it", true),
+        ("fix it", true),
+    ] {
+        h.key(Key::Char('n'));
+        typed(&mut h, line);
+        let Effect::Run { pane: got, .. } = h.key(Key::Enter) else {
+            panic!("{line}: a run")
+        };
+        assert_eq!(got, pane, "{line}");
+    }
+    // What the line cannot split, or that would lose the task, is refused with the line kept.
+    for (line, says) in [
+        ("--prompt x fix it", "leave out --prompt"),
+        ("--pane --detach fix it", "not both"),
+        ("--timeout", "needs a value"),
+        ("--detach", "type the task"),
+        ("--verify \"open fix it", "not closed"),
+    ] {
+        h.key(Key::Char('n'));
+        typed(&mut h, line);
+        assert_eq!(h.key(Key::Enter), Effect::None, "{line}");
+        assert!(
+            h.notice.as_deref().unwrap_or("").contains(says),
+            "{line}: {:?}",
+            h.notice
+        );
+        assert_eq!(h.mode, typing(Purpose::New, line));
+        h.key(Key::Esc);
+    }
 }
 
 /// **A line that cannot run stays open with the reason**: a blank task, and a type whose harness
@@ -1378,6 +1455,7 @@ fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
         Effect::Run {
             agent_type: "codex".into(),
             model: Some("o3".into()),
+            options: vec![],
             prompt: "p q".into(),
             pane: true,
         },

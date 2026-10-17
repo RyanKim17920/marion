@@ -733,6 +733,12 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
         &[
             ("tab", "next agent type", ""),
             ("↑↓", "the type's models", "--model <m>"),
+            (
+                "--detach",
+                "first on n: run it headless",
+                "marion run --detach",
+            ),
+            ("--<opt>", "options, before the task", "marion run --help"),
             ("enter", "run, send or add", ""),
             ("esc", "close it", ""),
         ],
@@ -810,10 +816,21 @@ fn footer(home: &Home) -> Footer {
                         Some(t) => format!("new {}", t.name),
                         None => "new".to_string(),
                     };
-                    let note = home
-                        .new_blocked()
-                        .or_else(|| home.new_model())
-                        .unwrap_or_default();
+                    // How it will run, once the options typed so far choose: the type decides
+                    // otherwise, and the line does not repeat it.
+                    let surface = match home.new_options(text).ok().and_then(|l| l.pane) {
+                        Some(true) => Some("pane".to_string()),
+                        Some(false) => Some("headless".to_string()),
+                        None => None,
+                    };
+                    let note = match home.new_blocked() {
+                        Some(why) => why,
+                        None => [home.new_model(), surface]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(" · "),
+                    };
                     (
                         target,
                         note,

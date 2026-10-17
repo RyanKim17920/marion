@@ -110,7 +110,10 @@ every key with the command it stands for, `,` opens Setup, Esc goes back, `q` or
 - **`n` opens the new-task line** on the footer: `tab` picks the agent type, `↑↓` a model you last
   ran its harness on, and Enter runs `marion run <type> --prompt <text>`. The type's harness
   decides how: in a pane `enter` can attach to when doctor measured one, else detached. A type
-  that cannot run says why on the line, and keeps what you typed.
+  that cannot run says why on the line, and keeps what you typed. Any `marion run` option goes
+  before the task, as on the command line, and `--` ends them: `--detach fix the flaky test` runs
+  a pane-capable type headless, and `--verify "cargo test -q" add rate limiting` runs it in a
+  worktree with a check.
 - **Setup** (`,`) is one list: each harness as doctor found it with your logins for it indented
   under it, your API keys, the project's agent types, and notifications. The footer names the keys
   the selected row takes. Enter shows a harness's details and fix, makes a login the default,
