@@ -351,6 +351,10 @@ every string and again from the rendered file. The root's own prompt is left out
 directly and starts no supervisor. [`examples/run-report.md`](examples/run-report.md) is what it
 writes for the test fixture, and [`run-report.html`](examples/run-report.html) is the page.
 
+## Searching past runs
+
+`marion search <words>` finds this project's runs, newest first, by the task they were given, what they reported, the checks they ran, their review's findings, the paths they changed and their branch; `marion search --help` lists the filters (`harness:`, `state:`, `since:`, `in:` and more), and `--all` searches every project. It reads an index in marion's private state directory and starts no supervisor; `--reindex` rebuilds that index from the journal. Each run's line is masked when the run ends, with the keys its stream was scrubbed of. A rebuild never reads the credential store, so a run that has no line in the index gets only secret-shape and secret-named-environment masking, over a contract that was already scrubbed when it was written.
+
 ## Agent types
 
 An agent type is a launch spec, not a persona: harness, model, tools, isolation, prompt,

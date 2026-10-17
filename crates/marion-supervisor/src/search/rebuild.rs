@@ -16,7 +16,10 @@
 //! which nothing records; a rebuild has only the persisted files, which the run path redacted of
 //! those keys before writing them, so it masks by credential shape and by secret-named
 //! environment values. A key that is neither and that a persisted file still holds is in the
-//! rebuilt line exactly as it is on disk (§6: the digest widens no one's access).
+//! rebuilt line exactly as it is on disk (§6: the digest widens no one's access). A rebuild never
+//! reads the credential store, so a run with no line in the digest (it ended before the digest
+//! existed, or its append failed) gets shape and secret-env masking only, over a contract that
+//! was already scrubbed of its stream's keys when it was written.
 //!
 //! [`open`]: crate::search::open
 
