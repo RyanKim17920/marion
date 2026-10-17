@@ -27,8 +27,7 @@
 //! opencode→copilot, copilot→goose, goose→cline, cline→opencode, pi→pi and
 //! qwen→claude. Each runs a harness about as often as a stub on the other side would. The rest of
 //! the square is [`full_matrix_cell`]: skipped by name unless `MARION_FULL_MATRIX=1`, which the
-//! nightly canary and `scripts/admit-harness.sh` set, so every pair still runs every night and on
-//! every admission.
+//! nightly canary sets, so every pair still runs every night.
 //!
 //! # One `#[test]` per cell, and never a loop
 //!
