@@ -68,7 +68,8 @@ enum Bounds {
     /// call was not running when that bound expired. A bound fixed at spawn cannot be started at
     /// the tool call, and every cell on the budget waited out a boot sized for a load of 25 per
     /// core. The short bound cannot pass a broken kill: a run that reached case B is asserted in
-    /// full, and one that did not is the vacuous run the retry replaces.
+    /// full, and so is one that left any survivor however little it reached; only a run with
+    /// neither is the vacuous one the retry replaces.
     QuietThenBudget,
 }
 
@@ -327,7 +328,11 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
             hold(),
             &script,
         );
-        if run.recorded.len() == 2 || attempt + 1 == boots.len() {
+        // Only a run that reached nothing is retried: one whose tool call recorded too few pids
+        // and that left no survivor. A survivor is a leak however early the bound fell.
+        let vacuous =
+            run.recorded.len() < 2 && run.survivors.is_empty() && run.recorded_survivors.is_empty();
+        if !vacuous || attempt + 1 == boots.len() {
             run.assert_no_survivor(agent_type, expiry, timeout_secs);
             return;
         }
@@ -470,6 +475,21 @@ impl Expired {
             elapsed,
         } = self;
 
+        // ---- criterion 6: ESRCH for every pid marion enumerated or the tool call recorded. -------
+        //
+        // First, so a leak is named as one even on a run that reached too little to be retried
+        // (see the attempt loop) or whose spawn failed.
+        assert!(
+            survivors.is_empty(),
+            "processes marion enumerated survived the timeout kill — the S7 leak: {survivors:?} \
+         (kill(pid, 0) did not return ESRCH; EPERM counts as a survivor). Enumerated set was \
+         {enumerated:?}"
+        );
+        assert!(
+            recorded_survivors.is_empty(),
+            "the tool call's own setsid'd processes outlived the expired child: {recorded_survivors:?}"
+        );
+
         let contract = contract
             .as_ref()
             .unwrap_or_else(|e| panic!("the spawn path runs to a contract: {e}"));
@@ -483,7 +503,7 @@ impl Expired {
             pidfile.display()
         );
 
-        // ---- criterion 6, first half: a non-empty enumerated set. ----------------------------------
+        // ---- criterion 6: a non-empty enumerated set. ----------------------------------------------
         if expiry == Expiry::TwoStepSweep {
             assert!(
                 !enumerated.is_empty(),
@@ -495,18 +515,6 @@ impl Expired {
              {enumerated:?}, tool call recorded {recorded:?}"
             );
         }
-
-        // ---- criterion 6, second half: ESRCH for every pid in that set. ----------------------------
-        assert!(
-            survivors.is_empty(),
-            "processes marion enumerated survived the timeout kill — the S7 leak: {survivors:?} \
-         (kill(pid, 0) did not return ESRCH; EPERM counts as a survivor). Enumerated set was \
-         {enumerated:?}"
-        );
-        assert!(
-            recorded_survivors.is_empty(),
-            "the tool call's own setsid'd processes outlived the expired child: {recorded_survivors:?}"
-        );
 
         // ---- the node was expired, not merely finished. --------------------------------------------
         let completion = contract
