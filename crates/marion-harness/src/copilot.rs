@@ -116,6 +116,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // repository hooks, workspace MCP and project extensions only for a folder in its
         // `trustedFolders`, or where one of these reads `"true"` — an operator's exported
         // `COPILOT_ALLOW_ALL` opened it (`copilot mcp list` listed a planted `.mcp.json` server).
+        // `false` takes away nothing marion grants: marion compiles no `--allow-all*`, and 1.0.89's
+        // app.js builds the approved rules from `--allow-tool` alone (`e.allowTool` through
+        // `permissionsParseRuleValue`), never from this variable, which only ever adds — read
+        // statically from the shipped app.js, not measured live.
         Env {
             key: "COPILOT_ALLOW_ALL",
             val: Val::Lit("false"),
