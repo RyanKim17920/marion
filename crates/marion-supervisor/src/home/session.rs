@@ -986,7 +986,12 @@ impl Session {
                     }
                 }
                 Report::Ended(line) => self.home.notice = Some(line),
-                Report::Title(id, task) => self.home.set_title(&id, task.as_deref()),
+                Report::Title(id, task) => {
+                    // Not final yet (a node still spawning): ask again on the next forest change.
+                    if !self.home.set_title(&id, task.as_deref()) {
+                        self.titles_asked.remove(&id);
+                    }
+                }
                 Report::Ran { ok, line, root } => {
                     self.home.notice = Some(if ok { line } else { format!("{line}  (esc)") });
                     self.home.notice_sticky = !ok;

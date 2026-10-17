@@ -577,7 +577,7 @@ fn a_rows_title_is_its_tasks_first_line_or_its_type() {
             ..Default::default()
         },
     );
-    h.set_title(&AgentId("root".into()), None);
+    assert!(h.set_title(&AgentId("root".into()), None));
     assert!(h.untitled().is_empty());
     let f = frame(&h);
     let title = &row(&f, "child").title;
@@ -592,6 +592,23 @@ fn a_rows_title_is_its_tasks_first_line_or_its_type() {
     assert_eq!(row(&f, "root").title, "codex");
     h.lost_supervisor();
     assert_eq!(h.watch.titles.len(), 2);
+}
+
+/// **A node still spawning has no title yet, not its type for good**: its contract may not be
+/// written, so the answer is not recorded and the session asks again.
+#[test]
+fn a_spawning_nodes_missing_task_is_asked_again() {
+    let mut h = home();
+    h.set_nodes(vec![node("kid", None, NodeState::Spawning)]);
+    assert!(!h.set_title(&AgentId("kid".into()), None), "not final");
+    assert_eq!(h.untitled().len(), 1, "still untitled, so asked again");
+    assert_eq!(
+        row(&frame(&h), "kid").title,
+        "codex",
+        "drawn by its type meanwhile"
+    );
+    assert!(h.set_title(&AgentId("kid".into()), Some("read the limiter")));
+    assert_eq!(row(&frame(&h), "kid").title, "read the limiter");
 }
 
 /// A row carries its run time and its token total from the summary, for every node, not only

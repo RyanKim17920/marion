@@ -655,19 +655,21 @@ impl Home {
     }
 
     /// A node's title, read: its task's first line, or its agent type where it has no task (a
-    /// root, whose prompt went to its harness rather than into a contract).
-    pub fn set_title(&mut self, id: &AgentId, task: Option<&str>) {
+    /// root, whose prompt went to its harness rather than into a contract). Returns `false`, and
+    /// records nothing, for a node with no task yet that is still spawning: its contract may not be
+    /// written yet, so the answer is not final and is worth asking again.
+    pub fn set_title(&mut self, id: &AgentId, task: Option<&str>) -> bool {
         let line = task
             .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
             .map(|l| marion_core::text::visible(l).into_owned());
-        let title = line.unwrap_or_else(|| {
-            self.watch
-                .nodes
-                .iter()
-                .find(|n| n.agent_id == *id)
-                .map_or_else(String::new, |n| n.agent_type.clone())
-        });
+        let node = self.watch.nodes.iter().find(|n| n.agent_id == *id);
+        let title = match (line, node) {
+            (Some(l), _) => l,
+            (None, Some(n)) if n.state == marion_core::node::NodeState::Spawning => return false,
+            (None, n) => n.map_or_else(String::new, |n| n.agent_type.clone()),
+        };
         self.watch.titles.insert(id.0.clone(), title);
+        true
     }
 
     /// A `node/get` answer for `id`: its detail, and the page of its output appended.
@@ -692,7 +694,7 @@ impl Home {
         }
         if !self.watch.titles.contains_key(&id.0) {
             let task = detail.task.as_ref().map(|t| t.prompt.clone());
-            self.set_title(&id, task.as_deref());
+            let _ = self.set_title(&id, task.as_deref());
         }
         let branch = detail.completion.as_ref().and_then(|c| c.branch.clone());
         if let Some(b) = &branch {
