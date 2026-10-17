@@ -409,6 +409,8 @@ struct ListArgs {
     attention: bool,
     /// Lines even on a terminal (`--plain`, or the old `marion list`).
     plain: bool,
+    /// With an `<id>`: its output as it comes, until it ends.
+    follow: bool,
     place: Place,
 }
 
@@ -419,11 +421,17 @@ fn parse_list(argv: &[String]) -> Result<ListArgs, Exit> {
         match word {
             Word::Flag("--attention", v) => args.attention = cli::switch("--attention", v)?,
             Word::Flag("--plain", v) => args.plain = cli::switch("--plain", v)?,
+            Word::Flag("--follow", v) => args.follow = cli::switch("--follow", v)?,
             Word::Flag(f, v) if args.place.take(f, v, &mut words)? => {}
             Word::Flag(f, _) => return Err(cli::unknown(f)),
             Word::Plain(id) if args.target.is_none() => args.target = Some(id.to_string()),
             Word::Plain(extra) => return Err(Exit::Usage(format!("unexpected `{extra}`"))),
         }
+    }
+    if args.follow && args.target.is_none() {
+        return Err(Exit::Usage(
+            "--follow follows one agent: give its <id>".into(),
+        ));
     }
     Ok(args)
 }
@@ -447,6 +455,7 @@ fn ls(args: ListArgs, interactive: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match args.target {
+        Some(id) if args.follow => ls_follow(&id, &repo, &state),
         Some(id) => ls_one(&id, &repo, &state),
         None if interactive && !args.attention => home_on(repo, state),
         None => list_lines(&repo, &state, args.attention),
@@ -481,23 +490,7 @@ fn home_on(repo: PathBuf, state: PathBuf) -> ExitCode {
 /// ([`marion_supervisor::tree::JournalView`]), printed by the same [`detail_text`] — a node on a
 /// retired harness too, headed by its [`marion_supervisor::tree::retired_line`].
 fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
-    use marion_supervisor::tree;
-    let offline = tree::JournalView::open(repo, state);
-    let found = offline.and_then(|view| match view {
-        Some(view) => {
-            err!("{FROM_JOURNAL}");
-            let nodes = view.nodes();
-            match view.retired(target) {
-                Some((line, d)) => Ok((line, None, d, nodes)),
-                None => view
-                    .node(target)
-                    .map(|(n, d)| (tree::list_line(&n), Some(n.agent_id), d, nodes)),
-            }
-        }
-        None => live_node(target, repo, state)
-            .map(|(n, d, nodes)| (tree::list_line(&n), Some(n.agent_id), d, nodes)),
-    });
-    match found {
+    match node_detail(target, repo, state) {
         Ok((head, id, detail, nodes)) => {
             let rollup = marion_supervisor::rollup::Rollup::build(&nodes);
             let subtree = id
@@ -511,6 +504,171 @@ fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Err(e) => {
+            err!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// One node's list line, id, detail and the forest it is in: from the serving supervisor, or as the
+/// journal and its contract left it when nobody serves the project (saying so on stderr).
+#[allow(clippy::type_complexity)]
+fn node_detail(
+    target: &str,
+    repo: &Path,
+    state: &Path,
+) -> Result<
+    (
+        String,
+        Option<marion_core::contract::AgentId>,
+        marion_core::proto::result::NodeDetail,
+        Vec<marion_core::proto::NodeSummary>,
+    ),
+    String,
+> {
+    use marion_supervisor::tree;
+    let offline = tree::JournalView::open(repo, state);
+    offline.and_then(|view| match view {
+        Some(view) => {
+            err!("{FROM_JOURNAL}");
+            let nodes = view.nodes();
+            match view.retired(target) {
+                Some((line, d)) => Ok((line, None, d, nodes)),
+                None => view
+                    .node(target)
+                    .map(|(n, d)| (tree::list_line(&n), Some(n.agent_id), d, nodes)),
+            }
+        }
+        None => live_node(target, repo, state)
+            .map(|(n, d, nodes)| (tree::list_line(&n), Some(n.agent_id), d, nodes)),
+    })
+}
+
+/// **`marion diff`, `merge` and `shell <id>`**: what an agent landed, or where it worked, from its
+/// detail — the home screen's `d`, `m` and `o`, run through the same commands they run there.
+#[derive(Clone, Copy)]
+enum Landed {
+    Diff,
+    Merge,
+    Shell,
+}
+
+fn diff_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    landed_main(argv, Landed::Diff)
+}
+
+fn merge_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    landed_main(argv, Landed::Merge)
+}
+
+fn shell_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    landed_main(argv, Landed::Shell)
+}
+
+fn landed_main(argv: &[String], what: Landed) -> Result<ExitCode, Exit> {
+    use marion_supervisor::home::session::{branch_log, branch_merge};
+    let args = parse_attach(argv)?;
+    let Some((repo, state)) = resolve_project(&args.place) else {
+        return Ok(ExitCode::FAILURE);
+    };
+    let ran = node_detail(&args.agent_id, &repo, &state).and_then(|(_, _, d, _)| {
+        let branch = || {
+            d.completion
+                .as_ref()
+                .and_then(|c| c.branch.clone())
+                .ok_or_else(|| {
+                    "it landed no branch; an agent run with --worktree or --verify ends on one"
+                        .to_string()
+                })
+        };
+        match what {
+            Landed::Diff => run_status(branch_log(&repo, &branch()?), "git log"),
+            Landed::Merge => {
+                let branch = branch()?;
+                run_status(branch_merge(&repo, &branch)?, "git merge")?;
+                out!("marion: merged {branch}");
+                Ok(())
+            }
+            Landed::Shell => {
+                use marion_core::contract::Workspace;
+                let dir = match d.workspace.as_ref() {
+                    Some(Workspace::Worktree { path, .. } | Workspace::SharedCwd { path }) => path,
+                    None => return Err("no workspace is recorded for it".into()),
+                };
+                err!("marion: a shell in {}; exit returns", dir.display());
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
+                let mut c = std::process::Command::new(shell);
+                c.current_dir(dir);
+                run_status(c, "the shell")
+            }
+        }
+    });
+    Ok(match ran {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            err!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    })
+}
+
+/// Run `c` with the terminal; an `Err` naming `what` when it fails or does not start.
+fn run_status(mut c: std::process::Command, what: &str) -> Result<(), String> {
+    match c.status() {
+        Ok(st) if st.success() => Ok(()),
+        Ok(st) => Err(format!("{what} exited {st}")),
+        Err(e) => Err(format!("{what} did not start: {e}")),
+    }
+}
+
+/// **`marion ls <id> --follow`**: the agent's output as it comes, until it ends — the home
+/// screen's `enter` on a headless agent, for any terminal or a pipe. Woken by the forest's
+/// changes, and once a second while the agent runs (its output moves no forest field); exits 0 when
+/// it ended ok, 1 otherwise. Live only: an ended agent's output is `marion ls <id>`.
+fn ls_follow(target: &str, repo: &Path, state: &Path) -> ExitCode {
+    use marion_core::proto::params::ActivityCursor;
+    use marion_supervisor::tree;
+    let followed = (|| -> Result<bool, String> {
+        let mut sub = tree::Subscription::open(repo, state)?;
+        sub.nonblocking().map_err(|e| e.to_string())?;
+        let id = tree::resolve_target(target, &sub.nodes)?;
+        let sock = socket::socket_paths(state, &socket::project_root(repo), socket::own_uid());
+        let mut cursor = ActivityCursor::Tail;
+        loop {
+            // Read the state first, so the page read after it holds every line written before
+            // the end was seen.
+            let ended = sub.nodes.iter().find(|n| n.agent_id == id).map(|n| n.state);
+            let got = marion_supervisor::courier::node_get_with(&sock, &id, Some(cursor))
+                .map_err(|e| e.to_string())?;
+            if let Some(page) = got.detail.stream {
+                let text: String = page
+                    .lines
+                    .iter()
+                    .map(|l| format!("{}  {}\n", l.at.get(11..19).unwrap_or(&l.at), l.text))
+                    .collect();
+                // What the agent said is node-authored text.
+                let _ = marion_supervisor::printable::show(
+                    &mut std::io::stdout(),
+                    &marion_supervisor::printable::printable(&text),
+                );
+                cursor = ActivityCursor::From(page.next);
+            }
+            match ended {
+                Some(marion_core::node::NodeState::Exited(s)) => {
+                    return Ok(s == marion_core::contract::ExitStatus::Ok);
+                }
+                None => return Err(format!("{target} is no longer in the forest")),
+                Some(_) => {}
+            }
+            marion_supervisor::home::wake::wait(&[sub.fd()], Some(StdDuration::from_secs(1)))
+                .map_err(|e| e.to_string())?;
+            sub.drain()?;
+        }
+    })();
+    match followed {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
         Err(e) => {
             err!("marion: {e}");
             ExitCode::FAILURE
@@ -3599,7 +3757,7 @@ mod tests {
         for v in cli::VERBS {
             assert_eq!(cli::verb(v.name).map(|found| found.name), Some(v.name));
         }
-        assert_eq!(cli::VERBS.len(), 19, "a command was added or dropped");
+        assert_eq!(cli::VERBS.len(), 22, "a command was added or dropped");
         assert_eq!(cli::verb("list").map(|v| v.name), Some("ls"));
         assert_eq!(cli::verb("tree").map(|v| v.name), Some("ls"));
         assert!(cli::verb("bogus").is_none());
@@ -3638,7 +3796,8 @@ mod tests {
             );
         }
         assert!(!cli::top_help().contains('§'));
-        assert!(cli::top_help().lines().count() <= 30);
+        // One screen: a 24-row terminal with a few rows of scrollback above it.
+        assert!(cli::top_help().lines().count() <= 32);
     }
 
     /// **`--help` is a request for help anywhere before `--`, and a word after it.** So `marion

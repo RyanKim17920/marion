@@ -297,13 +297,16 @@ impl Bed {
     }
 
     fn marion(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_marion"))
-            .args(args)
+        self.command(args).output().expect("marion runs")
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_marion"));
+        c.args(args)
             .current_dir(&self.repo)
             .env("PATH", &self.path)
-            .env("MARION_STATE_DIR", &self.state)
-            .output()
-            .expect("marion runs")
+            .env("MARION_STATE_DIR", &self.state);
+        c
     }
 }
 
@@ -581,6 +584,19 @@ fn run_detach_ls_and_cancel_are_commands_too() {
         "`marion ls` without a terminal prints the list"
     );
 
+    // `ls --follow` watches it until it ends: here, until the cancel below ends it.
+    let mut follow = bed
+        .command(&["ls", &id, "--follow"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("marion runs");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        follow.try_wait().unwrap().is_none(),
+        "--follow waits while it runs"
+    );
+
     let short = marion_supervisor::tree::short_id(&id).to_string();
     let cancel = bed.marion(&["cancel", &short]);
     let said = String::from_utf8_lossy(&cancel.stdout);
@@ -594,5 +610,20 @@ fn run_detach_ls_and_cancel_are_commands_too() {
     assert!(
         !again.status.success(),
         "a second cancel is refused: it has already ended"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let followed = loop {
+        if let Some(st) = follow.try_wait().unwrap() {
+            break st;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "--follow is still waiting on an agent that ended"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        !followed.success(),
+        "a cancelled agent did not end ok, and --follow says so by its exit"
     );
 }

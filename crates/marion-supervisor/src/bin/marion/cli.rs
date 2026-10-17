@@ -90,6 +90,27 @@ pub const VERBS: &[Verb] = &[
         main: super::attach_main,
     },
     Verb {
+        name: "diff",
+        aliases: &[],
+        summary: Some("show what an agent's branch changed"),
+        help: diff_help,
+        main: super::diff_main,
+    },
+    Verb {
+        name: "merge",
+        aliases: &[],
+        summary: Some("merge an agent's branch into your checkout"),
+        help: merge_help,
+        main: super::merge_main,
+    },
+    Verb {
+        name: "shell",
+        aliases: &[],
+        summary: Some("open a shell where an agent worked"),
+        help: shell_help,
+        main: super::shell_main,
+    },
+    Verb {
         name: "steer",
         aliases: &[],
         summary: Some("send a running agent a message"),
@@ -560,7 +581,7 @@ fn workflow_help() -> String {
 
 fn ls_help() -> String {
     format!(
-        "usage: marion ls [<id>] [--attention] [--plain] [--repo <path>]\n\
+        "usage: marion ls [<id> [--follow]] [--attention] [--plain] [--repo <path>]\n\
          \n\
          Show the agent tree. On a terminal it opens the home screen; piped, or\n\
          with --attention, it prints one agent per line. With an <id> it prints that agent's\n\
@@ -570,6 +591,8 @@ fn ls_help() -> String {
          \x20 --attention          only the agents that need you: blocked, failed, timed out,\n\
          \x20                      ended without reporting, or orphaned\n\
          \x20 --plain              print one agent per line, even on a terminal\n\
+         \x20 --follow             with an <id>: print its output as it comes until it ends;\n\
+         \x20                      exits 0 when it ended ok\n\
          {PLACE_HELP}\n\
          \n\
          {ID_HELP}\n\
@@ -583,6 +606,47 @@ fn attach_help() -> String {
          \n\
          Open the terminal of an agent started with `marion run --pane`: see its screen and\n\
          type into it. ^] d detaches and leaves it running.\n\
+         \n\
+         {PLACE_HELP}\n\
+         \n\
+         {ID_HELP}"
+    )
+}
+
+fn diff_help() -> String {
+    format!(
+        "usage: marion diff <id> [--repo <path>]\n\
+         \n\
+         Show what an agent's branch added over your HEAD, commit by commit with its patch. The\n\
+         patch is shown raw: no diff driver or textconv program the branch names runs, and no\n\
+         pager; pipe it to one.\n\
+         \n\
+         {PLACE_HELP}\n\
+         \n\
+         {ID_HELP}"
+    )
+}
+
+fn merge_help() -> String {
+    format!(
+        "usage: marion merge <id> [--repo <path>]\n\
+         \n\
+         Merge an agent's branch into your checkout with `git merge --no-ff`. No hook, editor or\n\
+         signing program runs, and it refuses when the repository's own config names a filter or\n\
+         merge driver, a program a merge would run.\n\
+         \n\
+         {PLACE_HELP}\n\
+         \n\
+         {ID_HELP}"
+    )
+}
+
+fn shell_help() -> String {
+    format!(
+        "usage: marion shell <id> [--repo <path>]\n\
+         \n\
+         Open your $SHELL in the directory an agent worked in: its worktree, or your checkout.\n\
+         Exiting the shell comes back.\n\
          \n\
          {PLACE_HELP}\n\
          \n\

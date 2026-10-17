@@ -26,6 +26,7 @@ mod detached_supervisor;
 mod harness_rows;
 mod home_e2e;
 mod journal;
+mod landed_verbs;
 mod launch_only_root;
 mod list_offline;
 mod login;

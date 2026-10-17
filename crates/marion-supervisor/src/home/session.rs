@@ -132,10 +132,9 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 let c = branch_log(&s.repo, &branch);
                 s.foreground(c, "git log");
             }
-            Handoff::Merge(branch) => match merge_refusal(&s.repo) {
-                Some(why) => s.home.notice = Some(why),
-                None => {
-                    let c = git_in(&s.repo, &Effect::Merge(branch.clone()));
+            Handoff::Merge(branch) => match branch_merge(&s.repo, &branch) {
+                Err(why) => s.home.notice = Some(why),
+                Ok(c) => {
                     s.foreground(c, "git merge");
                     if s.home.notice.is_none() {
                         s.home.notice = Some(format!("merged {branch}"));
@@ -1075,11 +1074,21 @@ fn harnesses_of(rows: &[doctor::Row]) -> Vec<Harness> {
         .collect()
 }
 
-/// `git log -p` of what `branch` added over HEAD, for the operator to read. A child's branch can
-/// carry a `.gitattributes` naming a diff driver, so the patch is shown raw: no textconv program
-/// and no external diff runs over the child's content.
-fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
+/// `git log -p` of what `branch` added over HEAD, for the operator to read: `d` here, and `marion
+/// diff`. A child's branch can carry a `.gitattributes` naming a diff driver, so the patch is shown
+/// raw: no textconv program and no external diff runs over the child's content.
+pub fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
     git_in(repo, &Effect::Diff(branch.to_string()))
+}
+
+/// `git merge --no-ff -- <branch>` in `repo`, hardened as [`git_in`] runs it: `m` here after its
+/// `y`, and `marion merge`. Refused, with why, where the repository's own config names a program
+/// a merge would run ([`merge_refusal`]).
+pub fn branch_merge(repo: &Path, branch: &str) -> Result<std::process::Command, String> {
+    match merge_refusal(repo) {
+        Some(why) => Err(why),
+        None => Ok(git_in(repo, &Effect::Merge(branch.to_string()))),
+    }
 }
 
 /// Why the TUI will not merge in `repo`, or `None`: the repository's own configuration names a

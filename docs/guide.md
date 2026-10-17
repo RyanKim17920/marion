@@ -27,7 +27,11 @@ marion run codex --prompt "…" --verify "cargo test"     # in its own worktree,
 marion race --prompt "…" --on claude,codex --verify "cargo test"  # keep the seat that passes
 marion ls                                 # the home screen; in a pipe, list's lines
 marion ls <id>                            # one node's detail
+marion ls <id> --follow                   # its output as it comes, until it ends
 marion ls --attention                     # only the nodes that need you
+marion diff <id>                          # what its branch changed, raw, no pager
+marion merge <id>                         # merge its branch into your checkout (--no-ff)
+marion shell <id>                         # your $SHELL where it worked
 marion attach <id>                        # a pane node's terminal; ^] d comes back
 marion resume <id> [--prompt <text>]
 marion cancel <id> [--force]              # end it and its subtree gracefully; --force kills
