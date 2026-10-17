@@ -533,23 +533,25 @@ pub const LEAVING: Duration = Duration::from_secs(2);
 /// **Whether the supervisor at `paths` lets its lock go within `wait`**: it was on its way out,
 /// and nobody is serving. One still serving keeps the lock, and the answer is `false`.
 ///
-/// A blocking `flock` on a helper thread, answered over a channel: no wakeups while it waits, and
-/// the answer the instant the lock frees. The lock is let go as soon as it is taken, as
-/// [`someone_is_serving`]'s probe lets go of its own. A thread still blocked past `wait` ends with
-/// the process; it holds nothing but a descriptor of the lock file until then.
+/// A bounded poll of [`nobody_is_serving`], backing off from 1 ms by doubling to 25 ms. Not a
+/// blocking `flock` on a helper thread: past `wait` that thread would stay blocked for as long as
+/// the supervisor serves, one per failed dial in the long-lived TUI. Asked only after a dial found
+/// no listener, so it never runs idle.
 pub fn left_within(paths: &SocketPaths, wait: Duration) -> bool {
-    // No file means nothing ever served here.
-    let Ok(lock) = std::fs::File::open(paths.lock()) else {
-        return true;
-    };
-    let (freed, freed_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        if lock.lock().is_ok() {
-            let _ = lock.unlock();
-            let _ = freed.send(());
+    const PAUSE_MAX: Duration = Duration::from_millis(25);
+    let deadline = Instant::now() + wait;
+    let mut pause = Duration::from_millis(1);
+    loop {
+        if nobody_is_serving(paths) {
+            return true;
         }
-    });
-    freed_rx.recv_timeout(wait).is_ok()
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(pause.min(left));
+        pause = (pause * 2).min(PAUSE_MAX);
+    }
 }
 
 /// Whether the supervisor lock is held, without ever holding it.

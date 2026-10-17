@@ -24,3 +24,6 @@ crates/marion-supervisor/src/client_auth.rs:hello  bounded: one read timeout per
 
 # --- etxtbsy-retry (2026-10-16): a spawn refused while its program is open for writing ------
 crates/marion-harness/src/probe.rs:spawn_past_busy_text  bounded one-shot retry: runs only after a spawn failed with ETXTBSY, backing off from BUSY_TEXT_FIRST_PAUSE (5 ms) by doubling until BUSY_TEXT_BUDGET (1 s) has been waited, nine tries at most; a write descriptor closing in another process has no portable event to wait on, and the path never runs idle
+
+# --- search-leaving (2026-10-17): a dial in the instant a supervisor is leaving -----------------
+crates/marion-supervisor/src/socket.rs:left_within  bounded one-shot wait: runs only after a dial found no listener (NotFound or ConnectionRefused), re-asking nobody_is_serving with backoff (1 ms doubling to 25 ms) until the leaving supervisor's lock goes or LEAVING (2 s) passes; a blocking flock on a helper thread would outlive the wait in the long-lived TUI, and the path never runs idle
