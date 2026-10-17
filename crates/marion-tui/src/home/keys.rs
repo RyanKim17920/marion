@@ -21,6 +21,8 @@ pub enum Key {
     Tab,
     BackTab,
     Backspace,
+    /// The forward-delete key (`ESC [ 3 ~`). A Mac's delete key sends [`Key::Backspace`].
+    Delete,
     Up,
     Down,
     Left,
@@ -116,6 +118,7 @@ fn escape(b: &[u8]) -> (Option<Key>, usize) {
                 (b'Z', _) => Some(Key::BackTab),
                 (b'~', b"5") => Some(Key::PageUp),
                 (b'~', b"6") => Some(Key::PageDown),
+                (b'~', b"3") => Some(Key::Delete),
                 (b'~', b"1" | b"7") => Some(Key::Home),
                 (b'~', b"4" | b"8") => Some(Key::End),
                 _ => None,
@@ -167,6 +170,7 @@ mod tests {
             ]
         );
         assert_eq!(decode(b"\x1b"), [Key::Esc]);
+        assert_eq!(decode(b"\x1b[3~"), [Key::Delete]);
         assert_eq!(
             decode(b"\x1bOP\x1b[11~\x1b[1P"),
             [],
