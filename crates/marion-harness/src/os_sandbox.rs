@@ -358,14 +358,17 @@ impl SandboxPlan {
             .ok_or("the node has no HOME to place its row's paths under")?;
         let siblings = Some(agents.clone());
         // Read only, and only to resolve another node's tree: a parent's worktree is named below
-        // the resolved agents dir like the node's own.
+        // the resolved agents dir like the node's own. A tree outside the agents dir (a root's
+        // checkout) needs no rule, as reads there are not denied; granted, one holding the
+        // agents dir would read every sibling's token.
         let parent_tree = match spec.extra.parent_tree.as_deref() {
             Some(pt) => match pt.strip_prefix(agents_lexical(agent_dir)) {
                 Ok(rel) => Some(agents.join(rel)),
                 Err(_) => Some(canonical(pt)?),
             },
             None => None,
-        };
+        }
+        .filter(|pt| pt.starts_with(&agents) && *pt != agents);
         let held = marion_core::paths::MARION_WRITTEN
             .iter()
             .map(|leaf| own.join(leaf))
@@ -439,37 +442,52 @@ impl SandboxPlan {
         &self.dirs
     }
 
-    /// **The Seatbelt profile for `n` writable directories**, and with `siblings` the read rule
-    /// over other nodes' agent dirs. Writes are denied except to those and to the terminal and null
-    /// devices; reads are denied only inside another node's agent dir (`SIB/<id>/…`) but its
+    /// **The Seatbelt profile for `n` writable directories**, and with `siblings` the rules over
+    /// other nodes' agent dirs. Writes are denied except to those and to the terminal and null
+    /// devices. With `siblings`, which lists the writable directories inside the agents dir `SIB`
+    /// (the node's own agent dir, a parent's worktree a `shared-cwd` child works in), nothing inside
+    /// `SIB` is written and nothing inside another node's agent dir (`SIB/<id>/…`) is read but its
     /// `contracts/` and `events.jsonl`, and, with `parent_tree`, the one tree `PT` the node was
-    /// spawned over; every writable directory stays readable, the node's own agent dir among them.
-    /// The `held` paths (`H0`…) inside a writable directory are then refused writes again.
-    /// Everything else — reads, exec, the network, the supervisor's socket — is left as it was.
+    /// spawned over; then the listed directories are opened again, read and write. The `held`
+    /// paths (`H0`…) inside a writable directory are then refused writes again. Everything else —
+    /// reads, exec, the network, the supervisor's socket — is left as it was.
+    ///
+    /// **In that order, because the last matching rule wins**: a writable directory holding the
+    /// agents dir (a checkout with the state dir inside it) is granted first and the sibling rules
+    /// override it, so no grant reopens another node's token.
+    ///
     /// Paths arrive only as parameters (`W0`…, `SIB`, `PT`, `H0`…), quoted into the one regex by
     /// Seatbelt's own `regex-quote`, never in the profile's text, so no path can change what the
     /// profile says.
-    pub fn seatbelt_profile(n: usize, siblings: bool, parent_tree: bool, held: usize) -> String {
+    pub fn seatbelt_profile(
+        n: usize,
+        siblings: Option<&[usize]>,
+        parent_tree: bool,
+        held: usize,
+    ) -> String {
         let mut p = String::from(
             "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*\n  \
              (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\")\n  \
              (literal \"/dev/ptmx\") (regex #\"^/dev/ttys[0-9]+$\") \
              (literal \"/dev/dtracehelper\"))\n",
         );
-        if siblings {
+        for i in 0..n {
+            p.push_str(&format!("(allow file-write* (subpath (param \"W{i}\")))\n"));
+        }
+        if let Some(inside) = siblings {
             p.push_str(
-                "(deny file-read* (regex (string-append \"^\" (regex-quote (param \"SIB\")) \
+                "(deny file-write* (regex (string-append \"^\" (regex-quote (param \"SIB\")) \
+                 \"/.\")))\n(deny file-read* (regex (string-append \"^\" (regex-quote (param \"SIB\")) \
                  \"/[^/]+/.\")))\n(allow file-read* (regex (string-append \"^\" \
                  (regex-quote (param \"SIB\")) \"/[^/]+/(contracts(/.*)?|events\\\\.jsonl)$\")))\n",
             );
             if parent_tree {
                 p.push_str("(allow file-read* (subpath (param \"PT\")))\n");
             }
-        }
-        for i in 0..n {
-            p.push_str(&format!("(allow file-write* (subpath (param \"W{i}\")))\n"));
-            if siblings {
-                p.push_str(&format!("(allow file-read* (subpath (param \"W{i}\")))\n"));
+            for i in inside.iter().filter(|i| **i < n) {
+                p.push_str(&format!(
+                    "(allow file-read* file-write* (subpath (param \"W{i}\")))\n"
+                ));
             }
         }
         // After the allows: the last matching rule wins.
@@ -517,9 +535,19 @@ fn platform_command(
 ) -> std::process::Command {
     let (siblings, parent_tree) = (plan.siblings.as_deref(), plan.parent_tree.as_deref());
     let mut cmd = std::process::Command::new(SANDBOX_EXEC);
+    // The writable directories inside the agents dir: opened again after the sibling rules.
+    let inside: Vec<usize> = siblings
+        .map(|sib| {
+            dirs.iter()
+                .enumerate()
+                .filter(|(_, d)| d.starts_with(sib) && d.as_path() != sib)
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .unwrap_or_default();
     cmd.arg("-p").arg(SandboxPlan::seatbelt_profile(
         dirs.len(),
-        siblings.is_some(),
+        siblings.map(|_| inside.as_slice()),
         parent_tree.is_some(),
         plan.held.len(),
     ));
@@ -884,7 +912,7 @@ mod tests {
     /// contains can change what the profile says.
     #[test]
     fn the_seatbelt_profile_names_no_path_only_parameters() {
-        let p = SandboxPlan::seatbelt_profile(3, true, true, 2);
+        let p = SandboxPlan::seatbelt_profile(3, Some(&[0]), true, 2);
         assert!(p.contains("(deny file-write*)"));
         assert!(p.contains("(regex-quote (param \"SIB\"))"), "{p}");
         for i in 0..3 {
@@ -1279,6 +1307,61 @@ mod tests {
             Some("own\n"),
             "the rest is its own"
         );
+    }
+
+    /// **A checkout holding marion's state dir opens no sibling's agent dir**: a node working in
+    /// that checkout (a root, a `shared-cwd` child) is granted the whole checkout, and a root's
+    /// child names it as its parent tree, yet a sibling's token is neither read nor written,
+    /// while the checkout itself and the node's own agent dir stay the node's.
+    ///
+    /// Mutation: emit the writable directories' read allows after the sibling deny again, or grant
+    /// a parent tree outside the agents dir, and the token reads.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_checkout_holding_the_state_dir_opens_no_siblings_token() {
+        assert!(support().available(), "{}", support().describe());
+        let dir = marion_testsupport::scratch("osb-state-in-checkout");
+        let checkout = dir.join("checkout");
+        let agents = checkout.join("state");
+        let sibling = agents.join("sibling");
+        for parent_tree in [None, Some(checkout.clone())] {
+            let (mut spec, mut inv) = node_in(&agents, Auth::Canned);
+            std::fs::create_dir_all(sibling.join("config")).unwrap();
+            std::fs::write(sibling.join("config/node-token"), "SECRET-TOKEN").unwrap();
+            spec.extra.parent_tree = parent_tree.clone();
+            inv.cwd = checkout.clone();
+            let s = sibling.display();
+            inv.args = vec![
+                "-c".into(),
+                format!(
+                    "cat '{s}/config/node-token' 2>&1; echo forged > '{s}/config/node-token'; \
+                     echo '|'; echo work > f.txt && cat f.txt; echo '|'; \
+                     echo own > state/agent/own.txt && cat state/agent/own.txt; true"
+                ),
+            ];
+            inv.sandbox = Some(
+                SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+            );
+            let tmp = agents.join("agent/tmp");
+            std::fs::create_dir_all(&tmp).unwrap();
+            let out = inv.command(&tmp).output().expect("the process runs");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let parts: Vec<&str> = stdout.split('|').map(str::trim).collect();
+            assert!(
+                parts[0].contains("Operation not permitted") && !stdout.contains("SECRET"),
+                "{parent_tree:?}: {out:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(sibling.join("config/node-token")).unwrap(),
+                "SECRET-TOKEN",
+                "{parent_tree:?}: not written"
+            );
+            assert_eq!(
+                parts[1], "work",
+                "{parent_tree:?}: the checkout is the node's"
+            );
+            assert_eq!(parts[2], "own", "{parent_tree:?}: its own agent dir too");
+        }
     }
 
     /// **A child of a node reads the parent's worktree it was spawned over, and nothing else of

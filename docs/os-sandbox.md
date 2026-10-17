@@ -16,8 +16,10 @@
   `contracts/` and `events.jsonl` (what a parent's bridge reads of its children), and the one tree
   it was spawned over (a child of a node is cut from its parent's worktree, which its bridge
   resolves to reach the supervisor): no other node's `config/node-token`, prompt or recording. Its
-  own agent dir and every dir it may write stay
-  readable. On Linux, Landlock here restricts writes only, so these reads are not refused.
+  own agent dir and every dir it may write stay readable. A dir it may write that holds marion's
+  state dir (a checkout with the state dir inside it) grants nothing inside another node's agent
+  dir: the sibling rules come after every grant, and nothing there is written either. On Linux,
+  Landlock here restricts writes only, so these reads are not refused.
 - **What it may not write in its own agent dir.** Its `contracts/`, `events.jsonl` and
   `events.jsonl.1` are marion's record of it, which a parent's bridge and the operator's view
   read: on macOS the profile refuses the node's writes there (create, replace, remove, rename).
