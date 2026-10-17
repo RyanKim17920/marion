@@ -750,19 +750,6 @@ const BUILTINS: &[Builtin] = &[
         acp_agent: None,
         delegates_writes: true,
     },
-    // No `tools`, and no orchestrator: Hermes' default toolsets already read, write and run
-    // commands, and which `-t` toolsets withhold writes is unmeasured. The operator's own login
-    // and configured model.
-    Builtin {
-        canonical: "hermes",
-        aliases: &["hermes-impl"],
-        description: "Implementer on Nous Research's Hermes Agent: all of Hermes' own tools.",
-        harness: Harness::Hermes,
-        model: None,
-        tools: &[],
-        acp_agent: None,
-        delegates_writes: false,
-    },
 ];
 
 /// A built-in by name, or the one open-ended family: any ACP agent, named by its command.
@@ -1273,15 +1260,20 @@ mod tests {
             ("qwen-orchestrator", Harness::Qwen),
             ("agy", Harness::Antigravity),
             ("agy-orchestrator", Harness::Antigravity),
-            ("hermes", Harness::Hermes),
         ] {
             assert_eq!(builtin(name).unwrap().harness, h, "{name}");
             assert!(builtin_names().contains(&name), "{name} must be listed");
         }
         assert_eq!(
             builtin_names().len(),
-            26,
+            25,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
+        );
+        // Held: the row's guard against a child adopting the operator's codex and claude logins
+        // was read from the 0.22.2 source, not measured. The type lands with the capture.
+        assert!(
+            BUILTINS.iter().all(|b| b.harness != Harness::Hermes),
+            "no built-in may launch Hermes before its borrowed-login guard is measured"
         );
     }
 

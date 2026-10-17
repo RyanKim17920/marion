@@ -856,18 +856,6 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         )),
         structured: None,
     },
-    // Disabled 2026-10-17: the managed-scope declaration was read from the v0.22.2 source only;
-    // no Hermes TUI was measured reading it, and no working release is installed to measure.
-    NativeFacadeDescriptor {
-        identity: VendorIdentity::new("hermes"),
-        command: "hermes",
-        aliases: &[],
-        native: Some(Lane::new(
-            false,
-            NativeLane::new("hermes", "hermes", NativeAdapterId::new("hermes")),
-        )),
-        structured: None,
-    },
 ];
 
 /// The production registry: [`PRODUCTION_NATIVE_FACADES`], validated.
@@ -1206,9 +1194,10 @@ mod tests {
         assert_eq!(registry.enabled_native_commands(), vec!["atlas", "boreal"]);
     }
 
-    /// **The registry's cardinality is the `Harness` enum's**, minus the one protocol row.
+    /// **The registry's cardinality is the `Harness` enum's**, minus the one protocol row and any
+    /// row no built-in type launches yet (a facade's lane is a type, so it has nothing to stand on).
     ///
-    /// Every terminal harness has exactly one facade whose native lane resolves to an agent type
+    /// Every terminal harness with a built-in type has exactly one facade whose native lane resolves to an agent type
     /// on that harness, whose adapter id is that harness's own spelling (the adapter is the row),
     /// and whose command is the executable it stands in front of; no facade names a harness
     /// twice, none names ACP, and no structured lane is advertised here. Reserved words stay
@@ -1263,6 +1252,11 @@ mod tests {
         let mut expected: Vec<Harness> = Harness::ALL
             .into_iter()
             .filter(|h| *h != Harness::Acp)
+            .filter(|h| {
+                crate::agent_type::builtin_names()
+                    .iter()
+                    .any(|n| crate::agent_type::builtin(n).is_some_and(|t| t.harness == *h))
+            })
             .collect();
         expected.sort();
         covered.sort();

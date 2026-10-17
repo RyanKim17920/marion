@@ -1308,7 +1308,6 @@ mod tests {
                 // pi's JSONL command channel runs on the typed-turn loop (`Dialect::Jsonl`).
                 ("pi", Some(LaunchPath::Duplex)),
                 ("pi-orchestrator", Some(LaunchPath::Duplex)),
-                ("hermes", Some(LaunchPath::LaunchOnly)),
             ]
         );
     }
