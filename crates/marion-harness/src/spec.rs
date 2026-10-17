@@ -1208,23 +1208,28 @@ impl UpdatePolicy {
     /// Write a [`Self::Document`] policy's keys into a JSON object, creating the intermediate
     /// objects a dotted path names. A no-op for every other variant.
     pub fn apply_to_json(self, doc: &mut serde_json::Value) {
-        let UpdatePolicy::Document { keys, .. } = self else {
-            return;
-        };
-        for (path, value) in keys {
-            let mut node = &mut *doc;
-            let mut parts = path.split('.').peekable();
-            while let Some(part) = parts.next() {
-                if !node.is_object() {
-                    *node = serde_json::Value::Object(Default::default());
-                }
-                let object = node.as_object_mut().expect("just made an object");
-                node = object
-                    .entry(part)
-                    .or_insert_with(|| serde_json::Value::Object(Default::default()));
-                if parts.peek().is_none() {
-                    *node = serde_json::Value::Bool(*value);
-                }
+        if let UpdatePolicy::Document { keys, .. } = self {
+            set_bools(doc, keys);
+        }
+    }
+}
+
+/// Write boolean `keys`, as dotted paths, into a JSON object, creating the intermediate objects a
+/// path names and replacing whatever stood at each.
+pub fn set_bools(doc: &mut serde_json::Value, keys: &[(&str, bool)]) {
+    for (path, value) in keys {
+        let mut node = &mut *doc;
+        let mut parts = path.split('.').peekable();
+        while let Some(part) = parts.next() {
+            if !node.is_object() {
+                *node = serde_json::Value::Object(Default::default());
+            }
+            let object = node.as_object_mut().expect("just made an object");
+            node = object
+                .entry(part)
+                .or_insert_with(|| serde_json::Value::Object(Default::default()));
+            if parts.peek().is_none() {
+                *node = serde_json::Value::Bool(*value);
             }
         }
     }
@@ -2286,6 +2291,12 @@ pub struct ConfigFile {
     /// The top-level key the harness reads its servers under: [`MCP_SERVERS_KEY`] on every row
     /// but one that spells it otherwise (Hermes' `mcp_servers`).
     pub servers_key: &'static str,
+    /// **The switches that keep the harness from borrowing another harness's login**, as dotted
+    /// boolean keys written over the base (Hermes' `auth.adopt_external_logins: false`, without
+    /// which it adopts the operator's codex and claude refresh tokens). Empty on a document that
+    /// guards nothing. A guarding document is written under every auth mode, and the sweep
+    /// `every_borrowed_login_switch_renders_in_every_launch_shape` holds every launch to it.
+    pub borrowed_login: &'static [(&'static str, bool)],
     pub pretty: bool,
 }
 
@@ -2295,6 +2306,7 @@ impl ConfigFile {
     pub fn render(self, bridge: Option<&BridgeEnv>) -> Option<String> {
         let mut doc: serde_json::Value = serde_json::from_str(self.base).ok()?;
         doc.as_object()?;
+        set_bools(&mut doc, self.borrowed_login);
         if let (Some(servers), Some(b)) = (self.servers, bridge) {
             doc[self.servers_key] = serde_json::json!({ MCP_ALIAS: servers.entry(b) });
         }

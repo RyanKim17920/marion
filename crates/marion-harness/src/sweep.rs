@@ -272,6 +272,15 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
                 format!("{:?}'s base is not a JSON object", file.path),
             );
         }
+        if !file.borrowed_login.is_empty() && file.modes != spec::Modes::All {
+            fault(
+                "files",
+                format!(
+                    "{:?} guards a borrowed login, so it must be written under every auth mode",
+                    file.path
+                ),
+            );
+        }
         if file.servers.is_some() && file.servers_key.trim().is_empty() {
             fault(
                 "files",
@@ -501,6 +510,18 @@ mod tests {
                 },
                 "files",
                 "files: \"home/settings.json\" declares servers under no key",
+            ),
+            (
+                HarnessSpec {
+                    files: Box::leak(Box::new([spec::ConfigFile {
+                        borrowed_login: &[("auth.adopt_external_logins", false)],
+                        ..qwen.files[0]
+                    }])),
+                    ..qwen
+                },
+                "files",
+                "files: \"home/settings.json\" guards a borrowed login, so it must be written \
+                 under every auth mode",
             ),
             (
                 HarnessSpec {

@@ -1136,6 +1136,9 @@ pub struct ConfigFileDto {
     /// The key the servers go under; `mcpServers` where unstated.
     #[serde(default)]
     pub servers_key: Option<String>,
+    /// Dotted boolean keys that stop the harness borrowing another's login.
+    #[serde(default)]
+    pub borrowed_login: Vec<(String, bool)>,
     #[serde(default)]
     pub pretty: bool,
 }
@@ -1924,6 +1927,12 @@ impl RowDto {
                         base: leak(f.base),
                         servers: f.servers.map(McpServersDto::servers),
                         servers_key: f.servers_key.map_or(spec::MCP_SERVERS_KEY, leak),
+                        borrowed_login: leak_all(
+                            f.borrowed_login
+                                .into_iter()
+                                .map(|(k, b)| (leak(k), b))
+                                .collect(),
+                        ),
                         pretty: f.pretty,
                     })
                     .collect(),

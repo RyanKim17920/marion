@@ -9343,6 +9343,23 @@ mod tests {
         assert_eq!(spelled["memory"], default["memory"]);
     }
 
+    /// **A document's borrowed-login switches are written over its base**, at their dotted paths,
+    /// with or without a bridge — the switch guards the node whether or not it reaches marion.
+    #[test]
+    fn a_document_writes_its_borrowed_login_switches_over_its_base() {
+        let file = spec::ConfigFile {
+            base: r#"{"auth":{"adopt_external_logins":true,"keep":1}}"#,
+            borrowed_login: &[("auth.adopt_external_logins", false)],
+            ..qwen::SPEC.files[0]
+        };
+        let bridge = bridge_env(&spec_for(Harness::Qwen), &ctx());
+        for rendered in [file.render(None), file.render(Some(&bridge))] {
+            let doc: serde_json::Value = serde_json::from_str(&rendered.unwrap()).unwrap();
+            assert_eq!(doc["auth"]["adopt_external_logins"], false, "{doc}");
+            assert_eq!(doc["auth"]["keep"], 1, "the base's other keys stay: {doc}");
+        }
+    }
+
     #[test]
     fn every_row_states_its_update_policy_and_renders_it_into_every_launch_shape() {
         use crate::spec::UpdatePolicy;

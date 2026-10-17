@@ -205,6 +205,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         base: r#"{"memory":{"enableManagedAutoMemory":false}}"#,
         servers: Some(MCP_SERVERS),
         servers_key: crate::spec::MCP_SERVERS_KEY,
+        borrowed_login: &[],
         pretty: true,
     }],
     overlay_documents: &[],
