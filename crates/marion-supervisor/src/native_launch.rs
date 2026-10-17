@@ -374,7 +374,11 @@ struct NativeNodeJournal {
 }
 
 impl NativeNodeJournal {
-    fn intent(&self, agent_type: &AgentType) -> Result<(), crate::journal::JournalError> {
+    fn intent(
+        &self,
+        agent_type: &AgentType,
+        trust: &marion_core::journal::TrustRecord,
+    ) -> Result<(), crate::journal::JournalError> {
         self.handle
             .journal_now(RecordKind::SpawnIntent(SpawnIntent {
                 budget: None,
@@ -395,7 +399,7 @@ impl NativeNodeJournal {
                 verification: vec![],
                 race: None,
                 workflow: None,
-                trust: Default::default(),
+                trust: trust.clone(),
             }))
     }
 
@@ -587,8 +591,13 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
             agent_id: agent_id.clone(),
             harness_version: "unknown".into(),
         };
+        // The operator's own session is a root: its checkout's trust record is taken here, before
+        // it runs, as `root::prepare` takes a managed root's, so the children it spawns are held
+        // to the checkout as the operator launched it rather than to none.
+        let tree = working_tree_root(context.client_cwd());
+        let trust = crate::spawn::trust_record_taken(&tree);
         journal
-            .intent(agent_type)
+            .intent(agent_type, &trust)
             .map_err(|error| BootstrapError::NativeClaim(error.to_string()))?;
         // **§6.1 step 7's window, and the only instant §5.4's capability can be decided in.** The
         // intent is durable, so the node exists and the registry can read its depth and agent type
@@ -601,11 +610,10 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
         // this node lives in is the tree its own children branch from, and a native root lives
         // where the operator stood, never in §2's key.
         let node_token = self.handle.claim(
-            &agent_id,
-            // A root has no contract (§9).
-            None,
-            working_tree_root(context.client_cwd()),
+            &agent_id, // A root has no contract (§9).
+            None, tree,
         );
+        self.handle.record_trust(&agent_id, &trust);
         let claim = NativeNodeClaim {
             agent_id: agent_id.clone(),
             // Present or absent, never empty: an empty token is a secret every process on this
@@ -1549,7 +1557,8 @@ mod tests {
 
     /// **A native root is `Running` while its pty session is up, and its `Spawned` names the
     /// harness version the launch probed** — the two facts `marion tree` showed as `spawning`
-    /// and `unknown` for the node's whole life.
+    /// and `unknown` for the node's whole life. Its intent carries the trust record the launch
+    /// took, which its children inherit.
     ///
     /// Mutations: drop the `StateChanged(Running)` from `NativeNodeJournal::spawned` and the
     /// summary reads `Spawning` until the exit; write `"unknown"` for the version and the
@@ -1569,11 +1578,20 @@ mod tests {
             harness_version: "9.9.9-probed".into(),
         };
         let agent_type = marion_core::agent_type::builtin("claude-impl").unwrap();
-        journal.intent(&agent_type).unwrap();
+        let trust = marion_core::journal::TrustRecord {
+            head: Some(marion_core::contract::Oid("c0ffee".into())),
+            ..Default::default()
+        };
+        journal.intent(&agent_type, &trust).unwrap();
         journal.spawned(std::process::id() as i32);
 
         let replayed = Registry::boot_path(&journal_path).unwrap();
         let node = replayed.tree().get(&agent_id).expect("the node replays");
+        assert_eq!(
+            node.intent.as_ref().map(|i| &i.trust),
+            Some(&trust),
+            "the native root's intent carries the trust record its launch took"
+        );
         let summary = crate::handler::summarize(node, true).expect("a native root projects");
         assert_eq!(
             summary.state,

@@ -301,9 +301,7 @@ impl crate::run::SpawnObserver for NodeOwner {
     }
 
     fn trust_recorded(&self, agent_id: &AgentId, record: &marion_core::journal::TrustRecord) {
-        if let Some(node) = lock(&self.handle.nodes).get_mut(agent_id) {
-            node.trust = Some(record.clone());
-        }
+        self.handle.record_trust(agent_id, record);
     }
 
     fn identified(&self, agent_id: &AgentId) -> Option<Secret> {

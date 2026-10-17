@@ -246,6 +246,18 @@ impl RegistryHandle {
         self.inboxes.open(agent_id);
         token
     }
+
+    /// **What the claimed node's repository-config trust is held to**, as it recorded before its
+    /// process existed: what a node it spawns inherits ([`crate::run::trust_record_for`]).
+    pub(crate) fn record_trust(
+        &self,
+        agent_id: &AgentId,
+        record: &marion_core::journal::TrustRecord,
+    ) {
+        if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
+            node.trust = Some(record.clone());
+        }
+    }
 }
 
 /// Send a run of a node's events to one client with `send` ([`Outbound::notify`], or
