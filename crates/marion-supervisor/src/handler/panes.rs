@@ -1287,7 +1287,7 @@ fn attach_io_failure(
 
 /// [`attach_io_failure`] for a read that failed once the replay had begun. Events already sent
 /// cannot be unsent, so the refusal names them for a client to drop.
-fn replay_failure(
+pub(super) fn replay_failure(
     id: &AgentId,
     path: &std::path::Path,
     error: &crate::events::EventError,

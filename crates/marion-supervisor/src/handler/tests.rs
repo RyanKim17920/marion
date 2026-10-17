@@ -5899,10 +5899,29 @@ fn node_attach_replays_a_history_longer_than_the_outbound_queue() {
 /// the answer, so a read that fails after the rotated half has gone out cannot unsend it; the
 /// refusal names how many events were sent and that they are an incomplete prefix to discard.
 ///
-/// The current file is a directory here: it opens, and its first read fails, after the rotated
-/// half's events were delivered.
+/// No file a test can leave makes a read fail once its open succeeded (a directory or a FIFO at
+/// either half is refused at the open, below), so the refusal is held here as it is built.
 #[test]
-fn node_attach_that_fails_partway_through_its_replay_says_what_was_already_sent() {
+fn a_replay_failing_partway_names_what_was_already_sent() {
+    let error = crate::events::EventError::from(std::io::Error::other("read failed"));
+    let path = std::path::Path::new("/s/events.jsonl");
+    let e = super::panes::replay_failure(&AgentId("root".into()), path, &error, 2);
+    assert!(
+        e.message.contains("2 events")
+            && e.message.contains("incomplete")
+            && e.message.contains("discard"),
+        "{}",
+        e.message
+    );
+    let e = super::panes::replay_failure(&AgentId("root".into()), path, &error, 0);
+    assert!(!e.message.contains("incomplete"), "{}", e.message);
+}
+
+/// **A stream half that is not a regular file refuses the attach before anything is sent**: a
+/// directory in place of the current file is refused at its open, so the rotated half's events
+/// never go out as a prefix to be discarded.
+#[test]
+fn node_attach_over_a_directory_at_its_stream_sends_nothing() {
     let w = Wired::new("handler-attach-partial");
     let stream = events_of(&w.fx, "root");
     say(&stream, "root", &["older-1", "older-2"]);
@@ -5912,15 +5931,10 @@ fn node_attach_that_fails_partway_through_its_replay_says_what_was_already_sent(
     let mut c = w.dial();
     let mut r = std::io::BufReader::new(c.try_clone().unwrap());
     let (replay, outcome) = attach(&mut c, &mut r, "root", 1);
-    assert_eq!(
-        heard(&replay),
-        vec![(0, "older-1".into()), (1, "older-2".into())]
-    );
+    assert_eq!(heard(&replay), vec![]);
     let e = refusal(outcome);
     assert!(
-        e.message.contains("2 events")
-            && e.message.contains("incomplete")
-            && e.message.contains("discard"),
+        e.message.contains("could not be read") && !e.message.contains("incomplete"),
         "{}",
         e.message
     );
