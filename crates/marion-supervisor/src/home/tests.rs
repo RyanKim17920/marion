@@ -1424,7 +1424,6 @@ fn every_key() -> Vec<Key> {
         Key::PageUp,
         Key::PageDown,
         Key::End,
-        Key::F1,
         Key::Paste("p".into()),
     ]
     .into_iter()

@@ -29,8 +29,6 @@ pub enum Key {
     PageDown,
     Home,
     End,
-    /// F1: help, from anywhere, since `?` is text while a prompt is being typed.
-    F1,
     Paste(String),
 }
 
@@ -120,9 +118,6 @@ fn escape(b: &[u8]) -> (Option<Key>, usize) {
                 (b'~', b"6") => Some(Key::PageDown),
                 (b'~', b"1" | b"7") => Some(Key::Home),
                 (b'~', b"4" | b"8") => Some(Key::End),
-                // F1: `ESC O P` (SS3), `ESC [ 1 P` (xterm with a modifier byte), `ESC [ 11 ~` (rxvt).
-                (b'P', b"" | b"1") => Some(Key::F1),
-                (b'~', b"11") => Some(Key::F1),
                 _ => None,
             };
             (key, used)
@@ -174,7 +169,8 @@ mod tests {
         assert_eq!(decode(b"\x1b"), [Key::Esc]);
         assert_eq!(
             decode(b"\x1bOP\x1b[11~\x1b[1P"),
-            [Key::F1, Key::F1, Key::F1]
+            [],
+            "F1 is skipped, not typed: `?` is help"
         );
         assert_eq!(
             decode(b"\x1b[99x"),
