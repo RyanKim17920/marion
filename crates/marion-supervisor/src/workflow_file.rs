@@ -202,7 +202,8 @@ pub fn check(tree: &Path, path: &Path) -> Result<(String, Workflow), LoadError> 
 }
 
 /// A file's text, refusing a link that leaves its directory (a repository's file must be the
-/// repository's own) and anything that is not UTF-8.
+/// repository's own) and anything that is not a small regular UTF-8 file
+/// ([`marion_harness::tree_file::read`]).
 fn read(path: &Path) -> Result<String, LoadError> {
     let refuse = |why: String| LoadError::Read {
         path: path.to_path_buf(),
@@ -217,7 +218,9 @@ fn read(path: &Path) -> Result<String, LoadError> {
             real.display()
         )));
     }
-    std::fs::read_to_string(path).map_err(|e| refuse(e.to_string()))
+    // The resolved path, so the read itself follows no link; the check above placed it.
+    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    marion_harness::tree_file::read_to_string(&real).map_err(|e| refuse(e.to_string()))
 }
 
 /// **The workflow named `name`, ready to run**: found, checked, and — a repository's — trusted by

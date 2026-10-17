@@ -1017,7 +1017,7 @@ pub fn run(
         [verb, rest @ ..] if verb == "allow" => {
             let file = file_arg(rest)?;
             let canonical = canonical(&file).map_err(err)?;
-            let text = std::fs::read_to_string(&canonical)
+            let text = marion_harness::tree_file::read_to_string(&canonical)
                 .map_err(|e| Some(format!("{}: {e}", canonical.display())))?;
             if crate::workflow_file::is_repo_workflow(&canonical) {
                 return allow_workflow(&canonical, &text, store, out);
@@ -1068,7 +1068,7 @@ pub fn run(
                 return w(out_to!(out, "no trusted files"));
             }
             for e in &store.files {
-                let state = match std::fs::read(&e.path) {
+                let state = match marion_harness::tree_file::read(&e.path) {
                     Ok(bytes) if crate::inbox::sha256_hex(&bytes) == e.sha256 => "trusted",
                     Ok(_) => "edited ",
                     Err(_) => "missing",

@@ -1086,9 +1086,10 @@ pub fn main_checkout(cwd: &Path) -> Option<PathBuf> {
     if dot.is_dir() {
         return Some(top.to_path_buf());
     }
-    let text = std::fs::read_to_string(&dot).ok()?;
+    // The gitfile is the tree's and `commondir` sits in the admin dir a node may write.
+    let text = crate::tree_file::read_to_string(&dot).ok()?;
     let gitdir = top.join(text.strip_prefix("gitdir:")?.trim());
-    let common = match std::fs::read_to_string(gitdir.join("commondir")) {
+    let common = match crate::tree_file::read_to_string(&gitdir.join("commondir")) {
         Ok(rel) => gitdir.join(rel.trim()),
         Err(_) => gitdir,
     };
