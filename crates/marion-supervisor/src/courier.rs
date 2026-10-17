@@ -826,6 +826,10 @@ fn terminal_of(agent_id: &AgentId, event: marion_core::proto::notify::Event) -> 
     }
 }
 
+/// The most of a persisted contract [`read_contract`] reads: every field a contract carries is
+/// bounded where it is built (evidence above all), so one past this was not marion's.
+const CONTRACT_CAP: u64 = 64 << 20;
+
 /// **§6.7's contract, read from the file that is the contract.**
 ///
 /// Capped here with the same [`cap_for_return`] `run_spawn` applied when the bridge ran children
@@ -842,9 +846,12 @@ pub(crate) fn read_contract(
     task_id: &TaskId,
 ) -> Result<TaskContract, SpawnError> {
     let path = project.agent(agent_id).contract(task_id);
-    let bytes = std::fs::read(&path).map_err(|e| SpawnError::NoContract {
-        path: path.clone(),
-        why: e.to_string(),
+    // In the child's agent dir, which on Linux its sandbox may still write (docs/os-sandbox.md).
+    let bytes = marion_harness::tree_file::read_capped(&path, CONTRACT_CAP).map_err(|e| {
+        SpawnError::NoContract {
+            path: path.clone(),
+            why: e.to_string(),
+        }
     })?;
     let contract =
         serde_json::from_slice::<TaskContract>(&bytes).map_err(|e| SpawnError::NoContract {
@@ -901,6 +908,21 @@ mod tests {
                 && msg.contains(&other.0),
             "the refusal names both tasks: {msg}"
         );
+
+        // A FIFO in its place (no writer) is refused at once, not waited on.
+        let fifo = project.agent(&agent_id).contract(&contract.task_id);
+        std::fs::remove_file(&fifo).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(matches!(
+            read_contract(&project, &agent_id, &contract.task_id),
+            Err(SpawnError::NoContract { .. })
+        ));
     }
 
     /// A supervisor's socket paths under a state root with nothing listening.
