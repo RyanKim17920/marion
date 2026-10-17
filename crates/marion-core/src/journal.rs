@@ -617,6 +617,29 @@ pub struct Spawned {
     /// the key. `None` wherever `provider` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// The repository config this generation's tree held back ([`ConfigHeld`]), so a watcher
+    /// sees it while the node runs rather than only from its contract. Additive: skipped when
+    /// nothing was held back.
+    #[serde(default, skip_serializing_if = "ConfigHeld::is_empty")]
+    pub repo_config_held: ConfigHeld,
+}
+
+/// **The repository config a generation's tree held back**, in a repository the operator
+/// trusted: the paths not as the operator's commit (or, in their checkout, the root's first
+/// launch) has them, and whether that reference could not be read at all — then every path the
+/// tree holds is held, and the line says so rather than that each differs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigHeld {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unverified: bool,
+}
+
+impl ConfigHeld {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1158,6 +1181,7 @@ mod tests {
         let kinds = [
             intent(),
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: AgentId("a-1".into()),
                 harness_version: "2.1.220".into(),
                 model: Some("gpt-5.4".into()),
@@ -1473,6 +1497,7 @@ mod tests {
     #[test]
     fn a_spawned_without_a_start_id_is_byte_identical_to_what_the_previous_build_wrote() {
         let without = Spawned {
+            repo_config_held: Default::default(),
             agent_id: AgentId("a-1".into()),
             harness_version: "2.1.220".into(),
             model: None,
@@ -1490,6 +1515,7 @@ mod tests {
         );
 
         let with = Spawned {
+            repo_config_held: Default::default(),
             agent_id: AgentId("a-1".into()),
             harness_version: "2.1.220".into(),
             model: None,

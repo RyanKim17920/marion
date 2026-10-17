@@ -37,6 +37,7 @@ fn a_tree() -> Vec<RecordKind> {
             trust: Default::default(),
         }),
         RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: AgentId("root".into()),
             harness_version: "2.1.220".into(),
             model: None,
@@ -65,6 +66,7 @@ fn a_tree() -> Vec<RecordKind> {
             trust: Default::default(),
         }));
         kinds.push(RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: child.clone(),
             harness_version: "0.9.0".into(),
             model: None,

@@ -271,6 +271,7 @@ fn a_summary_carries_when_the_node_started_and_ended() {
             1,
             ms,
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("c"),
                 harness_version: "0.9.0".into(),
                 model: None,
@@ -318,6 +319,7 @@ fn a_summary_carries_an_endpoint_nodes_provider_model_and_route() {
             1,
             2,
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("c"),
                 harness_version: "1.17.3".into(),
                 model: Some("marion/qwen/qwen3-coder".into()),
@@ -386,6 +388,7 @@ fn an_undescribable_node_is_named_rather_than_filled_in() {
             0,
             1,
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("no-intent"),
                 harness_version: "0.9.0".into(),
                 model: None,
@@ -601,6 +604,7 @@ fn recording_fx_with(tag: &str, records: Vec<RecordKind>) -> (Fx, Arc<RecordingR
 
 fn spawned(agent: &str, pid: i32) -> RecordKind {
     RecordKind::Spawned(Spawned {
+        repo_config_held: Default::default(),
         agent_id: id(agent),
         harness_version: "test".into(),
         model: None,
@@ -930,6 +934,7 @@ fn a_node_the_snapshot_cannot_describe_is_counted_rather_than_dropped_into_silen
             1,
             2_000,
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("headless"),
                 harness_version: "0.9.0".into(),
                 model: None,
@@ -8475,6 +8480,7 @@ mod owns_nodes {
         vec![
             intent("root", None, "claude", 0),
             RecordKind::Spawned(marion_core::journal::Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("root"),
                 harness_version: "test".into(),
                 model: None,
@@ -8511,6 +8517,7 @@ mod owns_nodes {
     fn lost_root_and_child(workspace: Option<marion_core::contract::Workspace>) -> Vec<RecordKind> {
         let spawned = |agent: &str| {
             RecordKind::Spawned(marion_core::journal::Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id(agent),
                 harness_version: "test".into(),
                 model: None,

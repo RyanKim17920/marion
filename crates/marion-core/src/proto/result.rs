@@ -79,17 +79,42 @@ pub struct NodeDetail {
     /// contract's `repo_config_held`: paths only, empty where nothing was held back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repo_config_held: Vec<String>,
+    /// The contract's `repo_config_unverified`: the held paths are every one the tree holds,
+    /// because the reference could not be read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repo_config_unverified: bool,
+}
+
+impl NodeDetail {
+    /// Its contract's held-back config as one value, for [`repo_config_held_line`].
+    pub fn config_held(&self) -> crate::journal::ConfigHeld {
+        crate::journal::ConfigHeld {
+            paths: self.repo_config_held.clone(),
+            unverified: self.repo_config_unverified,
+        }
+    }
 }
 
 /// **The one line that says why a trusted repository's config did not load in a node**, or `None`
-/// where nothing was held back: what `marion ls <id>` and the home screen's node detail print.
-pub fn repo_config_held_line(held: &[String]) -> Option<String> {
+/// where nothing was held back: what `marion ls <id>`, `marion run`'s start line and the home
+/// screen's node detail print. Where the reference could not be read (`unverified`) it says that
+/// instead of that each path differs, which nobody compared.
+pub fn repo_config_held_line(held: &crate::journal::ConfigHeld) -> Option<String> {
     (!held.is_empty()).then(|| {
-        let verb = if held.len() == 1 { "differs" } else { "differ" };
-        format!(
-            "repository config held back: {} {verb} from yours",
-            held.join(", ")
-        )
+        let paths = held.paths.join(", ");
+        if held.unverified {
+            format!(
+                "repository config held back: {paths} (marion could not read your commit to \
+                 compare it with)"
+            )
+        } else {
+            let verb = if held.paths.len() == 1 {
+                "differs"
+            } else {
+                "differ"
+            };
+            format!("repository config held back: {paths} {verb} from yours")
+        }
     })
 }
 
@@ -512,17 +537,30 @@ pub struct SessionHelloResult {
 mod tests {
     use super::*;
 
-    /// The held-back line names every path and says nothing where nothing was held back.
+    /// The held-back line names every path and says nothing where nothing was held back; where
+    /// the reference could not be read it says so, not that the paths differ.
     #[test]
     fn the_held_back_line_names_the_paths_or_nothing() {
-        assert_eq!(repo_config_held_line(&[]), None);
+        let held = |paths: &[&str], unverified| crate::journal::ConfigHeld {
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            unverified,
+        };
+        assert_eq!(repo_config_held_line(&held(&[], false)), None);
+        assert_eq!(repo_config_held_line(&held(&[], true)), None);
         assert_eq!(
-            repo_config_held_line(&[".codex/config.toml".into()]).as_deref(),
+            repo_config_held_line(&held(&[".codex/config.toml"], false)).as_deref(),
             Some("repository config held back: .codex/config.toml differs from yours")
         );
         assert_eq!(
-            repo_config_held_line(&[".mcp.json".into(), ".pi".into()]).as_deref(),
+            repo_config_held_line(&held(&[".mcp.json", ".pi"], false)).as_deref(),
             Some("repository config held back: .mcp.json, .pi differ from yours")
+        );
+        assert_eq!(
+            repo_config_held_line(&held(&[".mcp.json"], true)).as_deref(),
+            Some(
+                "repository config held back: .mcp.json (marion could not read your commit to \
+                 compare it with)"
+            )
         );
     }
     use crate::contract::ExitStatus;
@@ -546,6 +584,7 @@ mod tests {
         let full = NodeGetResult {
             node: old.node.clone(),
             detail: NodeDetail {
+                repo_config_unverified: false,
                 task: Some(TaskSent {
                     prompt: "add a limiter".into(),
                     appended: Some("report when done".into()),

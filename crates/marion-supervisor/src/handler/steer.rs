@@ -499,6 +499,7 @@ mod tests {
         fn running(&self, agent: &str, parent: Option<&str>, harness: Harness) -> String {
             self.intent(agent, parent, harness);
             self.write(RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id(agent),
                 harness_version: "test".into(),
                 model: None,
@@ -725,6 +726,7 @@ mod tests {
         fx.intent("native", None, Harness::ClaudeCode);
         for kind in [
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("native"),
                 harness_version: "test".into(),
                 model: None,

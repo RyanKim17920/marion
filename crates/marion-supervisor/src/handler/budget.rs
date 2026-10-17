@@ -260,6 +260,7 @@ mod tests {
         crate::journal::append_at(
             path,
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: AgentId(agent.into()),
                 harness_version: "test".into(),
                 model: None,

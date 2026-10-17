@@ -363,6 +363,7 @@ mod tests {
             &line(
                 3,
                 RecordKind::Spawned(Spawned {
+                    repo_config_held: Default::default(),
                     agent_id: child_id(2),
                     harness_version: "0.146.0".into(),
                     model: None,

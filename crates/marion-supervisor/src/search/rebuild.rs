@@ -266,6 +266,7 @@ mod tests {
                 provider: None,
                 route: None,
                 credential: None,
+                repo_config_held: Default::default(),
             }),
             RecordKind::Exited(Exited {
                 agent_id: AgentId(id.into()),

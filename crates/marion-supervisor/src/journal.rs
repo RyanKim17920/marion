@@ -516,6 +516,7 @@ mod tests {
             let mut j = Journal::open_path(&path, WriterId("w".into())).unwrap();
             j.append(intent("root", None)).unwrap();
             j.append(RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: AgentId("root".into()),
                 // From the one table rather than a fourth copy of the literal: a bare "2.1.220"
                 // here reads as a claim about the pinned CLI, and a pin that lives in two places
@@ -698,6 +699,7 @@ mod tests {
         confirm_spawned(
             &project,
             Spawned {
+                repo_config_held: Default::default(),
                 agent_id: agent_id.clone(),
                 harness_version: "9.9.9-probed".into(),
                 model: None,

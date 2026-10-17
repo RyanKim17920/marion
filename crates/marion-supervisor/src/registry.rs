@@ -649,6 +649,7 @@ mod tests {
 
     fn spawned(agent: &str) -> RecordKind {
         RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: id(agent),
             harness_version: "0.9.0".into(),
             model: None,

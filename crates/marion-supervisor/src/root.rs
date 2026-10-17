@@ -2407,6 +2407,7 @@ fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBu
 /// `stub_harness` does).
 fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> Spawned {
     Spawned {
+        repo_config_held: Default::default(),
         agent_id: node.agent_id.clone(),
         harness_version: harness_version.to_string(),
         // The **compiled** invocation's model, for §6.7's reason: what went on the wire, not what

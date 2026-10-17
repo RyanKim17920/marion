@@ -1136,6 +1136,7 @@ pub fn finished_project(project: &marion_core::paths::ProjectDir) -> FinishedPro
     };
     let spawned = |id: &AgentId| {
         RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: id.clone(),
             harness_version: "1.0.0".into(),
             model: None,

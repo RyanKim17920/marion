@@ -98,6 +98,9 @@ pub struct ReplayedNode {
     pub provider: Option<String>,
     pub route: Option<String>,
     pub credential: Option<String>,
+    /// The repository config the last `Spawned` recorded as held back: the running generation's,
+    /// which a contract (written only at the end) cannot yet say.
+    pub repo_config_held: crate::journal::ConfigHeld,
     /// The harness's own name for this node's conversation, from the last [`SessionObserved`]
     /// the journal carries — the handle a resume hands back to the harness. `None` is honest and
     /// common: no producer has written the record yet, the harness's first frame never arrived, or
@@ -220,6 +223,7 @@ impl ReplayedNode {
             provider: None,
             route: None,
             credential: None,
+            repo_config_held: Default::default(),
             harness_session: None,
             harness_pane: false,
             launch_workspace: None,
@@ -525,6 +529,7 @@ impl ReplayedNode {
         self.provider = s.provider;
         self.route = s.route;
         self.credential = s.credential;
+        self.repo_config_held = s.repo_config_held;
         if self.spawn_generation > 1 {
             self.state = NodeState::Spawning;
             self.state_reason = None;
@@ -1273,6 +1278,7 @@ mod tests {
                 trust: Default::default(),
             })),
             next(RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("root"),
                 harness_version: "2.1.220".into(),
                 model: None,
@@ -1298,6 +1304,7 @@ mod tests {
                 trust: Default::default(),
             })),
             next(RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("child"),
                 harness_version: "0.9.0".into(),
                 model: None,
@@ -1806,6 +1813,7 @@ mod tests {
         r.extend(&bytes(&[record(
             n,
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("root"),
                 harness_version: "2.1.221".into(),
                 model: Some("opus".into()),
@@ -2120,6 +2128,7 @@ mod tests {
                 2_000,
                 1,
                 RecordKind::Spawned(Spawned {
+                    repo_config_held: Default::default(),
                     agent_id: id("a"),
                     harness_version: "0.9.0".into(),
                     model: None,
@@ -2201,6 +2210,7 @@ mod tests {
         let j = vec![record(
             0,
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id("orphan-record"),
                 harness_version: "1".into(),
                 model: None,
@@ -2731,6 +2741,7 @@ mod tests {
 
         // Onto the node: after `SpawnIntent` + `Spawned`, the observation names the session.
         let spawned = RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: AgentId("a-1".into()),
             harness_version: "2.1.220".into(),
             model: None,
@@ -3232,5 +3243,55 @@ mod tests {
             ["root"],
             "a marking is a move"
         );
+    }
+
+    /// **A generation's `Spawned` replaces the held-back config the one before recorded**: a
+    /// continuation that holds nothing back clears what generation 0 held.
+    #[test]
+    fn each_spawned_replaces_the_held_back_config() {
+        let a = id("held");
+        let spawned = |paths: &[&str]| {
+            RecordKind::Spawned(Spawned {
+                repo_config_held: crate::journal::ConfigHeld {
+                    paths: paths.iter().map(|p| p.to_string()).collect(),
+                    unverified: false,
+                },
+                agent_id: a.clone(),
+                harness_version: "1".into(),
+                model: None,
+                pid: Some(1),
+                start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
+            })
+        };
+        let journal = |kinds: Vec<RecordKind>| {
+            let intent = RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
+                review_of: None,
+                agent_id: a.clone(),
+                parent_id: None,
+                agent_type: "claude".into(),
+                harness: Harness::ClaudeCode,
+                depth: 0,
+                task_id: None,
+                timeout_secs: None,
+                verification: vec![],
+                race: None,
+                workflow: None,
+                trust: Default::default(),
+            });
+            let records: Vec<JournalRecord> = std::iter::once(intent)
+                .chain(kinds)
+                .enumerate()
+                .map(|(i, k)| record(i as u64, k))
+                .collect();
+            replay(&bytes(&records))
+        };
+        let gen0 = journal(vec![spawned(&[".mcp.json"])]);
+        assert_eq!(gen0.get(&a).unwrap().repo_config_held.paths, [".mcp.json"]);
+        let gen1 = journal(vec![spawned(&[".mcp.json"]), spawned(&[])]);
+        assert!(gen1.get(&a).unwrap().repo_config_held.is_empty());
     }
 }

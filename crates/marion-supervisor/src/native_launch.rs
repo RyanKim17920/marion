@@ -418,6 +418,7 @@ impl NativeNodeJournal {
 impl NativeNodeRecorder for NativeNodeJournal {
     fn spawned(&self, pid: i32) {
         self.record(RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: self.agent_id.clone(),
             harness_version: self.harness_version.clone(),
             model: None,

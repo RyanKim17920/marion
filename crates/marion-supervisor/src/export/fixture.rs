@@ -146,6 +146,7 @@ fn write_journal(p: &ProjectDir) {
     };
     let spawned = |agent: &str, version: &str, model: &str, credential: Option<&str>| {
         RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: id(agent),
             harness_version: version.into(),
             model: Some(model.into()),

@@ -1328,7 +1328,7 @@ fn a_preview_names_the_repository_config_held_back() {
     );
     assert!(
         facts(&h).contains(&(
-            "repository config held back: .mcp.json differs from your branch".into(),
+            "repository config held back: .mcp.json differs from yours".into(),
             vec![Ink::Dim]
         )),
         "{:?}",

@@ -960,6 +960,7 @@ mod tests {
                 trust: Default::default(),
             }),
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: AgentId("019f0000-0000-7000-8000-00000000000a".into()),
                 harness_version: "x".into(),
                 model: None,
@@ -1080,6 +1081,7 @@ mod tests {
                 trust: Default::default(),
             }),
             RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: decided.clone(),
                 harness_version: "x".into(),
                 model: None,

@@ -384,6 +384,7 @@ mod tests {
                 trust: Default::default(),
             }));
             self.push(RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id(agent),
                 harness_version: "2.1.220".into(),
                 model: None,
@@ -860,6 +861,7 @@ mod tests {
 
         // The running supervisor relaunches the node under its own id.
         let relaunch = RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: id("lost"),
             harness_version: "2.1.220".into(),
             model: None,

@@ -4,6 +4,7 @@
 //! reads its JSONL until the process ends, then derives the contract from **git** and from the
 //! child's `report` call. `spawn` blocks for the whole run and returns the completed contract.
 
+use marion_core::journal::ConfigHeld;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -1013,16 +1014,17 @@ pub fn repo_config_unchanged(
 /// **The config `paths` the child tree `wt` holds otherwise than the operator's commit**, by
 /// [`repo_config_unchanged`]'s rule: each path that is not as the reference has it. Where there is
 /// no reference, every path present in the tree is held, and with none present the first path
-/// stands for the lot, so a missing reference never reads as the operator's.
+/// stands for the lot, so a missing reference never reads as the operator's; the answer then says
+/// it was not compared ([`ConfigHeld::unverified`]).
 pub fn repo_config_held(
     wt: Tree<'_>,
     base: &Oid,
     common: &Path,
     head: Option<&Oid>,
     paths: &[&str],
-) -> Vec<String> {
+) -> ConfigHeld {
     if paths.is_empty() {
-        return Vec::new();
+        return ConfigHeld::default();
     }
     let Some(head) = head else {
         return config_held_unverified(wt.dir(), paths);
@@ -1031,25 +1033,31 @@ pub fn repo_config_held(
         return config_held_unverified(wt.dir(), paths);
     };
     let reference = reference.trim();
-    paths
-        .iter()
-        .filter(|p| !config_as_committed(wt, reference, p))
-        .map(|p| p.to_string())
-        .collect()
+    ConfigHeld {
+        paths: paths
+            .iter()
+            .filter(|p| !config_as_committed(wt, reference, p))
+            .map(|p| p.to_string())
+            .collect(),
+        unverified: false,
+    }
 }
 
 /// **What is held where nothing says the config in `dir` is the operator's**: every path present
 /// there, and with none present the first path stands for the lot, so the answer is never "none
-/// held". Empty only for no `paths`.
-pub fn config_held_unverified(dir: &Path, paths: &[&str]) -> Vec<String> {
+/// held". Empty only for no `paths`. Always [`ConfigHeld::unverified`]: nothing was compared.
+pub fn config_held_unverified(dir: &Path, paths: &[&str]) -> ConfigHeld {
     let present: Vec<String> = paths
         .iter()
         .filter(|p| std::fs::symlink_metadata(dir.join(p)).is_ok())
         .map(|p| p.to_string())
         .collect();
-    match (present.is_empty(), paths.first()) {
-        (true, Some(first)) => vec![first.to_string()],
-        _ => present,
+    ConfigHeld {
+        paths: match (present.is_empty(), paths.first()) {
+            (true, Some(first)) => vec![first.to_string()],
+            _ => present,
+        },
+        unverified: true,
     }
 }
 
@@ -1981,6 +1989,7 @@ pub fn build_contract(
         verification_containment: None,
     };
     TaskContract {
+        repo_config_unverified: false,
         task_id,
         requester,
         // `version` and `model` are provisional: `run_spawn` overwrites them from the **compiled
@@ -2975,7 +2984,7 @@ mod tests {
         std::fs::write(wt.join(".mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
         assert!(!same(child, &base), "an edit");
         assert_eq!(
-            repo_config_held(child, &base, &common, Some(&base), &paths),
+            repo_config_held(child, &base, &common, Some(&base), &paths).paths,
             [".mcp.json"],
             "and the held paths name it alone"
         );
@@ -3104,7 +3113,7 @@ mod tests {
             repo: &repo,
         };
         assert_eq!(
-            repo_config_held(child2, &base2, &common, Some(&base2), &paths),
+            repo_config_held(child2, &base2, &common, Some(&base2), &paths).paths,
             [".pi"],
             "a committed blob past the cap is held, never read"
         );
@@ -3143,6 +3152,15 @@ mod tests {
         let (wt, base) = child_from("fresh");
         assert!(same(&wt, &base, Some(&recorded)), "the operator's config");
         assert!(!same(&wt, &base, None), "no recorded commit: nothing is");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        assert!(
+            repo_config_held(child, &base, &common, None, &paths).unverified,
+            "and the held paths say nothing was compared"
+        );
+        assert!(!repo_config_held(child, &base, &common, Some(&recorded), &paths).unverified);
 
         // The root commits a planted config on the branch it was launched on.
         std::fs::write(repo.join(".mcp.json"), "{\"mcpServers\":{\"x\":{}}}\n").unwrap();

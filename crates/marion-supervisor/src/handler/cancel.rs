@@ -504,6 +504,7 @@ mod tests {
                 trust: Default::default(),
             }));
             self.write(RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
                 agent_id: id(agent),
                 harness_version: "test".into(),
                 model: None,

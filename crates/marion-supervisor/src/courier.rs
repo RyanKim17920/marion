@@ -828,7 +828,7 @@ fn terminal_of(agent_id: &AgentId, event: marion_core::proto::notify::Event) -> 
 
 /// The most of a persisted contract [`read_contract`] reads: every field a contract carries is
 /// bounded where it is built (evidence above all), so one past this was not marion's.
-const CONTRACT_CAP: u64 = 64 << 20;
+pub(crate) const CONTRACT_CAP: u64 = 64 << 20;
 
 /// **§6.7's contract, read from the file that is the contract.**
 ///

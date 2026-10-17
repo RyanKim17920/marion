@@ -37,6 +37,9 @@ pub struct Inputs {
     pub recorded: Spent,
     /// How the journal says it ended, for a node no contract speaks for (a root).
     pub ended: Ended,
+    /// The repository config its latest generation's `Spawned` recorded as held back: what is
+    /// shown while it runs, before a contract says.
+    pub repo_config_held: marion_core::journal::ConfigHeld,
 }
 
 /// **How the journal says a node ended**: an aborted spawn's reason, and the last exit's status and
@@ -95,6 +98,7 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
         launch_workspace: node.launch_workspace.clone(),
         recorded: Spent::recorded(node),
         ended: Ended::of(node),
+        repo_config_held: node.repo_config_held.clone(),
     })
 }
 
@@ -113,14 +117,22 @@ pub fn read(
     let dir = project.agent(id);
     let events = dir.events();
     let contract = i.task_id.as_ref().and_then(|t| {
-        let bytes = std::fs::read(dir.contract(t)).ok()?;
+        // In the node's agent dir, which on Linux its sandbox may still write.
+        let bytes =
+            marion_harness::tree_file::read_capped(&dir.contract(t), crate::courier::CONTRACT_CAP)
+                .ok()?;
         serde_json::from_slice::<TaskContract>(&bytes).ok()
     });
     let spent = crate::spending::shown(i.exited, &i.recorded, live);
-    let repo_config_held = contract
-        .as_ref()
-        .map(|c| c.repo_config_held.clone())
-        .unwrap_or_default();
+    // A node that has ended is spoken for by its contract; one still running (or a resume of
+    // one, beside an earlier run's contract) by its running generation's `Spawned`.
+    let held = match (&contract, i.exited) {
+        (Some(c), true) => marion_core::journal::ConfigHeld {
+            paths: c.repo_config_held.clone(),
+            unverified: c.repo_config_unverified,
+        },
+        _ => i.repo_config_held.clone(),
+    };
     let workspace = contract
         .as_ref()
         .map(|c| c.workspace.clone())
@@ -151,7 +163,8 @@ pub fn read(
             })
         }),
         turns: spent.turns,
-        repo_config_held,
+        repo_config_held: held.paths,
+        repo_config_unverified: held.unverified,
     }
 }
 
@@ -471,6 +484,7 @@ mod tests {
 
     fn inputs(exited: bool, task: Option<&TaskId>) -> Inputs {
         Inputs {
+            repo_config_held: Default::default(),
             harness: Harness::Codex.into(),
             exited,
             task_id: task.cloned(),
@@ -496,6 +510,40 @@ mod tests {
         done.exit.description = "child exited with code 1".into();
         done.failure_cause = cause;
         c
+    }
+
+    /// **The held-back config is shown while a node runs, from its running generation's
+    /// `Spawned`, and from its contract once it has ended**: a resumed node's earlier contract
+    /// does not speak for the run in progress, and a node that ended without one is still spoken
+    /// for by its journal.
+    #[test]
+    fn held_back_config_is_read_from_the_running_generation_until_a_contract_ends_it() {
+        let (p, id) = project("detail-held");
+        let task = TaskId("t-1".into());
+        write_contract(&p, &id, &task, true);
+        let path = p.agent(&id).contract(&task);
+        let mut c: TaskContract = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        c.repo_config_held = vec![".mcp.json".into()];
+        std::fs::write(&path, serde_json::to_vec(&c).unwrap()).unwrap();
+        let running = marion_core::journal::ConfigHeld {
+            paths: vec![".pi".into()],
+            unverified: true,
+        };
+        let with = |exited, task: Option<&TaskId>| Inputs {
+            repo_config_held: running.clone(),
+            ..inputs(exited, task)
+        };
+        let shown = |i: &Inputs| read(&p, &id, i, None, None).config_held();
+        assert_eq!(shown(&with(false, Some(&task))), running, "while it runs");
+        assert_eq!(
+            shown(&with(true, Some(&task))),
+            marion_core::journal::ConfigHeld {
+                paths: vec![".mcp.json".into()],
+                unverified: false,
+            },
+            "once its contract says"
+        );
+        assert_eq!(shown(&with(true, None)), running, "ended with no contract");
     }
 
     /// **Why a node did not end well is said wherever anything recorded says it**: a child's

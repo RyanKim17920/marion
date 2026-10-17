@@ -634,6 +634,10 @@ pub struct TaskContract {
     /// every generation, which asks the tree again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repo_config_held: Vec<String>,
+    /// [`Self::repo_config_held`] is every config path the tree holds because the reference it
+    /// is compared with could not be read (`journal::ConfigHeld::unverified`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repo_config_unverified: bool,
 }
 
 #[cfg(test)]

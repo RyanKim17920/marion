@@ -1850,8 +1850,8 @@ pub(crate) struct RepoTrust {
     /// **What was held back that the operator would expect to load**: in a repository they
     /// trusted, the config paths the tree holds otherwise than their branch. Empty anywhere else
     /// — an untrusted repository loads none, and Setup says why. The contract's
-    /// `repo_config_held`.
-    pub held: Vec<String>,
+    /// `repo_config_held` and `repo_config_unverified`, and the generation's `Spawned`'s.
+    pub held: marion_core::journal::ConfigHeld,
 }
 
 /// **Whether the repository's own harness config in `wt` is the operator's, and whether it
@@ -1882,13 +1882,16 @@ pub(crate) fn repo_trust_of(
         crate::spawn::Tree::Child { wt, .. } => {
             let mut held = match base {
                 Some(b) => crate::spawn::repo_config_held(tree, b, project_root, head, &paths),
-                None => paths.iter().take(1).map(|p| p.to_string()).collect(),
+                None => marion_core::journal::ConfigHeld {
+                    paths: paths.iter().take(1).map(|p| p.to_string()).collect(),
+                    unverified: true,
+                },
             };
             // The node's agent dir above its worktree, which its sandbox may write and a harness
             // reading up from its cwd (claude's `.mcp.json`) loads: nothing there is the
             // operator's. The levels above it are marion's own state, which no node writes.
             if let Some(agent_dir) = wt.parent() {
-                held.extend(
+                held.paths.extend(
                     paths
                         .iter()
                         .filter(|p| std::fs::symlink_metadata(agent_dir.join(p)).is_ok())
@@ -1898,11 +1901,14 @@ pub(crate) fn repo_trust_of(
             held
         }
         crate::spawn::Tree::Operator(dir) => match &record.repo_config {
-            Some(was) => was.held(&crate::spawn::repo_config_snapshot(
-                dir,
-                record.checkout_root.as_deref(),
-                &paths,
-            )),
+            Some(was) => marion_core::journal::ConfigHeld {
+                paths: was.held(&crate::spawn::repo_config_snapshot(
+                    dir,
+                    record.checkout_root.as_deref(),
+                    &paths,
+                )),
+                unverified: false,
+            },
             None => crate::spawn::config_held_unverified(dir, &paths),
         },
     };
@@ -1911,7 +1917,11 @@ pub(crate) fn repo_trust_of(
     RepoTrust {
         own,
         trusted: own && in_trusted_repo,
-        held: if in_trusted_repo { differs } else { Vec::new() },
+        held: if in_trusted_repo {
+            differs
+        } else {
+            Default::default()
+        },
     }
 }
 
@@ -1925,7 +1935,7 @@ fn continuation_launch(
     launch: &LaunchSpec,
     resume: String,
     prompt: String,
-) -> (LaunchSpec, Vec<String>) {
+) -> (LaunchSpec, marion_core::journal::ConfigHeld) {
     let mut next = LaunchSpec {
         resume: Some(resume),
         prompt,
@@ -2602,6 +2612,9 @@ pub fn run_spawn_watched(
     // means: no process exists.
     let unaccountable: std::cell::Cell<Option<crate::journal::JournalError>> =
         std::cell::Cell::new(None);
+    // The latest generation's repository config held back: what its `Spawned` and the contract
+    // record. A cell, because `announce` reads it for every generation and each one replaces it.
+    let repo_config_held = std::cell::RefCell::new(marion_core::journal::ConfigHeld::default());
     // Asked of each process with what that process carries: its attempt's version, model and
     // endpoint on the first generation, and the same on every continuation generation after.
     let announce = |pid: i32,
@@ -2610,7 +2623,14 @@ pub fn run_spawn_watched(
                     endpoint: Option<&crate::endpoint::Endpoint>| {
         let appended = crate::journal::confirm_spawned(
             &env.project_dir,
-            child_spawned_record(&agent_id, version, model, pid, endpoint),
+            child_spawned_record(
+                &agent_id,
+                version,
+                model,
+                pid,
+                endpoint,
+                repo_config_held.borrow().clone(),
+            ),
         );
         match appended {
             // **After the append, never before.** The owner's whole reason for wanting this instant
@@ -2655,8 +2675,7 @@ pub fn run_spawn_watched(
     let launched_at = Instant::now();
     let trust = repo_trust(env, &wt, base.as_ref(), &trust_record);
     let (repo_config_own, repo_trusted) = (trust.own, trust.trusted);
-    // The latest generation's: what the contract records as held back.
-    let mut repo_config_held = trust.held;
+    *repo_config_held.borrow_mut() = trust.held;
     // The profile this attempt runs on: an index into `profiles`, 0 for the first.
     let mut at = 0;
     let (launch, inv, mut run, version) = loop {
@@ -3021,7 +3040,7 @@ pub fn run_spawn_watched(
                 resume,
                 crate::inbox::render(&message),
             );
-            repo_config_held = held;
+            *repo_config_held.borrow_mut() = held;
             let next_inv = match declare_and_compile(adapter.as_ref(), &next_launch, &ctx) {
                 Ok(inv) => inv,
                 Err(e) => {
@@ -3186,7 +3205,9 @@ pub fn run_spawn_watched(
         verification,
         evidence,
     );
-    contract.repo_config_held = repo_config_held;
+    let held = repo_config_held.into_inner();
+    contract.repo_config_held = held.paths;
+    contract.repo_config_unverified = held.unverified;
     // Said plainly beside the evidence it describes: whether those lines were kept to the
     // workspace, or ran as the operator.
     if let Some(completion) = contract.completion.as_mut()
@@ -3940,8 +3961,10 @@ fn child_spawned_record(
     model: Option<&str>,
     pid: i32,
     endpoint: Option<&crate::endpoint::Endpoint>,
+    repo_config_held: marion_core::journal::ConfigHeld,
 ) -> Spawned {
     Spawned {
+        repo_config_held,
         agent_id: agent_id.clone(),
         harness_version: version.to_string(),
         // The **compiled** value, for §6.7's reason: what went on the wire, never what was asked

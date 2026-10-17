@@ -815,7 +815,7 @@ fn detail_text(
     if let Some(why) = &d.failure {
         kv("why", why);
     }
-    if let Some(held) = marion_core::proto::result::repo_config_held_line(&d.repo_config_held) {
+    if let Some(held) = marion_core::proto::result::repo_config_held_line(&d.config_held()) {
         kv("config", &held);
     }
     if let Some(page) = &d.stream {
@@ -3784,7 +3784,6 @@ fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec
 
 #[cfg(test)]
 mod tests {
-
     /// **Raw frames reach stdout only when stdout is not a terminal.** The live view already
     /// rendered every frame on stderr; printing the transcript again on a terminal dumped ~20 KB of
     /// stream-json over it when the picker's run ended. Piped, stdout stays the machine surface.

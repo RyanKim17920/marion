@@ -345,7 +345,7 @@ fn preview(home: &Home, now: std::time::SystemTime) -> Option<Preview> {
     let mut facts = Vec::new();
     if let Some(d) = detail {
         facts.extend(ended_facts(n, d));
-        if let Some(held) = marion_core::proto::result::repo_config_held_line(&d.repo_config_held) {
+        if let Some(held) = marion_core::proto::result::repo_config_held_line(&d.config_held()) {
             facts.push(vec![(held, Ink::Dim)]);
         }
     }

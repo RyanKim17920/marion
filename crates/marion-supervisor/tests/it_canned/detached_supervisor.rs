@@ -841,6 +841,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
         path,
         1,
         RecordKind::Spawned(Spawned {
+            repo_config_held: Default::default(),
             agent_id: id.clone(),
             harness_version: "0.146.0".into(),
             model: None,

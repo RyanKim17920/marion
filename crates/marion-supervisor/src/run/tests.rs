@@ -2218,7 +2218,7 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
         "[mcp_servers.x]\ncommand = \"x\"\n",
     )
     .unwrap();
-    let (next, _) = continuation_launch(
+    let (next, held) = continuation_launch(
         &env,
         &wt,
         (Some(&base), &record),
@@ -2229,6 +2229,10 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     assert!(
         !next.extra.repo_config_own && !next.extra.repo_trusted,
         "a config planted in generation 0 is the child's in generation 1"
+    );
+    assert!(
+        held.is_empty(),
+        "an untrusted repository holds nothing back that would have loaded: {held:?}"
     );
     assert_eq!(next.resume.as_deref(), Some("s1"));
     assert_eq!(next.prompt, "go on");
