@@ -87,7 +87,7 @@ pub fn repo_config_held_line(held: &[String]) -> Option<String> {
     (!held.is_empty()).then(|| {
         let verb = if held.len() == 1 { "differs" } else { "differ" };
         format!(
-            "repository config held back: {} {verb} from your branch",
+            "repository config held back: {} {verb} from yours",
             held.join(", ")
         )
     })
@@ -518,11 +518,11 @@ mod tests {
         assert_eq!(repo_config_held_line(&[]), None);
         assert_eq!(
             repo_config_held_line(&[".codex/config.toml".into()]).as_deref(),
-            Some("repository config held back: .codex/config.toml differs from your branch")
+            Some("repository config held back: .codex/config.toml differs from yours")
         );
         assert_eq!(
             repo_config_held_line(&[".mcp.json".into(), ".pi".into()]).as_deref(),
-            Some("repository config held back: .mcp.json, .pi differ from your branch")
+            Some("repository config held back: .mcp.json, .pi differ from yours")
         );
     }
     use crate::contract::ExitStatus;

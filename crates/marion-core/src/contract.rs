@@ -627,8 +627,9 @@ pub struct TaskContract {
     /// it ended unobserved (`reap_state: Orphaned`).
     pub completion: Option<Completion>,
     /// **The repository config the child's tree held back**: in a repository the operator trusted,
-    /// the config paths (relative to the tree) that were not as the operator's branch has them, so
-    /// that config did not load. Paths only, never contents. Empty where nothing was held back —
+    /// the config paths (relative to the tree) that were not as the operator's branch has them —
+    /// or, in the operator's own checkout, not as it stood at the root's first launch — so that
+    /// config did not load. Paths only, never contents. Empty where nothing was held back —
     /// including an untrusted repository, where nothing loads and Setup says why. Rewritten for
     /// every generation, which asks the tree again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

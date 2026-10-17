@@ -403,7 +403,10 @@ of where the child's base meets your `HEAD`): a child that edited or added any o
 such an edit in from its parent, runs as in an untrusted repository. In your own checkout, which a
 root or a `shared-cwd` node can write, the config loads as it stood when you launched the root:
 marion fingerprints it then, and a continuation, a resume, or a node below that finds it changed
-(or finds a link in it) runs as in an untrusted repository.
+(or finds a link in it) runs as in an untrusted repository. That includes a harness's own writes
+during a run (opencode installing a plugin under `.opencode/`, claude saving an "always allow" to
+`.claude/settings.local.json`), since either can carry code that runs; in a trusted repository
+`marion ls <id>` names the files a node held back.
 
 When `marion` or `marion run` starts at your terminal, on your own login, in a repository that
 holds any of that config and that you have not decided about, it asks once: `this repository has
