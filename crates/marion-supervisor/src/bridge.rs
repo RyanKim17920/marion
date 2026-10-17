@@ -350,14 +350,25 @@ fn agent_type_description_where(
 ///
 /// A row's own `env` could set `PATH` for its harness's process; no row does, and the lookup does
 /// not apply one.
+///
+/// The file is read through [`crate::private_fs::read_capped`]: the state directory is the
+/// operator's, but a FIFO or a link planted there must not hang or exhaust every node's
+/// `tools/list`, so anything but a small regular file falls back too.
 fn spawn_path() -> std::ffi::OsString {
-    crate::mcp::project_dir()
-        .ok()
-        .and_then(|p| std::fs::read(p.spawn_path()).ok())
+    spawn_path_in(crate::mcp::project_dir().ok().as_ref())
+}
+
+/// [`spawn_path`] for a stated project directory.
+fn spawn_path_in(project: Option<&marion_core::paths::ProjectDir>) -> std::ffi::OsString {
+    project
+        .and_then(|p| crate::private_fs::read_capped(&p.spawn_path(), SPAWN_PATH_CAP).ok())
         .map(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec)
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_default()
 }
+
+/// The most of a recorded spawn `PATH` read; a `PATH` is a few hundred bytes.
+const SPAWN_PATH_CAP: u64 = 64 * 1024;
 
 /// **Whether a spawn on `path` can launch a type**: its program — the row's, or an ACP agent's
 /// own command — is an executable there. Read off the registry, never a list of names here; a type
@@ -1842,6 +1853,43 @@ pub(crate) fn contract_that_ran(outcome: crate::spawn::ChildOutcome) -> TaskCont
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A spawn PATH is read only from the regular file the supervisor wrote**: one planted in
+    /// its place — a FIFO, a link to `/dev/zero` — falls back to this process's own `PATH`, at
+    /// once, rather than hanging or exhausting every node's `tools/list`.
+    #[test]
+    fn a_planted_spawn_path_falls_back_to_the_bridges_own_path_at_once() {
+        let dir = marion_testsupport::scratch("bridge-spawn-path-planted");
+        let project = marion_core::paths::ProjectDir::new(&dir, std::path::Path::new("/repo"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let own = std::env::var_os("PATH").unwrap_or_default();
+        assert_eq!(spawn_path_in(Some(&project)), own, "nothing recorded");
+
+        std::fs::write(project.spawn_path(), "/recorded/bin").unwrap();
+        assert_eq!(spawn_path_in(Some(&project)), "/recorded/bin");
+
+        std::fs::remove_file(project.spawn_path()).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(project.spawn_path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(spawn_path_in(Some(&project)), own, "a FIFO");
+        std::fs::remove_file(project.spawn_path()).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", project.spawn_path()).unwrap();
+        assert_eq!(spawn_path_in(Some(&project)), own, "a link to /dev/zero");
+        std::fs::remove_file(project.spawn_path()).unwrap();
+        std::fs::write(
+            project.spawn_path(),
+            vec![b'/'; SPAWN_PATH_CAP as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(spawn_path_in(Some(&project)), own, "past the cap");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
 
     /// **A child's end is announced in a few lines, not as its contract**: the status line, the
     /// narrative, and nothing a clean run's stderr said. Its parent acts on status, narrative,

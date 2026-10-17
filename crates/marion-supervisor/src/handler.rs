@@ -580,7 +580,9 @@ impl RegistryHandle {
         };
         // **The `PATH` this handle launches nodes on**, for a bridge to list what a spawn could
         // launch (`bridge::spawn_path`): `Invocation::command` inherits this process's own. A
-        // failed write leaves the bridges on their own `PATH`, which is all they had before.
+        // failed write leaves the bridges on their own `PATH`, which is all they had before. The
+        // last owning handle to write it wins, which is the right one: only `detach.rs`'s
+        // supervisor builds an owning handle, and a project has one supervisor at a time.
         if let Some(env) = &spawn_env {
             let path = std::env::var_os("PATH").unwrap_or_default();
             let _ = crate::private_fs::write_atomic(

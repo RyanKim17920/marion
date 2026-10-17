@@ -11,9 +11,9 @@ merged) goes here. Do not put a screen tour here. -->
 
 ## What it does
 
-- A running agent gets marion's MCP tools (`spawn`, `wait`, `status`, `steer`, `report`;
-  `status` with no id lists its children) and hands work to another harness by calling `spawn`. Any MCP client gets the same
-  tools, minus `report`, from `marion mcp`.
+- A running agent gets marion's MCP tools (`spawn`, `wait`, `status`, `steer`, `cancel`,
+  `report`; `status` with no id lists its children) and hands work to another harness by calling
+  `spawn`. Any MCP client gets the same tools, minus `report`, from `marion mcp`.
 - Every node is journaled and has an id. `marion` opens a terminal UI over the whole tree: start
   a task, watch each node's tool calls and tokens, steer it, attach to its terminal, and take the
   branch it landed.

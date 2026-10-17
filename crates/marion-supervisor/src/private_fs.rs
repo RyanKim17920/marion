@@ -80,6 +80,36 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     replace(path, bytes, 0o600)
 }
 
+/// **Read back a small document marion wrote, refusing anything planted in its place**: opened
+/// `O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`, so a link is refused and a FIFO cannot block the open;
+/// refused unless the handle is a regular file; and refused past `cap` bytes rather than read
+/// without end.
+pub(crate) fn read_capped(path: &Path, cap: u64) -> io::Result<Vec<u8>> {
+    use rustix::fs::{FileType, OFlags};
+    use std::io::Read;
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    let stat = rustix::fs::fstat(&fd)?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    File::from(fd).take(cap + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(io::Error::other(format!(
+            "{} is longer than {cap} bytes",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
 /// [`write_atomic`] for a document that lives in the operator's repository rather than marion's
 /// state (`.marion/agents.toml`): the same replacement, with the umask's modes, because the file is
 /// the project's and holds no secret.
@@ -128,6 +158,35 @@ mod tests {
 
     fn mode(p: &Path) -> u32 {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    /// **A small file marion wrote is read back; anything planted in its place is refused, and
+    /// promptly**: a FIFO (which a blocking open would wait on forever), a link to `/dev/zero`
+    /// (which an unbounded read would never finish), and a regular file past the cap.
+    #[test]
+    fn a_capped_read_takes_a_small_regular_file_and_refuses_a_fifo_a_link_or_an_oversize_file() {
+        let dir = scratch("private-fs-capped");
+        let good = dir.join("good");
+        write_atomic(&good, b"/usr/bin:/bin").unwrap();
+        assert_eq!(read_capped(&good, 64).unwrap(), b"/usr/bin:/bin");
+
+        let fifo = dir.join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let link = dir.join("link");
+        std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
+        let big = dir.join("big");
+        write_atomic(&big, &[b'x'; 65]).unwrap();
+        let started = std::time::Instant::now();
+        for refused in [&fifo, &link, &big] {
+            assert!(read_capped(refused, 64).is_err(), "{}", refused.display());
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     /// **No core file, here or in any child**: after the call the limit is 0 soft and hard, and a
