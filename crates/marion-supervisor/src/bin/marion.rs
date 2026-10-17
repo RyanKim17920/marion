@@ -630,7 +630,12 @@ fn ls_follow(target: &str, repo: &Path, state: &Path) -> ExitCode {
     use marion_core::proto::params::ActivityCursor;
     use marion_supervisor::tree;
     let followed = (|| -> Result<bool, String> {
-        let mut sub = tree::Subscription::open(repo, state)?;
+        let mut sub = tree::Subscription::open(repo, state).map_err(|_| {
+            format!(
+                "no supervisor is serving this project, so nothing runs to follow; `marion ls \
+                 {target}` shows its record"
+            )
+        })?;
         sub.nonblocking().map_err(|e| e.to_string())?;
         let id = tree::resolve_target(target, &sub.nodes)?;
         let sock = socket::socket_paths(state, &socket::project_root(repo), socket::own_uid());
