@@ -965,9 +965,10 @@ fn command_note(home: &Home, text: &str) -> String {
             many => many.iter().map(|s| s.name).collect::<Vec<_>>().join(" "),
         };
     }
-    let name = word.split_whitespace().next().unwrap_or_default();
-    match (crate::verbs::spec(name), home.selected()) {
-        (Some(s), Some(n)) if s.on_agent => format!("on {}", who_short(home, &n.agent_id)),
+    let words = super::options::words(text).unwrap_or_default();
+    let name = words.first().map_or("", String::as_str);
+    match (crate::verbs::spec(name), home.command_agent(&words)) {
+        (Some(s), Some((id, _))) if s.on_agent => format!("on {}", who_short(home, &id)),
         (Some(s), _) => s.summary.unwrap_or_default().to_string(),
         (None, _) => "no such command".to_string(),
     }

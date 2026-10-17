@@ -1081,9 +1081,10 @@ impl Home {
     }
 
     /// **The `:` line read**: `marion`'s words for the command typed, with the selected agent's id
-    /// put first after the command where the command acts on one agent (`:steer use a deque` is
-    /// `marion steer <id> use a deque`). Refused, with why, for a word that is no command or a
-    /// command that is [`OFF_LINE`].
+    /// put first after the command where the command acts on one agent and the words do not name
+    /// one already (`:steer use a deque` is `marion steer <id> use a deque`; `:steer 3f2a hi` is
+    /// `marion steer 3f2a hi`). Refused, with why, for a word that is no command or a command that
+    /// is [`OFF_LINE`].
     pub fn command_line(&self, text: &str) -> Result<Vec<String>, String> {
         let mut words = options::words(text)?;
         let Some(name) = words.first() else {
@@ -1096,11 +1097,32 @@ impl Home {
             return Err(format!("no command named `{name}`; tab completes one"));
         };
         if spec.on_agent
-            && let Some(n) = self.selected()
+            && let Some((id, false)) = self.command_agent(&words)
         {
-            words.insert(1, n.agent_id.0.clone());
+            words.insert(1, id.0);
         }
         Ok(words)
+    }
+
+    /// **The agent the `:` line's words act on**, and whether they name it themselves: the agent
+    /// the first word after the command names — by the rule every command reads an `<id>` by
+    /// ([`crate::node_label::resolve_node`]: its whole id, its short id, or a start of its id,
+    /// even one several agents share, which the command then refuses) — else the selected agent.
+    pub fn command_agent(&self, words: &[String]) -> Option<(AgentId, bool)> {
+        let nodes = &self.watch.nodes;
+        let named = words.get(1).filter(|w| !w.is_empty()).and_then(|w| {
+            match crate::tree::resolve_target(w, nodes) {
+                Ok(id) if nodes.iter().any(|n| n.agent_id == id) => Some(id),
+                // It names no agent here: the command's own words.
+                Ok(_) => None,
+                // A start several agents share: named, for the command to refuse as ambiguous.
+                Err(_) => Some(AgentId(w.clone())),
+            }
+        });
+        match named {
+            Some(id) => Some((id, true)),
+            None => self.selected().map(|n| (n.agent_id.clone(), false)),
+        }
     }
 
     /// `tab` on the `:` line: the command word typed so far completed — to the command where one

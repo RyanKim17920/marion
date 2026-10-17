@@ -930,6 +930,48 @@ fn colon_runs_any_command_on_the_selected_agent() {
         Some(vec!["marion".into(), "diff".into(), "root".into()]),
         "the line it runs is marion and the words"
     );
+    // Words that name an agent themselves act on it, not on the selected one: by its whole id,
+    // its short id, or a start of its id.
+    for named in ["child", "chi"] {
+        assert_eq!(
+            colon(&mut h, &format!("steer {named} hi")),
+            words(&["steer", named, "hi"]),
+            "{named}"
+        );
+    }
+    assert_eq!(
+        h.command_agent(&["steer".into(), "chi".into()]),
+        Some((AgentId("child".into()), true))
+    );
+    // By the short id its row shows, the middle of a whole id rather than a start of it.
+    let whole = "0190a1b2-3f2a-7c00-8000-000000000001";
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        node("child", Some("root"), NodeState::Exited(ExitStatus::Ok)),
+        node(whole, None, NodeState::Running),
+    ]);
+    h.select("root");
+    assert_eq!(
+        colon(&mut h, "steer 3f2a hi"),
+        words(&["steer", "3f2a", "hi"]),
+        "as typed, for marion steer to read the same way"
+    );
+    assert_eq!(
+        h.command_agent(&["steer".into(), "3f2a".into()]),
+        Some((AgentId(whole.into()), true))
+    );
+    h.key(Key::Char(':'));
+    h.key(Key::Paste("steer 3f2a hi".into()));
+    let Footer::Input { note, .. } = frame(&h).footer else {
+        panic!("the input line")
+    };
+    assert_eq!(note, "on codex 3f2a");
+    h.key(Key::Esc);
+    // A first word that only looks like an id, naming no agent here, is the message's own.
+    assert_eq!(
+        colon(&mut h, "steer deadbeef in the cache"),
+        words(&["steer", "root", "deadbeef", "in", "the", "cache"])
+    );
     h.set_nodes(vec![]);
     assert_eq!(
         colon(&mut h, "ls"),
@@ -1006,6 +1048,8 @@ fn the_colon_lines_note_names_the_commands_then_the_agent() {
     assert_eq!(note(&h), "send a running agent a message");
     typed(&mut h, " ");
     assert_eq!(note(&h), "on codex root");
+    typed(&mut h, "child hi");
+    assert_eq!(note(&h), "on codex child", "an agent the words name");
     h.mode = Mode::Normal;
     h.key(Key::Char(':'));
     typed(&mut h, "doctor ");

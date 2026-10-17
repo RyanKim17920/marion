@@ -117,7 +117,8 @@ Setup, `?` lists every key with the command it stands for, and `q` or `^c` quits
 - **`:` runs any command** `marion --help` lists, on the selected agent: `:steer use a deque` is
   `marion steer <id> use a deque`, and `:diff`, `:merge`, `:shell`, `:resume` and `:export -o
   run.html` work the same way. A command that does not act on one agent runs as typed (`:doctor`,
-  `:key list`). `tab` completes the command's name, and the line names the agent it acts on. The
+  `:key list`), and words that start with an agent's id act on that agent instead (`:steer 3f2a hi`).
+  `tab` completes the command's name, and the line names the agent it acts on. The
   command runs with the terminal, in the project; Enter comes back. `marion mcp` is for an MCP
   client and is not run from here.
 - **`n` opens the new-task line** on the footer: `tab` picks the agent type, `↑↓` a model you last
