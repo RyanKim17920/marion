@@ -146,6 +146,12 @@ the row's note, and the stripped-grant transcript `goose-1.52.0/p-approval-ungra
 because no launch is made; git history keeps it as the measurement behind the note. Read by the
 author: a version line and a summary, no host names or catalogue.
 
+**2026-10-16, goose 1.55.0 conformance.** Homebrew replaced 1.52.0 in place; the battery was
+rerun canned for `goose` and `acp:goose` and admitted 1.55.0 on its record. No cell changed status.
+goose now exits 1 on a 429, a 500 and a cancel (1.52.0 exited 0), and its own usage frame reports
+200/40/20 tokens where 1.52.0 reported 747/81/45. `scripts/fixture-privacy.py` was clean; read by
+the author.
+
 **2026-10-01, claude 2.1.286 conformance.** Two tool-probe transcripts named one of the operator's
 installed plugins; it reads as the same-length `plugin01xxxxxxxxxxx`.
 
