@@ -879,19 +879,48 @@ fn node_refusal(
     operator_hello()
 }
 
-/// **Where `args` decide trust for**: the `--repo` directory, or the directory of the file named,
-/// else `cwd` — the project whose supervisor knows whether its nodes are live, which need not be
-/// the cwd's.
+/// **Where `args` decide trust for**: the repository `--repo` resolves to, or the directory of the
+/// file the verb resolves to, else `cwd` — the project whose supervisor knows whether its nodes
+/// are live, which need not be the cwd's. Resolved by [`repo_target`] and [`file_target`], the
+/// same two [`run`] decides with, so the supervisor asked is the one for what is then changed.
 fn target_dir(args: &[String], cwd: &Path) -> PathBuf {
-    match args {
-        [_, flag, dir] if flag == "--repo" => cwd.join(dir),
-        [_, flag, ..] if flag == "--repo" => cwd.to_path_buf(),
-        [_, file] => cwd
-            .join(file)
-            .parent()
-            .map_or_else(|| cwd.to_path_buf(), Path::to_path_buf),
-        _ => cwd.to_path_buf(),
-    }
+    let resolved = match args {
+        [_, flag, rest @ ..] if flag == "--repo" => repo_target(rest, cwd).ok(),
+        [verb, rest @ ..] if verb == "allow" || verb == "deny" => file_target(rest, cwd)
+            .ok()
+            .and_then(|f| f.parent().map(Path::to_path_buf)),
+        _ => None,
+    };
+    resolved.unwrap_or_else(|| cwd.to_path_buf())
+}
+
+/// The repository a `--repo` verb decides for: the directory named (else `cwd`), resolved, as its
+/// project's root. `Err(None)` is a usage error.
+fn repo_target(rest: &[String], cwd: &Path) -> Result<PathBuf, Option<String>> {
+    let dir = match rest {
+        [] => cwd.to_path_buf(),
+        [d] => cwd.join(d),
+        _ => return Err(None),
+    };
+    let dir = std::fs::canonicalize(&dir).map_err(|e| Some(format!("{}: {e}", dir.display())))?;
+    Ok(crate::socket::project_root(&dir))
+}
+
+/// The file an `allow` or `deny` decides for: the one named, else the nearest agent-types table
+/// at or above `cwd`, resolved ([`canonical`]). `Err(None)` is a usage error.
+fn file_target(rest: &[String], cwd: &Path) -> Result<PathBuf, Option<String>> {
+    let file = match rest {
+        [] => nearest_agents_file(cwd).ok_or_else(|| {
+            Some(format!(
+                "no {} at or above {}; name the file",
+                crate::run::AGENT_TYPES_FILE,
+                cwd.display()
+            ))
+        })?,
+        [f] => cwd.join(f),
+        _ => return Err(None),
+    };
+    canonical(&file).map_err(|e| Some(e.to_string()))
 }
 
 /// **The cwd's supervisor's refusal of the operator's hello**, where one is listening: it refuses
@@ -958,34 +987,11 @@ pub fn run(
     store: PathBuf,
     out: &mut dyn std::io::Write,
 ) -> Result<(), Option<String>> {
-    let file_arg = |rest: &[String]| -> Result<PathBuf, Option<String>> {
-        match rest {
-            [] => nearest_agents_file(cwd).ok_or_else(|| {
-                Some(format!(
-                    "no {} at or above {}; name the file",
-                    crate::run::AGENT_TYPES_FILE,
-                    cwd.display()
-                ))
-            }),
-            [f] => Ok(cwd.join(f)),
-            _ => Err(None),
-        }
-    };
     let err = |e: TrustError| Some(e.to_string());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
-    let repo_arg = |rest: &[String]| -> Result<PathBuf, Option<String>> {
-        let dir = match rest {
-            [] => cwd.to_path_buf(),
-            [d] => cwd.join(d),
-            _ => return Err(None),
-        };
-        let dir =
-            std::fs::canonicalize(&dir).map_err(|e| Some(format!("{}: {e}", dir.display())))?;
-        Ok(crate::socket::project_root(&dir))
-    };
     match args {
         [verb, flag, rest @ ..] if verb == "allow" && flag == "--repo" => {
-            let root = repo_arg(rest)?;
+            let root = repo_target(rest, cwd)?;
             let mut store = Store::edit(store).map_err(err)?;
             let added = store.allow_repo(root.clone());
             store.save().map_err(err)?;
@@ -1000,7 +1006,7 @@ pub fn run(
             ))
         }
         [verb, flag, rest @ ..] if verb == "deny" && flag == "--repo" => {
-            let root = repo_arg(rest)?;
+            let root = repo_target(rest, cwd)?;
             let mut store = Store::edit(store).map_err(err)?;
             let was = store.deny_repo(&root);
             store.save().map_err(err)?;
@@ -1015,8 +1021,7 @@ pub fn run(
             }
         }
         [verb, rest @ ..] if verb == "allow" => {
-            let file = file_arg(rest)?;
-            let canonical = canonical(&file).map_err(err)?;
+            let canonical = file_target(rest, cwd)?;
             let text = marion_harness::tree_file::read_to_string(&canonical)
                 .map_err(|e| Some(format!("{}: {e}", canonical.display())))?;
             if crate::workflow_file::is_repo_workflow(&canonical) {
@@ -1049,7 +1054,7 @@ pub fn run(
             ))
         }
         [verb, rest @ ..] if verb == "deny" => {
-            let file = canonical(&file_arg(rest)?).map_err(err)?;
+            let file = file_target(rest, cwd)?;
             let mut store = Store::edit(store).map_err(err)?;
             if store.deny(&file) {
                 store.save().map_err(err)?;
@@ -1251,26 +1256,38 @@ mod tests {
         assert_eq!(operator_hello_refusal(&dir), None);
     }
 
-    /// **The hello goes to the supervisor of the repository the verb decides about**: the
-    /// `--repo` directory or the named file's, not only the cwd's, which a node can leave.
+    /// **The hello goes to the supervisor of the repository the verb decides about**, resolved
+    /// exactly as the verb resolves it: `--repo` to its project's root (a linked worktree's main
+    /// checkout, a relative or linked spelling resolved), a file to its resolved directory, no
+    /// file to the nearest agent-types table's, and anything unresolvable to the cwd.
     #[test]
     fn a_trust_change_is_checked_against_its_targets_supervisor() {
-        let cwd = Path::new("/somewhere");
+        let dir = marion_testsupport::scratch("trust-target");
+        let repo = marion_testsupport::fixture_repo(&dir);
+        let sub = repo.join("sub");
+        std::fs::create_dir_all(sub.join("deeper")).unwrap();
+        std::fs::create_dir_all(repo.join(".marion")).unwrap();
+        std::fs::write(repo.join(crate::run::AGENT_TYPES_FILE), "").unwrap();
+        let root = crate::socket::project_root(&std::fs::canonicalize(&repo).unwrap());
+        let marion_dir = std::fs::canonicalize(repo.join(".marion")).unwrap();
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(target_dir(&args(&["allow", "--repo", "sub"]), &repo), root);
+        assert_eq!(target_dir(&args(&["deny", "--repo"]), &sub), root);
         assert_eq!(
-            target_dir(&args(&["allow", "--repo", "/repo"]), cwd),
-            Path::new("/repo")
+            target_dir(&args(&["allow", ".marion/agents.toml"]), &repo),
+            marion_dir
         );
         assert_eq!(
-            target_dir(&args(&["deny", "--repo", "sub"]), cwd),
-            Path::new("/somewhere/sub")
+            target_dir(&args(&["allow"]), &sub.join("deeper")),
+            marion_dir,
+            "no file: the nearest table, as `allow` itself finds it"
         );
-        assert_eq!(target_dir(&args(&["allow", "--repo"]), cwd), cwd);
+        let nowhere = dir.join("nowhere");
         assert_eq!(
-            target_dir(&args(&["allow", "/repo/.marion/agents.toml"]), cwd),
-            Path::new("/repo/.marion")
+            target_dir(&args(&["allow", "--repo", "x"]), &nowhere),
+            nowhere
         );
-        assert_eq!(target_dir(&args(&["allow"]), cwd), cwd);
+        assert_eq!(target_dir(&args(&["list"]), &nowhere), nowhere);
     }
 
     use super::*;
