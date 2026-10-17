@@ -757,6 +757,57 @@ mod tests {
         );
     }
 
+    /// **The parent tree a child may read is that one tree and nothing beside it**: with it
+    /// granted, a sibling's worktree and token, a cousin's worktree, and a sibling's file reached
+    /// through a link inside the granted tree are each still refused, while the tree itself reads.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_granted_parent_tree_opens_no_sibling_cousin_or_linked_path() {
+        assert!(support().available(), "{}", support().describe());
+        let dir = marion_testsupport::scratch("osb-parent-tree-negative");
+        let (mut spec, mut inv) = node_in(&dir, Auth::Canned);
+        let (parent, sibling, cousin) =
+            (dir.join("parent"), dir.join("sibling"), dir.join("cousin"));
+        std::fs::create_dir_all(parent.join("worktree/src")).unwrap();
+        std::fs::write(parent.join("worktree/src/f.txt"), "tree").unwrap();
+        for d in [&sibling, &cousin] {
+            std::fs::create_dir_all(d.join("worktree")).unwrap();
+            std::fs::write(d.join("worktree/f"), "SECRET-WORKTREE").unwrap();
+        }
+        std::fs::create_dir_all(sibling.join("config")).unwrap();
+        std::fs::write(sibling.join("config/node-token"), "SECRET-TOKEN").unwrap();
+        std::os::unix::fs::symlink("../../sibling/worktree/f", parent.join("worktree/link"))
+            .unwrap();
+        spec.extra.parent_tree = Some(parent.join("worktree"));
+        let denied = [
+            sibling.join("worktree/f"),
+            sibling.join("config/node-token"),
+            cousin.join("worktree/f"),
+            parent.join("worktree/link"),
+        ];
+        let script: String = std::iter::once(parent.join("worktree/src/f.txt"))
+            .chain(denied.iter().cloned())
+            .map(|p| format!("cat '{}' 2>&1; echo '|'; ", p.display()))
+            .collect();
+        inv.args = vec!["-c".into(), script];
+        inv.sandbox = Some(
+            SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+        );
+        let tmp = dir.join("agent/tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = inv.command(&tmp).output().expect("the process runs");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let reads: Vec<&str> = stdout.split('|').map(str::trim).collect();
+        assert_eq!(reads[0], "tree", "the granted tree reads: {stdout}");
+        for (path, read) in denied.iter().zip(&reads[1..]) {
+            assert!(
+                read.contains("Operation not permitted") && !read.contains("SECRET"),
+                "{} was read: {read:?}",
+                path.display()
+            );
+        }
+    }
+
     /// **A node does not write what marion shows of it**: its `contracts/`, its `events.jsonl`
     /// and that file's rotated copy sit in its own writable agent dir, and a parent's bridge and
     /// the operator's view read them, so its sandbox refuses writes there — creating, replacing
