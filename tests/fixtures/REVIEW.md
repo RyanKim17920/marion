@@ -162,6 +162,11 @@ no longer lists `mcp__marion__list`, which marion itself dropped (0fd5357c), and
 gained the flag from d13be59c; neither is a change in claude. `scripts/fixture-privacy.py` was
 clean; read by the author.
 
+**2026-10-17, codex 0.163.0 conformance.** The standalone installer moved 0.159.2 to 0.163.0;
+the battery was rerun canned for `codex` on f4126a9a and admitted 0.163.0 on its record. No cell
+changed status. Every app-server `turn` object now carries a `rootTurnId` key, which is additive:
+marion reads none of it. `scripts/fixture-privacy.py` was clean; read by the author.
+
 **2026-10-01, claude 2.1.286 conformance.** Two tool-probe transcripts named one of the operator's
 installed plugins; it reads as the same-length `plugin01xxxxxxxxxxx`.
 

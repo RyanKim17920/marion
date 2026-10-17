@@ -1,0 +1,93 @@
+{"dir":"note","msg":{"args":["-c","check_for_update_on_startup=false","-C","<SCRATCH>/p-tui/repo","--"],"pid":40639,"spawned in a pty":"codex"},"t":0.017}
+{"dir":"raw","msg":"\u001b[?2004h","t":0.058}
+{"dir":"raw","msg":"\u001b[>4;0m\u001b[>7u\u001b[?1004h\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c","t":0.058}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[?1049h\u001b[>4;0m\u001b[>7u\u001b[?1007l\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l\u001b[1;1H\u001b[J","t":0.311}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[2;3H\u001b[38;2;99;168;248;49m>_ \u001b[1m\u001b[39;49mOpenAI Codex\u001b[22m\u001b[2m\u001b[2m (v0.163.0)\u001b[3;6Hloading\u001b[12;56H⣀⣤⣤⣤⣀⣀\u001b[13;53H⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀\u001b[14;51H⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄\u001b[15;50H⣀⣾⣿⣿⠃\u001b[15;56H⣀⣴⣾⣿⣿⡿⠟⠋\u001b[15;65H⣀⡀\u001b[15;68H⠈⠙⢿⣿⣿⣧\u001b[16;47H⣀⣶⣿⣿⣿⣿⡇\u001b[16;55H⢸⣿⣿⡿⠛⠉⢀⣠⣴⣿⣿⣿⣷⣦⣀⠈⢻⣿⣿⡇\u001b[17;46H⣰⣿⣿⡿⢿⣿⣿⡇\u001b[17;55H⢸⣿⣿⢀⣤⣶⣿⣿⣿⠟⠛⠻⣿⣿⣿⣿⣮⣿⣿⡷\u001b[18;…[236 more chars]","t":0.317}
+{"dir":"raw","msg":"��⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿\u001b[22;69H⣿⣿⡇\u001b[22;73H⣠⣿⣿⣿\u001b[23;47H⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿\u001b[23;69H⣿⣿⣷⣴⣿⣿⣿⠃\u001b[24;47H⠘⣿⣿⣷\u001b[24;52H⠈⠛⢿⣿⣿⣿⠿⠋⠉\u001b[24;62H⣠⣴⣿⣿⣿\u001b[24;69H⣿⣿⣿⣿⣿⠟⠁\u001b[25;48H⠻⣿⣿⣿⣤⣀\u001b[25;55H⠈⠉\u001b[25;58H⢀⣤⣶⣿⣿⣿⠿⠟⠁\u001b[25;68H⣰⣿⣿⡟⠋⠁\u001b[26;49H⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁\u001b[26;66H⣠⣼⣿⣿⡟\u001b[27;52H⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿⣿⡿⠏\u001b[28;59H⠈⠙⠛⠿⠿⠿⠿⠛⠉\u001b[37;1H\u001b[22m\u001b[1m›\u001b[37;3H\u001b[22m\u001b[2m\u001b[2mAsk Code…[139 more chars]","t":0.32}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.325}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.329}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.336}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.34}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[3;6H\u001b[2m<SCRATCH>/p-tui/repo\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.374}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.38}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.384}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.392}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.399}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":0.982}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.004}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.1}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.118}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.122}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.128}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.132}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.136}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":1.167}
+{"dir":"raw","msg":"\u001b[?1006l\u001b[?1015l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1007h","t":1.168}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":1.169}
+{"dir":"raw","msg":"\u001b[2;16H\u001b[0m\u001b[49m\u001b[K\u001b[12;28H\u001b[0m\u001b[49m\u001b[K\u001b[13;2H\u001b[0m\u001b[49m\u001b[K\u001b[14;2H\u001b[0m\u001b[49m\u001b[K\u001b[15;2H\u001b[0m\u001b[49m\u001b[K\u001b[16;2H\u001b[0m\u001b[49m\u001b[K\u001b[17;2H\u001b[0m\u001b[49m\u001b[K\u001b[18;2H\u001b[0m\u001b[49m\u001b[K\u001b[19;2H\u001b[0m\u001b[49m\u001b[K\u001b[20;2H\u001b[0m\u001b[49m\u001b[K\u001b[21;2H\u001b[0m\u001b[49m\u001b[K\u001b[22;2H\u001b[0m\u001b[49m\u001b[K\u001b[23;2H\u001b[0m\u001b[49m\u001b[K\u001b[24;2H\u001b[0m\u001b[49m\u001b[K\u001b[25;2H\u001b[0m\u001b[49m\u001b[K\u001b[26;2H\u001b[0m\u001b[49m\u001b[K\u001b[27;2H\u001b[0m\u001b[49…[704 more chars]","t":1.169}
+{"dir":"raw","msg":"will\u001b[7;17Hbe\u001b[7;20Hsaved.\u001b[9;1H\u001b[7m\u001b[1m› 1. Trust and continue                                                                                                 \u001b[10;3H\u001b[27m\u001b[22m2.\u001b[10;6HQuit\u001b[12;3H\u001b[1menter\u001b[22m\u001b[2m\u001b[2m continue · \u001b[22m\u001b[1mesc\u001b[22m\u001b[2m\u001b[2m quit\u001b[37;1H\u001b[22m \u001b[39m\u001b[49m\u001b[0m\u001b[?2026l","t":1.17}
+{"dir":"note","msg":{"first screen":["","  Folder access","  <SCRATCH>/p-tui/repo","","  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings","  can run code automatically, even without a model request. Continue only if you trust these files. Your trust","  decision will be saved.","","› 1. Trust and continue","  2. Quit","","  enter continue · esc quit","","","","","","","","","","","","","","","","","","","","","","","","","","","",""],"quiet":true},"t":2.673}
+{"dir":"c2s","msg":"\r","t":2.674}
+{"dir":"raw","msg":"\u001b[?1007l\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[1;1H\u001b[J","t":2.682}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[2;3H\u001b[38;2;99;168;248;49m>_ \u001b[1m\u001b[39;49mOpenAI Codex\u001b[22m\u001b[2m\u001b[2m (v0.163.0)\u001b[3;6H<SCRATCH>/p-tui/repo\u001b[12;56H⣀⣤⣤⣤⣀⣀\u001b[13;53H⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀\u001b[14;51H⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄\u001b[15;50H⣀⣾⣿⣿⠃\u001b[15;56H⣀⣴⣾⣿⣿⡿⠟⠋\u001b[15;65H⣀⡀\u001b[15;68H⠈⠙⢿⣿⣿⣧\u001b[16;47H⣀⣶⣿⣿⣿⣿⡇\u001b[16;55H⢸⣿⣿⡿⠛⠉⢀⣠⣴⣿⣿⣿⣷⣦⣀⠈⢻⣿⣿⡇\u001b[17;46H⣰⣿⣿⡿⢿⣿⣿⡇\u001b[17;55H⢸⣿⣿⢀⣤⣶⣿⣿⣿⠟⠛⠻⣿⣿⣿⣿⣮⣿…[214 more chars]","t":2.704}
+{"dir":"raw","msg":"H⣿⣿⡇\u001b[21;74H⣿⣿⣿⠇\u001b[22;47H⢻⣿⣿⣿⣷⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿\u001b[22;69H⣿⣿⡇\u001b[22;73H⣠⣿⣿⣿\u001b[23;47H⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿\u001b[23;69H⣿⣿⣷⣴⣿⣿⣿⠃\u001b[24;47H⠘⣿⣿⣷\u001b[24;52H⠈⠛⢿⣿⣿⣿⠿⠋⠉\u001b[24;62H⣠⣴⣿⣿⣿\u001b[24;69H⣿⣿⣿⣿⣿⠟⠁\u001b[25;48H⠻⣿⣿⣿⣤⣀\u001b[25;55H⠈⠉\u001b[25;58H⢀⣤⣶⣿⣿⣿⠿⠟⠁\u001b[25;68H⣰⣿⣿⡟⠋⠁\u001b[26;49H⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁\u001b[26;66H⣠⣼⣿⣿⡟\u001b[27;52H⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿⣿⡿⠏\u001b[28;59H⠈⠙⠛⠿⠿⠿⠿⠛⠉\u001b[37;1H\u001b[22m\u001b[1m›\u001b…[118 more chars]","t":2.706}
+{"dir":"raw","msg":"\u001b[?2026l","t":2.707}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.711}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.716}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.791}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.809}
+{"dir":"raw","msg":"\u001b]0;repo\u0007","t":2.815}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.826}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.832}
+{"dir":"raw","msg":"\u001b]7501;state=idle:app=codex\u001b\\","t":2.842}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[39;3H\u001b[38;2;246;226;183;49mGPT-6.1-Sol default\u001b[39;23H\u001b[39;49m·\u001b[39;25H\u001b[38;2;171;223;167;49m<SCRATCH>/p-tui/repo\u001b[40;96H\u001b[39;49m⚠\u001b[40;98H\u001b[38;2;196;167;103;49m1 warning\u001b[40;108H\u001b[39;49m·\u001b[40;110H\u001b[1mf2\u001b[40;113H\u001b[22mto\u001b[40;116Hview\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.846}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.857}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.922}
+{"dir":"raw","msg":"\u001b]0;⠙ repo\u0007","t":2.951}
+{"dir":"raw","msg":"\u001b]7501;state=working:app=codex\u001b\\","t":2.972}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.977}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.981}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":2.985}
+{"dir":"raw","msg":"\u001b]0;repo\u0007","t":3.004}
+{"dir":"raw","msg":"\u001b]7501;state=idle:app=codex\u001b\\","t":3.005}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":3.01}
+{"dir":"note","msg":{"screen after the row's dialog keys":["","  >_ OpenAI Codex (v0.163.0)","     <SCRATCH>/p-tui/repo","","","","","","","","","                                                       ⣀⣤⣤⣤⣀⣀","                                                    ⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀","                                                  ⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄","                                                 ⣀⣾⣿⣿⠃ ⣀⣴⣾⣿⣿⡿⠟⠋ ⣀⡀ ⠈⠙⢿⣿⣿⣧","                                              ⣀⣶⣿⣿⣿⣿⡇ ⢸⣿⣿⡿⠛⠉⢀⣠⣴⣿⣿⣿⣷⣦⣀⠈⢻⣿⣿⡇","                                             ⣰⣿⣿⡿⢿⣿⣿⡇ ⢸⣿⣿⢀⣤⣶⣿⣿⣿⠟⠛⠻⣿⣿⣿⣿⣮⣿⣿⡷","                                            ⢰⣿⣿⡟⠁⢸⣿⣿⡇ ⢸⣿⣿⣿⣿⠿⠿⣿⣿⣿⣦⣄⡀⠈⠛⠿⣿⣿⣿⣧⡀","                                            ⣾⣿⣿⠃ ⢸⣿⣿⡇ ⢸⣿⣿⠋⠁  ⠈⠙⢻⣿⣿⣿⣶⣤⡀ ⠹⢿⣿⣷⡄","                                            ⢸⣿⣿⣇ ⠸⣿⣿⣷⣦⣼⣿⣿      ⢸⣿⣿⠻⢿⣿⣿⡇ ⠘⣿⣿⣿","                                            ⠈⢿⣿⣿⣦⡀⠈⠛⠿⣿⣿⣿⣿⣄⡀  ⢀⣠⣼⣿⣿  ⣿⣿⡇  ⣿⣿⣿⠇","                                              ⢻⣿⣿⣿⣷⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿  ⣿⣿⡇ ⣠⣿⣿⣿","                                              ⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿  ⣿⣿⣷⣴⣿⣿⣿⠃","                                              ⠘⣿⣿⣷ ⠈⠛⢿⣿⣿⣿⠿⠋⠉ ⣠⣴⣿⣿⣿  ⣿⣿⣿⣿⣿⠟⠁","                                               ⠻⣿⣿⣿⣤⣀ ⠈⠉ ⢀⣤⣶⣿⣿⣿⠿⠟⠁ ⣰⣿⣿⡟⠋⠁","                                                ⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁  ⣠⣼⣿⣿⡟","                                                   ⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿⣿⡿⠏","                                                          ⠈⠙⠛⠿⠿⠿⠿⠛⠉","","","","","","","","","› Ask Codex to do anything","","  GPT-6.1-Sol default · <SCRATCH>/p-tui/repo","  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view"]},"t":4.512}
+{"dir":"c2s","msg":"\u001b[200~CONFTUI: follow the conformance script.\u001b[201~","t":4.513}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[12;2H\u001b[0m\u001b[49m\u001b[K\u001b[13;2H\u001b[0m\u001b[49m\u001b[K\u001b[14;2H\u001b[0m\u001b[49m\u001b[K\u001b[15;2H\u001b[0m\u001b[49m\u001b[K\u001b[16;2H\u001b[0m\u001b[49m\u001b[K\u001b[17;2H\u001b[0m\u001b[49m\u001b[K\u001b[18;2H\u001b[0m\u001b[49m\u001b[K\u001b[19;2H\u001b[0m\u001b[49m\u001b[K\u001b[20;2H\u001b[0m\u001b[49m\u001b[K\u001b[21;2H\u001b[0m\u001b[49m\u001b[K\u001b[22;2H\u001b[0m\u001b[49m\u001b[K\u001b[23;2H\u001b[0m\u001b[49m\u001b[K\u001b[24;2H\u001b[0m\u001b[49m\u001b[K\u001b[25;2H\u001b[0m\u001b[49m\u001b[K\u001b[26;2H\u001b[0m\u001b[49m\u001b[K\u001b[27;2H\u001b[0m\u001b[49m\u001b[K\u001b[…[140 more chars]","t":4.517}
+{"dir":"c2s","msg":"\r","t":4.565}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;42H\u001b[?25h\u001b[?2026l","t":4.567}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[37;27H\u001b[0m\u001b[49m\u001b[K\u001b[6;1H\u001b[1m\u001b[2m› \u001b[22m\u001b[22mCONFTUI:\u001b[6;12Hfollow\u001b[6;19Hthe\u001b[6;23Hconformance\u001b[6;35Hscript.\u001b[37;3H\u001b[2mAsk Codex to do anything\u001b[40;3H\u001b[22m\u001b[1m?\u001b[40;5H\u001b[22mfor\u001b[40;9Hshortcuts\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.571}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.6}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.606}
+{"dir":"raw","msg":"\u001b]0;⠏ repo\u0007","t":4.734}
+{"dir":"raw","msg":"\u001b]7501;state=working:app=codex\u001b\\","t":4.742}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[34;1H\u001b[1m\u001b[38;2;128;128;128;49m•\u001b[34;3H\u001b[22m\u001b[2m\u001b[2m\u001b[39;49mWorking\u001b[34;11H(0s • \u001b[22m\u001b[1mesc\u001b[22m\u001b[2m\u001b[2m to interrupt)\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H","t":4.743}
+{"dir":"raw","msg":"\u001b[?25h\u001b[?2026l","t":4.743}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":false,"req":1,"turn":["CONFTUI",0],"user_texts":["<environment_context>\n  <cwd><SCRATCH>/p-tui/repo</cwd>\n  <shell>zsh</shell>\n  <current_date>2026-10-17</current_date>\n  <timezone>America/Chicago</timezone>\n  <filesystem><workspace_roots><root><SCRATCH>/p-tui/repo</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=…[561 more chars]","CONFTUI: follow the conformance script."],"wire":"responses"},"t":4.777}
+{"dir":"prov","msg":{"resp":"script","wire":"responses"},"t":4.78}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.795}
+{"dir":"raw","msg":"\u001b]0;⠏ ⠏ | repo\u0007","t":4.797}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[39;90H·\u001b[39;92H\u001b[38;2;203;166;247;49m⠏\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":4.8}
+{"dir":"raw","msg":"\u001b[?2026l","t":4.8}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[34;2H\u001b[0m\u001b[49m\u001b[K\u001b[34;1H \u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.807}
+{"dir":"raw","msg":"\u001b]0;⠋ ⠋ | repo\u0007","t":4.818}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[9;1H\u001b[2m• \u001b[22mconformance\u001b[9;15Htui\u001b[9;19Hdone\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.818}
+{"dir":"raw","msg":"\u001b]0;⠋ | repo\u0007","t":4.826}
+{"dir":"raw","msg":"\u001b]7501;state=idle:app=codex\u001b\\","t":4.827}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[11;1H\u001b[2m  Worked for <1s • 2:56 PM                                                                                              \u001b[39;92H\u001b[22m\u001b[38;2;203;166;247;49m⠋\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.83}
+{"dir":"prov","msg":{"marion_tools":false,"offers_tools":false,"req":2,"turn":["CONFTUI",0],"user_texts":["<environment_context>\n  <current_date>2026-10-17</current_date>\n  <timezone>America/Chicago</timezone>\n</environment_context>","Generate a concise, single-line task title of at most 36 characters and under five words where possible. Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. Preserve ticket references exactly. Write in the user's language. Do…[132 more chars]"],"wire":"responses"},"t":4.873}
+{"dir":"prov","msg":{"resp":"script","wire":"responses"},"t":4.875}
+{"dir":"raw","msg":"\u001b]0;⠙ | repo\u0007","t":4.928}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[39;92H\u001b[38;2;203;166;247;49m⠙\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h","t":4.93}
+{"dir":"raw","msg":"\u001b[?2026l","t":4.93}
+{"dir":"raw","msg":"\u001b]0;repo\u0007","t":4.934}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[39;89H\u001b[0m\u001b[49m\u001b[K\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":4.941}
+{"dir":"note","msg":{"screen after the turn":["","  >_ OpenAI Codex (v0.163.0)","     <SCRATCH>/p-tui/repo","","","› CONFTUI: follow the conformance script.","","","• conformance tui done","","  Worked for <1s • 2:56 PM","","","","","","","","","","","","","","","","","","","","","","","","","","› Ask Codex to do anything","","  GPT-6.1-Sol default · <SCRATCH>/p-tui/repo","  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view"]},"t":6.448}
+{"dir":"c2s","msg":"\u001b[200~/mcp\u001b[201~","t":6.45}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[37;7H\u001b[0m\u001b[49m\u001b[K\u001b[40;2H\u001b[0m\u001b[49m\u001b[K\u001b[35;1H\u001b[7m\u001b[1m› /mcp  \u001b[22mlist MCP tools; use /mcp verbose or /mcp login <name>\u001b[1m                                                           \u001b[37;3H\u001b[27m\u001b[22m/mcp\u001b[39m\u001b[49m\u001b[0m\u001b[37;7H\u001b[?25h\u001b[?2026l","t":6.453}
+{"dir":"c2s","msg":"\r","t":6.505}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l\u001b[35;2H\u001b[0m\u001b[49m\u001b[K\u001b[13;1H\u001b[1m\u001b[38;2;128;128;128;49m•\u001b[13;3H\u001b[39;49mLoading MCP inventory\u001b[22m\u001b[2m\u001b[2m…\u001b[35;1H\u001b[22m \u001b[37;3H\u001b[2mAsk Codex to do anything\u001b[40;3H\u001b[22m\u001b[1m?\u001b[40;5H\u001b[22mfor\u001b[40;9Hshortcuts\u001b[40;96H⚠\u001b[40;98H\u001b[38;2;196;167;103;49m1 warning\u001b[40;108H\u001b[39;49m·\u001b[40;110H\u001b[1mf2\u001b[40;113H\u001b[22mto\u001b[40;116Hv…[38 more chars]","t":6.507}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[39m\u001b[49m\u001b[0m\u001b[37;3H\u001b[?25h\u001b[?2026l","t":6.56}
+{"dir":"raw","msg":"\u001b[?2026h\u001b[?25l","t":6.6}
+{"dir":"raw","msg":"\u001b[13;5H\u001b[0m\u001b[49m\u001b[K\u001b[13;1H\u001b[38;5;5;49m/mcp\u001b[15;1H\u001b[39;49m🔌\u001b[15;5H\u001b[1mMCP Tools\u001b[17;1H\u001b[38;5;2;49m  • \u001b[39;49mcodex_worktrees\u001b[22m:\u001b[17;22H\u001b[1m\u001b[38;5;2;49mconnected\u001b[22m\u001b[2m\u001b[2m\u001b[39;49m (3 tools)\u001b[18;1H\u001b[22m\u001b[1m\u001b[38;5;2;49m  • \u001b[39;49mmarion\u001b[22m:\u001b[18;13H\u001b[1m\u001b[38;5;2;49mconnected\u001b[22m\u001b[2m\u001b[2m\u001b[39;49m (6 tools)\u001b[20;1H  U…[75 more chars]","t":6.6}
+{"dir":"note","msg":{"/mcp screen":["","  >_ OpenAI Codex (v0.163.0)","     <SCRATCH>/p-tui/repo","","","› CONFTUI: follow the conformance script.","","","• conformance tui done","","  Worked for <1s • 2:56 PM","","/mcp","","🔌  MCP Tools","","  • codex_worktrees: connected (3 tools)","  • marion: connected (6 tools)","","  Use /mcp verbose for tools and resources.","","","","","","","","","","","","","","","","","› Ask Codex to do anything","","  GPT-6.1-Sol default · <SCRATCH>/p-tui/repo","  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view"]},"t":8.106}

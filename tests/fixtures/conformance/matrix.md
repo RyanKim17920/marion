@@ -14,7 +14,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | claude-code | 2.1.302 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | cline | 3.0.66 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | n/a | **FAIL** | **FAIL** | n/a |
-| codex | 0.159.2 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| codex | 0.163.0 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | copilot | 1.0.89 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a |
 | goose | 1.55.0 | PASS | PASS | PASS | PASS | n/a | n/a | PASS | n/a | PASS | PASS | n/a |
 | opencode | 1.18.33 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
@@ -163,18 +163,18 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** FAIL: 401: ended after 1.4 s, 1 request(s), exit 1; cause Auth { line: "{\"ts\":\"2026-09-30T22:07:31.456Z\",\"type\":\"error\",\"message\":\"Incorrect API key provided: dummy.\"}" }; stream failure Some("Incorrect API key provided: dummy."); no frame reads as a refused credential | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### codex 0.159.2
+### codex 0.163.0
 
-- **P-version** PASS: 0.159.2 (admitted in PINNED_HARNESSES); no-self-update pair check_for_update_on_startup=false carried
+- **P-version** PASS: 0.163.0 (not listed in the row's verified releases); no-self-update pair check_for_update_on_startup=false carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"responses"}; still running; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 1.2 s after the spawn and did NOT list marion's tools (marion gates the first prompt on marion's server being ready)
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f44b-9c9d-7942-ad85-d6c4059a9df9 ; activity report
+- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 1.7 s after the spawn and did NOT list marion's tools (marion gates the first prompt on marion's server being ready)
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a14b6f-34ca-7a03-a4e5-0c658c8448d0 ; activity report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("failed: user rejected MCP tool call")), 0 permission ask(s) reached marion
 - **P-midturn** PASS: folded into the running turn (1 turn end; requests [3])
-- **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 2 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session 01a0f44b-e1f9-7203-a860-c8f45c44308b -> 01a0f44b-e1f9-7203-a860-c8f45c44308b; resume refusal: none
-- **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 0, left []
-- **P-errors** PASS: 401: ended after 7.0 s, 6 request(s), still running; cause Auth { line: "unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses" }; stream failure Some("unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses"); refused credential read off a frame: "unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses" | 429: ended after 0.3 s, 1 request(s), still running; cause RateLimit { line: "exceeded retry limit, last status: 429 Too Many Requests" }; stream failure Some("exceeded retry limit, last status: 429 Too Many Requests") | 500: ended after 25.1 s, 30 request(s), still running; cause Outage { line: "We’re currently experiencing high demand, which may cause temporary errors." }; stream failure Some("We’re currently experiencing high demand, which may cause temporary errors.")
+- **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session 01a14b6f-88fd-7833-b842-0efa045d059b -> 01a14b6f-88fd-7833-b842-0efa045d059b; resume refusal: none
+- **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 0, left [] (each after marion's end of the node)
+- **P-errors** PASS: 401: ended after 7.4 s, 6 request(s), still running; cause Auth { line: "unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:54243/v1/responses" }; stream failure Some("unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:54243/v1/responses"); refused credential read off a frame: "unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:54243/v1/responses" | 429: ended after 1.0 s, 1 request(s), still running; cause RateLimit { line: "exceeded retry limit, last status: 429 Too Many Requests" }; stream failure Some("exceeded retry limit, last status: 429 Too Many Requests") | 500: ended after 25.9 s, 30 request(s), still running; cause Outage { line: "We’re currently experiencing high demand, which may cause temporary errors." }; stream failure Some("We’re currently experiencing high demand, which may cause temporary errors.")
 - **P-tui** PASS: DECSET 2004 at boot: true; first screen ["  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings", "  can run code automatically, even without a model request. Continue only if you trust these files. Your trust", "  decision will be saved.", "› 1. Trust and continue", "  2. Quit", "  enter continue · esc quit"]; boot dialog "› 1. Trust and continue 2. Quit" (answered with "\r") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true
 
 ### copilot 1.0.89
