@@ -9552,6 +9552,102 @@ mod tests {
         }
     }
 
+    /// **Every switch that stops a harness borrowing another's login reaches every launch**: for
+    /// each row whose documents carry one ([`crate::spec::ConfigFile::borrowed_login`]), every
+    /// auth mode the row compiles, declared or not, headless and pane, and the native injection
+    /// write the document with the keys, and the variable that names its directory is set. A
+    /// launch that missed it would let a child adopt the operator's single-use refresh tokens.
+    #[test]
+    fn every_borrowed_login_switch_renders_in_every_launch_shape() {
+        use crate::spec::Val;
+
+        fn at<'a>(doc: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+            key.split('.').try_fold(doc, |v, k| v.get(k))
+        }
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        let mut guarded = Vec::new();
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            for file in row.files.iter().filter(|f| !f.borrowed_login.is_empty()) {
+                guarded.push(h.as_str());
+                let path = document_dir.join(file.path);
+                let carries = |body: &str| {
+                    let doc: serde_json::Value = serde_json::from_str(body).unwrap();
+                    file.borrowed_login
+                        .iter()
+                        .all(|(k, v)| at(&doc, k) == Some(&serde_json::Value::Bool(*v)))
+                };
+                // The variables naming the document's directory, as the launch must set them.
+                let named: Vec<(String, String)> = row
+                    .env
+                    .iter()
+                    .filter_map(|e| match e.val {
+                        Val::Under(dir) if std::path::Path::new(file.path).starts_with(dir) => {
+                            Some((
+                                e.key.to_string(),
+                                document_dir.join(dir).display().to_string(),
+                            ))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert!(!named.is_empty(), "{h}: no variable names {}", file.path);
+                let a = launch_adapter(h).unwrap();
+                let mut launched = 0;
+                for auth in [Auth::Canned, Auth::Endpoint, Auth::Inherited] {
+                    if row.no_recipe(auth).is_some() {
+                        continue;
+                    }
+                    for mcp in [McpDeclaration::Marion, McpDeclaration::None] {
+                        let launch = LaunchSpec {
+                            auth,
+                            mcp,
+                            config_dir: document_dir.clone(),
+                            ..spec_for(h)
+                        };
+                        let who = format!("{h} {auth:?} {mcp:?}");
+                        let files = a.config_files(&launch, &ctx()).unwrap();
+                        let body = files
+                            .iter()
+                            .find(|(p, _)| *p == path)
+                            .map(|(_, b)| b.as_str())
+                            .unwrap_or_else(|| panic!("{who}: {} is not written", file.path));
+                        assert!(carries(body), "{who}: {body}");
+                        let mut shapes = vec![("headless", a.compile(&launch, &ctx()))];
+                        if row.pane.is_some() {
+                            shapes.push(("pane", a.compile_pane(&launch, &ctx())));
+                        }
+                        for (shape, inv) in shapes {
+                            let inv = inv.unwrap_or_else(|e| panic!("{who} {shape}: {e}"));
+                            for var in &named {
+                                assert!(inv.env.contains(var), "{who} {shape}: {:?}", inv.env);
+                            }
+                            launched += 1;
+                        }
+                    }
+                }
+                assert!(launched > 0, "{h}: no launch renders at all");
+                if let Some(native) = native_injection(h, &document_dir) {
+                    let doc = native
+                        .documents
+                        .iter()
+                        .find(|d| d.path == path)
+                        .unwrap_or_else(|| panic!("{h} native: {} is not injected", file.path));
+                    assert!(carries(std::str::from_utf8(&doc.contents).unwrap()), "{h}");
+                    for (k, v) in &named {
+                        let var = (std::ffi::OsString::from(k), std::ffi::OsString::from(v));
+                        assert!(native.env_overlay.contains(&var), "{h} native: {k}");
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            guarded,
+            ["hermes"],
+            "each row that guards a borrowed login, named so the sweep is never vacuous"
+        );
+    }
+
     /// **Every ACP refinement row resolves to a no-self-update policy, and every launch of that
     /// agent carries it** — linked from the twin row of the binary it runs, or its own, or an
     /// explicit `None` saying what was not found. Headless, under each auth mode the row compiles,
