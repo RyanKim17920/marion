@@ -711,6 +711,12 @@ once pointed at a model provider through its own configuration. **Refused** rows
 | `qoder` | `qodercli --acp` | — | **refused** | `qodercli login` (account) |
 | `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |
 | `pi-acp` | `pi-acp` | — | **refused** | shim/pi version skew |
+| `hermes` | `hermes acp` | — | not probed | read from the 0.22.2 source; held, so doctor never launches it |
+
+Any command that runs Hermes (`hermes`, `hermes-acp` or `hermes-agent`, by any path) carries the
+`hermes` row's switch against adopting your Codex CLI or Claude Code login. That switch is read
+from the 0.22.2 source and not yet measured, and a wrapper such as `npx` or `uvx` in front of it
+is not recognised.
 
 `marion doctor --harness acp` probes every row and names the MCP transports each
 agent advertises; `marion-supervisor doctor --acp-command "<cmd>"` probes your own agent and says

@@ -306,7 +306,15 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
     notes.push(abort_note(adapter.spec()));
     notes.extend(usage_note(adapter.spec()));
 
-    let resolved = locate_binary(adapter.as_ref(), opts, agent, &mut notes);
+    // A row read from source with nothing on the wire behind it is held: no probe launches its
+    // binary before its capture lands. An operator's own command for the same binary still runs.
+    let resolved = match agent.and_then(acp::Binding::refinement).map(|a| a.reach) {
+        Some(acp::Reach::Unprobed { why }) => {
+            notes.push(format!("binary: not probed, held: {why}"));
+            None
+        }
+        _ => locate_binary(adapter.as_ref(), opts, agent, &mut notes),
+    };
     let identity = identify(
         adapter.as_ref(),
         opts,
@@ -3168,10 +3176,14 @@ mod tests {
             .iter()
             .filter(|r| r.report.harness_version.is_some())
             .collect();
+        let probed = acp::AGENTS
+            .iter()
+            .filter(|a| !matches!(a.reach, acp::Reach::Unprobed { .. }))
+            .count();
         assert_eq!(
             answered.len(),
-            acp::AGENTS.len(),
-            "every stand-in answers `initialize`: {}",
+            probed,
+            "every stand-in answers `initialize`, and no held row is launched: {}",
             render(&rows, &[])
         );
         // The version on an ACP row is the **agent's** identity, not a binary's `--version`: that

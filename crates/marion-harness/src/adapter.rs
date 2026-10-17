@@ -1147,6 +1147,27 @@ pub(crate) fn preconditions(
 /// **The row's [`spec::Requirement`]s against this launch**: the first one unmet, refused by name in
 /// the row's words — before the row's hook runs, so a launch missing an input is never compiled.
 pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result<(), HarnessError> {
+    unmet(row, spec, |_| true)
+}
+
+/// [`requirements`], only those that read the machine ([`spec::Need::PathAbsent`],
+/// [`spec::Need::EnvUnset`]): what another launch of the row's binary must also refuse, where it
+/// carries the row's variables naming a scope that would shadow one on the machine.
+pub(crate) fn machine_requirements(
+    row: &spec::HarnessSpec,
+    spec: &LaunchSpec,
+) -> Result<(), HarnessError> {
+    unmet(row, spec, |need| {
+        matches!(need, spec::Need::PathAbsent(_) | spec::Need::EnvUnset(_))
+    })
+}
+
+/// The first of the row's requirements `which` selects that this launch does not meet.
+fn unmet(
+    row: &spec::HarnessSpec,
+    spec: &LaunchSpec,
+    which: impl Fn(spec::Need) -> bool,
+) -> Result<(), HarnessError> {
     let met = |need: spec::Need| match need {
         spec::Need::BaseUrl => spec.base_url.is_some(),
         spec::Need::Model => spec.model.is_some(),
@@ -1160,7 +1181,7 @@ pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result
     match row
         .requires
         .iter()
-        .find(|r| r.modes.covers(spec.auth) && !met(r.need))
+        .find(|r| r.modes.covers(spec.auth) && which(r.need) && !met(r.need))
     {
         Some(r) => Err(HarnessError::MissingInput {
             harness: row.harness,
@@ -1779,6 +1800,47 @@ mod tests {
         assert!(!refused(Need::EnvUnset(
             "MARION_REQUIRES_READS_THE_MACHINE_UNSET"
         )));
+    }
+
+    /// **Another launch of a row's binary takes only the row's refusals of the machine**: a launch
+    /// missing the row's model is refused for it by `requirements`, while `machine_requirements`
+    /// steps over it to the scope that would be shadowed — and passes a row with only the first.
+    #[test]
+    fn machine_requirements_are_only_those_that_read_the_machine() {
+        use crate::spec::{Modes, Need, Requirement};
+
+        let model = Requirement {
+            modes: Modes::All,
+            need: Need::Model,
+            why: "synthetic: no model",
+        };
+        let shadowed = Requirement {
+            modes: Modes::All,
+            need: Need::PathAbsent("/"),
+            why: "synthetic: the machine's scope would be shadowed",
+        };
+        let launch = LaunchSpec {
+            model: None,
+            ..spec_for(Harness::Qwen)
+        };
+        let refusal = |r: Result<(), HarnessError>| match r {
+            Err(HarnessError::MissingInput { what, .. }) => Some(what),
+            _ => None,
+        };
+        let both = spec::HarnessSpec {
+            requires: Box::leak(Box::new([model, shadowed])),
+            ..qwen::SPEC
+        };
+        assert_eq!(refusal(requirements(&both, &launch)), Some(model.why));
+        assert_eq!(
+            refusal(machine_requirements(&both, &launch)),
+            Some(shadowed.why)
+        );
+        let model_only = spec::HarnessSpec {
+            requires: Box::leak(Box::new([model])),
+            ..qwen::SPEC
+        };
+        assert_eq!(refusal(machine_requirements(&model_only, &launch)), None);
     }
 
     /// **Every harness answers the occupancy question itself**, named one at a time: a row copying
@@ -9566,6 +9628,7 @@ mod tests {
         }
         let document_dir = PathBuf::from("/state/agents/019f-root");
         let mut guarded = Vec::new();
+        let mut guarded_agents = Vec::new();
         for h in Harness::ALL {
             let row = harness_spec(h);
             for file in row.files.iter().filter(|f| !f.borrowed_login.is_empty()) {
@@ -9639,12 +9702,69 @@ mod tests {
                         assert!(native.env_overlay.contains(&var), "{h} native: {k}");
                     }
                 }
+                // The same binary over ACP: every agent that runs it carries the switch, by id, as
+                // a command, and under every program the guard names, with the document declaring
+                // nothing (the bridge rides `session/new`).
+                for agent in acp::AGENTS {
+                    let guard = agent.login_guard.filter(|g| g.row == h);
+                    if agent.updates == acp::AgentUpdates::Twin(h) {
+                        assert!(
+                            guard.is_some(),
+                            "acp:{} runs {h} and must carry its guard",
+                            agent.id
+                        );
+                    }
+                    let Some(guard) = guard else { continue };
+                    let args = agent.argv[1..].join(" ");
+                    let selectors = [agent.id.to_string(), agent.argv.join(" ")]
+                        .into_iter()
+                        .chain(guard.programs.iter().flat_map(|program| {
+                            [
+                                program.to_string(),
+                                format!("/opt/agents/bin/{program} {args} --verbose"),
+                            ]
+                        }));
+                    for selector in selectors {
+                        let a = AcpAdapter::resolve(&selector).unwrap();
+                        for mcp in [McpDeclaration::Marion, McpDeclaration::None] {
+                            let launch = LaunchSpec {
+                                auth: Auth::Inherited,
+                                mcp,
+                                config_dir: document_dir.clone(),
+                                extra: Extras {
+                                    acp_agent: Some(selector.clone()),
+                                    ..Extras::default()
+                                },
+                                ..acp_spec()
+                            };
+                            let who = format!("acp:{selector} {mcp:?}");
+                            let files = a.config_files(&launch, &ctx()).unwrap();
+                            let body = files
+                                .iter()
+                                .find(|(p, _)| *p == path)
+                                .map(|(_, b)| b.as_str())
+                                .unwrap_or_else(|| panic!("{who}: {} is not written", file.path));
+                            assert!(carries(body), "{who}: {body}");
+                            let doc: serde_json::Value = serde_json::from_str(body).unwrap();
+                            assert!(doc.get(file.servers_key).is_none(), "{who}: {body}");
+                            let inv = a
+                                .compile(&launch, &ctx())
+                                .unwrap_or_else(|e| panic!("{who}: {e}"));
+                            for var in &named {
+                                assert!(inv.env.contains(var), "{who}: {:?}", inv.env);
+                            }
+                            guarded_agents.push(agent.id);
+                        }
+                    }
+                }
             }
         }
+        guarded_agents.dedup();
         assert_eq!(
-            guarded,
-            ["hermes"],
-            "each row that guards a borrowed login, named so the sweep is never vacuous"
+            (guarded, guarded_agents),
+            (vec!["hermes"], vec!["hermes"]),
+            "each row that guards a borrowed login, and each ACP agent carrying it, named so the \
+             sweep is never vacuous"
         );
     }
 

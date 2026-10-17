@@ -676,6 +676,9 @@ pub struct Agent {
     /// Where this agent's no-self-update switch comes from, applied to every launch of it
     /// ([`AcpAdapter`]'s `fields`): the built-in row of the binary it runs, or its own.
     pub updates: AgentUpdates,
+    /// **The built-in row whose borrowed-login switch every launch of this agent's binary
+    /// carries**, or `None` for an agent that adopts no other harness's login.
+    pub login_guard: Option<LoginGuard>,
     /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
     /// which is how a binary behind any command line is recognised as this row
     /// ([`identity_note`]). Held to the row's S33 capture by the sweep test.
@@ -738,6 +741,23 @@ pub enum Reach {
     },
     /// `session/new` was refused — an account wall, or a vendor-side refusal.
     Refused,
+    /// Never probed: no working release was installed to capture, so the row is read from the
+    /// agent's source and `why` says so. Nothing on the wire backs it, and no built-in type is
+    /// named for it.
+    Unprobed { why: &'static str },
+}
+
+/// **A built-in row's borrowed-login switch, on every ACP command that runs its binary.** Only that
+/// switch is taken: the row's documents that carry one ([`spec::ConfigFile::borrowed_login`]),
+/// written without a declaration (here it rides `session/new`), the variables that name their
+/// directories, and the row's refusals of a scope on the machine those variables would shadow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginGuard {
+    pub row: Harness,
+    /// Every program the install puts on `PATH` that runs this code, by file name. A command
+    /// running one is guarded whatever its arguments, because the borrow is the binary's and not
+    /// a subcommand's; the agent's own `argv[0]` is one of them.
+    pub programs: &'static [&'static str],
 }
 
 /// The channel marion's bridge is declared on for one agent.
@@ -813,6 +833,7 @@ pub const OPENCODE: Agent = Agent {
     reasoning: Some(Reasoning::Beside(THOUGHT_TOKENS)),
     // The same binary as opencode's row, one subcommand over.
     updates: AgentUpdates::Twin(Harness::OpenCode),
+    login_guard: None,
     agent_info: "OpenCode",
     install: "brew install opencode",
     reach: Reach::Opened {
@@ -847,6 +868,7 @@ pub const CLAUDE_ACP: Agent = Agent {
     // with the same updater, and the shim spreads its own process environment into the child's
     // (~6359), so the claude-code row's variable reaches it.
     updates: AgentUpdates::Twin(Harness::ClaudeCode),
+    login_guard: None,
     agent_info: "@agentclientprotocol/claude-agent-acp",
     install: "npm i -g @agentclientprotocol/claude-agent-acp",
     reach: Reach::Opened {
@@ -889,6 +911,7 @@ pub const CODEX_ACP: Agent = Agent {
                `-c check_for_update_on_startup` pair is a TUI startup check, so it is not \
                inherited",
     }),
+    login_guard: None,
     agent_info: "@agentclientprotocol/codex-acp",
     install: "npm i -g @agentclientprotocol/codex-acp",
     reach: Reach::Opened {
@@ -932,6 +955,7 @@ pub const COPILOT: Agent = Agent {
     reasoning: None,
     // The same binary as copilot's row: S33 ran it with this switch set by hand.
     updates: AgentUpdates::Twin(Harness::Copilot),
+    login_guard: None,
     agent_info: "Copilot",
     install: "npm i -g @github/copilot",
     reach: Reach::Opened {
@@ -962,6 +986,7 @@ pub const KILO: Agent = Agent {
         note: "no switch was searched for in kilo 7.8.1; it is an opencode fork, and opencode's \
                variable is not assumed to be its",
     }),
+    login_guard: None,
     agent_info: "Kilo",
     install: "npm i -g @kilocode/cli",
     reach: Reach::Opened {
@@ -986,6 +1011,7 @@ pub const QWEN: Agent = Agent {
     reasoning: None,
     // The same binary as qwen's row.
     updates: AgentUpdates::Twin(Harness::Qwen),
+    login_guard: None,
     agent_info: "qwen-code",
     install: "npm i -g @qwen-code/qwen-code",
     reach: Reach::Opened {
@@ -1011,6 +1037,7 @@ pub const GOOSE: Agent = Agent {
     reasoning: None,
     // The same binary as goose's row, which never updates itself.
     updates: AgentUpdates::Twin(Harness::Goose),
+    login_guard: None,
     agent_info: "goose",
     install: "brew install block-goose-cli",
     reach: Reach::Opened {
@@ -1039,6 +1066,7 @@ pub const FAST_AGENT: Agent = Agent {
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in fast-agent-acp 0.10.37",
     }),
+    login_guard: None,
     agent_info: "fast-agent-acp",
     install: "uv tool install fast-agent-acp",
     reach: Reach::Opened {
@@ -1065,6 +1093,7 @@ pub const VIBE: Agent = Agent {
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in mistral-vibe 2.25.8",
     }),
+    login_guard: None,
     agent_info: "@mistralai/mistral-vibe",
     install: "uv tool install mistral-vibe",
     reach: Reach::Opened {
@@ -1089,6 +1118,7 @@ pub const VTCODE: Agent = Agent {
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in vtcode 0.169.0",
     }),
+    login_guard: None,
     agent_info: "vtcode",
     install: "brew install vtcode",
     reach: Reach::Opened {
@@ -1115,6 +1145,7 @@ pub const AUGGIE: Agent = Agent {
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in auggie 0.36.0",
     }),
+    login_guard: None,
     agent_info: "auggie",
     install: "npm i -g @augmentcode/auggie",
     reach: Reach::Refused,
@@ -1135,6 +1166,7 @@ pub const QODER: Agent = Agent {
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in qoder-cli 1.1.64",
     }),
+    login_guard: None,
     agent_info: "qoder-cli",
     install: "npm i -g @qoder-ai/qodercli",
     reach: Reach::Refused,
@@ -1154,6 +1186,7 @@ pub const CLINE: Agent = Agent {
     reasoning: None,
     // The same binary as cline's row, at the release that row measured.
     updates: AgentUpdates::Twin(Harness::Cline),
+    login_guard: None,
     agent_info: "cline",
     install: "npm i -g cline",
     reach: Reach::Refused,
@@ -1178,12 +1211,46 @@ pub const PI_ACP: Agent = Agent {
     // (`buildUpdateNotice`, dist/index.js:2888) whatever the switch says: a network call that only
     // shows a notice and never installs.
     updates: AgentUpdates::Twin(Harness::Pi),
+    login_guard: None,
     agent_info: "pi-acp",
     install: "npm i -g pi-acp",
     reach: Reach::Refused,
     note: "S33: pi-acp 0.0.34 refuses session/new -32603 because it calls \
            `get_available_thinking_levels`, which the installed pi 0.80.2 does not have — a skew \
            between the shim and pi, not an account wall",
+};
+
+/// Nous Research's Hermes Agent, `hermes acp`, read from the v0.22.2 source
+/// (`acp_adapter/server.py`): it answers `initialize` as `hermes-agent`, advertises `loadSession`
+/// and accepts `mcpServers` on a `session/new` that no `authenticate` gates. Its `authMethods`
+/// include a terminal `hermes-setup` login flow, which marion never selects.
+pub const HERMES: Agent = Agent {
+    boot: UNMEASURED_AGENT,
+    id: "hermes",
+    argv: &["hermes", "acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    reasoning: None,
+    // The same binary as the `hermes` row, in-process at v0.22.2 (a later release turns `acp`
+    // into a viewer of a gateway daemon, which the row's pin keeps out).
+    updates: AgentUpdates::Twin(Harness::Hermes),
+    // Without it a session adopts the operator's codex and claude logins. The package's console
+    // scripts (v0.22.2 `pyproject.toml`): `hermes-acp` serves ACP directly, and `hermes-agent` is
+    // the legacy runner, on the same credential code.
+    login_guard: Some(LoginGuard {
+        row: Harness::Hermes,
+        programs: &["hermes", "hermes-acp", "hermes-agent"],
+    }),
+    agent_info: "hermes-agent",
+    install: "uv tool install 'hermes-agent[acp]'",
+    reach: Reach::Unprobed {
+        why: "no working Hermes 0.22.2 is installed to capture; read from the v0.22.2 source",
+    },
+    note: "read from the hermes-agent v0.22.2 source, not captured: `hermes acp` runs in-process, \
+           and every launch carries the `hermes` row's managed scope with \
+           auth.adopt_external_logins false; the install spelling is unverified",
 };
 
 /// Every ACP agent marion has a refinement row for. Naming one is not having measured it — see
@@ -1193,9 +1260,9 @@ pub const PI_ACP: Agent = Agent {
 /// *starting a device pairing* and printing its code (S33), and the doctor's `--try` mode opens
 /// a session on every row — so a row would make a routine probe start a login flow. It stays
 /// reachable as the operator's own `acp:droid exec --output-format acp-daemon`.
-pub const AGENTS: [Agent; 14] = [
+pub const AGENTS: [Agent; 15] = [
     OPENCODE, CLAUDE_ACP, CODEX_ACP, COPILOT, KILO, QWEN, GOOSE, FAST_AGENT, VIBE, VTCODE, AUGGIE,
-    QODER, CLINE, PI_ACP,
+    QODER, CLINE, PI_ACP, HERMES,
 ];
 
 /// The refinement row for an id, or `None` where marion has none — which is **not** a refusal;
@@ -1209,23 +1276,24 @@ pub fn agent(id: &str) -> Option<Agent> {
 /// do. Only the row's **binary** facts may be read off it (its update switch): the command is not
 /// bound to the row, whose spelling and declaration quirks were measured on its own argv.
 fn same_program(argv: &[String]) -> Option<Agent> {
-    let name = |p: &str| {
-        Path::new(p)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(p)
-            .to_string()
-    };
     let (program, args) = argv.split_first()?;
     AGENTS
         .into_iter()
         .filter(|a| {
             let (row_program, row_args) = a.argv.split_first().expect("a row names a program");
-            name(program) == *row_program
+            program_name(program) == *row_program
                 && args.len() >= row_args.len()
                 && args.iter().zip(row_args).all(|(a, b)| a == b)
         })
         .max_by_key(|a| a.argv.len())
+}
+
+/// A command's program by file name, so a full path to a binary names it as its bare name does.
+fn program_name(program: &str) -> &str {
+    Path::new(program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(program)
 }
 
 /// **What an ACP launch is bound to**: the agent's argv, and whatever refinement marion has for it.
@@ -1330,6 +1398,18 @@ impl Binding {
         self.refinement
             .or_else(|| same_program(&self.argv))
             .map(|a| a.updates.policy())
+    }
+
+    /// The row whose borrowed-login switch this launch carries ([`LoginGuard`]), keyed off the
+    /// **program** alone and never the id or the arguments: `hermes acp`, `hermes-acp`, and a full
+    /// path to either are guarded as the `hermes` row is. `None` for a program no row guards.
+    pub fn login_guard(&self) -> Option<&'static HarnessSpec> {
+        let program = program_name(&self.argv[0]);
+        AGENTS
+            .into_iter()
+            .filter_map(|a| a.login_guard)
+            .find(|g| g.programs.contains(&program))
+            .map(|g| crate::adapter::harness_spec(g.row))
     }
 
     /// The channel the bridge is declared on: the protocol's, unless a row measured otherwise.
@@ -2110,6 +2190,63 @@ fn apply_updates(binding: &Binding, f: &mut spec::Fields) -> Result<(), HarnessE
     Ok(())
 }
 
+/// **The bound agent's borrowed-login guard, on every launch of it** ([`Binding::login_guard`]):
+/// the guarding row's refusals of a scope on the machine its variables would shadow, then those
+/// variables, each naming its directory under this node's own. Nothing else of the row's env.
+fn apply_login_guard(
+    binding: &Binding,
+    spec: &LaunchSpec,
+    f: &mut spec::Fields,
+) -> Result<(), HarnessError> {
+    let Some(row) = binding.login_guard() else {
+        return Ok(());
+    };
+    crate::adapter::machine_requirements(row, spec)?;
+    let rows: Vec<spec::Env> = row
+        .env
+        .iter()
+        .copied()
+        .filter(|e| names_a_guard(row, e))
+        .collect();
+    f.extra_env.extend(spec::render_env(&rows, f));
+    Ok(())
+}
+
+/// Whether `e` is a variable naming the directory a guarding document of `row` sits in.
+fn names_a_guard(row: &HarnessSpec, e: &spec::Env) -> bool {
+    match e.val {
+        spec::Val::Under(dir) => row
+            .files
+            .iter()
+            .any(|f| !f.borrowed_login.is_empty() && Path::new(f.path).starts_with(dir)),
+        _ => false,
+    }
+}
+
+/// The guarding row's documents that carry its borrowed-login switch, under this node's own
+/// directory and **without a declaration**: marion's bridge rides `session/new`, and declaring it
+/// there as well would start a second copy of it.
+fn login_guard_documents(
+    binding: &Binding,
+    spec: &LaunchSpec,
+) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+    let Some(row) = binding.login_guard() else {
+        return Ok(Vec::new());
+    };
+    row.files
+        .iter()
+        .filter(|f| !f.borrowed_login.is_empty() && f.modes.covers(spec.auth))
+        .map(|f| {
+            f.render(None)
+                .map(|body| (spec.config_dir.join(f.path), body))
+                .ok_or(HarnessError::MissingInput {
+                    harness: Harness::Acp,
+                    what: "a guarding document whose base is a JSON object",
+                })
+        })
+        .collect()
+}
+
 impl HarnessAdapter for AcpAdapter {
     fn harness(&self) -> Harness {
         Harness::Acp
@@ -2212,6 +2349,7 @@ impl HarnessAdapter for AcpAdapter {
             }
         };
         apply_updates(binding, &mut f)?;
+        apply_login_guard(binding, spec, &mut f)?;
         // The agent type's approval mode rides the session too, set by the driver after the model.
         f.session_mode = spec.extra.approval_mode.clone();
         Ok(f)
@@ -2248,11 +2386,12 @@ impl HarnessAdapter for AcpAdapter {
         _ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
         let binding = self.binding(spec)?;
+        let mut documents = login_guard_documents(binding, spec)?;
         if !spec.auth.overlays() {
-            return Ok(Vec::new());
+            return Ok(documents);
         }
         match binding.canned() {
-            None => Ok(Vec::new()),
+            None => Ok(documents),
             Some(CannedRecipe::OpencodeConfigDocument) => {
                 let model = spec
                     .model
@@ -2270,7 +2409,7 @@ impl HarnessAdapter for AcpAdapter {
                     what: "a canned run points the agent at marion's own endpoint, and no base \
                            URL was given",
                 })?;
-                Ok(vec![(
+                documents.push((
                     opencode::config_path(&spec.config_dir),
                     format!(
                         "{:#}\n",
@@ -2286,7 +2425,8 @@ impl HarnessAdapter for AcpAdapter {
                             None,
                         )
                     ),
-                )])
+                ));
+                Ok(documents)
             }
         }
     }
@@ -2545,6 +2685,43 @@ mod tests {
         }
         let claude = Binding::resolve(&CLAUDE_ACP.argv.join(" ")).unwrap();
         assert_eq!(claude.updates(), Some(CLAUDE_ACP.updates.policy()));
+    }
+
+    /// **A borrowed-login guard keys off the program, never the id or the arguments**: every
+    /// program a guard names, bare or by full path, with the row's arguments, others or none, is
+    /// guarded; a name that merely starts the same is not. Each guard names its own agent's
+    /// program, and no program is claimed by two. Mutation: match on `same_program`, or on argv[0]
+    /// without the file-name step.
+    #[test]
+    fn a_login_guard_keys_off_the_program_alone() {
+        let guarded = |selector: &str| {
+            Binding::resolve(selector)
+                .unwrap()
+                .login_guard()
+                .map(|row| row.harness)
+        };
+        let mut claimed = Vec::new();
+        for a in AGENTS {
+            let Some(g) = a.login_guard else { continue };
+            assert!(g.programs.contains(&a.argv[0]), "`{}`", a.id);
+            assert_eq!(guarded(a.id), Some(g.row), "`{}` by id", a.id);
+            for program in g.programs {
+                assert!(!claimed.contains(program), "{program} is guarded twice");
+                claimed.push(*program);
+                for selector in [
+                    program.to_string(),
+                    a.argv[1..]
+                        .iter()
+                        .fold(program.to_string(), |s, arg| s + " " + arg),
+                    format!("/opt/agents/bin/{program} --profile p acp"),
+                ] {
+                    assert_eq!(guarded(&selector), Some(g.row), "{selector}");
+                }
+                assert_eq!(guarded(&format!("{program}x acp")), None, "{program}x");
+            }
+        }
+        assert_eq!(claimed, ["hermes", "hermes-acp", "hermes-agent"]);
+        assert_eq!(guarded("opencode acp"), None);
     }
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s20");
@@ -3649,14 +3826,25 @@ mod tests {
     /// a session or was refused ([`Agent::reach`]), and — for an opened session — whether the
     /// answer advertised a `model` and a `mode` select, read with the very [`session_select`] the
     /// driver uses. A row added without a capture, or a capture that drifts from its row, fails
-    /// here by the row's name.
+    /// here by the row's name — unless the row says it was never probed, and why, and is named
+    /// below so an unprobed row is a decision rather than an omission.
     #[test]
     fn every_refinement_row_matches_its_s33_capture() {
+        let mut unprobed = Vec::new();
         for a in AGENTS {
             let id = a.id;
             assert!(!a.agent_info.is_empty(), "`{id}` states no agentInfo");
             assert!(!a.install.is_empty(), "`{id}` states no install command");
             assert!(!a.note.is_empty(), "`{id}` states no note");
+            if let Reach::Unprobed { why } = a.reach {
+                assert!(!why.trim().is_empty(), "`{id}` says nothing of why");
+                assert!(
+                    !std::path::Path::new(&format!("{S33}/{id}.jsonl")).exists(),
+                    "`{id}` has a capture now: hold the row to it"
+                );
+                unprobed.push(id);
+                continue;
+            }
             let hs = AgentHandshake::parse(&s33_frame(id, 0))
                 .unwrap_or_else(|e| panic!("`{id}`'s capture is no handshake: {e}"));
             assert_eq!(hs.name, a.agent_info, "`{id}` answers as another agent");
@@ -3682,8 +3870,10 @@ mod tests {
                     matches!(session_id(&answer), Err(AcpError::Refused { .. })),
                     "`{id}` is recorded as refused: {answer}"
                 ),
+                Reach::Unprobed { .. } => unreachable!("stepped over above"),
             }
         }
+        assert_eq!(unprobed, ["hermes"], "the rows no capture backs, by name");
     }
 
     /// **An agent's identity is what it says on the wire, and the doctor holds a row to it.**
@@ -3742,7 +3932,10 @@ mod tests {
                     panic!("`{}` opened a session and has no {name}", a.id)
                 }
                 (Reach::Refused, Some(_)) => panic!("`{}` was refused and still has {name}", a.id),
-                (Reach::Refused, None) => {}
+                (Reach::Unprobed { .. }, Some(_)) => {
+                    panic!("`{}` was never probed and still has {name}", a.id)
+                }
+                (Reach::Refused | Reach::Unprobed { .. }, None) => {}
             }
         }
         for name in builtin_names().iter().filter(|n| n.starts_with("acp-")) {
@@ -3801,6 +3994,8 @@ mod tests {
             ("qoder", &["qodercli", "--acp"], None, None),
             ("cline", &["cline", "--acp"], None, None),
             ("pi-acp", &["pi-acp"], None, None),
+            // Read from the v0.22.2 source, never probed (see `Reach::Unprobed`).
+            ("hermes", &["hermes", "acp"], None, None),
         ];
         let actual: Vec<Row> = AGENTS
             .iter()
