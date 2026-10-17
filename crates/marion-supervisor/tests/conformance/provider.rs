@@ -349,7 +349,8 @@ fn rewrite_sse(sse: &str, mut f: impl FnMut(&mut Value) -> Option<String>) -> St
 }
 
 /// Put counted usage into an answer, where each wire states it: Anthropic's `message_start` and
-/// `message_delta`, Responses' `response.completed`, OpenAI chat's finishing chunk.
+/// `message_delta`, Responses' `response.completed`, OpenAI chat's choiceless usage chunk. Each
+/// replaces the canned figure the stream already carries, so a stream reports one spend.
 fn with_usage(wire: &str, sse: &str, (input, output, cached): (u64, u64, u64)) -> String {
     let gemini_usage = json!({"promptTokenCount": input + cached, "candidatesTokenCount": output,
         "cachedContentTokenCount": cached, "totalTokenCount": input + cached + output});
@@ -382,9 +383,11 @@ fn with_usage(wire: &str, sse: &str, (input, output, cached): (u64, u64, u64)) -
                         "total_tokens": input + cached + output});
                 }
             }
+            // The stream's own usage chunk, the one place Chat Completions states it: a second
+            // report elsewhere is a stream no provider sends, and harnesses differ on which they
+            // keep (goose 1.52.0 added both, 1.55.0 kept the last).
             _ => {
-                let finishing = v["choices"][0]["finish_reason"].is_string();
-                if finishing {
+                if v.get("usage").is_some() {
                     v["usage"] = json!({"prompt_tokens": input + cached, "completion_tokens": output,
                         "total_tokens": input + cached + output,
                         "prompt_tokens_details": {"cached_tokens": cached}});
@@ -536,6 +539,12 @@ mod tests {
             o.contains(r#""prompt_tokens":116"#) && o.ends_with("data: [DONE]\n\n"),
             "{o}"
         );
+        // One usage report per stream, the counted one: none of the canned figure is left.
+        for s in [&a, &r, &o] {
+            assert!(!s.contains(r#""input_tokens":100"#), "{s}");
+            assert!(!s.contains(r#""prompt_tokens":100"#), "{s}");
+        }
+        assert_eq!(o.matches(r#""usage""#).count(), 1, "{o}");
     }
 
     #[test]
