@@ -19,3 +19,6 @@ crates/marion-supervisor/src/kill.rs:end_session  bounded one-shot wait: re-read
 crates/marion-supervisor/src/home/session.rs:TICK  bounded: the home screen wakes on it only while something on the tab moves (a running node's elapsed time, a harness being checked); an idle screen has no timeout at all
 crates/marion-supervisor/src/home/session.rs:Session::reports  not a poll: drains the side threads' channel once the wake pipe says a report arrived; never loops on a timer
 crates/marion-supervisor/src/client_auth.rs:hello  bounded: one read timeout per connection, the handshake deadline HELLO_WAIT (5 s), cleared once the hello is answered; a silent listener would otherwise hang the client for ever
+
+# --- etxtbsy-retry (2026-10-16): a spawn refused while its program is open for writing ------
+crates/marion-harness/src/probe.rs:spawn_past_busy_text  bounded one-shot retry: runs only after a spawn failed with ETXTBSY, at most BUSY_TEXT_TRIES (20) tries BUSY_TEXT_PAUSE (5 ms) apart, about 100 ms in all; a write descriptor closing in another process has no portable event to wait on, and the path never runs idle

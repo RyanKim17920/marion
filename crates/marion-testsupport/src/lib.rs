@@ -414,13 +414,14 @@ fn output_within(
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    let mut child = match command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-    {
+        .process_group(0);
+    // A harness a sibling test thread just wrote can still be open for writing in a child that
+    // thread forked: tried again rather than read as absent.
+    let mut child = match marion_harness::probe::spawn_past_busy_text(|| command.spawn()) {
         Ok(child) => child,
         Err(e) => return Some(Err(e)),
     };
@@ -2097,9 +2098,10 @@ mod tests {
                     marker.display()
                 ),
             );
+            let got = output_within(&mut Command::new(&hang), Duration::from_millis(200));
             assert!(
-                output_within(&mut Command::new(&hang), Duration::from_millis(200)).is_none(),
-                "{name}: the descendant holds the pipe open past the budget"
+                got.is_none(),
+                "{name}: the descendant holds the pipe open past the budget, but got {got:?}"
             );
             std::thread::sleep(Duration::from_millis(1500));
             assert!(
@@ -2107,6 +2109,38 @@ mod tests {
                 "{name}: the probe's descendant was killed with it, not orphaned"
             );
         }
+    }
+
+    /// **A probe of a file still open for writing is run once the writer lets go**: Linux refuses
+    /// the exec with `ETXTBSY` while any descriptor writes the file — a sibling test thread's
+    /// fork holds one until its own exec — and the spawn is tried again rather than the harness
+    /// read as absent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_probe_of_a_file_still_open_for_writing_runs_once_it_is_closed() {
+        let dir = scratch("gate-busy-text");
+        let probe = dir.join("probe");
+        write_executable(&probe, "#!/bin/sh\necho ran\n");
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&probe)
+            .expect("the probe, open for writing");
+        assert_eq!(
+            Command::new(&probe).spawn().map_err(|e| e.kind()).err(),
+            Some(std::io::ErrorKind::ExecutableFileBusy),
+            "the fixture only means something while the exec is refused"
+        );
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            drop(writer);
+        });
+        let got = output_within(&mut Command::new(&probe), Duration::from_secs(10));
+        release.join().unwrap();
+        let out = match got {
+            Some(Ok(out)) => out,
+            other => panic!("the probe ran once its writer let go, but got {other:?}"),
+        };
+        assert_eq!(out.stdout, b"ran\n");
     }
 
     /// **The stub case the old exit-status gate could not tell from the real thing**: exits 0,

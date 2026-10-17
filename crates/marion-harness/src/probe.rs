@@ -155,6 +155,33 @@ pub struct VersionProbe {
     _document: Option<PrivateDir>,
 }
 
+/// How many times [`spawn_past_busy_text`] tries, and how long it waits between tries.
+const BUSY_TEXT_TRIES: u32 = 20;
+const BUSY_TEXT_PAUSE: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// **`spawn`, tried again while the file it executes is open for writing somewhere** (`ETXTBSY`,
+/// "Text file busy"), at most [`BUSY_TEXT_TRIES`] times [`BUSY_TEXT_PAUSE`] apart; any other
+/// outcome, and the last busy one, as it came.
+///
+/// Linux refuses to exec a file any process holds open for writing, and a multi-threaded process
+/// forks while another thread writes one: the forked child holds that write descriptor until its
+/// own exec closes it, a few milliseconds. A harness just written (a test's stub, an installer's
+/// new release) then reads as one that cannot run. A failed exec ran nothing, so trying again is
+/// safe. `spawn` is a closure so a caller can take a lock for each try and not hold it across the
+/// pause.
+pub fn spawn_past_busy_text<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut tries = 1;
+    loop {
+        match spawn() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < BUSY_TEXT_TRIES => {
+                tries += 1;
+                std::thread::sleep(BUSY_TEXT_PAUSE);
+            }
+            done => return done,
+        }
+    }
+}
+
 /// Why no probe command was built.
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
@@ -381,5 +408,34 @@ mod tests {
         }
         drop(p);
         assert!(!dir.exists(), "the probe's directory is removed with it");
+    }
+
+    /// **Only a busy text is tried again, and only so often**: two `ETXTBSY`s then a spawn is the
+    /// spawn; a file busy for good is reported after the last try; any other error at once.
+    #[test]
+    fn a_spawn_is_tried_again_only_while_its_text_is_busy() {
+        let busy = || io::Error::from(io::ErrorKind::ExecutableFileBusy);
+        let mut tries = 0;
+        let got = spawn_past_busy_text(|| {
+            tries += 1;
+            if tries < 3 { Err(busy()) } else { Ok(tries) }
+        });
+        assert_eq!(got.unwrap(), 3);
+
+        let mut tries = 0;
+        let got = spawn_past_busy_text(|| -> io::Result<()> {
+            tries += 1;
+            Err(busy())
+        });
+        assert_eq!(got.unwrap_err().kind(), io::ErrorKind::ExecutableFileBusy);
+        assert_eq!(tries, BUSY_TEXT_TRIES);
+
+        let mut tries = 0;
+        let got = spawn_past_busy_text(|| -> io::Result<()> {
+            tries += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert_eq!(got.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(tries, 1, "a missing program is not waited for");
     }
 }
