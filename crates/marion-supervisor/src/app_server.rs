@@ -993,7 +993,8 @@ for line in sys.stdin:
         assert!(run.exit.timed_out, "{run:?}");
         assert!(
             marion_testsupport::until(|| dead(bed.pid())),
-            "the interrupted turn's command survived"
+            "the interrupted turn's command survived: {:?}",
+            marion_testsupport::liveness(bed.pid())
         );
         let (_, stop) = bed.read("turn/interrupt").expect("an interrupt was sent");
         assert_eq!(
@@ -1013,9 +1014,13 @@ for line in sys.stdin:
         let run = run_app_server(bed.spec(Duration::from_secs(3), None)).expect("a session");
         let orphan = bed.pid();
         let died = marion_testsupport::until(|| dead(orphan));
+        let state = marion_testsupport::liveness(orphan);
         marion_testsupport::kill_hard(orphan);
         assert!(run.exit.timed_out, "{run:?}");
-        assert!(died, "the orphaned command {orphan} survived the timeout");
+        assert!(
+            died,
+            "the orphaned command {orphan} survived the timeout: {state:?}"
+        );
     }
 
     /// **A finished session leaves no command behind**: the turn completed with a command still
@@ -1027,9 +1032,13 @@ for line in sys.stdin:
         let run = run_app_server(bed.spec(Duration::from_secs(20), None)).expect("a session");
         let left = bed.pid();
         let died = marion_testsupport::until(|| dead(left));
+        let state = marion_testsupport::liveness(left);
         marion_testsupport::kill_hard(left);
         assert!(!run.exit.timed_out, "{run:?}");
-        assert!(died, "the command {left} outlived its finished session");
+        assert!(
+            died,
+            "the command {left} outlived its finished session: {state:?}"
+        );
     }
 
     /// **A refused credential ends the session at once** — no retry heals it — with the reason,
@@ -1071,6 +1080,10 @@ for line in sys.stdin:
             INTERRUPTS,
             "every interrupt went out"
         );
-        assert!(marion_testsupport::until(|| dead(bed.pid())));
+        assert!(
+            marion_testsupport::until(|| dead(bed.pid())),
+            "the unanswered turn's command survived: {:?}",
+            marion_testsupport::liveness(bed.pid())
+        );
     }
 }
