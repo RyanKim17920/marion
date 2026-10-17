@@ -117,7 +117,7 @@ fn providers() -> &'static Providers {
         .unwrap();
         let copilot_home = home.join(".copilot");
         std::fs::create_dir_all(&copilot_home).unwrap();
-        let mut vars: Vec<(String, String)> = vec![
+        let vars: Vec<(String, String)> = vec![
             ("HOME".into(), home.to_string_lossy().into_owned()),
             // qwen reads its provider from the environment alone.
             ("OPENAI_BASE_URL".into(), qwen_url),
@@ -135,9 +135,8 @@ fn providers() -> &'static Providers {
             ("COPILOT_MODEL".into(), "canned-1".into()),
             ("COPILOT_OFFLINE".into(), "true".into()),
         ];
-        // The ACP row names no update switch of its own (its program is the agent's), so the
-        // copilot row's is set here, from the row.
-        vars.extend(marion_harness::copilot::SPEC.updates.env());
+        // copilot's no-self-update switch is not set here: the `acp:copilot` launch carries it,
+        // from the agent's row.
         // SAFETY: set once, inside `get_or_init`, before any test in this binary has started a
         // process — every test's first act is to call this.
         unsafe {

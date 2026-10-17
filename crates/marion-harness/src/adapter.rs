@@ -9304,6 +9304,90 @@ mod tests {
         }
     }
 
+    /// **Every ACP refinement row resolves to a no-self-update policy, and every launch of that
+    /// agent carries it** — linked from the twin row of the binary it runs, or its own, or an
+    /// explicit `None` saying what was not found. Headless, under each auth mode the row compiles,
+    /// which is also the launch the doctor's `initialize` probe and the conformance runs compile.
+    /// An ACP launch has no override channel and writes no settings document, so no row may
+    /// resolve to a pair or a document.
+    #[test]
+    fn every_acp_row_resolves_an_update_policy_and_every_launch_of_it_carries_it() {
+        use crate::spec::UpdatePolicy;
+
+        for agent in acp::AGENTS {
+            let who = format!("acp:{}", agent.id);
+            let policy = agent.updates.policy();
+            let note = match policy {
+                UpdatePolicy::Env { note, .. }
+                | UpdatePolicy::Pair { note, .. }
+                | UpdatePolicy::Document { note, .. }
+                | UpdatePolicy::Never { note }
+                | UpdatePolicy::None { note } => note,
+            };
+            assert!(!note.trim().is_empty(), "{who}: no measurement behind it");
+            let a = AcpAdapter::for_agent(agent);
+            let launches: Vec<Invocation> = [Auth::Inherited, Auth::Canned]
+                .into_iter()
+                .filter_map(|auth| {
+                    let spec = LaunchSpec {
+                        auth,
+                        extra: Extras {
+                            acp_agent: Some(agent.id.into()),
+                            ..Extras::default()
+                        },
+                        ..acp_spec()
+                    };
+                    // Most rows have no canned recipe and refuse a canned launch by name.
+                    a.compile(&spec, &ctx()).ok()
+                })
+                .collect();
+            assert!(!launches.is_empty(), "{who}: no launch compiled");
+            match policy {
+                UpdatePolicy::Env { key, value, .. } => {
+                    let pair = (key.to_string(), value.to_string());
+                    for inv in &launches {
+                        assert_eq!(
+                            inv.env.iter().filter(|kv| **kv == pair).count(),
+                            1,
+                            "{who}: `{key}={value}` exactly once in {:?}",
+                            inv.env
+                        );
+                    }
+                }
+                UpdatePolicy::Never { .. } | UpdatePolicy::None { .. } => assert!(
+                    note.contains("no") || note.contains("never"),
+                    "{who}: must say what was searched and not found: {note}"
+                ),
+                UpdatePolicy::Pair { .. } | UpdatePolicy::Document { .. } => {
+                    panic!("{who}: an ACP launch has no channel for {policy:?}")
+                }
+            }
+        }
+    }
+
+    /// **`copilot --acp` launches with copilot's own no-self-update switch** — the same binary as
+    /// copilot's row, whose 1.0.83 updater runs unless `COPILOT_AUTO_UPDATE` is `false`. Before
+    /// the ACP rows linked their twin's policy, only the S33 probe set it, by hand.
+    #[test]
+    fn the_copilot_acp_launch_carries_copilots_no_self_update_switch() {
+        let spec = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some(acp::COPILOT.id.into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        let inv = AcpAdapter::for_agent(acp::COPILOT)
+            .compile(&spec, &ctx())
+            .unwrap();
+        assert!(
+            inv.env
+                .contains(&("COPILOT_AUTO_UPDATE".to_string(), "false".to_string())),
+            "{:?}",
+            inv.env
+        );
+    }
+
     /// **Every launch shape of every row runs in the temp dir its spawn site names, and no row
     /// competes for the variable.** The dir is the supervisor's (a node's `<agent-dir>/tmp`,
     /// removed at reap), so a row that set or cleared `TMPDIR` itself would either send a Bun

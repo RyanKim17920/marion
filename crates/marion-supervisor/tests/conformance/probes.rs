@@ -288,7 +288,11 @@ fn p_version(c: &mut Ctx<'_>) -> (String, Outcome) {
         LaunchPath::Acp => acp_version(&launch, &s.log),
         _ => flag_version(&launch.inv.program, c.t.spec),
     };
-    let (policy_ok, policy) = update_policy_reaches(c.t.spec.updates, &launch);
+    // An ACP agent's switch is its refinement row's: the protocol row has no program of its own.
+    let updates =
+        c.t.acp_agent()
+            .map_or(c.t.spec.updates, |a| a.updates.policy());
+    let (policy_ok, policy) = update_policy_reaches(updates, &launch);
     // An ACP agent's reading is `<name> <version>`.
     let listed = version
         .as_deref()

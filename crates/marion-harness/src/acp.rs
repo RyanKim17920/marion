@@ -131,11 +131,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     prompt_specials: &[],
     // The program is the agent's own, chosen at bind time, so no one switch fits the row: an
     // opencode agent's would be opencode's and a codex-acp agent's codex-acp's. The row states no
-    // policy; the opencode agent's canned recipe reuses opencode's row, switch included
-    // (`AcpAdapter::fields`), and every other agent runs with whatever its own binary does.
+    // policy; each refinement row states its agent's (`Agent::updates`), applied to every launch
+    // of it (`AcpAdapter::fields`), and a command no row names runs with whatever its own binary
+    // does.
     updates: UpdatePolicy::None {
-        note: "no single program: the switch is the bound agent's; only the opencode agent's \
-               canned recipe carries one (opencode's row)",
+        note: "no single program: the switch is the bound agent's, stated on its refinement row",
     },
     // No stdio pipe of marion's to push on: the declaration is a `session/new` request.
     boot: Boot::Unmeasured {
@@ -673,6 +673,9 @@ pub struct Agent {
     /// **beside** `outputTokens` or **within** it — refining [`USAGE`], which says nothing about
     /// reasoning. `None` where no split was measured. One of [`USAGES`]' rules, by the sweep test.
     pub reasoning: Option<Reasoning>,
+    /// Where this agent's no-self-update switch comes from, applied to every launch of it
+    /// ([`AcpAdapter`]'s `fields`): the built-in row of the binary it runs, or its own.
+    pub updates: AgentUpdates,
     /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
     /// which is how a binary behind any command line is recognised as this row
     /// ([`identity_note`]). Held to the row's S33 capture by the sweep test.
@@ -686,6 +689,32 @@ pub struct Agent {
     /// What starting this agent costs ([`crate::spec::Boot`]) — the budget its `initialize` and
     /// `session/new` are waited on for. The same binary's harness row where there is one.
     pub boot: Boot,
+}
+
+/// **Where an agent's no-self-update switch comes from** — linked, never copied, so a twin row's
+/// re-measured switch reaches its ACP launches too.
+///
+/// Only a policy an ACP launch can carry resolves to a launch: [`UpdatePolicy::Env`] joins its
+/// env, and [`UpdatePolicy::Never`] / [`UpdatePolicy::None`] carry nothing. A pair or a settings
+/// document has no channel here (an ACP agent's argv is verbatim and it writes no document), so
+/// it refuses the launch; the sweep test keeps every row clear of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentUpdates {
+    /// The built-in row of the binary this agent runs, or of the one it starts with its own env.
+    Twin(Harness),
+    /// The agent's own measurement, for an agent with no built-in twin — or the honest absence of
+    /// one, with what was searched.
+    Own(UpdatePolicy),
+}
+
+impl AgentUpdates {
+    /// The policy itself: the twin row's, as that row states it now, or the agent's own.
+    pub fn policy(self) -> UpdatePolicy {
+        match self {
+            Self::Twin(h) => crate::adapter::harness_spec(h).updates,
+            Self::Own(policy) => policy,
+        }
+    }
 }
 
 /// How far an agent's `session/new` got when it was measured — without an account marion made,
@@ -782,6 +811,8 @@ pub const OPENCODE: Agent = Agent {
     // s36 (1.18.32): the prompt response's `thoughtTokens` 7 sits beside `outputTokens` 43 of the
     // provider's 50 completion tokens, and `totalTokens` 1050 counts both.
     reasoning: Some(Reasoning::Beside(THOUGHT_TOKENS)),
+    // The same binary as opencode's row, one subcommand over.
+    updates: AgentUpdates::Twin(Harness::OpenCode),
     agent_info: "OpenCode",
     install: "brew install opencode",
     reach: Reach::Opened {
@@ -811,6 +842,9 @@ pub const CLAUDE_ACP: Agent = Agent {
     // second prompt is folded or queued into the running loop, both responses at the drain.
     mid_turn: Some(MidTurn::Fold),
     reasoning: None,
+    // A shim over the claude-code row's binary, which it starts with its own env: that row's switch
+    // reaches the wrapped binary that way (inherited, not measured through the shim).
+    updates: AgentUpdates::Twin(Harness::ClaudeCode),
     agent_info: "@agentclientprotocol/claude-agent-acp",
     install: "npm i -g @agentclientprotocol/claude-agent-acp",
     reach: Reach::Opened {
@@ -847,6 +881,10 @@ pub const CODEX_ACP: Agent = Agent {
     // `reasoningOutputTokens` (the response's `_meta.quota` carries both, and `thoughtTokens` is
     // the latter).
     reasoning: Some(Reasoning::Within(THOUGHT_TOKENS)),
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "no updater was searched for in the `codex-acp` bin; codex's own switch is a `-c` \
+               pair on codex's argv, which this binary has no measured channel for",
+    }),
     agent_info: "@agentclientprotocol/codex-acp",
     install: "npm i -g @agentclientprotocol/codex-acp",
     reach: Reach::Opened {
@@ -888,6 +926,8 @@ pub const COPILOT: Agent = Agent {
     // empty `end_turn` with stale usage, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
     reasoning: None,
+    // The same binary as copilot's row: S33 ran it with this switch set by hand.
+    updates: AgentUpdates::Twin(Harness::Copilot),
     agent_info: "Copilot",
     install: "npm i -g @github/copilot",
     reach: Reach::Opened {
@@ -914,6 +954,10 @@ pub const KILO: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "no switch was searched for in kilo 7.8.1; it is an opencode fork, and opencode's \
+               variable is not assumed to be its",
+    }),
     agent_info: "Kilo",
     install: "npm i -g @kilocode/cli",
     reach: Reach::Opened {
@@ -936,6 +980,8 @@ pub const QWEN: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    // The same binary as qwen's row.
+    updates: AgentUpdates::Twin(Harness::Qwen),
     agent_info: "qwen-code",
     install: "npm i -g @qwen-code/qwen-code",
     reach: Reach::Opened {
@@ -959,6 +1005,8 @@ pub const GOOSE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    // The same binary as goose's row, which never updates itself.
+    updates: AgentUpdates::Twin(Harness::Goose),
     agent_info: "goose",
     install: "brew install block-goose-cli",
     reach: Reach::Opened {
@@ -984,6 +1032,9 @@ pub const FAST_AGENT: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "no updater was searched for in fast-agent-acp 0.10.37",
+    }),
     agent_info: "fast-agent-acp",
     install: "uv tool install fast-agent-acp",
     reach: Reach::Opened {
@@ -1007,6 +1058,9 @@ pub const VIBE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "no updater was searched for in mistral-vibe 2.25.8",
+    }),
     agent_info: "@mistralai/mistral-vibe",
     install: "uv tool install mistral-vibe",
     reach: Reach::Opened {
@@ -1028,6 +1082,9 @@ pub const VTCODE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "no updater was searched for in vtcode 0.169.0",
+    }),
     agent_info: "vtcode",
     install: "brew install vtcode",
     reach: Reach::Opened {
@@ -1051,6 +1108,9 @@ pub const AUGGIE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "no updater was searched for in auggie 0.36.0",
+    }),
     agent_info: "auggie",
     install: "npm i -g @augmentcode/auggie",
     reach: Reach::Refused,
@@ -1068,6 +1128,9 @@ pub const QODER: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "no updater was searched for in qoder-cli 1.1.64",
+    }),
     agent_info: "qoder-cli",
     install: "npm i -g @qoder-ai/qodercli",
     reach: Reach::Refused,
@@ -1085,6 +1148,8 @@ pub const CLINE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    // The same binary as cline's row, at the release that row measured.
+    updates: AgentUpdates::Twin(Harness::Cline),
     agent_info: "cline",
     install: "npm i -g cline",
     reach: Reach::Refused,
@@ -1103,6 +1168,9 @@ pub const PI_ACP: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    // A shim over the pi row's binary, which it starts with its own env: that row's switch
+    // reaches the wrapped binary that way (inherited, not measured through the shim).
+    updates: AgentUpdates::Twin(Harness::Pi),
     agent_info: "pi-acp",
     install: "npm i -g pi-acp",
     reach: Reach::Refused,
@@ -1221,6 +1289,12 @@ impl Binding {
             .copied()
             .find(|rule| rule.reasoning == reasoning)
             .unwrap_or(&USAGE)
+    }
+
+    /// The agent's no-self-update switch, where a row states one. `None` on the generic path: the
+    /// binary is the operator's command, and nothing about it was measured.
+    pub fn updates(&self) -> Option<UpdatePolicy> {
+        self.refinement.map(|a| a.updates.policy())
     }
 
     /// The channel the bridge is declared on: the protocol's, unless a row measured otherwise.
@@ -1980,6 +2054,26 @@ impl AcpAdapter {
     }
 }
 
+/// **The bound agent's no-self-update switch, on every launch of it** — a refinement row's
+/// measurement, so the generic path has none to apply. A variable joins the launch's env; a switch
+/// an ACP launch has no channel for ([`AgentUpdates`]) is refused rather than dropped.
+fn apply_updates(binding: &Binding, f: &mut spec::Fields) -> Result<(), HarnessError> {
+    match binding.updates() {
+        Some(UpdatePolicy::Env { key, value, .. }) => {
+            f.extra_env.push((key.to_string(), value.to_string()))
+        }
+        Some(UpdatePolicy::Pair { .. } | UpdatePolicy::Document { .. }) => {
+            return Err(HarnessError::AcpAgent(format!(
+                "`{}`'s row states an update switch an ACP launch has no channel for (a pair or a \
+                 settings document); marion will not launch it without the switch",
+                binding.selector()
+            )));
+        }
+        Some(UpdatePolicy::Never { .. } | UpdatePolicy::None { .. }) | None => {}
+    }
+    Ok(())
+}
+
 impl HarnessAdapter for AcpAdapter {
     fn harness(&self) -> Harness {
         Harness::Acp
@@ -2054,11 +2148,8 @@ impl HarnessAdapter for AcpAdapter {
             // and only its call timeout has to be carried beside it.
             (_, Some(CannedRecipe::OpencodeConfigDocument)) => {
                 f.inline_config = Some(opencode::acp_session_document());
-                let mut env = spec::render_env(opencode::SPEC.env, &f);
-                // And opencode's no-self-update switch, which is that row's policy rather than one
-                // of its `Env` rows — the same binary, one subcommand over, updates itself the same
-                // way.
-                env.extend(opencode::SPEC.updates.env());
+                // opencode's no-self-update switch is the agent row's, applied below.
+                let env = spec::render_env(opencode::SPEC.env, &f);
                 // And, live, no session model where only the type's plumbing default was given:
                 // the session keeps the operator's own.
                 let model = opencode::requested_model(spec.auth, spec.model.as_deref());
@@ -2084,6 +2175,7 @@ impl HarnessAdapter for AcpAdapter {
                 });
             }
         };
+        apply_updates(binding, &mut f)?;
         // The agent type's approval mode rides the session too, set by the driver after the model.
         f.session_mode = spec.extra.approval_mode.clone();
         Ok(f)
@@ -2332,6 +2424,59 @@ pub const ROW: Row = Row {
 mod tests {
     use super::*;
     use crate::surfaces::{ControlTransport, DisplaySurface};
+
+    /// The agent's launch fields after its update switch, starting from its own argv tail.
+    fn updated(updates: AgentUpdates) -> Result<spec::Fields, HarnessError> {
+        let binding = Binding::refined(Agent { updates, ..KILO });
+        let mut f = spec::Fields {
+            agent_args: binding.argv()[1..].to_vec(),
+            ..spec::Fields::default()
+        };
+        apply_updates(&binding, &mut f).map(|()| f)
+    }
+
+    /// **A linked twin's variable, or the agent's own, joins its env and leaves its argv alone** —
+    /// and a switch an ACP launch has no channel for refuses the launch rather than running the
+    /// agent bare: codex's pair, or a settings document. The rows here are kilo's with each policy.
+    #[test]
+    fn an_agents_update_switch_reaches_its_launch_or_refuses_it() {
+        let f = updated(AgentUpdates::Twin(Harness::Copilot)).unwrap();
+        assert_eq!(f.agent_args, ["acp"]);
+        assert_eq!(
+            f.extra_env,
+            Vec::from_iter(copilot::SPEC.updates.env()),
+            "the twin row's switch, as that row states it"
+        );
+
+        let f = updated(AgentUpdates::Own(UpdatePolicy::Env {
+            key: "KILO_NO_UPDATE",
+            value: "1",
+            note: "synthetic",
+        }))
+        .unwrap();
+        assert_eq!(f.agent_args, ["acp"]);
+        assert_eq!(f.extra_env, [("KILO_NO_UPDATE".into(), "1".into())]);
+
+        let f = updated(AgentUpdates::Twin(Harness::Goose)).unwrap();
+        assert_eq!((f.agent_args, f.extra_env), (vec!["acp".into()], vec![]));
+
+        for uncarried in [
+            AgentUpdates::Twin(Harness::Codex),
+            AgentUpdates::Own(UpdatePolicy::Document {
+                keys: &[("general.enableAutoUpdate", false)],
+                note: "synthetic",
+            }),
+        ] {
+            let err = updated(uncarried).unwrap_err();
+            assert!(err.to_string().contains("update switch"), "{err}");
+        }
+
+        // The generic path has no row, so nothing to apply.
+        let generic = Binding::resolve("some-agent --acp").unwrap();
+        let mut f = spec::Fields::default();
+        apply_updates(&generic, &mut f).unwrap();
+        assert!(f.agent_args.is_empty() && f.extra_env.is_empty());
+    }
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s20");
     const S21: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s21");
