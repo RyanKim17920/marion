@@ -20,25 +20,37 @@ pub const CAP: u64 = 1 << 20;
 
 /// The bytes of the regular file at `path`, at most [`CAP`] of them, as the module doc says.
 pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+    read_capped(path, CAP)
+}
+
+/// [`read`] with its own `cap`, for a caller that knows how long the file must be (a committed
+/// blob's size) and so refuses one byte more.
+pub fn read_capped(path: &Path, cap: u64) -> io::Result<Vec<u8>> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
-    if !file.metadata()?.is_file() {
+    let meta = file.metadata()?;
+    if !meta.is_file() {
         return Err(io::Error::other(format!(
             "{} is not a regular file",
             path.display()
         )));
     }
+    if meta.len() > cap {
+        return Err(too_long(path, cap));
+    }
     let mut bytes = Vec::new();
-    file.take(CAP + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > CAP {
-        return Err(io::Error::other(format!(
-            "{} is longer than {CAP} bytes",
-            path.display()
-        )));
+    file.take(cap + 1).read_to_end(&mut bytes)?;
+    // It may have grown since `metadata`.
+    if bytes.len() as u64 > cap {
+        return Err(too_long(path, cap));
     }
     Ok(bytes)
+}
+
+fn too_long(path: &Path, cap: u64) -> io::Error {
+    io::Error::other(format!("{} is longer than {cap} bytes", path.display()))
 }
 
 /// [`read`], as UTF-8 text.
@@ -87,6 +99,14 @@ mod tests {
             read(&big).unwrap().len() as u64,
             CAP,
             "exactly the cap is read"
+        );
+        let short = dir.join("short");
+        std::fs::write(&short, [b'x'; 64]).unwrap();
+        assert_eq!(read_capped(&short, 64).unwrap().len(), 64, "a stated cap");
+        std::fs::write(&short, [b'x'; 65]).unwrap();
+        assert!(
+            read_capped(&short, 64).is_err(),
+            "one byte past a stated cap"
         );
 
         assert_eq!(

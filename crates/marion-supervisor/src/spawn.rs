@@ -1082,10 +1082,25 @@ pub fn config_held_unverified(dir: &Path, paths: &[&str]) -> Vec<String> {
 /// anything but a plain file or directory, and on a case-insensitive file system `.CLAUDE/` is
 /// found at `.claude/` exactly as the harness finds it. A committed link or submodule there is
 /// not compared, so it answers `false` too.
+///
+/// Nothing is read past what the reference holds: a committed blob larger than
+/// [`marion_harness::tree_file::CAP`] answers `false` unread, a file on disk whose length is not
+/// its blob's answers `false` before any blob is fetched, and each file is read through the tree
+/// reader capped at its blob's size, so a FIFO or a sparse giant planted there is never waited on
+/// or read whole.
 fn config_as_committed(wt: Tree<'_>, reference: &str, rel: &str) -> bool {
     let Ok(listed) = git_bytes(
         wt,
-        &["ls-tree", "-r", "-z", "--full-tree", reference, "--", rel],
+        &[
+            "ls-tree",
+            "-r",
+            "-z",
+            "-l",
+            "--full-tree",
+            reference,
+            "--",
+            rel,
+        ],
     ) else {
         return false;
     };
@@ -1095,15 +1110,22 @@ fn config_as_committed(wt: Tree<'_>, reference: &str, rel: &str) -> bool {
             return false;
         };
         let meta = String::from_utf8_lossy(&entry[..tab]);
-        let fields: Vec<&str> = meta.split(' ').collect();
-        let [mode, "blob", oid] = fields[..] else {
+        // `-l` pads the size column, so the fields are split on runs of spaces.
+        let fields: Vec<&str> = meta.split_whitespace().collect();
+        let [mode, "blob", oid, size] = fields[..] else {
             return false;
         };
         if mode != "100644" && mode != "100755" {
             return false;
         }
+        let Ok(size) = size.parse::<u64>() else {
+            return false;
+        };
+        if size > marion_harness::tree_file::CAP {
+            return false;
+        }
         let path = PathBuf::from(OsStr::from_bytes(&entry[tab + 1..]));
-        committed.insert(path, oid.to_string());
+        committed.insert(path, (oid.to_string(), size));
     }
     let mut at = wt.dir().to_path_buf();
     for part in Path::new(rel).components() {
@@ -1119,14 +1141,22 @@ fn config_as_committed(wt: Tree<'_>, reference: &str, rel: &str) -> bool {
     if !plain_files(&at, Path::new(rel), &mut found) || !found.keys().eq(committed.keys()) {
         return false;
     }
-    let oids: Vec<&str> = found.keys().map(|path| committed[path].as_str()).collect();
+    let sized = found.iter().all(|(path, on_disk)| {
+        std::fs::symlink_metadata(on_disk).is_ok_and(|m| m.len() == committed[path].1)
+    });
+    if !sized {
+        return false;
+    }
+    let oids: Vec<&str> = found
+        .keys()
+        .map(|path| committed[path].0.as_str())
+        .collect();
     let Some(blobs) = cat_blobs(wt, &oids) else {
         return false;
     };
-    found
-        .values()
-        .zip(blobs)
-        .all(|(on_disk, blob)| std::fs::read(on_disk).is_ok_and(|d| d == blob))
+    found.values().zip(blobs).all(|(on_disk, blob)| {
+        marion_harness::tree_file::read_capped(on_disk, blob.len() as u64).is_ok_and(|d| d == blob)
+    })
 }
 
 /// **The blobs `oids` name, in their order, from one `git cat-file --batch`** rather than a
@@ -1172,8 +1202,13 @@ fn cat_blobs(wt: Tree<'_>, oids: &[&str]) -> Option<Vec<Vec<u8>>> {
     rest.is_empty().then_some(blobs)
 }
 
+/// The most files [`plain_files`] gathers under one config path: past it the path is not
+/// something marion holds a generation to, and a directory of a million files is not walked.
+const MAX_CONFIG_FILES: usize = 1024;
+
 /// Every plain file at or under `at` into `found`, keyed by its path relative to the tree (`rel`
-/// for `at`), following no link: `false` at a link or anything but a file or directory.
+/// for `at`), following no link: `false` at a link, at anything but a file or directory, and past
+/// [`MAX_CONFIG_FILES`].
 fn plain_files(
     at: &Path,
     rel: &Path,
@@ -1185,7 +1220,7 @@ fn plain_files(
     let kind = meta.file_type();
     if kind.is_file() {
         found.insert(rel.to_path_buf(), at.to_path_buf());
-        return true;
+        return found.len() <= MAX_CONFIG_FILES;
     }
     if !kind.is_dir() {
         return false;
@@ -1250,7 +1285,9 @@ pub fn repo_config_snapshot(
 }
 
 /// One path's digest for [`repo_config_snapshot`]: every plain file at or under `rel`, by name
-/// and content, length-prefixed so no two file sets hash alike.
+/// and content, length-prefixed so no two file sets hash alike. Each file is read through the
+/// tree reader ([`marion_harness::tree_file::read`]), so at most one capped file is held at a
+/// time and a FIFO or a sparse giant there is `None`, not a wait or an exhausted memory.
 fn config_digest(dir: &Path, rel: &str) -> Option<String> {
     let mut at = dir.to_path_buf();
     let mut found = std::collections::BTreeMap::new();
@@ -1273,7 +1310,7 @@ fn config_digest(dir: &Path, rel: &str) -> Option<String> {
     let mut hasher = blake3::Hasher::new();
     for (path, on_disk) in &found {
         let name = path.as_os_str().as_bytes();
-        let bytes = std::fs::read(on_disk).ok()?;
+        let bytes = marion_harness::tree_file::read(on_disk).ok()?;
         hasher.update(&(name.len() as u64).to_le_bytes());
         hasher.update(name);
         hasher.update(&(bytes.len() as u64).to_le_bytes());
@@ -2976,6 +3013,89 @@ mod tests {
         assert!(
             !same(grandchild, &carried),
             "a parent's carried edit is not the operator's"
+        );
+    }
+
+    /// **A planted config file is never read whole or waited on**: a FIFO (no writer, so a
+    /// blocking open would hang the spawn) or a sparse 64 GiB file where a config file was is
+    /// held, and promptly, in a child tree and in the operator's snapshot alike; so is a committed
+    /// config blob past the tree reader's cap, and a config directory with more files than marion
+    /// will read.
+    #[test]
+    fn a_planted_config_file_is_held_without_being_read_whole_or_waited_on() {
+        let (dir, repo, _) = committed_repo("spawn-config-planted");
+        std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "config"]);
+        let base = Oid(tgit(&repo, &["rev-parse", "HEAD"]));
+        let common = crate::socket::project_root(&repo);
+        let paths = [".mcp.json", ".pi"];
+        let wt = dir.join("child-wt");
+        make_worktree(Tree::Operator(&repo), &wt, &["marion/child".into()], None)
+            .expect("the child's worktree");
+        let child = Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        };
+        let same = || repo_config_unchanged(child, &base, &common, None, &paths);
+        let digest =
+            |d: &Path| repo_config_snapshot(d, None, &[".mcp.json"]).0[".mcp.json"].clone();
+        assert!(same());
+        assert!(digest(&wt).is_some());
+
+        let started = std::time::Instant::now();
+        std::fs::remove_file(wt.join(".mcp.json")).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(wt.join(".mcp.json"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(!same(), "a FIFO");
+        assert_eq!(digest(&wt), None, "a FIFO");
+        std::fs::remove_file(wt.join(".mcp.json")).unwrap();
+        std::fs::File::create(wt.join(".mcp.json"))
+            .unwrap()
+            .set_len(64 << 30)
+            .unwrap();
+        assert!(!same(), "a sparse giant");
+        assert_eq!(digest(&wt), None, "a sparse giant");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::fs::write(wt.join(".mcp.json"), "{}\n").unwrap();
+        assert!(same());
+
+        std::fs::create_dir_all(wt.join(".pi")).unwrap();
+        for i in 0..=MAX_CONFIG_FILES {
+            std::fs::write(wt.join(format!(".pi/{i}")), "").unwrap();
+        }
+        assert_eq!(
+            repo_config_snapshot(&wt, None, &[".pi"]).0[".pi"],
+            None,
+            "more files than marion reads"
+        );
+        std::fs::remove_dir_all(wt.join(".pi")).unwrap();
+
+        std::fs::create_dir_all(repo.join(".pi")).unwrap();
+        std::fs::write(
+            repo.join(".pi/big"),
+            vec![b'x'; marion_harness::tree_file::CAP as usize + 1],
+        )
+        .unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "a big config"]);
+        let wt2 = dir.join("child-wt2");
+        let (base2, _) =
+            make_worktree(Tree::Operator(&repo), &wt2, &["marion/child2".into()], None)
+                .expect("the second child's worktree");
+        let child2 = Tree::Child {
+            wt: &wt2,
+            repo: &repo,
+        };
+        assert_eq!(
+            repo_config_held(child2, &base2, &common, None, &paths),
+            [".pi"],
+            "a committed blob past the cap is held, never read"
         );
     }
 

@@ -351,8 +351,8 @@ fn agent_type_description_where(
 /// A row's own `env` could set `PATH` for its harness's process; no row does, and the lookup does
 /// not apply one.
 ///
-/// The file is read through [`crate::private_fs::read_capped`]: the state directory is the
-/// operator's, but a FIFO or a link planted there must not hang or exhaust every node's
+/// The file is read through [`marion_harness::tree_file::read_capped`]: the state directory is
+/// the operator's, but a FIFO or a link planted there must not hang or exhaust every node's
 /// `tools/list`, so anything but a small regular file falls back too.
 ///
 /// Only the daemon writes the file (`detach.rs` builds the one owning handle). Under
@@ -366,7 +366,7 @@ fn spawn_path() -> std::ffi::OsString {
 /// [`spawn_path`] for a stated project directory.
 fn spawn_path_in(project: Option<&marion_core::paths::ProjectDir>) -> std::ffi::OsString {
     project
-        .and_then(|p| crate::private_fs::read_capped(&p.spawn_path(), SPAWN_PATH_CAP).ok())
+        .and_then(|p| marion_harness::tree_file::read_capped(&p.spawn_path(), SPAWN_PATH_CAP).ok())
         .map(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec)
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_default()
