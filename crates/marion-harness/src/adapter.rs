@@ -176,6 +176,12 @@ pub struct Extras {
     /// the row's switch keeps it out ([`spec::Arg::Disowned`]). `false` by default: nothing is the
     /// operator's unless the supervisor said so. A trusted repository is always its own.
     pub repo_config_own: bool,
+    /// **The root of the checkout this node works in, as the supervisor recorded it**: a child's
+    /// worktree, or the operator's checkout's top level at the root's first launch. A search for
+    /// repository config up from the cwd (copilot's, agy's) stops here rather than at the nearest
+    /// `.git`, which a node can plant in a subdirectory. `None` where none was recorded, and then
+    /// the nearest `.git` bounds it.
+    pub checkout_root: Option<PathBuf>,
     /// **The admin dir of the git worktree the node works in** (`<common>/worktrees/<name>`,
     /// where its index and HEAD live), as the supervisor proved it against the operator's
     /// worktree registration — never read from the tree's own `.git`, which the node can rewrite.
@@ -1099,6 +1105,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         env_passthrough: spec.extra.env_passthrough.clone(),
         repo_trusted: spec.extra.repo_trusted,
         repo_config_own: spec.extra.repo_config_own,
+        checkout_root: spec.extra.checkout_root.clone(),
         repo_mcp_servers: repo_mcp.clone().unwrap_or_default(),
         repo_mcp_unreadable: repo_mcp.is_none(),
         repo_mcp_unapproved: match &repo_mcp {

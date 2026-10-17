@@ -810,6 +810,7 @@ pub fn prepare_watched(
         Some(r) => r.trust.clone(),
         None => TrustRecord {
             branch: crate::spawn::trust_branch(crate::spawn::Tree::Operator(&spec.repo)),
+            checkout_root: crate::spawn::toplevel(crate::spawn::Tree::Operator(&spec.repo)),
             repo_config: Some(crate::spawn::repo_config_snapshot(
                 &spec.repo,
                 &crate::trust::repo_config_paths(),
@@ -941,6 +942,9 @@ pub fn prepare_watched(
             repo_config_own: true,
             // The only admin dir the sandbox writes: proven against the registration.
             git_admin_dir: crate::gitcmd::admin_dir(&spec.repo, &project_root),
+            // Where a search for repository config up from the cwd stops: the checkout's top
+            // level as the first launch found it.
+            checkout_root: trust_record.checkout_root.clone(),
             acp_agent: agent_type.acp_agent.clone(),
             approval_mode: agent_type.approval_mode.clone(),
             profile_dir: profiles.dir(0),

@@ -2257,6 +2257,7 @@ fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
     let paths = crate::trust::repo_config_paths();
     let record = TrustRecord {
         branch: None,
+        checkout_root: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
     };
     let gen0 = repo_trust(&env, &repo, None, &record);
@@ -2317,6 +2318,7 @@ fn a_linked_config_in_the_operator_tree_is_not_the_operators_after_generation_0(
     let paths = crate::trust::repo_config_paths();
     let record = TrustRecord {
         branch: None,
+        checkout_root: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
     };
     let trust = repo_trust_of(

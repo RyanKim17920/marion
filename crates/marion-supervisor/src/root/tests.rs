@@ -2544,6 +2544,7 @@ fn a_root_that_plants_repo_config_in_generation_0_is_untrusted_in_generation_1()
     let checkout = dir.to_path_buf();
     let record = TrustRecord {
         branch: None,
+        checkout_root: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(
             &checkout,
             &crate::trust::repo_config_paths(),
@@ -2584,6 +2585,11 @@ fn a_resumed_root_keeps_its_first_launchs_trust_record() {
     let recorded = intent(&first.agent_id).trust;
     assert_eq!(recorded.branch.as_deref(), Some("main"), "{recorded:?}");
     assert!(recorded.repo_config.is_some());
+    assert_eq!(
+        recorded.checkout_root,
+        Some(std::fs::canonicalize(&repo).unwrap()),
+        "the checkout's top level, as git spells it"
+    );
 
     let git = |args: &[&str]| {
         let out = marion_harness::env_filter::git_command()

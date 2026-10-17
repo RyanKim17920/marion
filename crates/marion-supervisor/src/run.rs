@@ -2291,6 +2291,7 @@ pub fn run_spawn_watched(
             .and_then(|parent| observer.trust_record(&parent))
             .unwrap_or_else(|| TrustRecord {
                 branch: crate::spawn::trust_branch(crate::spawn::Tree::Operator(&req.repo)),
+                checkout_root: crate::spawn::toplevel(crate::spawn::Tree::Operator(&req.repo)),
                 repo_config: Some(crate::spawn::repo_config_snapshot(
                     &req.repo,
                     &crate::trust::repo_config_paths(),
@@ -2655,6 +2656,11 @@ pub fn run_spawn_watched(
         launch.extra.env_passthrough = passthrough.clone();
         launch.extra.repo_trusted = repo_trusted;
         launch.extra.repo_config_own = repo_config_own;
+        // A worktree marion made is its own checkout's root; the operator's is as recorded.
+        launch.extra.checkout_root = match tree_of(env, &wt) {
+            crate::spawn::Tree::Child { .. } => Some(wt.clone()),
+            crate::spawn::Tree::Operator(_) => trust_record.checkout_root.clone(),
+        };
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep, gateway.as_ref());
         }

@@ -445,6 +445,11 @@ pub struct TrustRecord {
     /// place of the common `HEAD`, which a root running in the checkout can move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// The operator's checkout's top level (`git rev-parse --show-toplevel`) at the root's first
+    /// launch: where a harness's search for repository config up from its cwd stops, so a `.git`
+    /// a node plants in a subdirectory does not cut it short.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_root: Option<std::path::PathBuf>,
     /// The repository's own harness config in the operator's checkout at the root's first launch.
     /// `None` where none was taken (an older intent): nothing to hold a tree to, so no config in
     /// the operator's checkout counts as theirs.
@@ -454,7 +459,7 @@ pub struct TrustRecord {
 
 impl TrustRecord {
     pub fn is_empty(&self) -> bool {
-        self.branch.is_none() && self.repo_config.is_none()
+        self.branch.is_none() && self.checkout_root.is_none() && self.repo_config.is_none()
     }
 }
 
@@ -1622,6 +1627,7 @@ mod tests {
             workflow: None,
             trust: TrustRecord {
                 branch: Some("main".into()),
+                checkout_root: None,
                 repo_config: Some(was),
             },
         };

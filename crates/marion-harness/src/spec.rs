@@ -1484,6 +1484,9 @@ pub struct Fields {
     pub repo_trusted: bool,
     /// The tree's repository config is the operator's own: what [`Arg::Disowned`] reads.
     pub repo_config_own: bool,
+    /// Where the search for repository config up from [`Self::cwd`] stops
+    /// ([`crate::adapter::Extras::checkout_root`]).
+    pub checkout_root: Option<PathBuf>,
     /// The server names the tree's `.mcp.json` declares (its `mcpServers` keys), sorted; empty
     /// where it has none or does not read as servers. Read on a live launch only.
     pub repo_mcp_servers: Vec<String>,
@@ -1534,6 +1537,7 @@ impl std::fmt::Debug for Fields {
             env_passthrough,
             repo_trusted,
             repo_config_own,
+            checkout_root,
             repo_mcp_servers,
             repo_mcp_unreadable,
             repo_mcp_unapproved,
@@ -1551,6 +1555,7 @@ impl std::fmt::Debug for Fields {
             .field("env_passthrough", env_passthrough)
             .field("repo_trusted", repo_trusted)
             .field("repo_config_own", repo_config_own)
+            .field("checkout_root", checkout_root)
             .field("repo_mcp_servers", repo_mcp_servers)
             .field("repo_mcp_unreadable", repo_mcp_unreadable)
             .field("repo_mcp_unapproved", repo_mcp_unapproved)
@@ -1856,20 +1861,30 @@ pub fn repo_config_rule(f: &Fields) -> Option<bool> {
     (!f.auth.overlays()).then_some(f.repo_trusted)
 }
 
-/// **Whether any of `paths` is in `cwd` or a directory above it up to its checkout's root** (the
-/// nearest holding `.git`), as a file, a directory or a link: copilot and agy read repository
-/// config from every level up to that root, and a harness that reads only its cwd is covered by
-/// the first. Outside a checkout only `cwd` itself is looked at, so an operator's own config
-/// under their home never counts as a repository's.
-fn repo_config_in_checkout(paths: &[&str], cwd: &Path) -> bool {
+/// **Whether any of `paths` is in `cwd` or a directory above it up to its checkout's root**, as a
+/// file, a directory or a link: copilot and agy read repository config from every level up to
+/// that root, and a harness that reads only its cwd is covered by the first. The root is
+/// `recorded` where the supervisor recorded one above `cwd` — a `.git` a node planted between the
+/// two does not cut the search short — else the nearest directory holding `.git`. Outside a
+/// checkout only `cwd` itself is looked at, so an operator's own config under their home never
+/// counts as a repository's.
+fn repo_config_in_checkout(paths: &[&str], cwd: &Path, recorded: Option<&Path>) -> bool {
     let holds = |dir: &Path| {
         paths
             .iter()
             .any(|p| std::fs::symlink_metadata(dir.join(p)).is_ok())
     };
-    let root = cwd
-        .ancestors()
-        .find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok());
+    // The recorded root is git's spelling, links resolved; the cwd is held to it in the same one.
+    let real = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let (cwd, root) = match recorded {
+        Some(r) if cwd.starts_with(r) => (cwd, Some(r)),
+        Some(r) if real.starts_with(r) => (real.as_path(), Some(r)),
+        _ => (
+            cwd,
+            cwd.ancestors()
+                .find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok()),
+        ),
+    };
     match root {
         Some(root) => cwd
             .ancestors()
@@ -1948,7 +1963,7 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     let any_auth = argv.contains(&Arg::RefuseUntrustedAnyAuth);
     let refuses = (any_auth && !f.repo_trusted)
         || (argv.contains(&Arg::RefuseUntrusted) && repo_config_rule(f) == Some(false));
-    if refuses && repo_config_in_checkout(spec.repo_config, &f.cwd) {
+    if refuses && repo_config_in_checkout(spec.repo_config, &f.cwd, f.checkout_root.as_deref()) {
         return Err(Refusal::UntrustedRepoConfig { any_auth });
     }
     if argv
@@ -2587,6 +2602,36 @@ pub enum Constraint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A `.git` planted below the recorded checkout root does not cut the search short**: the
+    /// config at the root is still found from a cwd under the planted one. With nothing recorded
+    /// the nearest `.git` bounds it, and outside every checkout only the cwd counts.
+    #[test]
+    fn the_repo_config_search_runs_to_the_recorded_root_past_a_planted_git() {
+        let dir = marion_testsupport::scratch("spec-config-walk");
+        let root = dir.join("checkout");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".github")).unwrap();
+        std::fs::write(root.join(".github/mcp.json"), "{}").unwrap();
+        std::fs::create_dir_all(sub.join(".git")).unwrap();
+        let paths = [".github/mcp.json"];
+        assert!(
+            !repo_config_in_checkout(&paths, &sub, None),
+            "the nearest .git alone stops at the planted one"
+        );
+        assert!(repo_config_in_checkout(&paths, &sub, Some(&root)));
+        assert!(
+            !repo_config_in_checkout(&paths, &sub, Some(&dir.join("elsewhere"))),
+            "a recorded root that is not above the cwd is not used"
+        );
+        assert!(repo_config_in_checkout(&paths, &root, Some(&root)));
+        let real = std::fs::canonicalize(&root).unwrap();
+        assert!(
+            repo_config_in_checkout(&paths, &sub, Some(&real)),
+            "git's spelling of the root, links resolved, still bounds a cwd spelled otherwise"
+        );
+    }
 
     /// [`Field::BaseUrlRoot`]'s value drops one trailing `/v1` and the slashes around it, and
     /// leaves a URL without one as it is.

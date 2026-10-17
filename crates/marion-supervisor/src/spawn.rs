@@ -712,6 +712,15 @@ pub fn checked_out_branch(wt: Tree<'_>) -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
+/// **The top level of the checkout at `wt`** (`git rev-parse --show-toplevel`), or `None` outside
+/// one.
+pub fn toplevel(wt: Tree<'_>) -> Option<PathBuf> {
+    git(wt, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .map(|t| PathBuf::from(t.trim_end_matches('\n')))
+        .filter(|t| !t.as_os_str().is_empty())
+}
+
 /// **The branch `wt` has checked out, as a trust reference** ([`repo_config_unchanged`]'s
 /// `branch`): one that names a commit (`rev-parse --verify`), and never a branch under `marion/`,
 /// which is a node's own work.
