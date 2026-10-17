@@ -119,10 +119,14 @@ pub fn project_label(path: &str, home: Option<&str>, branch: Option<&str>) -> St
 fn agents(home: &Home, now: std::time::SystemTime) -> AgentsView {
     let w = &home.watch;
     let mut rows = Vec::new();
-    for i in 0..w.tree.rows() {
+    let mut cursor = 0;
+    for (i, dim) in home.shown_rows() {
         let Some((prefix, tnode)) = w.tree.row(i) else {
             break;
         };
+        if i == w.tree.cursor() {
+            cursor = rows.len();
+        }
         let row = |title: String, who: &str, tokens: Option<u64>| AgentRow {
             id: tnode.id.clone(),
             prefix: prefix.to_string(),
@@ -131,6 +135,7 @@ fn agents(home: &Home, now: std::time::SystemTime) -> AgentsView {
             who: who.to_string(),
             time: String::new(),
             tokens,
+            dim,
         };
         if let Some(race) = crate::tree::race_of_row(&tnode.id) {
             let s = race_summary(race, &w.nodes);
@@ -167,7 +172,6 @@ fn agents(home: &Home, now: std::time::SystemTime) -> AgentsView {
             )
         });
     }
-    let cursor = w.tree.cursor().min(rows.len().saturating_sub(1));
     AgentsView {
         rows,
         cursor,
@@ -712,6 +716,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("enter", "attach (pane); ^] d back", "marion attach <id>"),
             ("enter", "full output (headless)", "marion ls <id>"),
             ("n", "new task", "marion run <type> --prompt <text>"),
+            ("/", "search; ↑↓ next, enter go", ""),
             ("s", "steer a running agent", "marion steer <id> <text>"),
             ("x", "cancel, asks; again kills", "marion cancel <id>"),
             ("u", "resume an ended agent", "marion resume <id>"),
@@ -837,6 +842,21 @@ fn footer(home: &Home) -> Footer {
                         h(&[("tab", "type"), ("↑↓", "model"), ("enter", "run")]),
                     )
                 }
+                Purpose::Search { .. } => {
+                    let shown = home.shown_rows();
+                    let matches = shown.iter().filter(|(_, dim)| !dim).count();
+                    let note = match (text.trim().is_empty(), matches) {
+                        (true, _) => String::new(),
+                        (false, 0) => "no match".to_string(),
+                        (false, 1) => "1 match".to_string(),
+                        (false, n) => format!("{n} matches"),
+                    };
+                    (
+                        "search".to_string(),
+                        note,
+                        h(&[("↑↓", "next"), ("enter", "go"), ("esc", "back")]),
+                    )
+                }
                 Purpose::Steer(id) => (
                     format!("steer {}", who_short(home, id)),
                     String::new(),
@@ -924,7 +944,7 @@ fn agent_keys(home: &Home) -> Vec<Hint> {
             k.push(("x", "cancel"));
         }
     }
-    k.push(more);
+    k.extend([("/", "search"), more]);
     k.into_iter().map(|(a, b)| Hint::new(a, b)).collect()
 }
 

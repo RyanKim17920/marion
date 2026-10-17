@@ -358,6 +358,7 @@ fn row(prefix: &str, tone: Tone, title: &str, who: &str, time: &str, tokens: u64
         who: s(who),
         time: s(time),
         tokens: Some(tokens),
+        dim: false,
     }
 }
 
@@ -983,4 +984,29 @@ fn setup_a_key_the_store_could_not_read() {
         ("esc", "back"),
     ]);
     insta::assert_snapshot!(report(&setup_screen(&v, footer), 100, 30));
+}
+
+/// **`/` search within one project**: the rows that match `bucket`, and dim above them the root
+/// they sit under; the line counts the matches.
+#[test]
+fn agents_search_filters_and_keeps_ancestors_dim() {
+    let all = rows();
+    let mut kept: Vec<AgentRow> = [0, 2, 3, 4].into_iter().map(|i| all[i].clone()).collect();
+    kept[0].dim = true;
+    let v = AgentsView {
+        rows: kept,
+        cursor: 1,
+        ..agents_view(0, live_preview())
+    };
+    let footer = Footer::Input {
+        target: s("search"),
+        note: s("3 matches"),
+        text: s("bucket"),
+        keys: vec![
+            Hint::new("↑↓", "next"),
+            Hint::new("enter", "go"),
+            Hint::new("esc", "back"),
+        ],
+    };
+    insta::assert_snapshot!(at_every_size(&screen(Body::Agents(&v), footer)));
 }

@@ -98,7 +98,9 @@ every key with the command it stands for, `,` opens Setup, Esc goes back, `q` or
 - **The list** puts what needs you first, then work to land, then what runs, the newest first
   among equals; a tree is placed by its most urgent agent. Each row is the task's first line, the
   harness, how long it has run and its tokens (never a price). `j/k` move; the order holds while a
-  line is open, so a row never moves under a steer being typed.
+  line is open, so a row never moves under a steer being typed. `/` searches it as you type, by
+  task, agent type or short id, keeping the rows above a match dim; `↑↓` step through the
+  matches, Enter goes to one and Esc goes back.
 - **The preview** shows the agent's harness and id, what it needs from you, how it ended (status,
   tokens in and out, its own first line, the branch it landed with `+added -removed`), its
   subtree against its budget, and its output, which Page Up/Down scroll and End follows.

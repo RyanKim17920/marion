@@ -1,0 +1,146 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Agents(&v), footer))"
+---
+--- 80x24 ---
+ marion  ~/code/acme-api                       2 running  2 need you  1 to land
+  ⠋ ship the rate limiter                           claude opus       12m  312k
+  ├ ✗ add bucket tests                              codex gpt-5        5m  120k
+  ├ ✓ add token-bucket limiter                      codex gpt-5        7m  197k
+  └ ⠏ implement the bucket                          codex gpt-5        2m   88k
+────────────────────────────────────────────────────────────────────────────────
+ codex 91cd  wire the limiter into ci
+ wants to write .github/workflows/ci.yml
+
+ 14:24:00  read src/limits/mod.rs
+ 14:24:07  $ cargo test -q limits
+ 14:24:14  ok 4.1s
+ 14:24:21  I'll add a token bucket keyed by API key.
+ 14:24:28  ~ crates/api/src/limits/bucket.rs
+ 14:24:35  $ cargo build -q
+ 14:24:42  exit 101 3.2s
+ 14:24:49  read .github/workflows/ci.yml
+ 14:24:56  read src/limits/mod.rs
+
+
+
+
+
+ search 3 matches › bucket▏                        ↑↓ next  enter go  esc back
+--- styles ---
+  200  Style::new().fg(Color::Reset).bg(Color::Reset)  "✓addtoken-bucketlimiteri"
+   21  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cdsearch"
+  310  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "›↑↓enteresc"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addbuckettests"
+   18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✗codexgpt-55m120k"
+    7  Style::new().green().bg(Color::Reset)  "⠏ok4.1s"
+   11  Style::new().red().bg(Color::Reset)  "exit1013.2s"
+   36  Style::new().yellow().bg(Color::Reset)  "wantstowrite.github/work"
+
+--- 100x30 ---
+ marion  ~/code/acme-api                                           2 running  2 need you  1 to land
+  ⠋ ship the rate limiter       claude opus       12m  312k │ codex 91cd  wire the limiter into ci
+  ├ ✗ add bucket tests          codex gpt-5        5m  120k │ wants to write .github/workflows/ci.…
+  ├ ✓ add token-bucket limiter  codex gpt-5        7m  197k │
+  └ ⠏ implement the bucket      codex gpt-5        2m   88k │ 14:24:00  read src/limits/mod.rs
+                                                            │ 14:24:07  $ cargo test -q limits
+                                                            │ 14:24:14  ok 4.1s
+                                                            │ 14:24:21  I'll add a token bucket ke…
+                                                            │ 14:24:28  ~ …api/src/limits/bucket.rs
+                                                            │ 14:24:35  $ cargo build -q
+                                                            │ 14:24:42  exit 101 3.2s
+                                                            │ 14:24:49  read .github/workflows/ci.…
+                                                            │ 14:24:56  read src/limits/mod.rs
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+                                                            │
+ search 3 matches › bucket▏                                            ↑↓ next  enter go  esc back
+--- styles ---
+  192  Style::new().fg(Color::Reset).bg(Color::Reset)  "wirethelimiterintoci✓add"
+   21  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cdsearch"
+  247  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "›↑↓enteresc"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addbuckettests"
+   18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✗codexgpt-55m120k"
+    7  Style::new().green().bg(Color::Reset)  "⠏ok4.1s"
+   11  Style::new().red().bg(Color::Reset)  "exit1013.2s"
+   34  Style::new().yellow().bg(Color::Reset)  "wantstowrite.github/work"
+
+--- 160x50 ---
+ marion  ~/code/acme-api                                                                                                       2 running  2 need you  1 to land
+  ⠋ ship the rate limiter                                           claude opus       12m  312k │ codex 91cd  wire the limiter into ci
+  ├ ✗ add bucket tests                                              codex gpt-5        5m  120k │ wants to write .github/workflows/ci.yml
+  ├ ✓ add token-bucket limiter                                      codex gpt-5        7m  197k │
+  └ ⠏ implement the bucket                                          codex gpt-5        2m   88k │ 14:24:00  read src/limits/mod.rs
+                                                                                                │ 14:24:07  $ cargo test -q limits
+                                                                                                │ 14:24:14  ok 4.1s
+                                                                                                │ 14:24:21  I'll add a token bucket keyed by API key.
+                                                                                                │ 14:24:28  ~ crates/api/src/limits/bucket.rs
+                                                                                                │ 14:24:35  $ cargo build -q
+                                                                                                │ 14:24:42  exit 101 3.2s
+                                                                                                │ 14:24:49  read .github/workflows/ci.yml
+                                                                                                │ 14:24:56  read src/limits/mod.rs
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+                                                                                                │
+ search 3 matches › bucket▏                                                                                                        ↑↓ next  enter go  esc back
+--- styles ---
+  200  Style::new().fg(Color::Reset).bg(Color::Reset)  "wirethelimiterintoci✓add"
+   21  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex91cdsearch"
+  278  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-api2running2"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "▏"
+   11  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "›↑↓enteresc"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold().reversed()  "addbuckettests"
+   18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "├✗codexgpt-55m120k"
+    7  Style::new().green().bg(Color::Reset)  "⠏ok4.1s"
+   11  Style::new().red().bg(Color::Reset)  "exit1013.2s"
+   36  Style::new().yellow().bg(Color::Reset)  "wantstowrite.github/work"

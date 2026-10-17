@@ -28,6 +28,8 @@ pub struct AgentRow {
     /// How long it has run (or ran): `12m`. Empty where no start was recorded.
     pub time: String,
     pub tokens: Option<u64>,
+    /// Shown only for where a search's match sits under it: drawn dim, never selected.
+    pub dim: bool,
 }
 
 /// How a word in the preview is drawn. The supervisor says which; this says what each looks like.
@@ -278,6 +280,11 @@ fn row<'a>(r: &AgentRow, sel: bool, i: usize, frame: usize, w: usize, theme: The
         ),
     ];
     l.extend(right);
+    if r.dim {
+        for s in &mut l {
+            s.style = dim();
+        }
+    }
     row_bar(l, w, sel, theme)
 }
 

@@ -234,6 +234,9 @@ pub enum Purpose {
     Key,
     /// A login's name, to hand to `marion profile add <harness> <name>`.
     Profile(String),
+    /// A search of the list, which filters it as it is typed. `from` is the row selected when it
+    /// opened, where `esc` goes back to.
+    Search { from: Option<String> },
 }
 
 /// The `n` line read: the options for `marion run`, how it runs where they say (`Some(true)` in a
@@ -733,6 +736,41 @@ impl Home {
     }
 
     fn typing_key(&mut self, purpose: Purpose, mut text: String, key: Key) -> Effect {
+        if let Purpose::Search { from } = &purpose {
+            match key {
+                Key::Esc | Key::Ctrl('c') => {
+                    if let Some(id) = from {
+                        self.watch.tree.select(id);
+                    }
+                    self.selection_moved();
+                    return Effect::None;
+                }
+                Key::Down | Key::Up => {
+                    let q = text.to_lowercase();
+                    let (titles, nodes) = (&self.watch.titles, &self.watch.nodes);
+                    let tree = &self.watch.tree;
+                    let matches = (0..tree.rows())
+                        .filter_map(|i| tree.row(i))
+                        .filter(|(_, n)| row_matches(titles, nodes, &n.id, &q))
+                        .count();
+                    // The next match, wrapping; the previous is the next but one short of a lap.
+                    let steps = if key == Key::Down {
+                        1
+                    } else {
+                        matches.saturating_sub(1)
+                    };
+                    for _ in 0..steps {
+                        self.watch
+                            .tree
+                            .cycle_to(|id| row_matches(titles, nodes, id, &q));
+                    }
+                    self.selection_moved();
+                    self.mode = Mode::Typing { purpose, text };
+                    return Effect::None;
+                }
+                _ => {}
+            }
+        }
         match key {
             Key::Esc | Key::Ctrl('c') => return Effect::None,
             Key::Enter => return self.submit(purpose, text),
@@ -757,8 +795,76 @@ impl Home {
             }
             _ => {}
         }
+        if matches!(purpose, Purpose::Search { .. }) {
+            self.follow_search(&text);
+        }
         self.mode = Mode::Typing { purpose, text };
         Effect::None
+    }
+
+    /// The cursor on a match of `query` as it changes: kept where it is on one, else moved to the
+    /// next match below, wrapping. With none it stays put, and the list shows nothing.
+    fn follow_search(&mut self, query: &str) {
+        let q = query.to_lowercase();
+        let on_match = self
+            .watch
+            .tree
+            .selected()
+            .is_some_and(|n| self.row_matches(&n.id, &q));
+        if !on_match {
+            let tree = &mut self.watch.tree;
+            let (titles, nodes) = (&self.watch.titles, &self.watch.nodes);
+            tree.cycle_to(|id| row_matches(titles, nodes, id, &q));
+            self.selection_moved();
+        }
+    }
+
+    /// Whether the list row `id` matches `query` (lower case): its title, agent type, name or
+    /// short id holds it. A race's or a workflow's header row matches on its own label.
+    fn row_matches(&self, id: &str, query: &str) -> bool {
+        row_matches(&self.watch.titles, &self.watch.nodes, id, query)
+    }
+
+    /// The list's rows as they are shown, by row index, each with whether it is drawn dim. Every
+    /// row, until a search is typed; then the rows that match it, and dim, the rows above them in
+    /// the tree, so a match is seen where it sits.
+    pub fn shown_rows(&self) -> Vec<(usize, bool)> {
+        let tree = &self.watch.tree;
+        let all = || (0..tree.rows()).map(|i| (i, false)).collect();
+        let Mode::Typing {
+            purpose: Purpose::Search { .. },
+            text,
+        } = &self.mode
+        else {
+            return all();
+        };
+        if text.trim().is_empty() {
+            return all();
+        }
+        let q = text.to_lowercase();
+        let rows: Vec<&marion_tui::tree::Node> = (0..tree.rows())
+            .filter_map(|i| tree.row(i).map(|(_, n)| n))
+            .collect();
+        let mut keep = std::collections::HashSet::new();
+        for n in rows.iter().filter(|n| self.row_matches(&n.id, &q)) {
+            let mut at = Some(*n);
+            // Bounded by the row count, so a parent cycle cannot hold the frame.
+            for _ in 0..rows.len() {
+                let Some(node) = at else { break };
+                if !keep.insert(node.id.as_str()) {
+                    break;
+                }
+                at = node
+                    .parent
+                    .as_deref()
+                    .and_then(|p| rows.iter().find(|r| r.id == p).copied());
+            }
+        }
+        rows.iter()
+            .enumerate()
+            .filter(|(_, n)| keep.contains(n.id.as_str()))
+            .map(|(i, n)| (i, !self.row_matches(&n.id, &q)))
+            .collect()
     }
 
     /// **The `n` line's options and its task.** `--detach` and `--pane` choose how it runs and are
@@ -804,6 +910,18 @@ impl Home {
             Effect::None
         };
         match purpose {
+            Purpose::Search { .. } => {
+                let on_match = self
+                    .watch
+                    .tree
+                    .selected()
+                    .is_some_and(|n| self.row_matches(&n.id, &text.to_lowercase()));
+                if !on_match {
+                    return refused(self, "no match".into(), purpose, text);
+                }
+                self.selection_moved();
+                Effect::None
+            }
             Purpose::Steer(target) if !text.trim().is_empty() => Effect::Steer(target, text),
             Purpose::Steer(_) => Effect::None,
             Purpose::New => {
@@ -871,7 +989,7 @@ impl Home {
     fn agents_key(&mut self, key: Key) -> Effect {
         let anywhere = matches!(
             key,
-            Key::Char('q' | '?' | ',' | 'n' | 'j' | 'k')
+            Key::Char('q' | '?' | ',' | 'n' | 'j' | 'k' | '/')
                 | Key::Up
                 | Key::Down
                 | Key::PageUp
@@ -903,6 +1021,14 @@ impl Home {
                 self.ready_type();
                 self.mode = Mode::Typing {
                     purpose: Purpose::New,
+                    text: String::new(),
+                }
+            }
+            Key::Char('/') if !self.watch.tree.is_empty() => {
+                self.mode = Mode::Typing {
+                    purpose: Purpose::Search {
+                        from: self.watch.tree.selected().map(|n| n.id.clone()),
+                    },
                     text: String::new(),
                 }
             }
@@ -1209,6 +1335,27 @@ impl Home {
 impl Default for Home {
     fn default() -> Self {
         Home::new()
+    }
+}
+
+/// [`Home::row_matches`] over the parts of a [`Home`] it reads, so the tree can be borrowed for its
+/// cursor at the same time.
+fn row_matches(
+    titles: &std::collections::HashMap<String, String>,
+    nodes: &[NodeSummary],
+    id: &str,
+    query: &str,
+) -> bool {
+    let has = |s: &str| s.to_lowercase().contains(query);
+    if let Some(n) = nodes.iter().find(|n| n.agent_id.0 == id) {
+        titles.get(id).is_some_and(|t| has(t))
+            || has(&n.agent_type)
+            || n.name.as_deref().is_some_and(has)
+            || has(crate::tree::short_id(id))
+    } else {
+        crate::tree::race_of_row(id)
+            .or_else(|| crate::tree::workflow_of_row(id))
+            .is_some_and(has)
     }
 }
 

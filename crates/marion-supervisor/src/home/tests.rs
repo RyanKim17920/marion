@@ -1057,6 +1057,114 @@ fn stream_pages_append_only_where_the_last_one_ended() {
     assert_eq!(h.watch.stream.len(), 1);
 }
 
+// ------------------------------------------------------------------ search
+
+fn titled() -> Home {
+    let mut h = home();
+    h.set_title(&AgentId("root".into()), Some("add rate limiting"));
+    h.set_title(&AgentId("child".into()), Some("port invoices"));
+    h
+}
+
+fn search_note(h: &Home) -> String {
+    match frame(h).footer {
+        Footer::Input { target, note, .. } => {
+            assert_eq!(target, "search");
+            note
+        }
+        f => panic!("the search line, got {f:?}"),
+    }
+}
+
+/// **`/` filters the list as it is typed**, keeping the rows above a match dim so it is seen
+/// where it sits; the cursor goes to the match, and enter keeps it there with the list whole again.
+#[test]
+fn slash_filters_the_list_and_enter_goes_to_the_match() {
+    let mut h = titled();
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("root"));
+    h.key(Key::Char('/'));
+    assert_eq!(search_note(&h), "", "nothing typed, nothing counted");
+    assert_eq!(h.shown_rows(), [(0, false), (1, false)]);
+    typed(&mut h, "INVO");
+    assert_eq!(
+        h.shown_rows(),
+        [(0, true), (1, false)],
+        "case does not matter"
+    );
+    assert_eq!(search_note(&h), "1 match");
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("child"));
+    let f = frame(&h);
+    assert_eq!(
+        f.agents.rows.iter().map(|r| r.dim).collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert_eq!(f.agents.cursor, 1);
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some("child"));
+    assert_eq!(h.shown_rows().len(), 2, "the list is whole again");
+}
+
+/// No match shows nothing, says so, and keeps the line open on enter; esc goes back to the row
+/// selected when the search opened.
+#[test]
+fn a_search_with_no_match_keeps_the_line_and_esc_goes_back() {
+    let mut h = titled();
+    h.key(Key::Char('/'));
+    typed(&mut h, "invo");
+    typed(&mut h, "zzz");
+    assert!(h.shown_rows().is_empty());
+    assert_eq!(search_note(&h), "no match");
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("no match"));
+    assert!(matches!(
+        h.mode,
+        Mode::Typing {
+            purpose: Purpose::Search { .. },
+            ..
+        }
+    ));
+    h.key(Key::Esc);
+    assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(
+        h.selected().map(|n| n.agent_id.0.as_str()),
+        Some("root"),
+        "back where it was"
+    );
+}
+
+/// ↑↓ step through the matches, wrapping; a match is on its title, agent type or short id.
+#[test]
+fn arrows_step_through_the_matches_and_wrap() {
+    let mut h = titled();
+    h.key(Key::Char('/'));
+    typed(&mut h, "codex");
+    assert_eq!(search_note(&h), "2 matches", "both are of type codex");
+    let at = |h: &Home| h.selected().map(|n| n.agent_id.0.clone()).unwrap();
+    assert_eq!(at(&h), "root");
+    h.key(Key::Down);
+    assert_eq!(at(&h), "child");
+    h.key(Key::Down);
+    assert_eq!(at(&h), "root", "wraps");
+    h.key(Key::Up);
+    assert_eq!(at(&h), "child", "and back");
+    h.key(Key::Esc);
+    h.key(Key::Char('/'));
+    typed(&mut h, "chi");
+    assert_eq!(at(&h), "child", "the short id of `child` is itself");
+}
+
+/// `/` on an empty list opens nothing, and the footer offers it only where there is a list.
+#[test]
+fn slash_needs_a_list() {
+    let mut h = home();
+    h.set_nodes(vec![]);
+    h.key(Key::Char('/'));
+    assert_eq!(h.mode, Mode::Normal);
+    assert!(!footer_keys(&h).contains(&"/".to_string()));
+    assert!(footer_keys(&titled()).contains(&"/".to_string()));
+}
+
 /// **What a model said is drawn, never obeyed**: a control in an output line reaches the preview
 /// as its escape, so it cannot clear the screen or move the cursor.
 #[test]
