@@ -598,7 +598,7 @@ mod tests {
         let dir = scratch("scan-torn");
         let path = dir.join("runs.jsonl");
         let good = serde_json::to_vec(&run("a")).unwrap();
-        let mut bytes = br#"{"v":1,"built":"2026-10-16T00:00:00.000Z"}"#.to_vec();
+        let mut bytes = br#"{"v":2,"built":"2026-10-16T00:00:00.000Z"}"#.to_vec();
         bytes.push(b'\n');
         bytes.extend_from_slice(&good);
         bytes.push(b'\n');

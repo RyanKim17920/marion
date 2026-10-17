@@ -31,8 +31,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::export::scrub::Scrubber;
 
-/// The digest line's format. A file whose header names another is rebuilt.
-pub const VERSION: u32 = 1;
+/// The digest line's format. A file whose header names another is rebuilt. 2: lines end in the
+/// `"end":1` seal; a version-1 digest may hold unsealed lines, so it is rebuilt once.
+pub const VERSION: u32 = 2;
 
 /// The longest line, newline included: the journal's cap, for the same `O_APPEND` reason.
 pub const MAX_LINE_BYTES: usize = marion_core::journal::MAX_RECORD_BYTES;

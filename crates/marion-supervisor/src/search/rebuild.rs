@@ -1,6 +1,6 @@
 //! **Rebuilding a digest from the journal**: the one time search pays for a full replay.
 //!
-//! A rebuilt digest starts with a header line, `{"v":1,"built":"<ts>","root":…}`. A search that
+//! A rebuilt digest starts with a header line, `{"v":2,"built":"<ts>","root":…}`. A search that
 //! finds no header (no file, a file appenders started before any rebuild, a format it does not
 //! know) or finds `runs.stale` rebuilds first ([`needs_rebuild`]); `marion search --reindex`
 //! forces it.
@@ -401,6 +401,31 @@ mod tests {
         rebuild(&project, None).unwrap();
         assert!(!place.stale().exists());
         assert!(!needs_rebuild(&place));
+    }
+
+    /// **A digest of an older format is rebuilt once**: a version-1 header (whose lines may be
+    /// unsealed) reads as no header, and the rebuild writes this version's.
+    #[test]
+    fn a_digest_of_an_older_version_is_rebuilt_once() {
+        let (_state, project, _contract) = child_project("rebuild-v1");
+        let place = Place::of(&project).unwrap();
+        place.ensure().unwrap();
+        std::fs::write(
+            place.digest(),
+            "{\"v\":1,\"built\":\"2026-10-01T00:00:00Z\",\"root\":null}\n{\"unsealed\":true}\n",
+        )
+        .unwrap();
+        assert_ne!(VERSION, 1);
+        assert!(header(&place).is_none(), "a v1 header is not this build's");
+        assert!(needs_rebuild(&place));
+        rebuild(&project, None).unwrap();
+        let rebuilt = header(&place).expect("the rebuild wrote this version's header");
+        assert_eq!(rebuilt.v, VERSION);
+        assert!(!needs_rebuild(&place), "and once is enough");
+        assert!(
+            !lines(&place).iter().any(|l| l.contains("unsealed")),
+            "the v1 lines are gone"
+        );
     }
 
     /// **An append racing a rebuild is deferred, never lost**: while the lock is held the line
