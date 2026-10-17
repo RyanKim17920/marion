@@ -28,7 +28,6 @@
 //! [`Effect::argv`]: crate::home::Effect::argv
 
 pub mod session;
-pub mod types_form;
 pub mod view;
 pub mod wake;
 
@@ -104,26 +103,15 @@ pub enum Effect {
     /// `marion notify on|off`: the operator's notify.toml, and this project's running supervisor at
     /// once. The row's Enter, turning it to the other state.
     Notify(bool),
-    /// Work out what the form's draft does to the agents file: the session reads the file, applies
-    /// the draft, holds the result to the spawn path's loader, and shows the diff for a `y`.
-    PreviewType(types_form::Draft),
-    /// Write the previewed file. Destructive (it replaces the operator's file): after a `y`.
-    WriteTypes {
-        text: String,
-        draft: types_form::Draft,
-    },
 }
 
 impl Effect {
     /// The command line this effect is, for the confirm line and `?` to show and for the operator
-    /// to learn. `None` for [`Effect::None`] and [`Effect::Quit`], which are not commands, and for
-    /// the form's preview and write, which the diff describes instead.
+    /// to learn. `None` for [`Effect::None`] and [`Effect::Quit`], which are not commands.
     pub fn argv(&self) -> Option<Vec<String>> {
         let v = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
         Some(match self {
-            Effect::None | Effect::Quit | Effect::PreviewType(_) | Effect::WriteTypes { .. } => {
-                return None;
-            }
+            Effect::None | Effect::Quit => return None,
             Effect::Login(id) => v(&["marion", "key", "add", id]),
             Effect::Logout(id) => v(&["marion", "key", "rm", id]),
             Effect::ProfileAdd { harness, name } => v(&["marion", "profile", "add", harness, name]),
@@ -185,7 +173,6 @@ impl Effect {
                 | Effect::Merge(_)
                 | Effect::Logout(_)
                 | Effect::ProfileRemove { .. }
-                | Effect::WriteTypes { .. }
         )
     }
 }
@@ -228,8 +215,6 @@ pub enum Mode {
     },
     /// A destructive effect waiting for `y`.
     Confirm(Effect),
-    /// Filling in the agent-type form.
-    Form(Form),
 }
 
 /// What the input line is for.
@@ -241,54 +226,25 @@ pub enum Purpose {
     Steer(AgentId),
     /// The credential id (`<provider>[:<label>]`) to hand to `marion key add`.
     Key,
-    /// `<harness> <name>`, to hand to `marion profile add`.
-    Profile,
+    /// A login's name, to hand to `marion profile add <harness> <name>`.
+    Profile(String),
 }
 
-/// The agent-type form: the draft, the field being edited, and why the last preview was refused.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Form {
-    pub draft: types_form::Draft,
-    pub field: usize,
-    pub error: Option<String>,
-}
-
-/// One field of the form, in the order it shows them.
+/// One row of Setup the cursor can rest on, in the order Setup shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Field {
-    Name,
-    Harness,
-    Model,
-    Description,
-    Tools,
-    Provider,
-}
-
-impl Field {
-    pub const ALL: [Field; 6] = [
-        Field::Name,
-        Field::Harness,
-        Field::Model,
-        Field::Description,
-        Field::Tools,
-        Field::Provider,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Field::Name => "name",
-            Field::Harness => "harness",
-            Field::Model => "model",
-            Field::Description => "description",
-            Field::Tools => "tools",
-            Field::Provider => "provider",
-        }
-    }
-
-    /// Picked with ←→ rather than typed.
-    pub fn is_choice(self) -> bool {
-        matches!(self, Field::Harness | Field::Tools)
-    }
+pub enum SetupItem {
+    /// Into [`Home::harnesses`].
+    Harness(usize),
+    /// Into [`Setup::profiles`]: a login, under its harness.
+    Profile(usize),
+    /// Into [`Setup::logins`].
+    Key(usize),
+    /// The row in the keys' place while none is stored.
+    NoKeys,
+    /// The project's agents file.
+    Types,
+    /// Desktop notifications, once read.
+    Notify,
 }
 
 /// One stored provider key, by credential id — the only thing about a key the home screen holds.
@@ -389,8 +345,9 @@ impl Watch {
 /// Setup's state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Setup {
-    /// Into the harnesses, then on into [`Setup::logins`].
+    /// Into [`Home::setup_items`].
     pub cursor: usize,
+    /// The selected harness shows its detail.
     pub expanded: bool,
     /// The last validation of the agents file: passed, and its one line.
     pub validation: Option<(bool, String)>,
@@ -402,8 +359,6 @@ pub struct Setup {
     pub store: Option<String>,
     /// Why the keys could not be listed, when they could not.
     pub logins_error: Option<String>,
-    /// The previewed change to the agents file, while it waits for a `y`.
-    pub preview: Vec<types_form::DiffLine>,
     /// The profiles, by harness then name, as `marion profile list` finds them.
     pub profiles: Vec<StoredProfile>,
     /// The harnesses a profile can be added for: those whose row names a carrier.
@@ -740,7 +695,6 @@ impl Home {
         let effect = match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Confirm(effect) => self.confirm_key(effect, key),
             Mode::Typing { purpose, text } => self.typing_key(purpose, text, key),
-            Mode::Form(form) => self.form_key(form, key),
             Mode::Normal => self.normal(key),
         };
         // A line that just closed releases the order it held.
@@ -752,19 +706,9 @@ impl Home {
 
     fn confirm_key(&mut self, effect: Effect, key: Key) -> Effect {
         if key == Key::Char('y') {
-            self.setup.preview.clear();
             return effect;
         }
         match effect {
-            Effect::WriteTypes { draft, .. } => {
-                self.setup.preview.clear();
-                self.mode = Mode::Form(Form {
-                    draft,
-                    field: 0,
-                    error: None,
-                });
-                self.notice = Some("not written".into());
-            }
             Effect::Logout(_) => self.notice = Some("key kept".into()),
             Effect::Merge(_) => self.notice = Some("not merged".into()),
             Effect::ProfileRemove { .. } => self.notice = Some("profile kept".into()),
@@ -834,9 +778,9 @@ impl Home {
                 Ok(e) => e,
                 Err(why) => refused(self, why, purpose, text),
             },
-            Purpose::Profile => match self.profile_add(&text) {
+            Purpose::Profile(harness) => match self.profile_add(&harness, &text) {
                 Ok(e) => e,
-                Err(why) => refused(self, why, purpose, text),
+                Err(why) => refused(self, why, Purpose::Profile(harness), text),
             },
         }
     }
@@ -989,146 +933,184 @@ impl Home {
     }
 
     fn setup_key(&mut self, key: Key) -> Effect {
+        let item = self.selected_item();
         match key {
             Key::Char('q') => return Effect::Quit,
             Key::Char('?') => self.toggle_help(),
             Key::Esc | Key::Char(',') => self.page = Page::Agents,
-            Key::Char('j') | Key::Down => {
-                // The profiles (or the one row that adds the first), then the notifications row
-                // once it has been read.
-                let last = self.notify_row() - usize::from(self.setup.notify.is_none());
-                self.setup.cursor = (self.setup.cursor + 1).min(last);
-            }
-            Key::Char('k') | Key::Up => self.setup.cursor = self.setup.cursor.saturating_sub(1),
-            // Details are a harness's; a key or a login row has nothing more to show.
-            Key::Enter if self.setup.cursor < self.harnesses.len() => {
-                self.setup.expanded = !self.setup.expanded
-            }
-            Key::Enter if self.on_notify() => {
-                return Effect::Notify(self.setup.notify != Some(true));
-            }
+            Key::Char('j') | Key::Down => self.move_setup(1),
+            Key::Char('k') | Key::Up => self.move_setup(-1),
             Key::Char('r') => return Effect::Recheck,
-            Key::Char('e') => return Effect::EditTypes,
-            Key::Char('n') => {
-                self.mode = Mode::Form(Form {
-                    draft: types_form::Draft {
-                        harness: self.harness_choices().first().cloned().unwrap_or_default(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
-            }
-            Key::Char('a') if self.on_profiles() => {
-                let text = self
-                    .selected_profile()
-                    .map(|p| format!("{} ", p.harness))
-                    .unwrap_or_default();
-                self.mode = Mode::Typing {
-                    purpose: Purpose::Profile,
-                    text,
-                };
-            }
-            Key::Char('a') => {
-                let text = self
-                    .selected_login()
-                    .map(|l| l.provider.clone())
-                    .unwrap_or_default();
-                self.mode = Mode::Typing {
-                    purpose: Purpose::Key,
-                    text,
-                };
-            }
-            Key::Char('u') => match self.selected_profile() {
-                Some(p) if p.default => {
-                    self.notice = Some(format!("{} already runs on {}", p.harness, p.name))
+            Key::Enter => match item {
+                Some(SetupItem::Harness(_)) => self.setup.expanded = !self.setup.expanded,
+                Some(SetupItem::Profile(i)) => {
+                    let p = &self.setup.profiles[i];
+                    if p.default {
+                        self.notice = Some(format!("{} already runs on {}", p.harness, p.name));
+                    } else {
+                        return Effect::ProfileUse {
+                            harness: p.harness.clone(),
+                            name: p.name.clone(),
+                        };
+                    }
                 }
-                Some(p) => {
-                    return Effect::ProfileUse {
-                        harness: p.harness.clone(),
-                        name: p.name.clone(),
-                    };
-                }
-                None => self.notice = Some("select a profile".into()),
+                Some(SetupItem::Types) => return Effect::EditTypes,
+                Some(SetupItem::Notify) => return Effect::Notify(self.setup.notify != Some(true)),
+                Some(SetupItem::Key(_) | SetupItem::NoKeys) | None => {}
             },
-            Key::Char('x') => match (self.selected_login(), self.selected_profile()) {
-                (Some(l), _) => self.mode = Mode::Confirm(Effect::Logout(l.id.clone())),
-                (_, Some(p)) => {
+            Key::Char('a') => match item {
+                Some(SetupItem::Harness(i)) => {
+                    let harness = self.harnesses[i].name.clone();
+                    self.add_login(harness);
+                }
+                Some(SetupItem::Profile(i)) => {
+                    let harness = self.setup.profiles[i].harness.clone();
+                    self.add_login(harness);
+                }
+                Some(SetupItem::Key(i)) => {
+                    self.mode = Mode::Typing {
+                        purpose: Purpose::Key,
+                        text: self.setup.logins[i].provider.clone(),
+                    }
+                }
+                Some(SetupItem::NoKeys) => {
+                    self.mode = Mode::Typing {
+                        purpose: Purpose::Key,
+                        text: String::new(),
+                    }
+                }
+                Some(SetupItem::Types | SetupItem::Notify) | None => {}
+            },
+            Key::Backspace | Key::Delete => match item {
+                Some(SetupItem::Key(i)) => {
+                    let id = self.setup.logins[i].id.clone();
+                    self.mode = Mode::Confirm(Effect::Logout(id));
+                }
+                Some(SetupItem::Profile(i)) => {
+                    let p = &self.setup.profiles[i];
                     self.mode = Mode::Confirm(Effect::ProfileRemove {
                         harness: p.harness.clone(),
                         name: p.name.clone(),
-                    })
+                    });
                 }
-                _ => self.notice = Some("select a key or a profile".into()),
+                _ => {}
             },
             _ => {}
         }
         Effect::None
     }
 
-    /// The stored key under Setup's cursor, when the cursor is past the harnesses.
-    pub fn selected_login(&self) -> Option<&StoredLogin> {
-        let i = self.setup.cursor.checked_sub(self.harnesses.len())?;
-        self.setup.logins.get(i)
+    /// `a` on a harness or one of its logins: the input line for a new login's name, where the
+    /// harness takes logins at all.
+    fn add_login(&mut self, harness: String) {
+        if self.setup.profile_harnesses.contains(&harness) {
+            self.mode = Mode::Typing {
+                purpose: Purpose::Profile(harness),
+                text: String::new(),
+            };
+        } else {
+            self.notice = Some(format!("{harness} takes no logins of marion's"));
+        }
     }
 
-    /// Where Setup's profile rows begin: after the harnesses and the stored keys.
-    fn profiles_start(&self) -> usize {
-        self.harnesses.len() + self.setup.logins.len()
+    fn move_setup(&mut self, by: isize) {
+        let last = self.setup_items().len().saturating_sub(1);
+        let at = self.setup.cursor.min(last) as isize + by;
+        self.setup.cursor = at.clamp(0, last as isize) as usize;
+        self.setup.expanded = false;
     }
 
-    /// Setup's cursor is on the profiles: one of them, or the row that adds the first.
-    pub fn on_profiles(&self) -> bool {
-        self.setup.cursor >= self.profiles_start() && !self.on_notify()
+    /// **Setup's rows the cursor can rest on, in the order Setup shows them**: each installed
+    /// harness with its logins under it, then any login whose harness doctor does not list, the
+    /// stored keys (or the one row that adds the first), the agents file, and notifications once
+    /// read. A harness that is not installed is folded into one line and is not a row, unless it
+    /// has logins.
+    pub fn setup_items(&self) -> Vec<SetupItem> {
+        let mut out = Vec::new();
+        let profiles = &self.setup.profiles;
+        let logins_of = |name: &str| -> Vec<SetupItem> {
+            profiles
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.harness == name)
+                .map(|(i, _)| SetupItem::Profile(i))
+                .collect()
+        };
+        for (i, h) in self.harnesses.iter().enumerate() {
+            let logins = logins_of(&h.name);
+            if h.ready != Ready::Absent || !logins.is_empty() {
+                out.push(SetupItem::Harness(i));
+                out.extend(logins);
+            }
+        }
+        out.extend(
+            self.setup
+                .profiles
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| !self.harnesses.iter().any(|h| h.name == p.harness))
+                .map(|(i, _)| SetupItem::Profile(i)),
+        );
+        if self.setup.logins.is_empty() {
+            out.push(SetupItem::NoKeys);
+        } else {
+            out.extend((0..self.setup.logins.len()).map(SetupItem::Key));
+        }
+        out.push(SetupItem::Types);
+        if self.setup.notify.is_some() {
+            out.push(SetupItem::Notify);
+        }
+        out
     }
 
-    /// Setup's last row: desktop notifications, after the profiles (or the row that adds the
-    /// first).
-    fn notify_row(&self) -> usize {
-        self.profiles_start() + self.setup.profiles.len().max(1)
-    }
-
-    /// Setup's cursor is on the notifications row, which is there once it has been read.
-    pub fn on_notify(&self) -> bool {
-        self.setup.notify.is_some() && self.setup.cursor == self.notify_row()
-    }
-
-    /// The profile under Setup's cursor.
-    pub fn selected_profile(&self) -> Option<&StoredProfile> {
-        let i = self.setup.cursor.checked_sub(self.profiles_start())?;
-        self.setup.profiles.get(i)
+    /// The row under Setup's cursor.
+    pub fn selected_item(&self) -> Option<SetupItem> {
+        let items = self.setup_items();
+        items
+            .get(self.setup.cursor.min(items.len().saturating_sub(1)))
+            .copied()
     }
 
     /// A new listing of the profiles. The cursor moves onto `select` where the listing has it — a
-    /// profile just added, whose row shows the login it needs — and otherwise stays on a row that
-    /// still exists.
+    /// login just added, whose row shows the command that signs it in — and otherwise stays on the
+    /// row it was on, or the nearest one that still exists.
     pub fn set_profiles(
         &mut self,
         rows: Vec<StoredProfile>,
         harnesses: Vec<String>,
         select: Option<&str>,
     ) {
+        let was = self.selected_item();
+        // A login is followed by its harness and name: the new listing may number it differently.
+        let was_login = match was {
+            Some(SetupItem::Profile(i)) => self
+                .setup
+                .profiles
+                .get(i)
+                .map(|p| (p.harness.clone(), p.name.clone())),
+            _ => None,
+        };
         let s = &mut self.setup;
         s.profiles = rows;
         s.profile_harnesses = harnesses;
         s.profiles_listed = true;
         s.profiles_error = None;
-        let start = self.profiles_start();
-        let last = start + self.setup.profiles.len().max(1) - 1;
-        let chosen = select.and_then(|n| self.setup.profiles.iter().position(|p| p.name == n));
-        self.setup.cursor = match chosen {
-            Some(i) => start + i,
-            None => self.setup.cursor.min(last),
-        };
-    }
-
-    /// The harnesses an agents file can name, in doctor's order: the rows whose name is a harness
-    /// spelling the file's loader accepts.
-    pub fn harness_choices(&self) -> Vec<String> {
-        self.harnesses
-            .iter()
-            .filter(|h| h.name.parse::<marion_core::harness::Harness>().is_ok())
-            .map(|h| h.name.clone())
-            .collect()
+        let items = self.setup_items();
+        let profiles = &self.setup.profiles;
+        let chosen = select
+            .and_then(|n| profiles.iter().position(|p| p.name == n))
+            .or_else(|| {
+                let (h, n) = was_login.as_ref()?;
+                profiles
+                    .iter()
+                    .position(|p| &p.harness == h && &p.name == n)
+            })
+            .map(SetupItem::Profile)
+            .or(was.filter(|w| !matches!(w, SetupItem::Profile(_))));
+        if let Some(i) = chosen.and_then(|c| items.iter().position(|it| *it == c)) {
+            self.setup.cursor = i;
+        }
+        self.setup.cursor = self.setup.cursor.min(items.len().saturating_sub(1));
     }
 
     /// Enter on the key line: `marion key add <text>` when its provider is one marion knows.
@@ -1146,122 +1128,25 @@ impl Home {
         Ok(Effect::Login(text.to_string()))
     }
 
-    /// Enter on the profile line: `marion profile add <harness> <name>` when the harness takes
-    /// profiles and the name is one — refused here, before the terminal changes hands, otherwise.
-    fn profile_add(&self, text: &str) -> Result<Effect, String> {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let [harness, name] = words.as_slice() else {
-            return Err("type a harness and a name for the profile".into());
-        };
-        if !self.setup.profile_harnesses.iter().any(|h| h == harness) {
-            return Err(format!(
-                "`{harness}` takes no profiles; these do: {}",
-                self.setup.profile_harnesses.join(", ")
-            ));
+    /// Enter on the login line: `marion profile add <harness> <name>` when the name is one and is
+    /// free — refused here, before the terminal changes hands, otherwise.
+    fn profile_add(&self, harness: &str, text: &str) -> Result<Effect, String> {
+        let name = text.trim();
+        if name.is_empty() {
+            return Err("type a name for the login".into());
         }
         if !marion_core::agent_type::is_valid_name(name) {
             return Err(format!(
-                "`{name}` is not a profile name: letters, digits, - and _"
+                "`{name}` is not a login name: letters, digits, - and _"
             ));
         }
-        if self.setup.profiles.iter().any(|p| p.name == *name) {
-            return Err(format!("a profile named `{name}` already exists"));
+        if self.setup.profiles.iter().any(|p| p.name == name) {
+            return Err(format!("a login named `{name}` already exists"));
         }
         Ok(Effect::ProfileAdd {
             harness: harness.to_string(),
             name: name.to_string(),
         })
-    }
-
-    fn form_key(&mut self, mut form: Form, key: Key) -> Effect {
-        let field = Field::ALL[form.field.min(Field::ALL.len() - 1)];
-        let step = |form: &mut Form, by: isize| {
-            let n = Field::ALL.len() as isize;
-            form.field = (form.field as isize + by).rem_euclid(n) as usize;
-        };
-        match key {
-            Key::Esc | Key::Ctrl('c') => return Effect::None,
-            Key::Tab | Key::Down => step(&mut form, 1),
-            Key::BackTab | Key::Up => step(&mut form, -1),
-            Key::Left | Key::Right if field.is_choice() => {
-                let by = if key == Key::Right { 1 } else { -1 };
-                match field {
-                    Field::Harness => {
-                        let choices = self.harness_choices();
-                        form.draft.harness = cycle(&choices, &form.draft.harness, by);
-                    }
-                    _ => {
-                        let at = types_form::Tools::ALL
-                            .iter()
-                            .position(|t| *t == form.draft.tools)
-                            .unwrap_or(0) as isize;
-                        let n = types_form::Tools::ALL.len() as isize;
-                        form.draft.tools = types_form::Tools::ALL[(at + by).rem_euclid(n) as usize];
-                    }
-                }
-            }
-            Key::Enter => {
-                let d = &form.draft;
-                let missing: Vec<&str> = [
-                    ("name", &d.name),
-                    ("harness", &d.harness),
-                    ("description", &d.description),
-                ]
-                .into_iter()
-                .filter(|(_, v)| v.trim().is_empty())
-                .map(|(n, _)| n)
-                .collect();
-                if !missing.is_empty() {
-                    form.error = Some(format!("needs a {}", missing.join(", a ")));
-                    self.mode = Mode::Form(form);
-                    return Effect::None;
-                }
-                form.error = None;
-                let draft = form.draft.clone();
-                self.mode = Mode::Form(form);
-                return Effect::PreviewType(draft);
-            }
-            Key::Backspace => {
-                if let Some(t) = text_of(&mut form.draft, field) {
-                    t.pop();
-                }
-            }
-            Key::Char(c) => {
-                if let Some(t) = text_of(&mut form.draft, field) {
-                    push_bounded(t, &c.to_string());
-                }
-            }
-            Key::Paste(p) => {
-                if let Some(t) = text_of(&mut form.draft, field) {
-                    push_bounded(t, &p.replace(['\n', '\r'], " "));
-                }
-            }
-            _ => {}
-        }
-        self.mode = Mode::Form(form);
-        Effect::None
-    }
-
-    /// The session's answer to [`Effect::PreviewType`]: the file it would write and the change,
-    /// which now waits for a `y`.
-    pub fn show_preview(&mut self, text: String, diff: Vec<types_form::DiffLine>) {
-        let draft = match std::mem::replace(&mut self.mode, Mode::Normal) {
-            Mode::Form(f) => f.draft,
-            other => {
-                self.mode = other;
-                return;
-            }
-        };
-        self.setup.preview = diff;
-        self.mode = Mode::Confirm(Effect::WriteTypes { text, draft });
-    }
-
-    /// The session's answer to [`Effect::PreviewType`] when the result would not load: the form
-    /// stays open and says why, in the loader's words.
-    pub fn form_refused(&mut self, why: String) {
-        if let Mode::Form(f) = &mut self.mode {
-            f.error = Some(why);
-        }
     }
 }
 
@@ -1269,31 +1154,6 @@ impl Default for Home {
     fn default() -> Self {
         Home::new()
     }
-}
-
-/// The text field `field` edits in `d`, or `None` for a field picked with ←→.
-fn text_of(d: &mut types_form::Draft, field: Field) -> Option<&mut String> {
-    match field {
-        Field::Name => Some(&mut d.name),
-        Field::Model => Some(&mut d.model),
-        Field::Description => Some(&mut d.description),
-        Field::Provider => Some(&mut d.provider),
-        Field::Harness | Field::Tools => None,
-    }
-}
-
-/// The choice `by` steps from `current` in `choices`, wrapping; the first when `current` is not one.
-fn cycle(choices: &[String], current: &str, by: isize) -> String {
-    if choices.is_empty() {
-        return current.to_string();
-    }
-    let n = choices.len() as isize;
-    let at = choices.iter().position(|c| c == current);
-    let next = match at {
-        Some(i) => (i as isize + by).rem_euclid(n),
-        None => 0,
-    };
-    choices[next as usize].clone()
 }
 
 /// **Why a `marion` command failed, in one line**: its own `marion: …` or `marion <verb>: …` refusal where it

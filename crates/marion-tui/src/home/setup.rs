@@ -1,11 +1,15 @@
-//! Setup: what `marion doctor` found for each harness, with the fix for anything not ready; where
-//! this project keeps its state and agent types; the agent types themselves; the provider keys
-//! `marion login` has stored; and profiles. `n` opens the agent-type form in place of all that.
+//! Setup, on `,`: one list under dim lowercase group headers — the harnesses as `marion doctor`
+//! found them with each one's logins indented under it, the stored API keys, the project's files
+//! and notifications. Every row takes single keys, which the footer names for the selected row.
+//!
+//! The supervisor decides the rows and their order ([`SetupLine`]); this draws them, the selected
+//! one as the agents list draws its own, with a harness's detail or a logged-out login's command
+//! under it.
 
 use super::GUTTER;
-use super::text::{clip, fit, pad, width};
-use super::theme::{CARET, Ready, Theme, bad, bold, dim, good};
-use super::widgets::{code_spans, expansion, section, span};
+use super::text::{fit, pad, width};
+use super::theme::{Ready, Theme, bad, dim, good};
+use super::widgets::{code_spans, expansion, row_bar, span};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -24,35 +28,23 @@ pub struct HarnessRow {
     pub surfaces: String,
     /// What to do about it, with the command in backticks: ``run `qwen` once and sign in``.
     pub fix: Option<String>,
-    /// Setup's detail rows, label then value: `binary`, `version`, `auth`.
+    /// The detail rows `enter` shows, label then value: `binary`, `version`, `auth`.
     pub detail: Vec<(String, String)>,
-}
-
-/// One agent type this project can spawn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentTypeRow {
-    pub name: String,
-    /// Its harness's readiness: a type is only as runnable as the harness under it.
-    pub ready: Ready,
-    /// Declared in the project's agents file rather than built in; drawn in the accent.
-    pub custom: bool,
 }
 
 /// One stored provider key, by its credential id. **Never the key**: the id is all a listing has.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginRow {
     pub provider: String,
-    /// The credential id `marion logout` takes (`openrouter`, `openrouter:work`).
+    /// The credential id `marion key rm` takes (`openrouter`, `openrouter:work`).
     pub id: String,
     /// Why the store could not say, when it could not.
     pub note: Option<String>,
 }
 
-/// One profile `marion profile add` made: its harness, its name, its login as the harness's own
-/// read-only probe answered, and the last usage-limit reading a child's stream left for it.
+/// One login (profile) `marion profile add` made, drawn under its harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileRow {
-    pub harness: String,
     pub name: String,
     /// The harness's default: what its nodes run on when nothing names another.
     pub default: bool,
@@ -60,203 +52,224 @@ pub struct ProfileRow {
     pub ready: Ready,
     /// The probe's answer in words: `logged in`, `logged out`, `checking…`, or why it could not say.
     pub note: String,
-    /// The command that signs it in, shown under the selected row while it is signed out. Shown,
-    /// never run: a login is the operator's.
+    /// The command that signs it in, while it is signed out. Shown, never run: a login is the
+    /// operator's.
     pub login: Option<String>,
     pub limit: Option<String>,
 }
 
-/// One field of the agent-type form.
+/// One line of Setup, in the order it shows them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FormField {
-    pub label: String,
-    pub value: String,
-    /// Picked with ←→ from a fixed list rather than typed.
-    pub choice: bool,
-    /// Shown dim while the value is empty.
-    pub hint: String,
-}
-
-/// The agent-type form, and — once enter has been pressed — the change it would make to the file.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FormView {
-    pub title: String,
-    pub fields: Vec<FormField>,
-    /// The field being edited.
-    pub field: usize,
-    /// Why the last preview was refused (the loader's own words).
-    pub error: Option<String>,
-    /// The file it writes, as the operator would type it.
-    pub file: String,
-    /// `+`/`-`/` ` lines of the change, waiting for `y`; empty until previewed.
-    pub preview: Vec<(char, String)>,
+pub enum SetupLine {
+    /// A dim lowercase header: `harnesses`, `api keys`, `files`, `notify`.
+    Group(String),
+    Harness(HarnessRow),
+    /// A login, indented under its harness.
+    Profile(ProfileRow),
+    /// The harnesses that are not installed, folded into one line by name.
+    Absent(Vec<String>),
+    Key(LoginRow),
+    /// A dim line in a group's place: none stored yet and the key that adds one, or why the group
+    /// could not be listed.
+    Note(String),
+    /// A project file: what it is, where, and its last check (`None` until checked).
+    File {
+        what: String,
+        path: String,
+        check: Option<(bool, String)>,
+    },
+    /// Desktop notifications: on or off, and how a notice is shown here.
+    Notify {
+        on: bool,
+        shown_by: String,
+    },
 }
 
 /// Everything Setup draws.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SetupView {
-    pub harnesses: Vec<HarnessRow>,
-    pub checking: bool,
-    /// Into the harnesses, then on into [`Self::logins`], then [`Self::profiles`] — or, while there
-    /// are none, the one row that adds the first.
-    pub cursor: usize,
-    /// Whether the selected harness shows its detail rows.
+    pub lines: Vec<SetupLine>,
+    /// The selected line, an index into [`Self::lines`].
+    pub cursor: Option<usize>,
+    /// The selected harness shows its detail rows.
     pub expanded: bool,
-    /// Where things are, label then path: `("state", "~/.local/state/marion")`.
-    pub project: Vec<(String, String)>,
-    pub agent_types: Vec<AgentTypeRow>,
-    /// The project's agents file, as the operator would type it.
-    pub agents_file: String,
-    /// The last validation of the agents file: whether it passed, and its one-line answer.
-    pub validation: Option<(bool, String)>,
-    /// The stored provider keys, by credential id.
-    pub logins: Vec<LoginRow>,
-    /// One dim line under them: where keys are kept, or why they could not be listed.
-    pub logins_note: String,
-    /// The profiles, by harness then name.
-    pub profiles: Vec<ProfileRow>,
-    /// One dim line under them: what the keys do, or why they could not be listed.
-    pub profiles_note: String,
-    /// Desktop notifications: on or off, and how a notice is shown here. One row, after the
-    /// profiles (or the row that adds the first); `None` until read.
-    pub notify: Option<(bool, String)>,
-    /// The agent-type form, drawn in place of everything else while it is open.
-    pub form: Option<FormView>,
 }
 
-/// The harness name and version columns.
+/// The name column's floor and ceiling: wide enough for `acp claude-agent-acp`, never wider.
 const NAME_W: usize = 13;
-/// The widest the name column grows for a long harness name (`acp claude-agent-acp`).
 const NAME_MAX: usize = 26;
+const VERSION_W: usize = 10;
+/// The note column, so the surfaces line up after it.
+const NOTE_W: usize = 28;
 
-/// The harness name column for `rows`: wide enough for the longest name and a gap, within
-/// [`NAME_W`]..=[`NAME_MAX`], so a long name is never clipped against its version.
-pub fn name_col(rows: &[HarnessRow]) -> usize {
-    rows.iter()
-        .map(|h| width(&h.name) + 2)
+/// The name column for `lines`: wide enough for the longest harness, provider or file label and a
+/// gap, within [`NAME_W`]..=[`NAME_MAX`], so a long name is never clipped against what follows.
+pub fn name_col(lines: &[SetupLine]) -> usize {
+    lines
+        .iter()
+        .filter_map(|l| match l {
+            SetupLine::Harness(h) => Some(width(&h.name)),
+            SetupLine::Key(k) => Some(width(&k.provider)),
+            SetupLine::File { what, .. } => Some(width(what)),
+            _ => None,
+        })
+        .map(|w| w + 2)
         .max()
         .unwrap_or(0)
         .clamp(NAME_W, NAME_MAX)
 }
-const VERSION_W: usize = 10;
-/// `3 of 6 ready`, or `checking…` while the probe runs.
+
+/// `3 of 6 ready`, or with `· checking…` while the probe runs: Setup's status-line counts.
 pub fn readiness(rows: &[HarnessRow], checking: bool) -> String {
     let ok = rows.iter().filter(|h| h.ready == Ready::Ready).count();
+    let mut s = format!("{ok} of {} ready", rows.len());
     if checking {
-        format!("{ok} of {} ready · checking…", rows.len())
-    } else {
-        format!("{ok} of {} ready", rows.len())
+        s.push_str(" · checking…");
     }
+    s
 }
-
-/// A harness row: caret, glyph, name, version, note, and — when `surfaces_at` is given — the
-/// surfaces from that column on. Shared with Setup, which shows the surfaces.
-#[allow(clippy::too_many_arguments)]
-pub fn harness_line<'a>(
-    h: &HarnessRow,
-    name_w: usize,
-    sel: bool,
-    frame: usize,
-    theme: Theme,
-    w: usize,
-    surfaces_at: Option<usize>,
-) -> Line<'a> {
-    let mut l = vec![
-        span(if sel { CARET } else { " " }, theme.key()),
-        Span::raw(" "),
-        span(h.ready.glyph(frame), h.ready.style(theme)),
-        Span::raw(" "),
-        span(
-            pad(&h.name, name_w),
-            if sel { bold() } else { Style::default() },
-        ),
-        span(pad(h.version.as_deref().unwrap_or("—"), VERSION_W), dim()),
-    ];
-    match surfaces_at {
-        Some(col) => {
-            l.push(span(pad(&h.note, col), h.ready.note_style()));
-            l.push(span(h.surfaces.clone(), dim()));
-        }
-        None => l.push(span(h.note.clone(), h.ready.note_style())),
-    }
-    Line::from(fit(l, w))
-}
-
-/// The note column's width, so the surfaces line up after it.
-const NOTE_W: usize = 28;
-/// The form's label column.
-const FORM_LABEL_W: usize = 14;
 
 pub fn render(v: &SetupView, theme: Theme, frame: usize, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width <= GUTTER * 2 {
         return;
     }
-    let w = (area.width - GUTTER * 2) as usize;
-    let (lines, selected) = match &v.form {
-        Some(f) => (form_lines(f, theme, w), (0, 0)),
-        None => body_lines(v, theme, frame, w),
-    };
-    // A window over the lines that keeps the selected row (and its expansion) in view.
+    let w = (area.width - GUTTER) as usize;
+    let (lines, selected) = body_lines(v, theme, frame, w);
+    // A window over the lines that keeps the selected row (and what it shows under it) in view.
     let rows = area.height as usize;
     let skip = if lines.len() <= rows {
         0
     } else {
         selected.1.saturating_sub(rows).min(selected.0)
     };
-    for (y, (indent, l)) in (area.y..area.bottom()).zip(lines.iter().skip(skip)) {
-        let lx = area.x + indent;
-        buf.set_line(lx, y, l, area.right().saturating_sub(lx));
+    for (y, l) in (area.y..area.bottom()).zip(lines.iter().skip(skip)) {
+        buf.set_line(area.x + 1, y, l, w as u16);
     }
 }
 
-/// Every line of the normal body, each with its indent from the area's left edge, and the range of
-/// lines the selected row covers.
+/// Every line, and the range of lines the selected row covers.
 fn body_lines<'a>(
     v: &SetupView,
     theme: Theme,
     frame: usize,
     w: usize,
-) -> (Vec<(u16, Line<'a>)>, (usize, usize)) {
-    let mut out: Vec<(u16, Line)> = Vec::new();
+) -> (Vec<Line<'a>>, (usize, usize)) {
+    let mut out: Vec<Line> = Vec::new();
     let mut selected = (0, 0);
-    let g = GUTTER;
-    let blank = |out: &mut Vec<(u16, Line)>| out.push((0, Line::default()));
-
-    out.push((
-        g,
-        section("Harnesses", &readiness(&v.harnesses, v.checking)),
-    ));
-    blank(&mut out);
-    let name_w = name_col(&v.harnesses);
-    // Harnesses that are not installed fold into one line, so twenty-odd rows of "not installed"
-    // do not push the sections below off the screen; the one under the cursor still shows in place.
-    // One absent harness keeps its own row: a fold of one says no more and reads worse.
-    let fold = v
-        .harnesses
-        .iter()
-        .enumerate()
-        .filter(|(i, h)| h.ready == Ready::Absent && *i != v.cursor)
-        .count()
-        > 1;
-    let mut absent: Vec<&str> = Vec::new();
-    for (i, h) in v.harnesses.iter().enumerate() {
-        let sel = i == v.cursor;
-        if fold && h.ready == Ready::Absent && !sel {
-            absent.push(&h.name);
-            continue;
-        }
+    let name_w = name_col(&v.lines);
+    for (i, line) in v.lines.iter().enumerate() {
+        let sel = v.cursor == Some(i);
         let start = out.len();
-        let l = harness_line(
-            h,
-            name_w,
-            sel,
-            frame + i,
-            theme,
-            w + g as usize,
-            Some(NOTE_W),
-        );
-        out.push((0, l));
-        if sel && v.expanded {
+        let f = frame + i;
+        let cells: Vec<Span> = match line {
+            SetupLine::Group(g) => {
+                if !out.is_empty() {
+                    out.push(Line::default());
+                }
+                out.push(Line::from(vec![Span::raw(" "), span(g.clone(), dim())]));
+                continue;
+            }
+            SetupLine::Harness(h) => vec![
+                span(h.ready.glyph(f), h.ready.style(theme)),
+                Span::raw(" "),
+                span(pad(&h.name, name_w), Style::default()),
+                span(pad(h.version.as_deref().unwrap_or("—"), VERSION_W), dim()),
+                span(pad(&h.note, NOTE_W), h.ready.note_style()),
+                span(h.surfaces.clone(), dim()),
+            ],
+            SetupLine::Profile(p) => {
+                let mut c = vec![
+                    Span::raw("  "),
+                    span(p.ready.glyph(f), p.ready.style(theme)),
+                    Span::raw(" "),
+                    span(pad(&p.name, name_w.saturating_sub(2)), Style::default()),
+                ];
+                if p.default {
+                    c.push(span("default · ", theme.accent()));
+                }
+                c.push(span(p.note.clone(), p.ready.note_style()));
+                if let Some(limit) = &p.limit {
+                    c.push(span(format!(" · {limit}"), dim()));
+                }
+                c
+            }
+            SetupLine::Absent(names) => vec![
+                span(Ready::Absent.glyph(f), Ready::Absent.style(theme)),
+                span(format!(" {} not installed  ", names.len()), dim()),
+                span(names.join(" · "), dim()),
+            ],
+            SetupLine::Key(k) => {
+                let mut c = vec![
+                    span("● ", good()),
+                    span(pad(&k.provider, name_w), Style::default()),
+                    span(k.id.clone(), dim()),
+                ];
+                if let Some(note) = &k.note {
+                    c.push(span(format!("  {note}"), bad()));
+                }
+                c
+            }
+            SetupLine::Note(n) => {
+                let mut c = vec![Span::raw("  ")];
+                c.extend(code_spans(n, dim(), theme));
+                c
+            }
+            SetupLine::File { what, path, check } => {
+                let (glyph, style) = match check {
+                    Some((true, _)) => ("✓", good()),
+                    Some((false, _)) => ("✗", bad()),
+                    None => ("○", dim()),
+                };
+                let mut c = vec![
+                    span(glyph, style),
+                    Span::raw(" "),
+                    span(pad(what, name_w), Style::default()),
+                    span(path.clone(), dim()),
+                ];
+                if let Some((ok, said)) = check {
+                    c.push(span(format!("  {said}"), if *ok { dim() } else { bad() }));
+                }
+                c
+            }
+            SetupLine::Notify { on, shown_by } => {
+                let (glyph, style, word) = if *on {
+                    ("●", good(), "on")
+                } else {
+                    ("○", dim(), "off")
+                };
+                vec![
+                    span(glyph, style),
+                    Span::raw(" "),
+                    span(pad(word, name_w), Style::default()),
+                    span(
+                        format!("when an agent ends or needs you · shown by {shown_by}"),
+                        dim(),
+                    ),
+                ]
+            }
+        };
+        let mut l = vec![Span::raw(" ")];
+        l.extend(cells);
+        out.push(row_bar(l, w, sel, theme));
+        if sel {
+            out.extend(under(line, v.expanded, theme, w));
+            selected = (start, out.len());
+        }
+    }
+    (out, selected)
+}
+
+/// What the selected row shows under it: a harness's detail and fix once `enter` has opened it,
+/// and a logged-out login's whole command — broken across rows where it must be, since a clipped
+/// one cannot be run.
+fn under<'a>(line: &SetupLine, expanded: bool, theme: Theme, w: usize) -> Vec<Line<'a>> {
+    let pad_left = |l: Line<'a>, by: usize| {
+        let mut s = vec![Span::raw(" ".repeat(by))];
+        s.extend(l.spans);
+        Line::from(s)
+    };
+    match line {
+        SetupLine::Harness(h) if expanded => {
             let mut rows: Vec<(String, Vec<Span>)> = h
                 .detail
                 .iter()
@@ -265,218 +278,25 @@ fn body_lines<'a>(
             if let Some(fix) = &h.fix {
                 rows.push(("fix".into(), code_spans(fix, Style::default(), theme)));
             }
-            if matches!(h.ready, Ready::Attention) {
-                rows.push((
-                    String::new(),
-                    vec![span("marion uses your login, never its own", dim())],
-                ));
-            }
-            for l in expansion(rows, 9, w.saturating_sub(2)) {
-                out.push((g + 2, l));
-            }
+            expansion(rows, 9, w.saturating_sub(4))
+                .into_iter()
+                .map(|l| pad_left(l, 3))
+                .collect()
         }
-        if sel {
-            selected = (start, out.len());
+        SetupLine::Profile(ProfileRow {
+            login: Some(cmd), ..
+        }) => {
+            let lw = w.saturating_sub(5).max(1);
+            break_at(cmd, lw)
+                .into_iter()
+                .map(|part| Line::from(vec![Span::raw("     "), span(part, theme.key())]))
+                .collect()
         }
+        _ => Vec::new(),
     }
-    if !absent.is_empty() {
-        let l = vec![
-            Span::raw("  "),
-            span(Ready::Absent.glyph(frame), Ready::Absent.style(theme)),
-            span(format!(" {} not installed  ", absent.len()), dim()),
-            span(absent.join(" · "), dim()),
-        ];
-        out.push((0, Line::from(fit(l, w + g as usize))));
-    }
-
-    if !v.project.is_empty() {
-        blank(&mut out);
-        let mut l = Vec::new();
-        for (i, (k, path)) in v.project.iter().enumerate() {
-            if i > 0 {
-                l.push(span(" · ", dim()));
-            }
-            l.push(span(format!("{k} "), dim()));
-            l.push(span(path.clone(), Style::default()));
-        }
-        out.push((g, section("Project", "")));
-        out.push((g, Line::from(fit(l, w))));
-    }
-
-    if !v.agent_types.is_empty() {
-        blank(&mut out);
-        let note = format!(
-            "{} · custom ones come from {}",
-            v.agent_types.len(),
-            v.agents_file
-        );
-        out.push((g, section("Agent types", &note)));
-        // Whole `glyph name` groups, wrapped over as many rows as they need.
-        let mut row: Vec<Span> = Vec::new();
-        for t in &v.agent_types {
-            let grp = vec![
-                span(t.ready.glyph(frame), t.ready.style(theme)),
-                span(
-                    format!(" {}", t.name),
-                    if t.custom {
-                        theme.accent()
-                    } else {
-                        Style::default()
-                    },
-                ),
-            ];
-            let gw: usize = grp.iter().map(|s| s.width()).sum();
-            let rw: usize = row.iter().map(|s| s.width()).sum();
-            if !row.is_empty() && rw + 3 + gw > w {
-                out.push((g, Line::from(std::mem::take(&mut row))));
-            } else if !row.is_empty() {
-                row.push(Span::raw("   "));
-            }
-            row.extend(grp);
-        }
-        if !row.is_empty() {
-            out.push((g, Line::from(row)));
-        }
-        if let Some((ok, answer)) = &v.validation {
-            let (glyph, style) = if *ok { ("✓", good()) } else { ("✗", bad()) };
-            let l = vec![span(glyph, style), span(format!(" {answer}"), dim())];
-            out.push((g, Line::from(fit(l, w))));
-        }
-    }
-
-    blank(&mut out);
-    let count = match v.logins.len() {
-        0 => String::new(),
-        1 => "1 key".to_string(),
-        n => format!("{n} keys"),
-    };
-    out.push((g, section("API keys", &count)));
-    let provider_w = v
-        .logins
-        .iter()
-        .map(|l| l.provider.chars().count())
-        .max()
-        .unwrap_or(0)
-        .clamp(8, 16);
-    for (i, login) in v.logins.iter().enumerate() {
-        let sel = v.harnesses.len() + i == v.cursor;
-        if sel {
-            selected = (out.len(), out.len() + 1);
-        }
-        let mut l = vec![
-            span(if sel { CARET } else { " " }, theme.key()),
-            Span::raw(" "),
-            span("● ", good()),
-            span(
-                pad(&login.provider, provider_w + 2),
-                if sel { bold() } else { Style::default() },
-            ),
-            span(login.id.clone(), dim()),
-        ];
-        if let Some(note) = &login.note {
-            l.push(span(format!("  {note}"), bad()));
-        }
-        out.push((0, Line::from(fit(l, w + g as usize))));
-    }
-    if !v.logins_note.is_empty() {
-        let l = code_spans(&v.logins_note, dim(), theme);
-        out.push((g, Line::from(fit(l, w))));
-    }
-
-    blank(&mut out);
-    let count = match v.profiles.len() {
-        0 => String::new(),
-        1 => "1 login".to_string(),
-        n => format!("{n} logins"),
-    };
-    out.push((g, section("Logins", &count)));
-    let first = v.harnesses.len() + v.logins.len();
-    let harness_w = column(v.profiles.iter().map(|p| p.harness.as_str()), 8, 12);
-    let profile_w = column(v.profiles.iter().map(|p| p.name.as_str()), 8, 20);
-    for (i, p) in v.profiles.iter().enumerate() {
-        let sel = first + i == v.cursor;
-        let start = out.len();
-        let mut l = vec![
-            span(if sel { CARET } else { " " }, theme.key()),
-            Span::raw(" "),
-            span(
-                format!("{} ", p.ready.glyph(frame + i)),
-                p.ready.style(theme),
-            ),
-            span(pad(&p.harness, harness_w + 2), dim()),
-            span(
-                pad(&p.name, profile_w + 2),
-                if sel { bold() } else { Style::default() },
-            ),
-        ];
-        if p.default {
-            l.push(span("default · ", theme.accent()));
-        }
-        l.push(span(p.note.clone(), p.ready.note_style()));
-        if let Some(limit) = &p.limit {
-            l.push(span(format!(" · {limit}"), dim()));
-        }
-        out.push((0, Line::from(fit(l, w + g as usize))));
-        if let (true, Some(login)) = (sel, &p.login) {
-            // The whole command, broken across rows where it must be: a clipped one cannot be run.
-            let lw = w.saturating_sub(4).max(1);
-            const LABEL: &str = "log in yourself: ";
-            if width(LABEL) + width(login) <= lw {
-                let l = vec![span(LABEL, dim()), span(login.clone(), theme.key())];
-                out.push((g + 4, Line::from(l)));
-            } else {
-                out.push((g + 4, Line::from(span(LABEL.trim_end(), dim()))));
-                for part in break_at(login, lw) {
-                    out.push((g + 4, Line::from(span(part, theme.key()))));
-                }
-            }
-        }
-        if sel {
-            selected = (start, out.len());
-        }
-    }
-    if v.profiles.is_empty() {
-        let sel = first == v.cursor;
-        if sel {
-            selected = (out.len(), out.len() + 1);
-        }
-        let l = vec![
-            span(if sel { CARET } else { " " }, theme.key()),
-            Span::raw(" "),
-            span("+ add a profile", if sel { bold() } else { dim() }),
-        ];
-        out.push((0, Line::from(fit(l, w + g as usize))));
-    }
-    if !v.profiles_note.is_empty() {
-        let l = code_spans(&v.profiles_note, dim(), theme);
-        out.push((g, Line::from(fit(l, w))));
-    }
-
-    if let Some((on, shown_by)) = &v.notify {
-        blank(&mut out);
-        out.push((g, section("Notifications", "")));
-        let sel = first + v.profiles.len().max(1) == v.cursor;
-        if sel {
-            selected = (out.len(), out.len() + 1);
-        }
-        let (glyph, style, word) = if *on {
-            ("● ", good(), "on")
-        } else {
-            ("○ ", dim(), "off")
-        };
-        let l = vec![
-            span(if sel { CARET } else { " " }, theme.key()),
-            Span::raw(" "),
-            span(glyph, style),
-            span(pad(word, 5), if sel { bold() } else { Style::default() }),
-            span(
-                format!("when an agent ends or needs you · shown by {shown_by}"),
-                dim(),
-            ),
-        ];
-        out.push((0, Line::from(fit(l, w + g as usize))));
-    }
-    (out, selected)
+    .into_iter()
+    .map(|l| Line::from(fit(l.spans, w)))
+    .collect()
 }
 
 /// `s` in rows of at most `w` columns, broken anywhere — for a command that has no spaces to wrap
@@ -493,75 +313,12 @@ fn break_at(s: &str, w: usize) -> Vec<String> {
     rows
 }
 
-/// A column as wide as its widest entry, held between `min` and `max`.
-fn column<'a>(entries: impl Iterator<Item = &'a str>, min: usize, max: usize) -> usize {
-    entries
-        .map(|e| e.chars().count())
-        .max()
-        .unwrap_or(0)
-        .clamp(min, max)
-}
-
-/// The agent-type form: one row per field, the one being edited marked, then the loader's
-/// refusal or the diff waiting for `y`.
-fn form_lines<'a>(f: &FormView, theme: Theme, w: usize) -> Vec<(u16, Line<'a>)> {
-    let g = GUTTER;
-    let mut out: Vec<(u16, Line)> = vec![(g, section(&f.title, &f.file)), (0, Line::default())];
-    for (i, field) in f.fields.iter().enumerate() {
-        let sel = i == f.field;
-        let mut l = vec![
-            span(if sel { CARET } else { " " }, theme.key()),
-            Span::raw(" "),
-            span(
-                pad(&field.label, FORM_LABEL_W),
-                if sel { bold() } else { dim() },
-            ),
-        ];
-        let vw = w.saturating_sub(FORM_LABEL_W + 4);
-        if field.choice {
-            l.push(span("‹ ", if sel { theme.key() } else { dim() }));
-            l.push(span(clip(&field.value, vw), Style::default()));
-            l.push(span(" ›", if sel { theme.key() } else { dim() }));
-        } else if field.value.is_empty() {
-            if sel {
-                l.push(span("▏", theme.accent()));
-            }
-            l.push(span(field.hint.clone(), dim()));
-        } else {
-            l.push(span(clip(&field.value, vw), Style::default()));
-            if sel {
-                l.push(span("▏", theme.accent()));
-            }
-        }
-        out.push((0, Line::from(fit(l, w + g as usize))));
-    }
-    if let Some(e) = &f.error {
-        out.push((0, Line::default()));
-        let l = vec![span("✗ ", bad()), span(e.clone(), bad())];
-        out.push((g, Line::from(fit(l, w))));
-    }
-    if !f.preview.is_empty() {
-        out.push((0, Line::default()));
-        out.push((g, section("Change", &f.file)));
-        for (tag, text) in &f.preview {
-            let style = match tag {
-                '+' => good(),
-                '-' => bad(),
-                _ => dim(),
-            };
-            let l = vec![span(format!("{tag} "), style), span(text.clone(), style)];
-            out.push((g, Line::from(fit(l, w))));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
-mod name_tests {
+mod tests {
     use super::*;
 
-    fn row(name: &str) -> HarnessRow {
-        HarnessRow {
+    fn harness(name: &str) -> SetupLine {
+        SetupLine::Harness(HarnessRow {
             name: name.into(),
             version: None,
             ready: Ready::Absent,
@@ -569,21 +326,29 @@ mod name_tests {
             surfaces: String::new(),
             fix: None,
             detail: Vec::new(),
-        }
+        })
     }
 
     #[test]
     fn the_name_column_fits_the_longest_name_within_bounds() {
         assert_eq!(
-            name_col(&[row("codex")]),
+            name_col(&[harness("codex")]),
             NAME_W,
             "short names keep the floor"
         );
         assert_eq!(
-            name_col(&[row("codex"), row("acp claude-agent-acp")]),
+            name_col(&[harness("codex"), harness("acp claude-agent-acp")]),
             "acp claude-agent-acp".len() + 2,
             "a long name gets its width and a gap, never clipped against its version"
         );
-        assert_eq!(name_col(&[row(&"x".repeat(60))]), NAME_MAX);
+        assert_eq!(name_col(&[harness(&"x".repeat(60))]), NAME_MAX);
+    }
+
+    #[test]
+    fn a_long_command_breaks_into_rows_and_keeps_every_character() {
+        let cmd = "CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login";
+        let rows = break_at(cmd, 20);
+        assert!(rows.iter().all(|r| width(r) <= 20));
+        assert_eq!(rows.concat(), cmd);
     }
 }

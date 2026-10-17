@@ -1,0 +1,143 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&setup_screen(&v, footer))"
+---
+--- 80x24 ---
+ marion  setup                                                     3 of 6 ready
+  harnesses
+  ● claude       2.1.268   ready                       headless · pane · chann…
+    ● work       default · logged in · last limit allowed_warning (five_hour)
+    ● personal   logged in
+  ● codex        0.61.0    ready                       headless · pane · ACP
+    ◐ cx         logged out
+      CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+    ⠇ oc         checking…
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ 1 not installed  agy
+
+  api keys
+  ● anthropic    anthropic
+  ● openrouter   openrouter
+  ● openrouter   openrouter:work
+
+  files
+  ✓ agent types  .marion/agents.toml  2 types, valid
+
+  notify
+ enter use  a add login  del remove  r re-check  esc back
+--- styles ---
+   83  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeworkpersonalcodexq"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+  337  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6readyharnesses2"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "default·⠇"
+   83  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "CODEX_HOME='/Users/me/.l"
+   12  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "◐cxloggedout"
+    9  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   14  Style::new().yellow().bg(Color::Reset)  "◐sign-inneeded"
+
+--- 100x30 ---
+ marion  setup                                                                         3 of 6 ready
+  harnesses
+  ● claude       2.1.268   ready                       headless · pane · channel push
+    ● work       default · logged in · last limit allowed_warning (five_hour)
+    ● personal   logged in
+  ● codex        0.61.0    ready                       headless · pane · ACP
+    ◐ cx         logged out
+      CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+    ⠇ oc         checking…
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ 1 not installed  agy
+
+  api keys
+  ● anthropic    anthropic
+  ● openrouter   openrouter
+  ● openrouter   openrouter:work
+
+  files
+  ✓ agent types  .marion/agents.toml  2 types, valid
+
+  notify
+  ● on           when an agent ends or needs you · shown by osascript
+
+
+
+
+
+ enter use  a add login  del remove  r re-check  esc back
+--- styles ---
+   85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeworkpersonalcodexq"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+  384  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6readyharnesses2"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "default·⠇"
+   83  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "CODEX_HOME='/Users/me/.l"
+   12  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "◐cxloggedout"
+   10  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   14  Style::new().yellow().bg(Color::Reset)  "◐sign-inneeded"
+
+--- 160x50 ---
+ marion  setup                                                                                                                                     3 of 6 ready
+  harnesses
+  ● claude       2.1.268   ready                       headless · pane · channel push
+    ● work       default · logged in · last limit allowed_warning (five_hour)
+    ● personal   logged in
+  ● codex        0.61.0    ready                       headless · pane · ACP
+    ◐ cx         logged out
+      CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+    ⠇ oc         checking…
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ 1 not installed  agy
+
+  api keys
+  ● anthropic    anthropic
+  ● openrouter   openrouter
+  ● openrouter   openrouter:work
+
+  files
+  ✓ agent types  .marion/agents.toml  2 types, valid
+
+  notify
+  ● on           when an agent ends or needs you · shown by osascript
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter use  a add login  del remove  r re-check  esc back
+--- styles ---
+   85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeworkpersonalcodexq"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+  384  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6readyharnesses2"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "default·⠇"
+   83  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "CODEX_HOME='/Users/me/.l"
+   12  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "◐cxloggedout"
+   10  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   14  Style::new().yellow().bg(Color::Reset)  "◐sign-inneeded"

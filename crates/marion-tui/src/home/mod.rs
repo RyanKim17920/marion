@@ -28,7 +28,7 @@ pub mod widgets;
 
 pub use agents::{AgentRow, AgentsView, Ink, LineKind, Preview, StreamLine};
 pub use help::{HelpView, KeyRow};
-pub use setup::{AgentTypeRow, FormField, FormView, HarnessRow, LoginRow, ProfileRow, SetupView};
+pub use setup::{HarnessRow, LoginRow, ProfileRow, SetupLine, SetupView};
 pub use theme::{Ready, Theme};
 
 use ratatui::buffer::Buffer;

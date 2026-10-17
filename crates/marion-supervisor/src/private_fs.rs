@@ -137,17 +137,6 @@ pub(crate) fn read_capped(path: &Path, cap: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// [`write_atomic`] for a document that lives in the operator's repository rather than marion's
-/// state (`.marion/agents.toml`): the same replacement, with the umask's modes, because the file is
-/// the project's and holds no secret.
-#[cfg(any(test, feature = "client"))]
-pub(crate) fn write_atomic_shared(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    replace(path, bytes, 0o666)
-}
-
 fn replace(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
@@ -291,22 +280,6 @@ mod tests {
             .collect();
         assert_eq!(names, ["occupied"], "no staging file survives");
         assert_eq!(std::fs::read(target.join("inside")).unwrap(), b"kept");
-    }
-
-    /// The repository document is replaced the same way; its mode is the umask's, which a test
-    /// cannot read without racing every other test's file creation, so only the replacement is
-    /// asserted here.
-    #[test]
-    fn a_shared_document_is_replaced_whole() {
-        let dir = scratch("private-fs-atomic-shared");
-        let path = dir.join(".marion").join("agents.toml");
-        write_atomic_shared(&path, b"old").unwrap();
-        write_atomic_shared(&path, b"new").unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"new");
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            1
-        );
     }
 
     /// Mutation: drop the `custom_flags` and the append lands in the link's target.

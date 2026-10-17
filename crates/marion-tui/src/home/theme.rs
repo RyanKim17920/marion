@@ -25,9 +25,6 @@ pub const ACCENT_256: Color = Color::Indexed(173);
 /// Braille spinner frames, the ones cargo and most CLIs use. Text glyphs, one column, never emoji.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// The selection caret, drawn in the accent at the left edge of the selected row.
-pub const CARET: &str = "❯";
-
 /// Which accent the terminal can show, and whether to show colour at all. Everything else in the
 /// palette is the same either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

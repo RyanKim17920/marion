@@ -7,7 +7,7 @@ use marion_core::encoding::Duration;
 use marion_core::harness::Harness as H;
 use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::result::{ActionKind, ActionLine, ActivityPage, CompletionSummary};
-use marion_tui::home::{Footer, Ink};
+use marion_tui::home::{Footer, Ink, ProfileRow, SetupLine};
 
 fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
     NodeSummary {
@@ -1455,6 +1455,7 @@ fn every_key() -> Vec<Key> {
         Key::Tab,
         Key::BackTab,
         Key::Backspace,
+        Key::Delete,
         Key::Up,
         Key::Down,
         Key::Left,
@@ -1490,75 +1491,6 @@ fn setup_home() -> Home {
     h
 }
 
-/// **Setup's footer is the keys of the section under the cursor**: a harness offers details, the
-/// re-check and the agent-type keys; a key row offers add and remove. Enter expands only a
-/// harness.
-#[test]
-fn setup_footer_follows_the_section_under_the_cursor() {
-    let mut h = setup_home();
-    h.setup.cursor = 0;
-    let on_harness = footer_keys(&h);
-    assert!(
-        ["enter", "r", "e", "n"]
-            .iter()
-            .all(|k| on_harness.contains(&k.to_string())),
-        "{on_harness:?}"
-    );
-    h.key(Key::Enter);
-    assert!(h.setup.expanded, "Enter shows a harness's details");
-    h.setup.expanded = false;
-    h.setup.cursor = h.harnesses.len();
-    assert!(h.selected_login().is_some());
-    assert_eq!(footer_keys(&h), ["a", "x", "esc"]);
-    h.key(Key::Enter);
-    assert!(!h.setup.expanded, "a key has no details");
-}
-
-#[test]
-fn setup_cursor_runs_on_from_the_harnesses_into_the_stored_keys() {
-    let mut h = setup_home();
-    for _ in 0..10 {
-        h.key(Key::Char('j'));
-    }
-    assert_eq!(
-        h.setup.cursor, 4,
-        "two harnesses, two keys, then the row that adds the first profile, and no further"
-    );
-    assert_eq!(h.selected_login(), None);
-    h.key(Key::Char('k'));
-    assert_eq!(
-        h.selected_login().map(|l| l.id.as_str()),
-        Some("openrouter:work")
-    );
-    h.key(Key::Char('k'));
-    assert_eq!(h.selected_login().map(|l| l.id.as_str()), Some("anthropic"));
-    h.setup.cursor = 0;
-    assert_eq!(h.selected_login(), None, "a harness row is not a key");
-}
-
-#[test]
-fn removing_a_key_waits_for_y_and_names_the_credential_id() {
-    let mut h = setup_home();
-    h.setup.cursor = 3;
-    assert_eq!(h.key(Key::Char('x')), Effect::None);
-    assert_eq!(
-        h.mode,
-        Mode::Confirm(Effect::Logout("openrouter:work".into()))
-    );
-    assert_eq!(h.key(Key::Char('n')), Effect::None);
-    assert_eq!(h.mode, Mode::Normal);
-    assert_eq!(h.notice.as_deref(), Some("key kept"));
-    h.key(Key::Char('x'));
-    assert_eq!(
-        h.key(Key::Char('y')),
-        Effect::Logout("openrouter:work".into())
-    );
-    let mut h = setup_home();
-    assert_eq!(h.key(Key::Char('x')), Effect::None);
-    assert_eq!(h.mode, Mode::Normal, "x on a harness row removes nothing");
-    assert_eq!(h.notice.as_deref(), Some("select a key or a profile"));
-}
-
 fn typing(purpose: Purpose, text: &str) -> Mode {
     Mode::Typing {
         purpose,
@@ -1566,9 +1498,251 @@ fn typing(purpose: Purpose, text: &str) -> Mode {
     }
 }
 
+/// Two of [`setup_home`]'s rows: the second harness, and the second key.
+const COPILOT: usize = 1;
+const OPENROUTER: usize = 3;
+
+/// The row `item` is on, by moving the cursor there the way the operator does.
+fn select(h: &mut Home, item: SetupItem) {
+    h.setup.cursor = 0;
+    for _ in 0..h.setup_items().len() {
+        if h.selected_item() == Some(item) {
+            return;
+        }
+        h.key(Key::Char('j'));
+    }
+    panic!("{item:?} is not a row: {:?}", h.setup_items());
+}
+
+/// **Setup is one list in one order**: each harness with its logins under it, a login whose
+/// harness doctor does not list, the keys, the agents file, and notifications once read. The
+/// cursor walks it with j/k and stops at both ends.
+#[test]
+fn setup_rows_run_harnesses_logins_keys_files_notify() {
+    let mut h = profiles_home();
+    h.setup.notify = Some(false);
+    assert_eq!(
+        h.setup_items(),
+        [
+            SetupItem::Harness(0),
+            SetupItem::Profile(0),
+            SetupItem::Harness(1),
+            SetupItem::Profile(1),
+            SetupItem::Key(0),
+            SetupItem::Key(1),
+            SetupItem::Types,
+            SetupItem::Notify,
+        ],
+        "claude's login under claude; codex is not listed, so its login follows the harnesses"
+    );
+    for _ in 0..20 {
+        h.key(Key::Char('j'));
+    }
+    assert_eq!(
+        h.selected_item(),
+        Some(SetupItem::Notify),
+        "stops at the end"
+    );
+    for _ in 0..20 {
+        h.key(Key::Char('k'));
+    }
+    assert_eq!(
+        h.selected_item(),
+        Some(SetupItem::Harness(0)),
+        "and the top"
+    );
+    h.setup.notify = None;
+    assert!(
+        !h.setup_items().contains(&SetupItem::Notify),
+        "no row until read"
+    );
+    h.setup.logins.clear();
+    assert!(
+        h.setup_items().contains(&SetupItem::NoKeys),
+        "with no key stored, one row adds the first"
+    );
+}
+
+/// A harness that is not installed is folded into one line and is no row — unless a login of its
+/// own still needs a home.
+#[test]
+fn an_absent_harness_is_no_row_unless_it_has_a_login() {
+    let mut h = setup_home();
+    h.harnesses.push(harness("goose", Ready::Absent));
+    assert!(!h.setup_items().contains(&SetupItem::Harness(2)));
+    let f = frame(&h);
+    assert!(
+        f.setup
+            .lines
+            .contains(&SetupLine::Absent(vec!["goose".into()])),
+        "{:?}",
+        f.setup.lines
+    );
+    h.setup.profiles = vec![profile("goose", "g", false)];
+    assert_eq!(
+        h.setup_items()[..4],
+        [
+            SetupItem::Harness(0),
+            SetupItem::Harness(1),
+            SetupItem::Harness(2),
+            SetupItem::Profile(0)
+        ]
+    );
+}
+
+/// The view's groups are headed once each, in order, and the cursor's line is the selected row's.
+#[test]
+fn setup_lines_head_each_group_once_and_point_at_the_selected_row() {
+    let mut h = profiles_home();
+    h.setup.notify = Some(true);
+    select(&mut h, SetupItem::Key(1));
+    let v = frame(&h).setup;
+    let groups: Vec<&str> = v
+        .lines
+        .iter()
+        .filter_map(|l| match l {
+            SetupLine::Group(g) => Some(g.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(groups, ["harnesses", "api keys", "files", "notify"]);
+    assert!(
+        matches!(&v.lines[v.cursor.unwrap()], SetupLine::Key(k) if k.id == "openrouter:work"),
+        "{:?}",
+        v.lines
+    );
+    let orphan = v.lines.iter().find_map(|l| match l {
+        SetupLine::Profile(p) if p.name.contains("cx") => Some(p.name.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        orphan.as_deref(),
+        Some("codex cx"),
+        "a login away from its harness names it"
+    );
+}
+
+/// **"N of M ready" is said once**: on the status line, and not again on the harnesses' header.
+#[test]
+fn setup_says_how_many_are_ready_once() {
+    let h = setup_home();
+    let f = frame(&h);
+    assert_eq!(f.title, "setup");
+    assert_eq!(f.counts, "1 of 2 ready");
+    assert!(
+        f.setup
+            .lines
+            .contains(&SetupLine::Group("harnesses".into())),
+        "the header is the bare group name"
+    );
+}
+
+/// **Setup's footer is the keys the selected row takes**, with re-check and back on every row.
+#[test]
+fn setup_footer_follows_the_row_under_the_cursor() {
+    let mut h = profiles_home();
+    h.setup.notify = Some(false);
+    let cases: [(SetupItem, &[&str]); 7] = [
+        (SetupItem::Harness(0), &["enter", "a", "r", "esc"]),
+        (SetupItem::Harness(1), &["enter", "r", "esc"]),
+        (SetupItem::Profile(0), &["a", "del", "r", "esc"]),
+        (SetupItem::Profile(1), &["enter", "a", "del", "r", "esc"]),
+        (SetupItem::Key(0), &["a", "del", "r", "esc"]),
+        (SetupItem::Types, &["enter", "r", "esc"]),
+        (SetupItem::Notify, &["enter", "r", "esc"]),
+    ];
+    for (item, keys) in cases {
+        select(&mut h, item);
+        assert_eq!(footer_keys(&h), keys, "{item:?}");
+    }
+    assert!(footer_has(&h, "enter", "turn on"));
+    h.setup.notify = Some(true);
+    assert!(footer_has(&h, "enter", "turn off"));
+    h.setup.logins.clear();
+    select(&mut h, SetupItem::NoKeys);
+    assert_eq!(footer_keys(&h), ["a", "r", "esc"]);
+}
+
+/// Enter does the row's one thing: a harness's details, the login made the default, the agents
+/// file in `$EDITOR`, notifications flipped. A key has nothing to open.
+#[test]
+fn enter_does_the_selected_rows_one_thing() {
+    let mut h = profiles_home();
+    h.setup.notify = Some(false);
+    select(&mut h, SetupItem::Harness(0));
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert!(h.setup.expanded, "a harness shows its details");
+    h.key(Key::Char('j'));
+    assert!(!h.setup.expanded, "moving off closes them");
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("claude already runs on work"));
+    select(&mut h, SetupItem::Profile(1));
+    assert_eq!(
+        h.key(Key::Enter),
+        Effect::ProfileUse {
+            harness: "codex".into(),
+            name: "cx".into()
+        }
+    );
+    select(&mut h, SetupItem::Key(0));
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert!(!h.setup.expanded, "a key has no details");
+    select(&mut h, SetupItem::Types);
+    assert_eq!(h.key(Key::Enter), Effect::EditTypes);
+    select(&mut h, SetupItem::Notify);
+    assert_eq!(h.key(Key::Enter), Effect::Notify(true));
+    assert_eq!(
+        Effect::Notify(true).argv().unwrap(),
+        ["marion", "notify", "on"]
+    );
+}
+
+/// **`del` removes, after a `y`**: a key by its credential id, a login by harness and name. Both
+/// the Mac's delete (Backspace) and forward delete are `del`; on any other row it does nothing.
+#[test]
+fn del_removes_a_key_or_a_login_after_y() {
+    let mut h = profiles_home();
+    select(&mut h, SetupItem::Key(1));
+    assert_eq!(h.key(Key::Backspace), Effect::None);
+    assert_eq!(
+        h.mode,
+        Mode::Confirm(Effect::Logout("openrouter:work".into()))
+    );
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(h.notice.as_deref(), Some("key kept"));
+    h.key(Key::Delete);
+    assert_eq!(
+        h.key(Key::Char('y')),
+        Effect::Logout("openrouter:work".into())
+    );
+    select(&mut h, SetupItem::Profile(0));
+    h.key(Key::Delete);
+    let remove = Effect::ProfileRemove {
+        harness: "claude".into(),
+        name: "work".into(),
+    };
+    assert_eq!(h.mode, Mode::Confirm(remove.clone()));
+    let Footer::Confirm { question, .. } = frame(&h).footer else {
+        panic!("a confirm line")
+    };
+    assert_eq!(question, "remove the login claude work?");
+    assert_eq!(h.key(Key::Char('x')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("profile kept"));
+    h.key(Key::Backspace);
+    assert_eq!(h.key(Key::Char('y')), remove);
+    for item in [SetupItem::Harness(0), SetupItem::Types] {
+        select(&mut h, item);
+        assert_eq!(h.key(Key::Delete), Effect::None);
+        assert_eq!(h.mode, Mode::Normal, "{item:?} has nothing to remove");
+    }
+}
+
 #[test]
 fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_key_add() {
     let mut h = setup_home();
+    h.setup.logins.clear();
+    select(&mut h, SetupItem::NoKeys);
     assert_eq!(h.key(Key::Char('a')), Effect::None);
     assert_eq!(h.mode, typing(Purpose::Key, ""));
     typed(&mut h, "openrouter:personal");
@@ -1590,7 +1764,8 @@ fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_key_add() {
     assert_eq!(h.mode, typing(Purpose::Key, "nope"));
     h.key(Key::Esc);
     // On a key's row, the line starts with that key's provider.
-    h.setup.cursor = 3;
+    let mut h = setup_home();
+    h.setup.cursor = OPENROUTER;
     h.key(Key::Char('a'));
     assert_eq!(h.mode, typing(Purpose::Key, "openrouter"));
     assert_eq!(h.key(Key::Esc), Effect::None);
@@ -1622,7 +1797,7 @@ fn profile(harness: &str, name: &str, default: bool) -> StoredProfile {
     }
 }
 
-/// Two harnesses, two keys, then two profiles: rows 4 and 5.
+/// Two harnesses with a login under claude, a codex login whose harness is not listed, two keys.
 fn profiles_home() -> Home {
     let mut h = setup_home();
     h.setup.profile_harnesses = vec!["claude".into(), "codex".into()];
@@ -1634,84 +1809,14 @@ fn profiles_home() -> Home {
     h
 }
 
+/// **`a` on a harness or its login asks only for a name**: the harness is the row's, so the line
+/// is `profile add <harness> ›` and Enter hands off to `marion profile add`.
 #[test]
-fn setup_cursor_runs_on_from_the_stored_keys_into_the_profiles() {
+fn a_on_a_harness_or_its_login_asks_for_the_new_logins_name() {
     let mut h = profiles_home();
-    for _ in 0..10 {
-        h.key(Key::Char('j'));
-    }
-    assert_eq!(h.setup.cursor, 5, "two harnesses, two keys, two profiles");
-    assert_eq!(h.selected_profile().map(|p| p.name.as_str()), Some("cx"));
-    assert_eq!(h.selected_login(), None, "a profile row is not a key");
-    // With none, the cursor still reaches the one row that adds the first.
-    let mut h = setup_home();
-    for _ in 0..10 {
-        h.key(Key::Char('j'));
-    }
-    assert_eq!(h.setup.cursor, 4);
-    assert!(h.on_profiles());
-    assert_eq!(h.selected_profile(), None);
-}
-
-#[test]
-fn u_makes_the_selected_profile_its_harness_default_and_says_so_when_it_already_is() {
-    let mut h = profiles_home();
-    h.setup.cursor = 5;
-    assert_eq!(
-        h.key(Key::Char('u')),
-        Effect::ProfileUse {
-            harness: "codex".into(),
-            name: "cx".into()
-        }
-    );
-    h.setup.cursor = 4;
-    assert_eq!(h.key(Key::Char('u')), Effect::None);
-    assert_eq!(h.notice.as_deref(), Some("claude already runs on work"));
-    h.setup.cursor = 0;
-    assert_eq!(h.key(Key::Char('u')), Effect::None, "u off the profiles");
-    assert_eq!(h.notice.as_deref(), Some("select a profile"));
-}
-
-#[test]
-fn removing_a_profile_waits_for_y_and_n_keeps_it() {
-    let mut h = profiles_home();
-    h.setup.cursor = 4;
-    assert_eq!(h.key(Key::Char('x')), Effect::None);
-    assert_eq!(
-        h.mode,
-        Mode::Confirm(Effect::ProfileRemove {
-            harness: "claude".into(),
-            name: "work".into(),
-        })
-    );
-    assert_eq!(h.key(Key::Char('n')), Effect::None);
-    assert_eq!(h.mode, Mode::Normal);
-    assert_eq!(h.notice.as_deref(), Some("profile kept"));
-    h.key(Key::Char('x'));
-    assert_eq!(
-        h.key(Key::Char('y')),
-        Effect::ProfileRemove {
-            harness: "claude".into(),
-            name: "work".into(),
-        }
-    );
-    // On the row that adds the first profile there is nothing to remove.
-    let mut h = setup_home();
-    h.setup.cursor = 4;
-    assert_eq!(h.key(Key::Char('x')), Effect::None);
-    assert_eq!(h.mode, Mode::Normal);
-}
-
-#[test]
-fn adding_a_profile_asks_for_harness_and_name_and_hands_off_to_marion_profile_add() {
-    let mut h = profiles_home();
-    h.setup.cursor = 5;
+    select(&mut h, SetupItem::Profile(1));
     assert_eq!(h.key(Key::Char('a')), Effect::None);
-    assert_eq!(
-        h.mode,
-        typing(Purpose::Profile, "codex "),
-        "on a profile's row the line starts with its harness"
-    );
+    assert_eq!(h.mode, typing(Purpose::Profile("codex".into()), ""));
     typed(&mut h, "personal");
     assert_eq!(
         h.key(Key::Enter),
@@ -1720,50 +1825,52 @@ fn adding_a_profile_asks_for_harness_and_name_and_hands_off_to_marion_profile_ad
             name: "personal".into()
         }
     );
-    // Refused here, before the terminal changes hands: a harness with no carrier, a name that is
-    // not one, a name taken, and a line without both words. Each keeps the line open.
+    select(&mut h, SetupItem::Harness(0));
+    h.key(Key::Char('a'));
+    assert_eq!(h.mode, typing(Purpose::Profile("claude".into()), ""));
+    let Footer::Input { target, .. } = frame(&h).footer else {
+        panic!("the input line")
+    };
+    assert_eq!(target, "profile add claude");
+    // Refused here, before the terminal changes hands: a name that is not one, a name taken, an
+    // empty line. Each keeps the line open.
     for (text, says) in [
-        ("copilot gh", "takes no profiles"),
-        ("claude ../x", "not a profile name"),
-        ("claude work", "already exists"),
-        ("claude", "a harness and a name"),
+        ("../x", "not a login name"),
+        ("work", "already exists"),
+        ("  ", "type a name"),
     ] {
-        h.mode = typing(Purpose::Profile, text);
+        h.mode = typing(Purpose::Profile("claude".into()), text);
         assert_eq!(h.key(Key::Enter), Effect::None, "{text}");
         assert!(
             h.notice.as_deref().unwrap_or("").contains(says),
             "{text}: {:?}",
             h.notice
         );
-        assert_eq!(h.mode, typing(Purpose::Profile, text));
+        assert_eq!(h.mode, typing(Purpose::Profile("claude".into()), text));
     }
     h.key(Key::Esc);
-    // Off the profiles, `a` is still the key line.
-    h.setup.cursor = 3;
-    h.key(Key::Char('a'));
-    assert!(matches!(
-        h.mode,
-        Mode::Typing {
-            purpose: Purpose::Key,
-            ..
-        }
-    ));
-    // On the row that adds the first, the line starts empty.
-    let mut h = setup_home();
-    h.setup.cursor = 4;
-    h.key(Key::Char('a'));
-    assert_eq!(h.mode, typing(Purpose::Profile, ""));
-    assert_eq!(h.key(Key::Esc), Effect::None);
+    // A harness that takes no logins of marion's says so and opens nothing.
+    select(&mut h, SetupItem::Harness(COPILOT));
+    assert_eq!(h.key(Key::Char('a')), Effect::None);
     assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(
+        h.notice.as_deref(),
+        Some("copilot takes no logins of marion's")
+    );
 }
 
 #[test]
-fn no_single_key_on_a_profile_is_destructive() {
-    for k in every_key() {
-        let mut h = profiles_home();
-        h.setup.cursor = 4;
-        let e = h.key(k.clone());
-        assert!(!e.destructive(), "{k:?} returned {e:?} without a confirm");
+fn no_single_key_on_any_setup_row_is_destructive() {
+    let mut rows = profiles_home();
+    rows.setup.notify = Some(true);
+    for item in rows.setup_items() {
+        for k in every_key() {
+            let mut h = profiles_home();
+            h.setup.notify = Some(true);
+            select(&mut h, item);
+            let e = h.key(k.clone());
+            assert!(!e.destructive(), "{k:?} on {item:?} returned {e:?}");
+        }
     }
 }
 
@@ -1840,118 +1947,6 @@ fn the_profile_echoes_run_through_marion_profiles_own_verbs() {
 }
 
 #[test]
-fn the_form_fills_a_draft_and_enter_asks_for_a_preview() {
-    let mut h = setup_home();
-    assert_eq!(h.key(Key::Char('n')), Effect::None);
-    let Mode::Form(f) = &h.mode else {
-        panic!("n opens the form, got {:?}", h.mode)
-    };
-    assert_eq!(
-        f.draft.harness, "claude",
-        "the first harness a file can name"
-    );
-    typed(&mut h, "reviewer");
-    h.key(Key::Tab);
-    h.key(Key::Right);
-    h.key(Key::Tab);
-    typed(&mut h, "o3");
-    h.key(Key::Backspace);
-    h.key(Key::Tab);
-    typed(&mut h, "Reviews diffs");
-    h.key(Key::Tab);
-    h.key(Key::Right);
-    let Effect::PreviewType(d) = h.key(Key::Enter) else {
-        panic!("enter previews")
-    };
-    assert_eq!(d.name, "reviewer");
-    assert_eq!(d.harness, "copilot", "→ moved to the next harness");
-    assert_eq!(d.model, "o");
-    assert_eq!(d.description, "Reviews diffs");
-    assert_eq!(d.tools, types_form::Tools::Read);
-    assert!(
-        matches!(h.mode, Mode::Form(_)),
-        "the form stays open while it previews"
-    );
-    h.key(Key::BackTab);
-    let Mode::Form(f) = &h.mode else { panic!() };
-    assert_eq!(f.field, 3, "shift-tab goes back a field");
-}
-
-#[test]
-fn an_incomplete_form_previews_nothing_and_says_what_is_missing() {
-    let mut h = setup_home();
-    h.key(Key::Char('n'));
-    assert_eq!(h.key(Key::Enter), Effect::None);
-    let Mode::Form(f) = &h.mode else { panic!() };
-    assert!(f.error.as_deref().unwrap_or("").contains("name"), "{f:?}");
-    assert_eq!(h.key(Key::Esc), Effect::None);
-    assert_eq!(h.mode, Mode::Normal, "esc closes it");
-}
-
-#[test]
-fn a_preview_waits_for_y_and_anything_else_goes_back_to_the_form() {
-    let mut h = setup_home();
-    h.key(Key::Char('n'));
-    typed(&mut h, "reviewer");
-    let Effect::PreviewType(d) = ({
-        h.key(Key::Tab);
-        h.key(Key::Tab);
-        h.key(Key::Tab);
-        typed(&mut h, "Reviews");
-        h.key(Key::Enter)
-    }) else {
-        panic!()
-    };
-    h.show_preview("NEW".into(), vec![('+', "x".into())]);
-    assert_eq!(
-        h.mode,
-        Mode::Confirm(Effect::WriteTypes {
-            text: "NEW".into(),
-            draft: d.clone()
-        })
-    );
-    assert_eq!(h.setup.preview.len(), 1);
-    assert_eq!(h.key(Key::Char('n')), Effect::None);
-    let Mode::Form(f) = &h.mode else {
-        panic!("back to the form, got {:?}", h.mode)
-    };
-    assert_eq!(f.draft, d, "with the draft as it was");
-    assert!(h.setup.preview.is_empty());
-    h.form_refused("agent type \"reviewer\" would shadow".into());
-    let Mode::Form(f) = &h.mode else { panic!() };
-    assert!(f.error.as_deref().unwrap().contains("shadow"));
-    h.show_preview("NEW".into(), vec![]);
-    assert_eq!(
-        h.key(Key::Char('y')),
-        Effect::WriteTypes {
-            text: "NEW".into(),
-            draft: d
-        }
-    );
-    assert!(
-        Effect::WriteTypes {
-            text: String::new(),
-            draft: Default::default()
-        }
-        .destructive()
-    );
-}
-
-#[test]
-fn no_key_on_a_stored_key_or_in_the_form_is_destructive() {
-    for k in every_key() {
-        let mut h = setup_home();
-        h.setup.cursor = 3;
-        let e = h.key(k.clone());
-        assert!(!e.destructive(), "{k:?} on a key's row returned {e:?}");
-        let mut h = setup_home();
-        h.key(Key::Char('n'));
-        let e = h.key(k.clone());
-        assert!(!e.destructive(), "{k:?} in the form returned {e:?}");
-    }
-}
-
-#[test]
 fn setup_shows_long_paths_by_their_ends() {
     let short = view::short_place(
         "file /private/tmp/mn-501/marion-home-e2e-run-83954-t4/config/marion/keys.json",
@@ -1963,74 +1958,66 @@ fn setup_shows_long_paths_by_their_ends() {
     assert_eq!(view::short_place(keychain), keychain);
 }
 
-/// A profile's row says what its probe said, and shows the login command only while it is logged
+/// A login's row says what its probe said, and shows the login command only while it is logged
 /// out or the probe could not tell — the command for the operator to run, never marion.
 #[test]
-fn a_logged_out_profile_shows_its_login_command_and_a_logged_in_one_does_not() {
+fn a_logged_out_login_shows_its_login_command_and_a_logged_in_one_does_not() {
     use crate::profiles::LoginState;
     let mut h = profiles_home();
     h.setup.profiles[0].login = Some(LoginState::LoggedIn);
     h.setup.profiles[1].login = Some(LoginState::LoggedOut);
-    let f = frame(&h);
-    let rows = &f.setup.profiles;
+    let rows = |h: &Home| -> Vec<ProfileRow> {
+        frame(h)
+            .setup
+            .lines
+            .into_iter()
+            .filter_map(|l| match l {
+                SetupLine::Profile(p) => Some(p),
+                _ => None,
+            })
+            .collect()
+    };
+    let r = rows(&h);
     assert_eq!(
-        (rows[0].note.as_str(), rows[0].login.as_deref()),
+        (r[0].note.as_str(), r[0].login.as_deref()),
         ("logged in", None)
     );
-    assert_eq!(rows[1].note, "logged out");
+    assert_eq!(r[1].note, "logged out");
     assert_eq!(
-        rows[1].login.as_deref(),
+        r[1].login.as_deref(),
         Some("CODEX_HOME='/p/cx' codex login")
     );
-    assert!(rows[0].default && !rows[1].default);
+    assert!(r[0].default && !r[1].default);
     h.setup.profiles[1].login = Some(LoginState::Unknown("timed out".into()));
     assert!(
-        frame(&h).setup.profiles[1].login.is_some(),
+        rows(&h)[1].login.is_some(),
         "an unknown login offers the command too"
     );
     h.setup.profiles[1].login = None;
-    assert_eq!(frame(&h).setup.profiles[1].note, "checking…");
+    assert_eq!(rows(&h)[1].note, "checking…");
     assert!(h.animating(), "a probe still out keeps the spinner turning");
-    h.setup.cursor = 5;
-    assert!(footer_has(&h, "u", "use"));
 }
 
 #[test]
-fn a_new_listing_selects_the_profile_just_added_and_keeps_the_cursor_on_a_real_row() {
+fn a_new_listing_selects_the_login_just_added_and_keeps_the_cursor_on_a_real_row() {
     let mut h = profiles_home();
     let harnesses = h.setup.profile_harnesses.clone();
     let mut rows = h.setup.profiles.clone();
-    rows.push(profile("claude", "personal", false));
-    h.set_profiles(rows, harnesses.clone(), Some("personal"));
+    rows.insert(0, profile("claude", "personal", false));
+    h.set_profiles(rows.clone(), harnesses.clone(), Some("personal"));
     assert_eq!(
-        h.selected_profile().map(|p| p.name.as_str()),
-        Some("personal"),
-        "the profile just added is selected, so its login command shows"
+        h.selected_item(),
+        Some(SetupItem::Profile(0)),
+        "the login just added is selected, so its login command shows"
     );
-    // The last profile removed: the cursor comes back to the row that adds one.
+    // A re-listing that numbers the logins differently keeps the cursor on the same login.
+    select(&mut h, SetupItem::Profile(2));
+    rows.swap(0, 2);
+    h.set_profiles(rows, harnesses.clone(), None);
+    assert_eq!(h.selected_item(), Some(SetupItem::Profile(0)));
+    assert_eq!(h.setup.profiles[0].name, "cx");
+    // Every login removed: the cursor stays on a row that exists.
     h.set_profiles(Vec::new(), harnesses, None);
-    assert_eq!(h.setup.cursor, 4);
-    assert!(h.on_profiles() && h.selected_profile().is_none());
-}
-
-/// **Setup's last row turns notifications on or off**: past the profiles, Enter runs the `marion
-/// notify` that flips it, and the footer says which way it goes.
-#[test]
-fn setup_notifications_row_flips_them_with_enter() {
-    let mut h = setup_home();
-    h.setup.notify = Some(false);
-    h.setup.notify_shown_by = "osascript".into();
-    for _ in 0..10 {
-        h.key(Key::Char('j'));
-    }
-    assert!(h.on_notify(), "the cursor stops on the last row");
-    assert!(!h.on_profiles(), "which is not a profile row");
-    assert!(footer_has(&h, "enter", "turn on"));
-    assert_eq!(h.key(Key::Enter), Effect::Notify(true));
-    assert_eq!(
-        Effect::Notify(true).argv().unwrap(),
-        ["marion", "notify", "on"]
-    );
-    h.setup.notify = None;
-    assert!(!h.on_notify(), "no row until the setting has been read");
+    assert!(h.selected_item().is_some());
+    assert!(h.setup.cursor < h.setup_items().len());
 }

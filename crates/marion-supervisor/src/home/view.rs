@@ -1,7 +1,7 @@
 //! A [`Home`] as `marion_tui::home`'s views: every word the screen shows is decided here, from the
 //! wire types only the supervisor can read, and `marion-tui` only draws it.
 
-use super::{Effect, Field, Home, Mode, Purpose};
+use super::{Effect, Home, Mode, Purpose, SetupItem};
 use crate::tree::{attention_of, short_id};
 use marion_core::contract::{AgentId, ExitStatus};
 use marion_core::proto::NodeSummary;
@@ -9,17 +9,16 @@ use marion_core::proto::result::{ActionKind, NodeDetail};
 use marion_tui::home::help::KeyRow;
 use marion_tui::home::text::{elapsed, shell_line, tokens};
 use marion_tui::home::{
-    AgentRow, AgentTypeRow, AgentsView, Body, Footer, FormField, FormView, HarnessRow, HelpView,
-    Hint, Ink, LineKind, LoginRow, Page, Preview, ProfileRow, Ready, SetupView, StreamLine,
+    AgentRow, AgentsView, Body, Footer, HarnessRow, HelpView, Hint, Ink, LineKind, LoginRow, Page,
+    Preview, ProfileRow, Ready, SetupLine, SetupView, StreamLine,
 };
 use marion_tui::tree::Tone;
 
-/// Where the project keeps things, for Setup's Project line.
+/// Where the project is, for the list's title.
 #[derive(Debug, Clone, Default)]
 pub struct Places {
     /// The project as the operator recognises it (`~/code/acme-api`).
     pub project: String,
-    pub state: String,
 }
 
 /// Every view a frame needs, owned, so the caller can borrow them into a
@@ -65,7 +64,7 @@ pub fn frame_at(home: &Home, places: &Places, now: std::time::SystemTime) -> Fra
         title,
         counts,
         agents: agents(home, now),
-        setup: setup(home, places),
+        setup: setup(home),
         help: help(home),
         footer: footer(home),
     }
@@ -547,52 +546,97 @@ fn harness_row(h: &super::Harness) -> HarnessRow {
     }
 }
 
-fn setup(home: &Home, places: &Places) -> SetupView {
-    let ready_of = |harness: &str| {
-        home.harnesses
-            .iter()
-            .find(|h| h.name == harness)
-            .map_or(Ready::Absent, |h| h.ready)
+/// Setup as one list: [`Home::setup_items`] in order, with the group headers, the folded line of
+/// harnesses that are not installed, and a dim line where a group could not be listed.
+fn setup(home: &Home) -> SetupView {
+    let su = &home.setup;
+    let mut lines = vec![SetupLine::Group("harnesses".into())];
+    let mut cursor = None;
+    let at = su.cursor.min(home.setup_items().len().saturating_sub(1));
+    let mut group = "harnesses";
+    let mut enter = |lines: &mut Vec<SetupLine>, g: &'static str| {
+        if group != g {
+            if group == "harnesses" {
+                harnesses_tail(home, lines);
+            }
+            lines.push(SetupLine::Group(g.into()));
+            group = g;
+        }
     };
+    for (i, item) in home.setup_items().into_iter().enumerate() {
+        let line = match item {
+            SetupItem::Harness(h) => SetupLine::Harness(harness_row(&home.harnesses[h])),
+            SetupItem::Profile(p) => {
+                let known = home
+                    .harnesses
+                    .iter()
+                    .any(|h| h.name == su.profiles[p].harness);
+                SetupLine::Profile(profile_row(&su.profiles[p], !known))
+            }
+            SetupItem::Key(k) => {
+                enter(&mut lines, "api keys");
+                let l = &su.logins[k];
+                SetupLine::Key(LoginRow {
+                    provider: l.provider.clone(),
+                    id: l.id.clone(),
+                    note: l.note.clone(),
+                })
+            }
+            SetupItem::NoKeys => {
+                enter(&mut lines, "api keys");
+                SetupLine::Note(no_keys(home))
+            }
+            SetupItem::Types => {
+                enter(&mut lines, "files");
+                SetupLine::File {
+                    what: "agent types".into(),
+                    path: crate::run::AGENT_TYPES_FILE.into(),
+                    check: su.validation.clone(),
+                }
+            }
+            SetupItem::Notify => {
+                enter(&mut lines, "notify");
+                SetupLine::Notify {
+                    on: su.notify == Some(true),
+                    shown_by: su.notify_shown_by.clone(),
+                }
+            }
+        };
+        if i == at {
+            cursor = Some(lines.len());
+        }
+        lines.push(line);
+    }
     SetupView {
-        harnesses: home.harnesses.iter().map(harness_row).collect(),
-        checking: home.checking,
-        cursor: home.setup.cursor,
-        expanded: home.setup.expanded,
-        project: vec![
-            ("checkout".into(), places.project.clone()),
-            ("state".into(), short_place(&places.state)),
-            ("agents".into(), crate::run::AGENT_TYPES_FILE.into()),
-        ],
-        agent_types: home
-            .types
-            .iter()
-            .map(|t| AgentTypeRow {
-                name: t.name.clone(),
-                ready: ready_of(&t.harness),
-                custom: t.custom,
-            })
-            .collect(),
-        agents_file: crate::run::AGENT_TYPES_FILE.into(),
-        validation: home.setup.validation.clone(),
-        logins: home
-            .setup
-            .logins
-            .iter()
-            .map(|l| LoginRow {
-                provider: l.provider.clone(),
-                id: l.id.clone(),
-                note: l.note.clone(),
-            })
-            .collect(),
-        logins_note: logins_note(home),
-        profiles: home.setup.profiles.iter().map(profile_row).collect(),
-        profiles_note: profiles_note(home),
-        notify: home
-            .setup
-            .notify
-            .map(|on| (on, home.setup.notify_shown_by.clone())),
-        form: form_view(home),
+        lines,
+        cursor,
+        expanded: su.expanded,
+    }
+}
+
+/// The end of the harnesses group: the ones not installed, folded into one line by name, and why
+/// the logins could not be listed, when they could not.
+fn harnesses_tail(home: &Home, lines: &mut Vec<SetupLine>) {
+    let shown: Vec<usize> = home
+        .setup_items()
+        .into_iter()
+        .filter_map(|i| match i {
+            SetupItem::Harness(h) => Some(h),
+            _ => None,
+        })
+        .collect();
+    let absent: Vec<String> = home
+        .harnesses
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !shown.contains(i))
+        .map(|(_, h)| h.name.clone())
+        .collect();
+    if !absent.is_empty() {
+        lines.push(SetupLine::Absent(absent));
+    }
+    if let Some(e) = &home.setup.profiles_error {
+        lines.push(SetupLine::Note(format!("logins could not be listed: {e}")));
     }
 }
 
@@ -614,29 +658,22 @@ pub fn short_place(text: &str) -> String {
         .join(" ")
 }
 
-/// The line under the stored keys: why they could not be listed, else where they are kept and
-/// what the keys do. Subscription logins are never marion's: they stay with each harness's CLI.
-fn logins_note(home: &Home) -> String {
+/// The row in the keys' place while none is stored: where keys would be kept and the key that adds
+/// one, or why they could not be listed.
+fn no_keys(home: &Home) -> String {
     if let Some(e) = &home.setup.logins_error {
         return format!("keys could not be listed: {e}");
     }
-    let Some(store) = &home.setup.store else {
-        return "listing keys…".into();
-    };
-    let store = &short_place(store);
-    if home.setup.logins.is_empty() {
-        format!(
-            "no API keys stored ({store}) · `a` adds one with `marion key add <provider>`; \
-             subscription logins stay with each harness's own CLI"
-        )
-    } else {
-        format!("{store} · `a` adds a key · `x` removes the selected one")
+    match &home.setup.store {
+        Some(store) => format!("none stored ({}) · `a` adds one", short_place(store)),
+        None => "listing keys…".into(),
     }
 }
 
-/// One profile as Setup draws it: its login in the probe's words, and — while it is logged out —
-/// the command that logs in to it, for the operator to run.
-fn profile_row(p: &super::StoredProfile) -> ProfileRow {
+/// One login as Setup draws it: its state in the probe's words, and — while it is logged out — the
+/// command that signs it in, for the operator to run. `orphan` names its harness too, for a login
+/// whose harness doctor does not list.
+fn profile_row(p: &super::StoredProfile, orphan: bool) -> ProfileRow {
     use crate::profiles::LoginState;
     let (ready, note) = match &p.login {
         None => (Ready::Checking, "checking…".to_string()),
@@ -645,77 +682,17 @@ fn profile_row(p: &super::StoredProfile) -> ProfileRow {
         Some(LoginState::Unknown(why)) => (Ready::Attention, format!("login unknown: {why}")),
     };
     ProfileRow {
-        harness: p.harness.clone(),
-        name: p.name.clone(),
+        name: if orphan {
+            format!("{} {}", p.harness, p.name)
+        } else {
+            p.name.clone()
+        },
         default: p.default,
         login: (ready == Ready::Attention).then(|| p.login_command.clone()),
         ready,
         note,
         limit: p.limit.clone(),
     }
-}
-
-/// The line under the profiles: why they could not be listed, else what the keys do. marion
-/// never logs in for anyone: `add` prints the command, and the row shows it.
-fn profiles_note(home: &Home) -> String {
-    if let Some(e) = &home.setup.profiles_error {
-        return format!("logins could not be listed: {e}");
-    }
-    if !home.setup.profiles_listed {
-        return "listing logins…".into();
-    }
-    if home.setup.profiles.is_empty() {
-        "each harness uses its own login · `a` runs `marion profile add`, then you run the login it prints"
-            .into()
-    } else {
-        "`a` adds one · `u` makes the selected the default · `x` removes it, keeping its \
-         directory · marion never logs in for you"
-            .into()
-    }
-}
-
-/// The agent-type form, while it is open or its preview waits for a `y`.
-fn form_view(home: &Home) -> Option<FormView> {
-    let (form, preview) = match &home.mode {
-        Mode::Form(f) => (f.clone(), Vec::new()),
-        Mode::Confirm(Effect::WriteTypes { draft, .. }) => (
-            super::Form {
-                draft: draft.clone(),
-                field: Field::ALL.len() - 1,
-                error: None,
-            },
-            home.setup.preview.clone(),
-        ),
-        _ => return None,
-    };
-    let d = &form.draft;
-    let fields = Field::ALL
-        .iter()
-        .map(|f| {
-            let (value, hint) = match f {
-                Field::Name => (d.name.clone(), "letters, digits, - and _"),
-                Field::Harness => (d.harness.clone(), ""),
-                Field::Model => (d.model.clone(), "the harness's own default"),
-                Field::Description => (d.description.clone(), "one line: what it is for"),
-                Field::Tools => (d.tools.word().to_string(), ""),
-                Field::Provider => (d.provider.clone(), "optional: an endpoint provider id"),
-            };
-            FormField {
-                label: f.label().to_string(),
-                value,
-                choice: f.is_choice(),
-                hint: hint.to_string(),
-            }
-        })
-        .collect();
-    Some(FormView {
-        title: "Agent type".into(),
-        fields,
-        field: form.field,
-        error: form.error,
-        file: crate::run::AGENT_TYPES_FILE.into(),
-        preview,
-    })
 }
 
 // ---------------------------------------------------------------------------------- keys
@@ -762,13 +739,29 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
     (
         "setup",
         &[
-            ("enter", "a harness's detail and fix", ""),
+            (
+                "enter",
+                "harness: its detail",
+                "marion doctor --harness <h>",
+            ),
+            (
+                "enter",
+                "login: make it the default",
+                "marion profile use <harness> <name>",
+            ),
+            (
+                "enter",
+                "agent types: edit them",
+                "$EDITOR .marion/agents.toml",
+            ),
+            ("enter", "notify: turn on or off", "marion notify on|off"),
+            (
+                "a",
+                "add a login, or a key",
+                "marion profile add <harness> <name>",
+            ),
+            ("del", "remove a login or key, asks", "marion key rm <id>"),
             ("r", "re-check", "marion doctor"),
-            ("e", "edit agent types", "$EDITOR .marion/agents.toml"),
-            ("n", "new agent type, previewed", ".marion/agents.toml"),
-            ("a", "add a key, or a login", "marion key add <provider>"),
-            ("u", "use a login", "marion profile use <harness> <name>"),
-            ("x", "remove key or login, asks", "marion key rm <id>"),
             ("esc", "back", ""),
         ],
     ),
@@ -836,8 +829,8 @@ fn footer(home: &Home) -> Footer {
                     String::new(),
                     h(&[("enter", "add"), ("esc", "cancel")]),
                 ),
-                Purpose::Profile => (
-                    "profile add".to_string(),
+                Purpose::Profile(harness) => (
+                    format!("profile add {harness}"),
                     String::new(),
                     h(&[("enter", "add"), ("esc", "cancel")]),
                 ),
@@ -850,12 +843,6 @@ fn footer(home: &Home) -> Footer {
             }
         }
         Mode::Confirm(effect) => confirm(home, effect),
-        Mode::Form(_) => Footer::Keys(h(&[
-            ("tab", "next field"),
-            ("←→", "choose"),
-            ("enter", "preview"),
-            ("esc", "close"),
-        ])),
         Mode::Normal => Footer::Keys(match home.page {
             Page::Agents => agent_keys(home),
             Page::Setup => setup_keys(home),
@@ -925,32 +912,33 @@ fn agent_keys(home: &Home) -> Vec<Hint> {
 
 /// Setup's keys for the row under the cursor, and nothing that does something else there.
 fn setup_keys(home: &Home) -> Vec<Hint> {
-    let pairs: &[(&str, &str)] = if home.on_notify() {
-        if home.setup.notify == Some(true) {
-            &[("enter", "turn off"), ("esc", "back")]
-        } else {
-            &[("enter", "turn on"), ("esc", "back")]
+    let mut k: Vec<(&str, &str)> = match home.selected_item() {
+        Some(SetupItem::Harness(i)) => {
+            let mut k = vec![("enter", "details")];
+            if home
+                .setup
+                .profile_harnesses
+                .contains(&home.harnesses[i].name)
+            {
+                k.push(("a", "add login"));
+            }
+            k
         }
-    } else if home.on_profiles() {
-        &[
-            ("a", "add login"),
-            ("u", "use"),
-            ("x", "remove"),
-            ("esc", "back"),
-        ]
-    } else if home.selected_login().is_some() {
-        &[("a", "add key"), ("x", "remove key"), ("esc", "back")]
-    } else {
-        &[
-            ("enter", "details"),
-            ("r", "re-check"),
-            ("e", "edit types"),
-            ("n", "new type"),
-            ("a", "add key"),
-            ("esc", "back"),
-        ]
+        Some(SetupItem::Profile(i)) if home.setup.profiles[i].default => {
+            vec![("a", "add login"), ("del", "remove")]
+        }
+        Some(SetupItem::Profile(_)) => {
+            vec![("enter", "use"), ("a", "add login"), ("del", "remove")]
+        }
+        Some(SetupItem::Key(_)) => vec![("a", "add key"), ("del", "remove")],
+        Some(SetupItem::NoKeys) => vec![("a", "add key")],
+        Some(SetupItem::Types) => vec![("enter", "edit")],
+        Some(SetupItem::Notify) if home.setup.notify == Some(true) => vec![("enter", "turn off")],
+        Some(SetupItem::Notify) => vec![("enter", "turn on")],
+        None => Vec::new(),
     };
-    pairs.iter().map(|(a, b)| Hint::new(*a, *b)).collect()
+    k.extend([("r", "re-check"), ("esc", "back")]);
+    k.into_iter().map(|(a, b)| Hint::new(a, b)).collect()
 }
 
 /// The confirm line for `effect`: the question in a few words, and the command it runs.
@@ -961,17 +949,11 @@ fn confirm(home: &Home, effect: &Effect) -> Footer {
             .unwrap_or_default()
     };
     let (question, command) = match effect {
-        Effect::WriteTypes { draft, .. } => {
-            let added = home.setup.preview.iter().filter(|(t, _)| *t == '+').count();
-            let removed = home.setup.preview.iter().filter(|(t, _)| *t == '-').count();
-            (
-                format!("write {} to {}?", draft.name, crate::run::AGENT_TYPES_FILE),
-                format!("+{added} -{removed} lines"),
-            )
-        }
         Effect::Logout(id) => (format!("remove the key {id}?"), line(effect)),
         Effect::Merge(branch) => (format!("merge {branch} into your checkout?"), line(effect)),
-        Effect::ProfileRemove { name, .. } => (format!("remove the profile {name}?"), line(effect)),
+        Effect::ProfileRemove { harness, name } => {
+            (format!("remove the login {harness} {name}?"), line(effect))
+        }
         Effect::Kill(id) => (
             format!("cancel pending; kill {} now?", who_short(home, id)),
             line(effect),

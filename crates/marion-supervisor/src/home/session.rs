@@ -193,8 +193,6 @@ struct Session {
     detail_stale: bool,
     /// A root a run just started, to select once the forest shows it.
     pending_select: Option<String>,
-    /// The agents file as the form's preview read it: a write goes ahead only onto the same text.
-    preview_base: Option<String>,
     reports: Receiver<Report>,
     reporter: Reporter,
     wake: Wake,
@@ -240,7 +238,6 @@ impl Session {
                     std::env::var("HOME").ok().as_deref(),
                     current_branch(&shown).as_deref(),
                 ),
-                state: view::tilde(&opts.state.to_string_lossy()),
             },
             repo: opts.repo.clone(),
             state: opts.state.clone(),
@@ -253,7 +250,6 @@ impl Session {
             last_dial: None,
             detail_stale: true,
             pending_select: None,
-            preview_base: None,
             reports,
             reporter,
             wake,
@@ -439,14 +435,6 @@ impl Session {
             }
             Effect::ProfileRemove { harness, name } => {
                 self.profile_verb(&["rm", &harness, &name]);
-                None
-            }
-            Effect::PreviewType(draft) => {
-                self.preview_type(&draft);
-                None
-            }
-            Effect::WriteTypes { text, draft } => {
-                self.write_types(&text, &draft.name);
                 None
             }
             Effect::Steer(id, text) => {
@@ -781,77 +769,6 @@ impl Session {
         std::thread::spawn(move || {
             tx.send(Report::Logins(crate::login::user_logins()));
         });
-    }
-
-    /// The form's draft applied to the agents file as it is now, held to the spawn path's loader,
-    /// and shown as a diff waiting for `y` — or the loader's refusal, back on the form.
-    fn preview_type(&mut self, draft: &super::types_form::Draft) {
-        let path = self.repo.join(crate::run::AGENT_TYPES_FILE);
-        let old = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return self.home.form_refused(format!("reading it: {e}")),
-        };
-        let new = match super::types_form::apply(&old, draft) {
-            Ok(t) => t,
-            Err(e) => return self.home.form_refused(e),
-        };
-        if let Err(e) = crate::run::agent_types_text(path, &new) {
-            return self.home.form_refused(e.to_string());
-        }
-        let diff = super::types_form::diff(&old, &new);
-        if diff.is_empty() {
-            return self
-                .home
-                .form_refused("the file already says exactly this".into());
-        }
-        self.preview_base = Some(old);
-        self.home.show_preview(new, diff);
-    }
-
-    /// Write the previewed file — only if it is still the file the preview was made from, and only
-    /// if the loader still takes the result — then validate and reload the types as `e` does.
-    fn write_types(&mut self, text: &str, name: &str) {
-        let path = self.repo.join(crate::run::AGENT_TYPES_FILE);
-        let base = self.preview_base.take();
-        let now = match std::fs::read_to_string(&path) {
-            Ok(t) => Some(t),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
-            Err(_) => None,
-        };
-        if base.is_none() || now != base {
-            self.home.notice = Some(format!(
-                "{} changed since the preview; nothing written — press n and preview again",
-                crate::run::AGENT_TYPES_FILE
-            ));
-            return;
-        }
-        if let Err(e) = crate::run::agent_types_text(path.clone(), text) {
-            self.home.notice = Some(format!("not written: {e}"));
-            return;
-        }
-        match super::types_form::write(&path, text) {
-            Ok(()) => {
-                self.validate_types();
-                // The write is the operator's own action, so it vouches for the bytes it wrote;
-                // never for a file that already asked for trust they had not given.
-                let old = base.unwrap_or_default();
-                let trust = match crate::trust::allow_own_edit(&path, &old, text) {
-                    Ok(crate::trust::OwnEdit::Unvouched) => format!(
-                        "; the file asks for trust you have not given, so review it with: marion \
-                         trust allow {}",
-                        crate::run::AGENT_TYPES_FILE
-                    ),
-                    Ok(_) => String::new(),
-                    Err(e) => format!("; not trusted: {e}"),
-                };
-                self.home.notice = Some(format!(
-                    "wrote {name} to {}{trust}",
-                    crate::run::AGENT_TYPES_FILE
-                ));
-            }
-            Err(e) => self.home.notice = Some(format!("not written: {e}")),
-        }
     }
 
     fn load_types(&mut self) {

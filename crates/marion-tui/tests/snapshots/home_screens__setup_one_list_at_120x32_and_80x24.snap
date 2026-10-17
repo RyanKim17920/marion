@@ -1,0 +1,83 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "format!(\"{wide}\\n\\n{floor}\")"
+---
+--- 120x32 ---
+ marion  setup                                                                                             3 of 6 ready
+  harnesses
+  ● claude       2.1.268   ready                       headless · pane · channel push
+    ● work       default · logged in
+    ● personal   logged in
+  ● codex        0.61.0    ready                       headless · pane · ACP
+    ◐ cx         logged out
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+    ⠇ oc         checking…
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ 1 not installed  agy
+
+  api keys
+  ● anthropic    anthropic
+  ● openrouter   openrouter
+  ● openrouter   openrouter:work
+
+  files
+  ✓ agent types  .marion/agents.toml  2 types, valid
+
+  notify
+  ● on           when an agent ends or needs you · shown by osascript
+
+
+
+
+
+
+
+
+ enter details  a add login  r re-check  esc back
+--- styles ---
+   81  Style::new().fg(Color::Reset).bg(Color::Reset)  "workpersonalcodexcxqweno"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+  309  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6readyharnessesl"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "default·⠇"
+   10  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enteraresc"
+   44  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "●claude2.1.268readyheadl"
+    9  Style::new().green().bg(Color::Reset)  "●●●●●●●✓●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   24  Style::new().yellow().bg(Color::Reset)  "◐loggedout◐sign-inneeded"
+
+--- 80x24 ---
+ marion  setup                                                     3 of 6 ready
+  harnesses
+  ● claude       2.1.268   ready                       headless · pane · chann…
+    ● work       default · logged in
+    ● personal   logged in
+  ● codex        0.61.0    ready                       headless · pane · ACP
+    ◐ cx         logged out
+  ◐ qwen         0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+    ⠇ oc         checking…
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ 1 not installed  agy
+
+  api keys
+  ● anthropic    anthropic
+  ● openrouter   openrouter
+  ● openrouter   openrouter:work
+
+  files
+  ✓ agent types  .marion/agents.toml  2 types, valid
+
+  notify
+  ● on           when an agent ends or needs you · shown by osascript
+ enter turn off  r re-check  esc back
+--- styles ---
+   85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeworkpersonalcodexc"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+  291  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "setup3of6readyharnesses2"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "default·⠇"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "enterresc"
+   45  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).reversed()  "●onwhenanagentendsorneed"
+    9  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   24  Style::new().yellow().bg(Color::Reset)  "◐loggedout◐sign-inneeded"

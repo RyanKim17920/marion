@@ -14,10 +14,9 @@
 //! With `MARION_HOME_DUMP=<dir>` set, every screen is also written there as `<name>.json` — one
 //! `[symbol, fg, bg, flags]` per cell — for a rasteriser to turn into dark- and light-theme images.
 
-use marion_tui::home::setup::AgentTypeRow;
 use marion_tui::home::{
-    self, AgentRow, AgentsView, Body, Footer, FormField, FormView, HarnessRow, HelpView, Hint, Ink,
-    KeyRow, LineKind, LoginRow, Preview, ProfileRow, Ready, Screen, SetupView, StreamLine, Theme,
+    self, AgentRow, AgentsView, Body, Footer, HarnessRow, HelpView, Hint, Ink, KeyRow, LineKind,
+    LoginRow, Preview, ProfileRow, Ready, Screen, SetupLine, SetupView, StreamLine, Theme,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -112,6 +111,9 @@ fn harnesses() -> Vec<HarnessRow> {
     ]
 }
 
+/// Setup as the supervisor lays it out: the installed harnesses with their logins under them, the
+/// one folded line of those not installed, the keys, the files and notify. The cursor is on qwen,
+/// expanded.
 fn setup_view(checking: bool) -> SetupView {
     let mut hs = harnesses();
     hs[2].detail.push((s("auth"), s("not signed in")));
@@ -122,125 +124,85 @@ fn setup_view(checking: bool) -> SetupView {
             h.version = None;
         }
     }
-    let t = |n: &str, r: Ready, c: bool| AgentTypeRow {
-        name: s(n),
-        ready: r,
-        custom: c,
-    };
-    SetupView {
-        harnesses: hs,
-        checking,
-        cursor: 2,
-        expanded: true,
-        project: vec![
-            (s("repo"), s(PROJECT)),
-            (s("state"), s("~/.local/state/marion")),
-            (s("agents"), s(".marion/agents.toml")),
-        ],
-        agent_types: vec![
-            t("claude", Ready::Ready, false),
-            t("claude-orchestrator", Ready::Ready, false),
-            t("codex", Ready::Ready, false),
-            t("qwen", Ready::Attention, false),
-            t("opencode", Ready::Ready, false),
-            t("reviewer", Ready::Ready, true),
-            t("migrator", Ready::Ready, true),
-        ],
-        agents_file: s(".marion/agents.toml"),
-        validation: Some((true, s(".marion/agents.toml: 2 types, valid"))),
-        logins: vec![
-            login("anthropic", "anthropic"),
-            login("openrouter", "openrouter"),
-            login("openrouter", "openrouter:work"),
-        ],
-        logins_note: s("keys in the macOS Keychain · `a` adds one · `x` removes the selected"),
-        profiles: vec![
-            profile("claude", "work", true, Ready::Ready, "logged in", None),
-            profile(
-                "codex",
+    let absent: Vec<String> = hs
+        .iter()
+        .filter(|h| h.ready == Ready::Absent)
+        .map(|h| h.name.clone())
+        .collect();
+    let mut lines = vec![SetupLine::Group(s("harnesses"))];
+    for h in hs.into_iter().filter(|h| h.ready != Ready::Absent) {
+        let name = h.name.clone();
+        lines.push(SetupLine::Harness(h));
+        lines.extend(match name.as_str() {
+            "claude" => vec![
+                profile("work", true, Ready::Ready, "logged in", None),
+                profile("personal", false, Ready::Ready, "logged in", None),
+            ],
+            "codex" => vec![profile(
                 "cx",
                 false,
                 Ready::Attention,
                 "logged out",
                 Some("CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login"),
-            ),
-            profile("opencode", "oc", false, Ready::Checking, "checking…", None),
-        ],
-        profiles_note: s(
-            "`a` adds one · `u` makes the selected the default · `x` removes it, keeping its \
-             directory · marion never logs in for you",
-        ),
-        notify: Some((true, "osascript".into())),
-        form: None,
+            )],
+            "opencode" => vec![profile("oc", false, Ready::Checking, "checking…", None)],
+            _ => Vec::new(),
+        });
     }
+    if !absent.is_empty() {
+        lines.push(SetupLine::Absent(absent));
+    }
+    lines.extend([
+        SetupLine::Group(s("api keys")),
+        login("anthropic", "anthropic"),
+        login("openrouter", "openrouter"),
+        login("openrouter", "openrouter:work"),
+        SetupLine::Group(s("files")),
+        SetupLine::File {
+            what: s("agent types"),
+            path: s(".marion/agents.toml"),
+            check: Some((true, s("2 types, valid"))),
+        },
+        SetupLine::Group(s("notify")),
+        SetupLine::Notify {
+            on: true,
+            shown_by: s("osascript"),
+        },
+    ]);
+    let mut v = SetupView {
+        lines,
+        cursor: None,
+        expanded: true,
+    };
+    select(
+        &mut v,
+        |l| matches!(l, SetupLine::Harness(h) if h.name == "qwen"),
+    );
+    v
 }
 
-fn profile(
-    harness: &str,
-    name: &str,
-    default: bool,
-    ready: Ready,
-    note: &str,
-    login: Option<&str>,
-) -> ProfileRow {
-    ProfileRow {
-        harness: s(harness),
+/// Put the cursor on the first line `pick` takes.
+fn select(v: &mut SetupView, pick: impl Fn(&SetupLine) -> bool) {
+    v.cursor = Some(v.lines.iter().position(pick).expect("a line to select"));
+}
+
+fn profile(name: &str, default: bool, ready: Ready, note: &str, login: Option<&str>) -> SetupLine {
+    SetupLine::Profile(ProfileRow {
         name: s(name),
         default,
         ready,
         note: s(note),
         login: login.map(s),
         limit: None,
-    }
+    })
 }
 
-fn login(provider: &str, id: &str) -> LoginRow {
-    LoginRow {
+fn login(provider: &str, id: &str) -> SetupLine {
+    SetupLine::Key(LoginRow {
         provider: s(provider),
         id: s(id),
         note: None,
-    }
-}
-
-fn form_view(preview: bool) -> FormView {
-    let f = |label: &str, value: &str, choice: bool, hint: &str| FormField {
-        label: s(label),
-        value: s(value),
-        choice,
-        hint: s(hint),
-    };
-    FormView {
-        title: s("New agent type"),
-        fields: vec![
-            f("name", "reviewer", false, "letters, digits, - and _"),
-            f("harness", "codex", true, ""),
-            f("model", "", false, "the harness's default"),
-            f(
-                "description",
-                "Reviews a diff and reports",
-                false,
-                "one line",
-            ),
-            f("tools", "read", true, ""),
-            f("provider", "", false, "optional: an endpoint provider id"),
-        ],
-        field: if preview { 5 } else { 3 },
-        error: None,
-        file: s(".marion/agents.toml"),
-        preview: if preview {
-            vec![
-                (' ', s("description = \"Moves data.\"")),
-                (' ', s("")),
-                ('+', s("[[agent]]")),
-                ('+', s("name = \"reviewer\"")),
-                ('+', s("harness = \"codex\"")),
-                ('+', s("description = \"Reviews a diff and reports\"")),
-                ('+', s("tools = [\"read\"]")),
-            ]
-        } else {
-            Vec::new()
-        },
-    }
+    })
 }
 
 // ------------------------------------------------------------------------------ drawing
@@ -559,10 +521,8 @@ fn ended_keys() -> Footer {
 fn setup_keys() -> Footer {
     keys(&[
         ("enter", "details"),
+        ("a", "add login"),
         ("r", "re-check"),
-        ("e", "edit types"),
-        ("n", "new type"),
-        ("a", "add key"),
         ("esc", "back"),
     ])
 }
@@ -848,122 +808,179 @@ fn every_row_carries_its_state_glyph() {
     }
 }
 
+/// Setup with a harness's detail open under it, at every size.
 #[test]
 fn setup_expanded_harness() {
     let v = setup_view(false);
-    let input = setup_keys();
-    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
+    insta::assert_snapshot!(at_every_size(&setup_screen(&v, setup_keys())));
 }
 
-/// A machine with most harnesses missing: the missing ones fold into one line, so the sections
-/// below still show, and the one under the cursor keeps its own row.
+/// **The one list at the sizes the design names**: 120x32, and the 80x24 floor, where the window
+/// keeps the selected row in view.
+#[test]
+fn setup_one_list_at_120x32_and_80x24() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    select(
+        &mut v,
+        |l| matches!(l, SetupLine::Harness(h) if h.name == "claude"),
+    );
+    let wide = report(&setup_screen(&v, setup_keys()), 120, 32);
+    select(&mut v, |l| matches!(l, SetupLine::Notify { .. }));
+    let footer = keys(&[("enter", "turn off"), ("r", "re-check"), ("esc", "back")]);
+    let floor = report(&setup_screen(&v, footer), 80, 24);
+    insta::assert_snapshot!(format!("{wide}\n\n{floor}"));
+}
+
+/// A machine with most harnesses missing: the missing ones fold into one line, so the groups
+/// below still show.
 #[test]
 fn setup_folds_the_harnesses_that_are_not_installed() {
     let mut v = setup_view(false);
     v.expanded = false;
-    for name in [
-        "goose",
-        "cline",
-        "qwen",
-        "acp kilo",
-        "acp vibe",
-        "acp vtcode",
-    ] {
-        v.harnesses.push(harness(
-            name,
-            None,
-            Ready::Absent,
-            "not installed",
-            "headless",
-            None,
-        ));
-    }
-    v.cursor = v.harnesses.len() - 2;
-    let input = setup_keys();
-    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
+    let at = v
+        .lines
+        .iter()
+        .position(|l| matches!(l, SetupLine::Absent(_)))
+        .unwrap();
+    v.lines[at] = SetupLine::Absent(
+        [
+            "agy",
+            "goose",
+            "cline",
+            "acp kilo",
+            "acp vibe",
+            "acp vtcode",
+        ]
+        .map(s)
+        .to_vec(),
+    );
+    insta::assert_snapshot!(report(&setup_screen(&v, setup_keys()), 100, 30));
 }
 
 #[test]
 fn setup_doctor_checking() {
     let v = setup_view(true);
-    let input = setup_keys();
-    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
+    insta::assert_snapshot!(report(&setup_screen(&v, setup_keys()), 100, 30));
 }
 
 #[test]
-fn setup_logins_listed() {
+fn setup_keys_listed() {
     let mut v = setup_view(false);
     v.expanded = false;
-    v.cursor = v.harnesses.len() + 2;
-    let input = setup_keys();
-    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
-}
-
-/// The profiles, by harness: the selected one is logged out, so its row shows the command that
-/// logs in to it — for the operator to run — and the box echoes what `u` would run.
-#[test]
-fn setup_profiles_listed_with_the_login_command_shown() {
-    let mut v = setup_view(false);
-    v.expanded = false;
-    v.cursor = v.harnesses.len() + v.logins.len() + 1;
-    v.profiles[0].limit = Some(s("last limit allowed_warning (five_hour)"));
-    let input = setup_keys();
-    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
-}
-
-/// **The notifications row, last on Setup**: on or off and how a notice is shown here, and the
-/// box echoes the `marion notify` that Enter runs.
-#[test]
-fn setup_notifications_row_turns_them_off_on_enter() {
-    let mut v = setup_view(false);
-    v.expanded = false;
-    v.cursor = v.harnesses.len() + v.logins.len() + v.profiles.len();
-    let input = setup_keys();
-    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 40));
-}
-
-#[test]
-fn setup_no_profiles_offers_to_add_one_and_no_keys() {
-    let mut v = setup_view(false);
-    v.expanded = false;
-    v.logins.clear();
-    v.logins_note = s("no keys stored · `a` adds one with `marion login <provider>`");
-    v.profiles.clear();
-    v.profiles_note = s(
-        "each harness uses its own login · `a` runs `marion profile add`, then you run the login it prints",
+    select(
+        &mut v,
+        |l| matches!(l, SetupLine::Key(k) if k.id == "openrouter:work"),
     );
-    v.cursor = v.harnesses.len();
-    let input = setup_keys();
-    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
+    let footer = keys(&[
+        ("a", "add key"),
+        ("del", "remove"),
+        ("r", "re-check"),
+        ("esc", "back"),
+    ]);
+    insta::assert_snapshot!(at_every_size(&setup_screen(&v, footer)));
 }
 
+/// **A logged-out login shows the command that signs it in**, whole, under its row — for the
+/// operator to run; marion never runs it.
 #[test]
-fn setup_profile_remove_waits_for_y() {
+fn setup_logged_out_login_shows_its_command() {
     let mut v = setup_view(false);
     v.expanded = false;
-    v.cursor = v.harnesses.len() + v.logins.len();
+    if let Some(SetupLine::Profile(p)) = v.lines.get_mut(2) {
+        p.limit = Some(s("last limit allowed_warning (five_hour)"));
+    }
+    select(
+        &mut v,
+        |l| matches!(l, SetupLine::Profile(p) if p.name == "cx"),
+    );
+    let footer = keys(&[
+        ("enter", "use"),
+        ("a", "add login"),
+        ("del", "remove"),
+        ("r", "re-check"),
+        ("esc", "back"),
+    ]);
+    insta::assert_snapshot!(at_every_size(&setup_screen(&v, footer)));
+}
+
+/// **With nothing stored**: no logins under any harness, and one dim line in the keys' place.
+#[test]
+fn setup_no_logins_and_no_keys() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    v.lines
+        .retain(|l| !matches!(l, SetupLine::Profile(_) | SetupLine::Key(_)));
+    let at = v
+        .lines
+        .iter()
+        .position(|l| *l == SetupLine::Group(s("api keys")))
+        .unwrap();
+    v.lines.insert(
+        at + 1,
+        SetupLine::Note(s("none stored (macOS Keychain) · `a` adds one")),
+    );
+    select(&mut v, |l| matches!(l, SetupLine::Note(_)));
+    let footer = keys(&[("a", "add key"), ("r", "re-check"), ("esc", "back")]);
+    insta::assert_snapshot!(report(&setup_screen(&v, footer), 100, 30));
+}
+
+#[test]
+fn setup_login_remove_waits_for_y() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    select(
+        &mut v,
+        |l| matches!(l, SetupLine::Profile(p) if p.name == "personal"),
+    );
     let input = Footer::Confirm {
-        question: s("remove the profile work?"),
-        command: s("marion profile rm codex work"),
+        question: s("remove the login claude personal?"),
+        command: s("marion profile rm claude personal"),
     };
     insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
 }
 
+/// **A file that fails its check, and notifications off**: the file's row says why in red, and
+/// the notify row is dim with the key that turns it on.
 #[test]
-fn setup_form_open() {
+fn setup_a_failing_file_and_notify_off() {
     let mut v = setup_view(false);
-    v.form = Some(form_view(false));
-    let input = setup_keys();
-    insta::assert_snapshot!(at_every_size(&setup_screen(&v, input)));
+    v.expanded = false;
+    for l in &mut v.lines {
+        match l {
+            SetupLine::File { check, .. } => {
+                *check = Some((false, s("line 4: unknown key `harnes`")));
+            }
+            SetupLine::Notify { on, .. } => *on = false,
+            _ => {}
+        }
+    }
+    select(&mut v, |l| matches!(l, SetupLine::Notify { .. }));
+    let footer = keys(&[("enter", "turn on"), ("r", "re-check"), ("esc", "back")]);
+    insta::assert_snapshot!(report(&setup_screen(&v, footer), 100, 30));
 }
 
+/// A key the store could not read keeps its row, with why in red after its id.
 #[test]
-fn setup_form_diff_waits_for_y() {
+fn setup_a_key_the_store_could_not_read() {
     let mut v = setup_view(false);
-    v.form = Some(form_view(true));
-    let input = Footer::Confirm {
-        question: s("write reviewer to .marion/agents.toml?"),
-        command: s("+5 -0 lines"),
-    };
-    insta::assert_snapshot!(report(&setup_screen(&v, input), 100, 30));
+    v.expanded = false;
+    for l in &mut v.lines {
+        if let SetupLine::Key(k) = l
+            && k.id == "openrouter"
+        {
+            k.note = Some(s("the Keychain refused: user canceled"));
+        }
+    }
+    select(
+        &mut v,
+        |l| matches!(l, SetupLine::Key(k) if k.id == "openrouter"),
+    );
+    let footer = keys(&[
+        ("a", "add key"),
+        ("del", "remove"),
+        ("r", "re-check"),
+        ("esc", "back"),
+    ]);
+    insta::assert_snapshot!(report(&setup_screen(&v, footer), 100, 30));
 }

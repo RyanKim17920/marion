@@ -10,13 +10,13 @@ expression: screen
   n        new task                      esc      close it
   s        steer a running agent
   x        cancel, asks; again kills     setup
-  u        resume an ended agent         enter    a harness's detail and fix
-  o        shell in its workspace        r        re-check
-  d        what its branch changed       e        edit agent types
-  m        merge its branch, asks        n        new agent type, previewed
-  pgup/dn  scroll output; end follows    a        add a key, or a login
-  ,        setup                         u        use a login
-  ?        this page                     x        remove key or login, asks
+  u        resume an ended agent         enter    harness: its detail
+  o        shell in its workspace        enter    login: make it the default
+  d        what its branch changed       enter    agent types: edit them
+  m        merge its branch, asks        enter    notify: turn on or off
+  pgup/dn  scroll output; end follows    a        add a login, or a key
+  ,        setup                         del      remove a login or key, asks
+  ?        this page                     r        re-check
   q        quit                          esc      back
 
 

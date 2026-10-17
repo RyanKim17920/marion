@@ -570,7 +570,6 @@ dependencies = [
  "security-framework",
  "serde",
  "serde_json",
- "similar",
  "thiserror",
  "toml",
  "toml_edit",

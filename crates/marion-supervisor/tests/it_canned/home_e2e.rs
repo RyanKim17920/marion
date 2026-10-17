@@ -500,8 +500,8 @@ fn n_runs_a_task_and_the_list_shows_it_steers_it_and_cancels_it() {
     op.type_in(b",");
     let setup = op.wait_for("Setup with the doctor's answer and the stored key", |s| {
         status_line(s).contains("setup")
-            && s.contains("Harnesses")
-            && s.contains("Agent types")
+            && s.contains("harnesses")
+            && s.contains("api keys")
             && !s.contains("checking…")
             && s.contains("openrouter:work")
     });

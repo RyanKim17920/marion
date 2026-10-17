@@ -20,14 +20,13 @@ name = "marion-supervisor"
 path = "src/main.rs"
 
 # `client` is the viewer's half of this crate: the home screen, `marion attach`, the tree, the
-# native facade's keyboard relay, and setup's agents.toml editor — everything that draws a terminal
-# or edits the operator's file in place, and so everything that needs a terminal emulator and a TUI
-# stack. The daemon uses none of it. On by default, so `cargo build`, `cargo install` and the dist
+# native facade's keyboard relay — everything that draws a terminal, and so everything that needs a
+# terminal emulator and a TUI stack. The daemon uses none of it. On by default, so `cargo build`, `cargo install` and the dist
 # release build both binaries exactly as before; `--no-default-features` builds the daemon (and the
 # test targets that only drive it) without compiling alacritty, ratatui or the TUI at all.
 [features]
 default = ["client"]
-client = ["dep:marion-term", "dep:marion-tui", "dep:ratatui", "dep:similar"]
+client = ["dep:marion-term", "dep:marion-tui", "dep:ratatui"]
 
 # The user-facing command (§10). One crate, two binaries: M1 has no socket between them, so
 # sharing `run_spawn` by linkage is what keeps `marion run` and `marion-supervisor mcp` from
@@ -93,11 +92,8 @@ marion-term = { path = "../marion-term", optional = true }
 # marion uses is its own.
 ratatui = { version = "0.30", default-features = false, optional = true }
 rustix = { version = "1", features = ["event", "fs", "net", "process", "termios"] }
-# Setup's agent-type form: `.marion/agents.toml` is edited in place so the operator's comments and
-# layout survive, and the change is shown as a line diff before it is written. Both were already in
-# the build (through `toml` and `insta`). `toml_edit` is not `client`-only: `trust` quotes the
-# strings its refusals name with it, on the daemon's side.
-similar = { version = "2", optional = true }
+# `trust` quotes the strings its refusals name with it, on the daemon's side; already in the build
+# through `toml`.
 toml_edit = "0.22"
 # The node's screen as it stands, cell for cell, for the asks a pane's TUI raises mid-session
 # (`pty::input`): a prompt is up while its footer, or its header and an option, are on the screen,
