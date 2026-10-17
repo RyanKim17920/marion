@@ -868,6 +868,14 @@ fn fold_chunks(
     }
 }
 
+/// **A half of a node's stream, opened to read**: the regular file there or an error, never a
+/// link followed or a FIFO waited on ([`marion_harness::tree_file::open_regular`]). The agent dir
+/// is the node's to write where its sandbox cannot hold its files (Linux) or it has none, and a
+/// reader here is marion's: the supervisor's attach, a parent's bridge, the home screen.
+fn open_stream(path: &Path) -> std::io::Result<File> {
+    marion_harness::tree_file::open_regular(path)
+}
+
 impl EventReader {
     /// Attach to a node's stream inside its agent dir.
     pub fn open(agent: &AgentDir) -> Result<(Self, Vec<Event>), EventError> {
@@ -901,7 +909,7 @@ impl EventReader {
         use std::os::unix::fs::MetadataExt;
         // The current file is opened first and the rotated half read only if it is another file:
         // a rotation between the two opens would otherwise replay one file twice.
-        let current = match File::open(path) {
+        let current = match open_stream(path) {
             Ok(f) => Some(f),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
@@ -910,7 +918,7 @@ impl EventReader {
             Some(f) => Some(f.metadata()?.ino()),
             None => None,
         };
-        let older = match File::open(rotated_path(path)) {
+        let older = match open_stream(&rotated_path(path)) {
             Ok(f) if Some(f.metadata()?.ino()) != ino => Some(f),
             Ok(_) => None,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -1029,7 +1037,7 @@ impl EventReader {
         self.ino = Some(now);
         self.head.clear();
         let mut tail = Vec::new();
-        if let Ok(mut f) = File::open(rotated_path(&self.path))
+        if let Ok(mut f) = open_stream(&rotated_path(&self.path))
             && f.metadata().is_ok_and(|m| m.ino() == was)
             && f.seek(SeekFrom::Start(self.offset)).is_ok()
         {
@@ -1045,7 +1053,7 @@ impl EventReader {
             return true;
         }
         let mut start = vec![0u8; self.head.len()];
-        File::open(&self.path)
+        open_stream(&self.path)
             .and_then(|mut f| f.read_exact(&mut start))
             .is_ok_and(|()| start == self.head)
     }
@@ -1053,7 +1061,7 @@ impl EventReader {
     /// The bytes past the cursor. `Ok(None)` is "nothing new".
     fn read_new(&mut self) -> Result<Option<Vec<u8>>, crate::registry::Status> {
         use std::io::{Read, Seek, SeekFrom};
-        let mut f = match std::fs::File::open(&self.path) {
+        let mut f = match open_stream(&self.path) {
             Ok(f) => f,
             // A file that does not exist *yet* is a node that has not spoken, not a fault — the
             // writer creates it on its first append. One that stops existing after this reader saw
@@ -1308,6 +1316,45 @@ mod tests {
                 .unwrap()
                 .is_file()
         );
+    }
+
+    /// **A reader is not held by a FIFO the node left at either half of its stream**: with no
+    /// writer a blocking open would wait for ever, so this test would hang rather than fail. The
+    /// replay is refused at once, and a reader already attached reports the file unreadable.
+    #[test]
+    fn a_fifo_at_the_event_stream_is_refused_without_waiting() {
+        let mkfifo = |p: &Path| {
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(p)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        let dir = scratch("events-fifo");
+        let path = dir.join("events.jsonl");
+        let started = std::time::Instant::now();
+        mkfifo(&path);
+        assert!(EventReader::opening(&path).is_err(), "the current half");
+        std::fs::remove_file(&path).unwrap();
+        mkfifo(&rotated_path(&path));
+        assert!(EventReader::opening(&path).is_err(), "the rotated half");
+        std::fs::remove_file(rotated_path(&path)).unwrap();
+
+        let mut w = EventWriter::open_path(&path, &node()).unwrap();
+        w.append(frame("first")).unwrap();
+        let (mut r, replayed) = EventReader::open_path(&path).unwrap();
+        assert_eq!(replayed.len(), 1);
+        std::fs::remove_file(&path).unwrap();
+        mkfifo(&path);
+        assert_eq!(r.poll(&mut Vec::new()), 0);
+        assert!(
+            matches!(r.status(), crate::registry::Status::Unreadable { .. }),
+            "{:?}",
+            r.status()
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     /// **A reader follows a rotation without losing or repeating an event**, and a reader that

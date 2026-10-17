@@ -130,7 +130,7 @@ pub fn page(
              called."
         ));
     };
-    let Ok(mut file) = std::fs::File::open(events) else {
+    let Ok(mut file) = marion_harness::tree_file::open_regular(events) else {
         return ActivityPage::default();
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -477,8 +477,8 @@ pub fn all_frames(path: &Path) -> Vec<Value> {
 /// The harness frames in the last `limit` bytes of `path`. A missing or unreadable file is no
 /// frames: a peek is a view and never a reason to fail the answer it rides on.
 fn frames_within(path: &Path, limit: u64) -> Vec<Value> {
-    let Ok(bytes) =
-        std::fs::File::open(path).and_then(|mut f| crate::events::tail_lines(&mut f, limit))
+    let Ok(bytes) = marion_harness::tree_file::open_regular(path)
+        .and_then(|mut f| crate::events::tail_lines(&mut f, limit))
     else {
         return Vec::new();
     };
@@ -730,6 +730,24 @@ mod tests {
         ));
         assert_eq!(peek(&path, Harness::Codex), full);
         assert!(full.contains("last said: p4 final message"), "{full}");
+    }
+
+    /// **A page over a FIFO the node left at its stream is empty, at once**, rather than a view
+    /// that waits for ever for a writer.
+    #[test]
+    fn a_page_over_a_fifo_is_empty_without_waiting() {
+        let dir = marion_testsupport::scratch("activity-fifo");
+        let path = dir.join("events.jsonl");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let page = page(&path, Harness::Codex.into(), ActivityCursor::Tail, None);
+        assert!(page.lines.is_empty(), "{page:?}");
+        assert!(frames_within(&path, 4096).is_empty());
     }
 
     /// A watcher polls with `next` and reads each call once: a second page after more was recorded

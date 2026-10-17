@@ -26,17 +26,8 @@ pub fn read(path: &Path) -> io::Result<Vec<u8>> {
 /// [`read`] with its own `cap`, for a caller that knows how long the file must be (a committed
 /// blob's size) and so refuses one byte more.
 pub fn read_capped(path: &Path, cap: u64) -> io::Result<Vec<u8>> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+    let file = open_regular(path)?;
     let meta = file.metadata()?;
-    if !meta.is_file() {
-        return Err(io::Error::other(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
     if meta.len() > cap {
         return Err(too_long(path, cap));
     }
@@ -47,6 +38,25 @@ pub fn read_capped(path: &Path, cap: u64) -> io::Result<Vec<u8>> {
         return Err(too_long(path, cap));
     }
     Ok(bytes)
+}
+
+/// **The regular file at `path`, open for reading and not yet read**: `O_NOFOLLOW | O_NONBLOCK`,
+/// so a link is refused and a FIFO cannot hold the open, then refused unless `fstat` says it is a
+/// regular file. For a reader that reads its own way (a tail, a page, a stream it follows) rather
+/// than all at once; the caller bounds what it reads. `O_NONBLOCK` stays set and changes nothing
+/// for a regular file.
+pub fn open_regular(path: &Path) -> io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(file)
 }
 
 fn too_long(path: &Path, cap: u64) -> io::Error {
@@ -114,5 +124,37 @@ mod tests {
             io::ErrorKind::NotFound
         );
         assert!(read(&dir).is_err(), "a directory is refused");
+    }
+
+    /// [`open_regular`] opens a regular file unread and refuses a FIFO without waiting, a link
+    /// and a directory; a missing file is still `NotFound`.
+    #[test]
+    fn open_regular_takes_only_a_regular_file() {
+        let dir = marion_testsupport::scratch("tree-file-open");
+        let good = dir.join("events.jsonl");
+        std::fs::write(&good, b"line\n").unwrap();
+        let mut text = String::new();
+        open_regular(&good)
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "line\n");
+        let fifo = dir.join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(open_regular(&fifo).is_err(), "a FIFO, at once");
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&good, &link).unwrap();
+        assert!(open_regular(&link).is_err(), "a link is not followed");
+        assert!(open_regular(&dir).is_err(), "a directory");
+        assert_eq!(
+            open_regular(&dir.join("absent")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
     }
 }
