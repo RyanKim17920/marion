@@ -10,7 +10,7 @@ use marion_testsupport::{FinishedProject, Scratch, finished_project, scratch};
 
 /// `git` in `repo`, as a test's own commits need it: no signing, a fixed author.
 fn git(repo: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = marion_harness::env_filter::git_command()
         .arg("-C")
         .arg(repo)
         .args([

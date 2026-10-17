@@ -384,6 +384,35 @@ fn tests_never_spell_a_login_flow() {
     assert!(rules(r#"fn f() { hint("run `codex login`"); }"#).is_empty());
 }
 
+/// **Every git process starts from `git_command()`**: `Command::new("git")` is flagged in
+/// production and test code, through any `…Command` path or alias and by an absolute path, and
+/// only `env_filter.rs`, which builds `git_command`, may write it.
+#[test]
+fn a_raw_git_spawn_is_flagged_everywhere_but_env_filter() {
+    let raw = (Axis::Security, "raw-git");
+    for src in [
+        r#"fn f() { let c = Command::new("git"); }"#,
+        r#"fn f() { std::process::Command::new("git").arg("init"); }"#,
+        r#"fn f() { SysCommand::new("/usr/bin/git"); }"#,
+    ] {
+        assert!(scan_with(src, false, false).contains(&raw), "{src}");
+        assert!(
+            scan_with(src, true, false).contains(&raw),
+            "test code too: {src}"
+        );
+    }
+    let src = r#"fn f() { std::process::Command::new("git"); }"#;
+    assert!(!scan_at("crates/marion-harness/src/env_filter.rs", src, false, false).contains(&raw));
+    for clean in [
+        r#"fn f() { marion_harness::env_filter::git_command().arg("init"); }"#,
+        r#"fn f() { Command::new("mkfifo"); }"#,
+        r#"fn f() { Command::new(git_path); }"#,
+        r#"fn f() { Vec::new("git"); }"#,
+    ] {
+        assert!(!scan_with(clean, true, false).contains(&raw), "{clean}");
+    }
+}
+
 /// **marion's own `login`, `logout` and `key`, run through its own binary, are not a harness
 /// login** — and a harness's still is, wherever it appears.
 #[test]

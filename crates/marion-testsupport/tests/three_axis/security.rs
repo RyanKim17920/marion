@@ -21,6 +21,9 @@
 //!   the node token from that declaration — so the token would be embedded in an argv string.
 //! - `test-login`: test code spells a login command or device flow. marion's own `login`,
 //!   `logout` and `key` verbs, run through its own binary, are not one.
+//! - `raw-git`: a `Command::new("git")` outside `env_filter.rs`, test code included. A git that
+//!   inherits `GIT_DIR` or `GIT_INDEX_FILE` (a hook exports both) acts on another repository;
+//!   `marion_harness::env_filter::git_command()` is the one git spawn that inherits none of them.
 
 use proc_macro2::{TokenStream, TokenTree};
 use syn::spanned::Spanned;
@@ -34,7 +37,8 @@ pass secrets to children through the environment (never argv), and create files 
 or tokens with `OpenOptions` + `std::os::unix::fs::OpenOptionsExt::mode(0o600)`. Tests never run a \
 login or device flow — a harness without auth is BLOCKED and reported with the command the user \
 should run. The operator's CLI prints with `out!`, `err!` and `out_to!` (marion_supervisor::printable), \
-never a raw `println!`/`writeln!` of a value, so a control a value carries reads as its escape. If a finding is a verified false positive, add `path:item  <why it is safe>` to \
+never a raw `println!`/`writeln!` of a value, so a control a value carries reads as its escape. \
+Every git process, a test's included, starts from `marion_harness::env_filter::git_command()`. If a finding is a verified false positive, add `path:item  <why it is safe>` to \
 checks/security.allow.";
 
 /// CamelCase words that make a type name a secret's.
@@ -586,6 +590,52 @@ fn is_write_call(path: &[String]) -> bool {
         tail.as_slice(),
         ["write", "fs"] | ["create", "File"] | ["create_new", "File"]
     )
+}
+
+/// The one file that may start `git` by hand: it builds `git_command`, which every other git
+/// spawn goes through.
+const GIT_COMMAND_HOME: &str = "crates/marion-harness/src/env_filter.rs";
+
+/// `raw-git`, in production and test code alike: `Command::new("git")` (any path ending in a
+/// `…Command`, so `std::process::Command` and an alias such as `SysCommand`), or the same with an
+/// absolute `…/git`, anywhere but [`GIT_COMMAND_HOME`].
+pub fn check_git_spawn(s: &mut Scanner, c: &syn::ExprCall) {
+    if s.file == GIT_COMMAND_HOME {
+        return;
+    }
+    let syn::Expr::Path(p) = &*c.func else { return };
+    let segs: Vec<String> = p
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    let [.., ty, new] = segs.as_slice() else {
+        return;
+    };
+    if new != "new" || !ty.ends_with("Command") {
+        return;
+    }
+    let Some(syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(program),
+        ..
+    })) = c.args.first()
+    else {
+        return;
+    };
+    let program = program.value();
+    if program == "git" || program.ends_with("/git") {
+        s.emit(
+            Axis::Security,
+            "raw-git",
+            c.span(),
+            format!(
+                "`{}::new(\"{program}\")` inherits GIT_DIR, GIT_INDEX_FILE and the rest of \
+                 GIT_REDIRECTING; start it from marion_harness::env_filter::git_command()",
+                ty
+            ),
+        );
+    }
 }
 
 pub fn check_call(s: &mut Scanner, c: &syn::ExprCall) {

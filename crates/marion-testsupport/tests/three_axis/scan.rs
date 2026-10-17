@@ -404,6 +404,7 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
     }
 
     fn visit_expr_call(&mut self, i: &'ast syn::ExprCall) {
+        security::check_git_spawn(self, i);
         if !self.in_test() {
             efficiency::check_call(self, i);
             security::check_call(self, i);
