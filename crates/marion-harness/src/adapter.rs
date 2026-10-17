@@ -420,6 +420,9 @@ pub trait HarnessAdapter {
     /// The default renders this harness's [`spec::HarnessSpec`] row over [`Self::fields`], and is
     /// the whole of `compile` for every migrated harness: the row is the launch, the hook is the
     /// judgement, and nothing else stands between a `LaunchSpec` and an argv.
+    ///
+    /// A site that launches what this returns calls [`Self::launch_documents`] first and writes
+    /// them: a held row is refused there ([`Self::held`]), and a row's guard lives in them.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
         preconditions(self.spec(), spec, spec::Shape::Headless)?;
         let f = self.fields(spec, ctx, spec::Shape::Headless)?;
