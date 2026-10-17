@@ -980,6 +980,35 @@ fn stream_pages_append_only_where_the_last_one_ended() {
     assert_eq!(h.watch.stream.len(), 1);
 }
 
+/// **What a model said is drawn, never obeyed**: a control in an output line reaches the preview
+/// as its escape, so it cannot clear the screen or move the cursor.
+#[test]
+fn an_output_line_reaches_the_preview_with_its_controls_spelled() {
+    let mut h = home();
+    h.set_nodes(vec![node("root", None, NodeState::Running)]);
+    h.absorb_detail(
+        AgentId("root".into()),
+        NodeDetail {
+            stream: Some(ActivityPage {
+                from: 0,
+                next: 1,
+                lines: vec![ActionLine {
+                    at: "t".into(),
+                    kind: ActionKind::Said,
+                    text: "done\x1b[2J\x07".into(),
+                    id: None,
+                }],
+                unread: None,
+            }),
+            ..Default::default()
+        },
+    );
+    let stream = frame(&h).agents.preview.expect("a preview").stream;
+    let text = &stream.last().expect("the line").text;
+    assert!(text.starts_with("done"), "{text:?}");
+    assert!(!text.contains(['\x1b', '\x07']), "{text:?}");
+}
+
 /// **A call's end is drawn as its outcome.** Paged in two, a command and its end fold to one line
 /// each, the end drawn as a success; the preview shows the output only once the detail is read.
 #[test]

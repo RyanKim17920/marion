@@ -434,7 +434,8 @@ fn stream(home: &Home) -> Vec<StreamLine> {
                 ActionKind::Ended => LineKind::Failed,
                 ActionKind::Said => LineKind::Said,
             },
-            text: l.text.clone(),
+            // What a model said is drawn, never obeyed: a control in it reads as its escape.
+            text: marion_core::text::visible(&l.text).into_owned(),
         })
         .collect()
 }
