@@ -607,7 +607,22 @@ impl RegistryHandle {
         // appears on its first frame and the reader is already watching for it. For one that has
         // exited, no frame is coming, and `ReplayOnly(records: 0)` would be marion asserting it
         // observed silence it never observed.
-        if !opening.ever_written() && state.is_exited() {
+        //
+        // **A retained pane is a record too.** A native node writes no event stream (its pane is
+        // what marion keeps of it), and its vendor may exit before the operator's client attaches.
+        // So the refusal comes after the pane reservation: only an exited node with neither a
+        // stream nor a pane to replay is refused, and then nothing was reserved to roll back.
+        let unrecorded = !opening.ever_written() && state.is_exited();
+
+        // A versioned pane reservation is the first side effect. If its bounded cursor, entropy,
+        // or retained generation is unavailable, no NodeEvent, cursor, or lease has moved. It
+        // must never silently downgrade to an attach without the pane.
+        let (mut reserved_pane, reserved_host) = if pane_stream_v1 {
+            self.attach_pane_v1(id, out)?
+        } else {
+            (None, None)
+        };
+        if unrecorded && reserved_host.is_none() {
             return Err(RpcError::of(
                 FailureKind::NotFound,
                 Some(&id.0),
@@ -624,14 +639,6 @@ impl RegistryHandle {
             ));
         }
 
-        // A versioned pane reservation is the first side effect. If its bounded cursor, entropy,
-        // or retained generation is unavailable, no NodeEvent, cursor, or lease has moved. It
-        // must never silently downgrade to an attach without the pane.
-        let (mut reserved_pane, reserved_host) = if pane_stream_v1 {
-            self.attach_pane_v1(id, out)?
-        } else {
-            (None, None)
-        };
         // Sent before the reader is parked, so nothing appended between the two can be delivered
         // ahead of the replay it comes after. Read and sent a chunk at a time, paced, on this
         // connection's own thread and under no lock: a long run's history is up to two 64 MiB

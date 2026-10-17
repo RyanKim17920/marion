@@ -4221,6 +4221,57 @@ fn unresolved_input_delivery_cannot_be_published_as_completed() {
     assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
 }
 
+/// **A pane node the journal already calls `Exited` is replayed from its retained pane, not
+/// refused as unrecorded.** A native node writes no `events.jsonl` — its pane is its record — and
+/// its vendor may exit before the operator's client sends `node/attach`. The production change
+/// that must make this fail is refusing an exited node with no event stream before looking for
+/// its Completed pane; then a fast vendor's output never reaches the operator. Without the pane
+/// (no v1) the refusal still stands, because then nothing at all was recorded.
+#[test]
+fn an_exited_pane_node_with_no_event_stream_still_attaches_over_v1() {
+    let w = Wired::new("handler-pane-exited-unrecorded");
+    let host = drained_zero_output_pane(&w, "root");
+    let charge = host.completed_replay_charge().unwrap();
+    w.fx.handle.completed_pane(&id("root"), &host, charge);
+    append(
+        &w.fx.path,
+        &line(
+            1,
+            2_000,
+            RecordKind::Exited(Exited {
+                agent_id: id("root"),
+                status: ExitStatus::Failed,
+                exit: ProcessExit {
+                    code: Some(37),
+                    signal: None,
+                    description: "native node exited with code 37".into(),
+                },
+            }),
+        ),
+    );
+    w.fx.handle.live.refresh();
+
+    let (out, _rx) = crate::serve::capture(ConnId(1_301));
+    let attached =
+        w.fx.handle
+            .node_attach(&id("root"), true, &out)
+            .expect("an ended pane is its own record");
+    let pane = attached.pane.expect("the Completed pane is advertised");
+    assert!(pane.ended && !pane.writable);
+
+    let (out, _rx) = crate::serve::capture(ConnId(1_302));
+    let refused =
+        w.fx.handle
+            .node_attach(&id("root"), false, &out)
+            .unwrap_err();
+    assert!(
+        refused.message.contains("never recorded"),
+        "{}",
+        refused.message
+    );
+    host.unlisten(ConnId(1_301));
+}
+
 /// Projected pane presence means a live, attachable terminal—not retained replay state. The
 /// production change that must make this fail is projecting every `Panes` key: Closing and
 /// Completed then advertise `pane: true` on `node/get`, though only a v1 attach can reach them.
