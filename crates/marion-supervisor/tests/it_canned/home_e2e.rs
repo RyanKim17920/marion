@@ -4,14 +4,14 @@
 //! The bed is a `codex` shim on a stated `PATH`, as `node_kill.rs` builds one, so it needs no
 //! harness, no network and no credential. Run headless it is the app-server shim
 //! (`common::app_server`), whose turn prints a `report` call's app-server items a line at a time —
-//! so the Watch tab's action stream has frames to show, arriving while the node runs — and, run in
-//! a pane, it prints a banner and echoes what is typed into it. Both hold until the test opens a
-//! gate file.
+//! so the preview's output has frames to show, arriving while the node runs — and, run in a pane,
+//! it prints a banner and echoes what is typed into it. Both hold until the test opens a gate file.
 //!
-//! What it proves, in the order an operator meets it: Start renders with the shim's readiness; a
-//! typed prompt and Enter run `marion run … --detach`, and the node appears on Watch; its commands
-//! appear in the stream as they happen; `s` sends a steer and the supervisor's answer lands on the
-//! hint row; `x` asks before it cancels; and Enter on a pane node attaches, `^] d` comes back.
+//! What it proves, in the order an operator meets it: the agents page opens empty; `n`, `tab` to
+//! the codex type, a typed task and Enter run `marion run … --detach`, and the node appears in the
+//! list; its calls appear in the preview as they happen; `s` sends a steer and the supervisor's
+//! answer lands on the footer; `x` asks before it cancels; `,` is Setup and `?` the keys; and Enter
+//! on a pane node attaches, `^] d` comes back.
 //!
 //! ```sh
 //! cargo test -p marion-supervisor --test it_canned home_e2e::
@@ -37,7 +37,7 @@ const SIZE: WinSize = WinSize {
 const TASK: &str = "HOMEE2E-TASK list the limiter files";
 
 /// A `codex` that streams a `report` call's app-server items when headless, is a tiny echoing TUI
-/// when run in a pane, and holds until `gate` exists.
+/// when run in a pane, records how it was launched either way, and holds until `gate` exists.
 fn shim(bin: &Path, gate: &Path) {
     let started = r#"{"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"call_home","server":"marion","tool":"report","status":"inProgress","arguments":{"narrative":"s6 probe: reporting via MCP"}}}}"#;
     let completed = r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"call_home","server":"marion","tool":"report","status":"completed","arguments":{"narrative":"s6 probe: reporting via MCP"}}}}"#;
@@ -59,7 +59,9 @@ if [ -n "$MARION_SHIM_TURN" ]; then
   echo '{completed}'; echo '{said}'
   exit 0
 fi
-echo "$@" > {argv}/$$
+# A pane node's launch and token, as the headless branch records them: `n` runs a codex task in a
+# pane, since doctor measures one for it, and the test spawns a child under it.
+printf '%s TOKEN_FROM_ENV="%s"\n' "$*" "$(cat "${{MARION_NODE_TOKEN_FILE:-/dev/null}}")" > {argv}/$$
 echo "HOMEE2E-PANE-READY"
 ( while [ ! -e {gate} ]; do sleep 0.1; done; kill $$ ) &
 while IFS= read -r typed; do echo "typed: $typed"; done
@@ -398,92 +400,108 @@ impl Drop for Bed {
     }
 }
 
-/// Start → run → Watch → stream → steer → confirm-then-cancel, on one screen.
+/// The footer's input line for a new codex task, with nothing in the way: `new codex ›`, which a
+/// `codex-orchestrator` line or one still checking the harness does not read as.
+fn on_codex(s: &str) -> bool {
+    s.lines().any(|l| l.trim_start().starts_with("new codex ›"))
+}
+
+/// The first line: `marion  <project>`, then the counts.
+fn status_line(s: &str) -> &str {
+    s.lines().next().unwrap_or("")
+}
+
+/// n → run → list → preview output → steer → confirm-then-cancel → Setup → keys, on one screen.
 #[test]
-fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
+fn n_runs_a_task_and_the_list_shows_it_steers_it_and_cancels_it() {
     let bed = Bed::new("home-e2e-run");
     store_fake_key(&bed.dir, "openrouter:work");
     let op = Operator::start(&bed.dir, &bed.repo, &bed.state, &bed.path);
 
-    // Start: the harness list, with the shim read as ready and the others not installed.
-    op.wait_for("the Start tab with codex ready", |s| {
-        s.contains("HARNESS") && s.contains("codex") && s.contains("0.146.0")
+    // The agents page, empty, offering a new task.
+    op.wait_for("the empty agents page", |s| {
+        s.contains("no agents") && s.contains("n new")
     });
-    // Down to codex (the harnesses are listed in doctor's order: claude first), then the prompt.
-    let s = op.wait_for("codex selectable", |s| {
-        s.lines().any(|l| l.contains("● codex"))
-    });
-    let claude_first = s.find("claude").unwrap_or(usize::MAX) < s.find("● codex").unwrap();
-    if claude_first {
-        op.type_in(b"\x1b[B");
+    // `n`, then `tab` to the codex type, once doctor has found the shim ready.
+    op.type_in(b"n");
+    op.wait_for("the new-task line", |s| s.contains("enter run"));
+    let deadline = Instant::now() + BOUND;
+    while !on_codex(&op.screen()) {
+        assert!(
+            Instant::now() < deadline,
+            "never reached a ready codex type:\n{}",
+            op.screen()
+        );
+        op.type_in(b"\t");
+        std::thread::sleep(Duration::from_millis(300));
     }
-    op.wait_for("codex under the caret", |s| {
-        s.lines().any(|l| l.contains('❯') && l.contains("codex"))
-    });
     op.type_in(TASK.as_bytes());
-    op.wait_for("the run command echoed", |s| {
-        s.contains("marion run codex") && s.contains("HOMEE2E-TASK")
+    op.wait_for("the task typed", |s| {
+        on_codex(s) && s.contains("HOMEE2E-TASK")
     });
-    op.dump("real-start");
+    op.dump("real-new");
     op.type_in(b"\r");
 
-    // Watch: the node appears, and its commands appear in the stream as the shim prints them.
-    op.wait_for("the node on Watch", |s| {
-        s.contains("AGENTS") && s.lines().any(|l| l.contains("codex") && l.contains('❯'))
+    // The node appears in the list, running.
+    op.wait_for("the node in the list", |s| {
+        status_line(s).contains("1 running")
     });
 
     // A child under it, spawned the way the root's own `spawn` would be (its node token): its
     // app-server stream is recorded live, so its call appears while it runs.
     let root = bed.root_id();
     let child = bed.spawn_child(&root, "HOMEE2E-CHILD read the limiter");
-    op.wait_for("the child in the forest", |s| {
-        s.contains(marion_supervisor::tree::short_id(&child.0))
+    op.wait_for("the child in the list, by its task", |s| {
+        s.contains("HOMEE2E-CHILD") && status_line(s).contains("2 running")
     });
     op.type_in(b"j");
-    op.wait_for("the task marion sent the child", |s| {
-        s.contains("TASK") && s.contains("HOMEE2E-CHILD")
-    });
-    op.wait_for("the child's call, live, while it runs", |s| {
-        s.contains("report \"s6 probe") && s.contains("RUNNING")
-    });
-    op.dump("real-watch-child");
+    let child_short = marion_supervisor::tree::short_id(&child.0);
+    op.wait_for(
+        "the child's call in its preview, live, while it runs",
+        |s| s.contains(&format!("codex {child_short}")) && s.contains("report \"s6 probe"),
+    );
+    op.dump("real-agents-child");
     op.type_in(b"k");
-    op.wait_for("the root selected again", |s| {
-        s.lines()
-            .any(|l| l.contains('❯') && l.contains(marion_supervisor::tree::short_id(&root.0)))
+    let root_short = marion_supervisor::tree::short_id(&root.0);
+    op.wait_for("the root previewed again", |s| {
+        s.contains(&format!("codex {root_short}"))
     });
 
-    // Steer: the box composes, Enter sends, and the supervisor's own answer takes the hint row.
+    // Steer: the footer becomes the line, Enter sends, and the supervisor's answer takes it.
     op.type_in(b"s");
-    op.wait_for("the steer box", |s| {
-        s.contains("steer ") && s.contains("enter sends")
+    op.wait_for("the steer line", |s| {
+        s.contains(&format!("steer codex {root_short}")) && s.contains("enter send")
     });
     op.type_in(b"use a deque");
     op.wait_for("the steer typed", |s| s.contains("use a deque"));
-    op.dump("real-watch-steer");
+    op.dump("real-agents-steer");
     op.type_in(b"\r");
     op.wait_for("the supervisor's answer to the steer", |s| {
         s.contains("queued") || s.contains("delivered") || s.contains("steer refused")
     });
 
-    // Cancel asks first; `n` keeps it, `y` ends it.
+    // Cancel asks first, naming what it ends below; `n` keeps it, `y` ends it.
     op.type_in(b"x");
     op.wait_for("the confirm", |s| {
-        s.contains("Cancel codex") && s.contains("y yes")
+        s.contains(&format!("cancel codex {root_short} and the 1 below it?"))
+            && s.contains("y / any key")
     });
-    op.dump("real-watch-confirm");
+    op.dump("real-agents-confirm");
     op.type_in(b"n");
     op.wait_for("the refusal to cancel", |s| s.contains("not cancelled"));
     op.type_in(b"x");
-    op.wait_for("the confirm again", |s| s.contains("y yes"));
+    op.wait_for("the confirm again", |s| s.contains("y / any key"));
     op.type_in(b"y");
-    op.wait_for("the node cancelled", |s| s.contains("cancelled"));
+    op.wait_for("nothing running", |s| {
+        !status_line(s).contains("running") && !s.contains("cancelling")
+    });
 
-    // Setup: the real doctor rows; then the key page.
-    op.type_in(b"\t");
+    // Setup on `,`: the real doctor rows and the stored key.
+    op.type_in(b",");
     let setup = op.wait_for("Setup with the doctor's answer and the stored key", |s| {
-        s.contains("HARNESSES")
-            && s.contains("AGENT TYPES")
+        status_line(s).contains("setup")
+            && s.contains("Harnesses")
+            && s.contains("Agent types")
             && !s.contains("checking…")
             && s.contains("openrouter:work")
     });
@@ -492,16 +510,16 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
         "a stored key is listed by its id, never shown: {setup}"
     );
     op.dump("real-setup");
-    op.type_in(b"\t");
+    op.type_in(b"?");
     op.wait_for("the key page", |s| {
-        s.contains("EVERYWHERE") && s.contains("marion cancel <id>")
+        status_line(s).contains("keys") && s.contains("input line") && s.contains("cancel, asks")
     });
     op.dump("real-help");
 
     op.type_in(b"\x03");
 }
 
-/// A pane node: Enter attaches to it, `^] d` comes back to Watch.
+/// A pane node: Enter attaches to it, `^] d` comes back to the list.
 #[test]
 fn enter_attaches_to_a_pane_node_and_detaching_returns_home() {
     let bed = Bed::new("home-e2e-pane");
@@ -512,18 +530,14 @@ fn enter_attaches_to_a_pane_node_and_detaching_returns_home() {
         String::from_utf8_lossy(&out.stderr)
     );
     let op = Operator::start(&bed.dir, &bed.repo, &bed.state, &bed.path);
-    op.wait_for("the Start tab", |s| s.contains("HARNESS"));
-    op.type_in(b"\t");
-    op.wait_for("the pane node on Watch", |s| {
-        s.lines().any(|l| l.contains('❯') && l.contains("codex"))
-    });
+    op.wait_for("the pane node selected", |s| s.contains("enter attach"));
     op.type_in(b"\r");
     op.wait_for("the pane's own screen", |s| {
         s.contains("HOMEE2E-PANE-READY")
     });
     op.type_in(b"\x1dd");
-    op.wait_for("Watch again after detaching, repainted whole", |s| {
-        s.contains("AGENTS") && s.contains("F1 help") && !s.contains("HOMEE2E-PANE-READY")
+    op.wait_for("the list again after detaching, repainted whole", |s| {
+        s.contains("enter attach") && !s.contains("HOMEE2E-PANE-READY")
     });
     op.type_in(b"\x03");
 }
