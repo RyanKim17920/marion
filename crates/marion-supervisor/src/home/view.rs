@@ -60,13 +60,15 @@ pub fn frame_at(home: &Home, places: &Places, now: std::time::SystemTime) -> Fra
         ),
         Page::Help => ("keys".to_string(), String::new()),
     };
+    // Worked out once: the list draws these rows and the search line counts their matches.
+    let shown = home.shown_rows();
     Frame {
         title,
         counts,
-        agents: agents(home, now),
+        agents: agents(home, &shown, now),
         setup: setup(home),
         help: help(home),
-        footer: footer(home),
+        footer: footer(home, &shown),
     }
 }
 
@@ -122,11 +124,11 @@ pub fn project_label(path: &str, home: Option<&str>, branch: Option<&str>) -> St
 
 // ---------------------------------------------------------------------------------- agents
 
-fn agents(home: &Home, now: std::time::SystemTime) -> AgentsView {
+fn agents(home: &Home, shown: &[(usize, bool)], now: std::time::SystemTime) -> AgentsView {
     let w = &home.watch;
     let mut rows = Vec::new();
     let mut cursor = 0;
-    for (i, dim) in home.shown_rows() {
+    for &(i, dim) in shown {
         let Some((prefix, tnode)) = w.tree.row(i) else {
             break;
         };
@@ -178,10 +180,13 @@ fn agents(home: &Home, now: std::time::SystemTime) -> AgentsView {
             )
         });
     }
+    // The preview is of the highlighted row, or of nothing: a search that hides every row, or the
+    // selected one, previews nothing rather than a row the list does not show.
+    let highlighted = shown.iter().any(|(i, _)| *i == w.tree.cursor());
     AgentsView {
         rows,
         cursor,
-        preview: preview(home, now),
+        preview: highlighted.then(|| preview(home, now)).flatten(),
         full: w.full && home.selected().is_some(),
     }
 }
@@ -856,7 +861,7 @@ pub fn help_lines(home: &Home) -> usize {
 
 /// The footer: the line being typed, the confirm, or the keys the selection takes — each offered
 /// only where it does something, so a key the footer shows is never refused.
-fn footer(home: &Home) -> Footer {
+fn footer(home: &Home, shown: &[(usize, bool)]) -> Footer {
     let h = |pairs: &[(&str, &str)]| -> Vec<Hint> {
         pairs.iter().map(|(k, v)| Hint::new(*k, *v)).collect()
     };
@@ -890,7 +895,6 @@ fn footer(home: &Home) -> Footer {
                     )
                 }
                 Purpose::Search { .. } => {
-                    let shown = home.shown_rows();
                     let matches = shown.iter().filter(|(_, dim)| !dim).count();
                     let note = match (text.trim().is_empty(), matches) {
                         (true, _) => String::new(),

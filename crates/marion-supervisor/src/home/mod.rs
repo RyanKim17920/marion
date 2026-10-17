@@ -584,6 +584,15 @@ impl Home {
         self.watch.rollup = crate::rollup::Rollup::build(&nodes);
         self.watch.nodes = nodes;
         self.watch.supervisor = true;
+        self.refollow_search();
+    }
+
+    /// The list or a title changed under a search: the cursor onto a match again, so the row it
+    /// highlights is the one the preview shows.
+    fn refollow_search(&mut self) {
+        if let Some(q) = self.search_query().map(str::to_string) {
+            self.follow_search(&q);
+        }
     }
 
     /// The order again, now that nothing holds it.
@@ -640,6 +649,7 @@ impl Home {
             (None, None) => return false,
         };
         self.watch.titles.insert(id.0.clone(), title);
+        self.refollow_search();
         true
     }
 
@@ -715,25 +725,17 @@ impl Home {
                     return Effect::None;
                 }
                 Key::Down | Key::Up => {
-                    let q = text.to_lowercase();
-                    let (titles, nodes) = (&self.watch.titles, &self.watch.nodes);
-                    let tree = &self.watch.tree;
-                    let matches = (0..tree.rows())
-                        .filter_map(|i| tree.row(i))
-                        .filter(|(_, n)| row_matches(titles, nodes, &n.id, &q))
-                        .count();
-                    // The next match, wrapping; the previous is the next but one short of a lap.
-                    let steps = if key == Key::Down {
-                        1
+                    let matches = self.search_matches(&text);
+                    let at = self.watch.tree.cursor();
+                    // The next match below or the one before above, wrapping either way.
+                    let to = if key == Key::Down {
+                        matches.iter().find(|&&i| i > at).or(matches.first())
                     } else {
-                        matches.saturating_sub(1)
+                        matches.iter().rev().find(|&&i| i < at).or(matches.last())
                     };
-                    for _ in 0..steps {
-                        self.watch
-                            .tree
-                            .cycle_to(|id| row_matches(titles, nodes, id, &q));
+                    if let Some(&row) = to {
+                        self.select_row(row);
                     }
-                    self.selection_moved();
                     self.mode = Mode::Typing { purpose, text };
                     return Effect::None;
                 }
@@ -772,27 +774,56 @@ impl Home {
         Effect::None
     }
 
-    /// The cursor on a match of `query` as it changes: kept where it is on one, else moved to the
-    /// next match below, wrapping. With none it stays put, and the list shows nothing.
+    /// The cursor on a match of `query` as it, or the list, changes: kept where it is on one, else
+    /// moved to the next match below, wrapping. With none it stays put, and the list shows nothing.
     fn follow_search(&mut self, query: &str) {
-        let q = query.to_lowercase();
-        let on_match = self
-            .watch
-            .tree
-            .selected()
-            .is_some_and(|n| self.row_matches(&n.id, &q));
-        if !on_match {
-            let tree = &mut self.watch.tree;
-            let (titles, nodes) = (&self.watch.titles, &self.watch.nodes);
-            tree.cycle_to(|id| row_matches(titles, nodes, id, &q));
+        let matches = self.search_matches(query);
+        let at = self.watch.tree.cursor();
+        if matches.binary_search(&at).is_err()
+            && let Some(&row) = matches.iter().find(|&&i| i > at).or(matches.first())
+        {
+            self.select_row(row);
+        }
+    }
+
+    /// The search being typed, once it is more than blanks.
+    fn search_query(&self) -> Option<&str> {
+        match &self.mode {
+            Mode::Typing {
+                purpose: Purpose::Search { .. },
+                text,
+            } if !text.trim().is_empty() => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Put the cursor on list row `row`.
+    fn select_row(&mut self, row: usize) {
+        if let Some(id) = self.watch.tree.row(row).map(|(_, n)| n.id.clone()) {
+            self.watch.tree.select(&id);
             self.selection_moved();
         }
     }
 
-    /// Whether the list row `id` matches `query` (lower case): its title, agent type, name or
-    /// short id holds it. A race's or a workflow's header row matches on its own label.
-    fn row_matches(&self, id: &str, query: &str) -> bool {
-        row_matches(&self.watch.titles, &self.watch.nodes, id, query)
+    /// **The list rows `query` matches, by index, in list order**: one pass over the list, each
+    /// row's node found in a map built once, so a keystroke costs one walk of the forest. A row
+    /// matches where its title, agent type, name or short id holds the query, in any case; a
+    /// race's or a workflow's header row matches on its own label.
+    pub fn search_matches(&self, query: &str) -> Vec<usize> {
+        let q = query.to_lowercase();
+        let by_id: HashMap<&str, &NodeSummary> = self
+            .watch
+            .nodes
+            .iter()
+            .map(|n| (n.agent_id.0.as_str(), n))
+            .collect();
+        let tree = &self.watch.tree;
+        (0..tree.rows())
+            .filter(|&i| {
+                tree.row(i)
+                    .is_some_and(|(_, n)| row_matches(&self.watch.titles, &by_id, &n.id, &q))
+            })
+            .collect()
     }
 
     /// The list's rows as they are shown, by row index, each with whether it is drawn dim. Every
@@ -800,40 +831,31 @@ impl Home {
     /// the tree, so a match is seen where it sits.
     pub fn shown_rows(&self) -> Vec<(usize, bool)> {
         let tree = &self.watch.tree;
-        let all = || (0..tree.rows()).map(|i| (i, false)).collect();
-        let Mode::Typing {
-            purpose: Purpose::Search { .. },
-            text,
-        } = &self.mode
-        else {
-            return all();
+        let Some(query) = self.search_query() else {
+            return (0..tree.rows()).map(|i| (i, false)).collect();
         };
-        if text.trim().is_empty() {
-            return all();
-        }
-        let q = text.to_lowercase();
-        let rows: Vec<&marion_tui::tree::Node> = (0..tree.rows())
-            .filter_map(|i| tree.row(i).map(|(_, n)| n))
+        let matches = self.search_matches(query);
+        let row_of: HashMap<&str, usize> = (0..tree.rows())
+            .filter_map(|i| tree.row(i).map(|(_, n)| (n.id.as_str(), i)))
             .collect();
-        let mut keep = std::collections::HashSet::new();
-        for n in rows.iter().filter(|n| self.row_matches(&n.id, &q)) {
-            let mut at = Some(*n);
+        let mut keep = vec![false; tree.rows()];
+        for &m in &matches {
+            let mut at = Some(m);
             // Bounded by the row count, so a parent cycle cannot hold the frame.
-            for _ in 0..rows.len() {
-                let Some(node) = at else { break };
-                if !keep.insert(node.id.as_str()) {
+            for _ in 0..tree.rows() {
+                let Some(i) = at else { break };
+                if std::mem::replace(&mut keep[i], true) {
                     break;
                 }
-                at = node
-                    .parent
-                    .as_deref()
-                    .and_then(|p| rows.iter().find(|r| r.id == p).copied());
+                at = tree
+                    .row(i)
+                    .and_then(|(_, n)| n.parent.as_deref())
+                    .and_then(|p| row_of.get(p).copied());
             }
         }
-        rows.iter()
-            .enumerate()
-            .filter(|(_, n)| keep.contains(n.id.as_str()))
-            .map(|(i, n)| (i, !self.row_matches(&n.id, &q)))
+        (0..tree.rows())
+            .filter(|&i| keep[i])
+            .map(|i| (i, matches.binary_search(&i).is_err()))
             .collect()
     }
 
@@ -881,12 +903,8 @@ impl Home {
         };
         match purpose {
             Purpose::Search { .. } => {
-                let on_match = self
-                    .watch
-                    .tree
-                    .selected()
-                    .is_some_and(|n| self.row_matches(&n.id, &text.to_lowercase()));
-                if !on_match {
+                let at = self.watch.tree.cursor();
+                if self.search_matches(&text).binary_search(&at).is_err() {
                     return refused(self, "no match".into(), purpose, text);
                 }
                 self.selection_moved();
@@ -1359,16 +1377,15 @@ pub fn completions(prefix: &str) -> Vec<&'static crate::verbs::Spec> {
         .collect()
 }
 
-/// [`Home::row_matches`] over the parts of a [`Home`] it reads, so the tree can be borrowed for its
-/// cursor at the same time.
+/// Whether the list row `id` matches `query` (lower case), as [`Home::search_matches`] reads it.
 fn row_matches(
-    titles: &std::collections::HashMap<String, String>,
-    nodes: &[NodeSummary],
+    titles: &HashMap<String, String>,
+    nodes: &HashMap<&str, &NodeSummary>,
     id: &str,
     query: &str,
 ) -> bool {
     let has = |s: &str| s.to_lowercase().contains(query);
-    if let Some(n) = nodes.iter().find(|n| n.agent_id.0 == id) {
+    if let Some(n) = nodes.get(id) {
         titles.get(id).is_some_and(|t| has(t))
             || has(&n.agent_type)
             || n.name.as_deref().is_some_and(has)

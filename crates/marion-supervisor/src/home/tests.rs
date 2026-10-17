@@ -1133,6 +1133,54 @@ fn a_search_with_no_match_keeps_the_line_and_esc_goes_back() {
     );
 }
 
+/// **The highlight and the preview stay on one row while the list changes under a search**: a
+/// forest without the selected match moves the cursor to a match that is left, a title read
+/// meanwhile can make the selected row stop matching, and a search that hides every row previews
+/// nothing rather than a row the list does not show.
+#[test]
+fn a_search_keeps_the_highlight_and_the_preview_on_one_row() {
+    let forest = || {
+        vec![
+            node("root", None, NodeState::Running),
+            node("child", Some("root"), NodeState::Exited(ExitStatus::Ok)),
+            node("other", None, NodeState::Running),
+        ]
+    };
+    let mut h = titled();
+    h.set_nodes(forest());
+    h.set_title(&AgentId("other".into()), Some("more invoices"));
+    h.key(Key::Char('/'));
+    typed(&mut h, "invo");
+    let previewed = |h: &Home| {
+        let f = frame(h);
+        let lit = f.agents.rows.get(f.agents.cursor).map(|r| r.id.clone());
+        (lit, f.agents.preview.map(|p| p.title))
+    };
+    let selected = h.selected().map(|n| n.agent_id.0.clone()).unwrap();
+    let (lit, shown) = previewed(&h);
+    assert_eq!(lit.as_deref(), Some(selected.as_str()));
+    assert_eq!(shown.as_ref(), h.watch.titles.get(&selected));
+    // The selected match leaves the forest: the cursor goes to the match that is left.
+    let left = if selected == "child" {
+        "other"
+    } else {
+        "child"
+    };
+    h.set_nodes(
+        forest()
+            .into_iter()
+            .filter(|n| n.agent_id.0 != selected)
+            .collect(),
+    );
+    assert_eq!(h.selected().map(|n| n.agent_id.0.as_str()), Some(left));
+    assert_eq!(previewed(&h).0.as_deref(), Some(left));
+    // Its title is read again and no longer matches: nothing is left, so nothing is previewed.
+    h.watch.titles.remove(left);
+    h.set_title(&AgentId(left.into()), Some("something else"));
+    assert!(h.shown_rows().is_empty());
+    assert_eq!(frame(&h).agents.preview, None);
+}
+
 /// ↑↓ step through the matches, wrapping; a match is on its title, agent type or short id.
 #[test]
 fn arrows_step_through_the_matches_and_wrap() {
