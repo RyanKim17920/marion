@@ -9,7 +9,7 @@ use super::theme::{Theme, bold, dim, label};
 use super::{Footer, Hint};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
@@ -64,6 +64,27 @@ pub fn expansion<'a>(
             Line::from(fit(s, w))
         })
         .collect()
+}
+
+/// A list row fitted to `w` columns and padded to the edge; the selected one is one bar in the
+/// accent, every span reversed and its own colour dropped, since a red glyph reversed is a red block
+/// in the middle of the bar. The glyph still says the state. Bold stays bold.
+pub fn row_bar<'a>(spans: Vec<Span<'a>>, w: usize, sel: bool, theme: Theme) -> Line<'a> {
+    let mut l = fit(spans, w);
+    let used = spans_width(&l);
+    l.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+    if sel {
+        let bar = theme.accent().add_modifier(Modifier::REVERSED);
+        for s in &mut l {
+            let bold = s.style.add_modifier.contains(Modifier::BOLD);
+            s.style = if bold {
+                bar.add_modifier(Modifier::BOLD)
+            } else {
+                bar
+            };
+        }
+    }
+    Line::from(l)
 }
 
 /// The status line: `marion  <title>` on the left, the counts on the right.

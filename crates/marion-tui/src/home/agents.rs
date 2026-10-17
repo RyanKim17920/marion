@@ -3,13 +3,13 @@
 //! Below [`SPLIT_MIN`] columns the preview stacks under the list. `enter` on a headless agent
 //! gives its output the whole body ([`AgentsView::full`]).
 
-use super::text::{clip, clip_left, fit, pad, rpad, spans_width, tokens, width};
+use super::text::{clip, clip_left, fit, pad, rpad, tokens, width};
 use super::theme::{Theme, bad, bold, dim, good, spinner, warn};
-use super::widgets::{centred, span};
+use super::widgets::{centred, row_bar, span};
 use crate::tree::Tone;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// One row of the list. Rendered text throughout: the supervisor projects, this draws.
@@ -272,23 +272,7 @@ fn row<'a>(r: &AgentRow, sel: bool, i: usize, frame: usize, w: usize, theme: The
         ),
     ];
     l.extend(right);
-    let mut l = fit(l, w);
-    let used = spans_width(&l);
-    l.push(Span::raw(" ".repeat(w.saturating_sub(used))));
-    if sel {
-        // One bar in the accent: every span reversed and the tone's own colour dropped, since a red
-        // glyph reversed is a red block in the middle of the bar. The glyph still says the state.
-        let bar = theme.accent().add_modifier(Modifier::REVERSED);
-        for s in &mut l {
-            let bold = s.style.add_modifier.contains(Modifier::BOLD);
-            s.style = if bold {
-                bar.add_modifier(Modifier::BOLD)
-            } else {
-                bar
-            };
-        }
-    }
-    Line::from(l)
+    row_bar(l, w, sel, theme)
 }
 
 /// The state glyph's colour: the tone's own, except that a stop with no verdict is dim rather than
