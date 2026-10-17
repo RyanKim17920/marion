@@ -5269,6 +5269,38 @@ mod tests {
         }
     }
 
+    /// **The place flags the `n` line refuses are exactly the ones commands take**: every flag any
+    /// command's help names, and each in [`marion_supervisor::run::PLACE_FLAGS`], is one
+    /// [`cli::Place`] takes exactly when the table lists it — so a place flag added to the CLI and
+    /// not to the table fails here.
+    #[test]
+    fn the_place_flag_table_is_the_clis_own() {
+        use marion_supervisor::run::PLACE_FLAGS;
+        let mut flags: Vec<String> = PLACE_FLAGS.iter().map(|f| f.to_string()).collect();
+        for v in cli::VERBS {
+            for word in (v.help)().split_whitespace() {
+                let flag = word.trim_matches(['(', ')', ',', '.', ';', '`', '[', ']']);
+                let flag = flag.split('=').next().unwrap_or(flag);
+                if flag.starts_with("--") && flag.len() > 2 {
+                    flags.push(flag.to_string());
+                }
+            }
+        }
+        flags.sort();
+        flags.dedup();
+        for flag in &flags {
+            let mut place = cli::Place::default();
+            let words = argv(&["run", "v"]);
+            let mut w = cli::Words::after_verb(&words);
+            let taken = place.take(flag, None, &mut w).unwrap_or(false);
+            assert_eq!(
+                taken,
+                PLACE_FLAGS.contains(&flag.as_str()),
+                "{flag}: cli::Place and run::PLACE_FLAGS disagree"
+            );
+        }
+    }
+
     /// **Every home-screen effect is the command its box echoes**: each effect's `argv`, parsed
     /// back through this binary's own parsers, names the same node, text, type and model. An
     /// effect that drifted from its echo would teach the operator a command that does something

@@ -1981,6 +1981,10 @@ pub const RUN_FLAGS: &[(&str, bool)] = &[
     ("--allow-wider-children", false),
 ];
 
+/// The flags that say which project a command is for, each taking a value: the CLI's place flags,
+/// which the home screen states itself, so its `n` line refuses them.
+pub const PLACE_FLAGS: &[&str] = &["--repo", "--state-dir"];
+
 /// Where a working tree declares its own agent types, relative to the tree's root.
 pub const AGENT_TYPES_FILE: &str = ".marion/agents.toml";
 

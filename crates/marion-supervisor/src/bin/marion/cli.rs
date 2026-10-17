@@ -312,6 +312,10 @@ pub struct Place {
 impl Place {
     /// `true` when `flag` was one of the pair and has been taken.
     pub fn take(&mut self, flag: &str, inline: Option<&str>, w: &mut Words) -> Result<bool, Exit> {
+        // Only the flags the table names, which the home screen's `n` line refuses by that table.
+        if !marion_supervisor::run::PLACE_FLAGS.contains(&flag) {
+            return Ok(false);
+        }
         match flag {
             "--repo" => self.repo = Some(PathBuf::from(w.value(flag, inline)?)),
             "--state-dir" => self.state_dir = Some(w.value(flag, inline)?),
