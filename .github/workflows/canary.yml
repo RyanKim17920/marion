@@ -127,6 +127,10 @@ jobs:
           # shellcheck disable=SC2046
           npm install -g --no-fund --no-audit \
             $(for e in $NPM_HARNESSES; do printf '%s@latest ' "${e#*=}"; done)
+          # The runner image's Homebrew does not update itself, so `brew install` alone pours the
+          # release its formula cache knew when the image was built: goose 1.49.0 on 2026-10-16,
+          # the night after another image poured 1.54.0. The newest release is the point here.
+          brew update --quiet
           # shellcheck disable=SC2046
           brew install $(for e in $BREW_HARNESSES; do f=${e#*=}; printf '%s ' "${f%%=*}"; done)
 
