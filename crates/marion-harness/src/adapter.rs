@@ -1554,7 +1554,8 @@ fn repo_mcp_servers(cwd: &std::path::Path) -> Option<Vec<String>> {
         {
             continue;
         }
-        let text = crate::tree_file::read_to_string(&file).ok()?;
+        // A link to a file of the same directory's tree is read where it points.
+        let text = crate::tree_file::read_to_string_within(&file, dir).ok()?;
         let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
         if let Some(servers) = doc.as_object()?.get("mcpServers") {
             names.extend(servers.as_object()?.keys().cloned());
@@ -1576,9 +1577,10 @@ fn repo_mcp_approved(cwd: &std::path::Path, names: &[String]) -> bool {
     }
     let mut approved: Vec<String> = Vec::new();
     for file in ["settings.json", "settings.local.json"] {
-        let Some(doc) = crate::tree_file::read_to_string(&cwd.join(".claude").join(file))
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        let Some(doc) =
+            crate::tree_file::read_to_string_within(&cwd.join(".claude").join(file), cwd)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         else {
             continue;
         };
@@ -1641,10 +1643,12 @@ mod tests {
         assert_eq!(repo_mcp_servers(&tree), None);
     }
 
-    /// **A `.mcp.json` the tree planted as a FIFO, a link or a sparse giant reads as unusable
-    /// (`None`, so the launch treats the repository's servers as unapproved), and promptly**,
-    /// rather than holding the supervisor on an open with no writer or a read with no end. The
-    /// same for the claude settings that would approve them.
+    /// **A `.mcp.json` the tree planted as a FIFO, a link out of the tree or a sparse giant reads
+    /// as unusable (`None`, so the launch treats the repository's servers as unapproved), and
+    /// promptly**, rather than holding the supervisor on an open with no writer or a read with no
+    /// end. The same for the claude settings that would approve them. A link to the tree's own
+    /// file is read where it points, as a repository that keeps its config elsewhere in the tree
+    /// would have it.
     #[test]
     fn a_planted_mcp_json_or_settings_file_is_refused_not_read() {
         let dir = marion_testsupport::scratch("adapter-mcp-planted");
@@ -1671,7 +1675,17 @@ mod tests {
         let real = dir.join("real.json");
         std::fs::write(&real, r#"{"mcpServers":{"s":{}}}"#).unwrap();
         std::os::unix::fs::symlink(&real, &mcp).unwrap();
-        assert_eq!(repo_mcp_servers(&tree), None, "a link");
+        assert_eq!(repo_mcp_servers(&tree), None, "a link out of the tree");
+        std::fs::remove_file(&mcp).unwrap();
+        std::fs::create_dir_all(tree.join("conf")).unwrap();
+        std::fs::copy(&real, tree.join("conf/mcp.json")).unwrap();
+        std::os::unix::fs::symlink("conf/mcp.json", &mcp).unwrap();
+        assert_eq!(
+            repo_mcp_servers(&tree),
+            Some(vec!["s".to_string()]),
+            "a link to the tree's own file reads where it points"
+        );
+        std::fs::remove_file(&mcp).unwrap();
 
         let names = vec!["s".to_string()];
         let approving = dir.join("approving.json");
@@ -1680,6 +1694,14 @@ mod tests {
         assert!(
             !repo_mcp_approved(&tree, &names),
             "a linked settings file approves nothing"
+        );
+        std::fs::remove_file(tree.join(".claude/settings.json")).unwrap();
+        std::fs::copy(&approving, tree.join("conf/approving.json")).unwrap();
+        std::os::unix::fs::symlink("../conf/approving.json", tree.join(".claude/settings.json"))
+            .unwrap();
+        assert!(
+            repo_mcp_approved(&tree, &names),
+            "a link to the tree's own settings approves"
         );
         std::fs::remove_file(tree.join(".claude/settings.json")).unwrap();
         std::fs::copy(&approving, tree.join(".claude/settings.json")).unwrap();

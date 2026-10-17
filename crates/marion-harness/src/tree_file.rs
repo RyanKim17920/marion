@@ -8,8 +8,11 @@
 //! into a refusal or "not trusted", never a guess. A missing file stays
 //! [`std::io::ErrorKind::NotFound`], so a caller can still tell "absent" from "refused".
 //!
-//! A caller that accepts an in-tree link (the agent-types table) checks where it points and then
-//! reads the resolved path, so the final open still follows nothing.
+//! A caller that accepts an in-tree link (the agent-types table, [`read_to_string_within`]) checks
+//! where it points and then reads the resolved path, so the final open still follows nothing.
+//!
+//! `O_NOFOLLOW` guards the final component only: a directory above it that is a link is
+//! followed. Where the tree may swap one of those, the caller resolves or walks them itself.
 
 use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
@@ -66,6 +69,26 @@ fn too_long(path: &Path, cap: u64) -> io::Error {
 /// [`read`], as UTF-8 text.
 pub fn read_to_string(path: &Path) -> io::Result<String> {
     String::from_utf8(read(path)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// **[`read_to_string`] of a file that may be a link inside `root`**: `path` resolved first and
+/// refused unless it resolves inside `root` resolved, then read at the resolved path, so the read
+/// itself follows no link. A link the tree keeps to its own file is read where it points; one
+/// leaving the tree is an error, as is a missing file ([`io::ErrorKind::NotFound`]).
+pub fn read_to_string_within(path: &Path, root: &Path) -> io::Result<String> {
+    let real = path.canonicalize()?;
+    if !real.starts_with(root.canonicalize()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is a link to {}, outside {}",
+                path.display(),
+                real.display(),
+                root.display()
+            ),
+        ));
+    }
+    read_to_string(&real)
 }
 
 #[cfg(test)]
