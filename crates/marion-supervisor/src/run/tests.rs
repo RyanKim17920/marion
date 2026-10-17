@@ -2956,6 +2956,44 @@ fn one_command(line: &str, cwd: &Path, timeout: StdDuration) -> Command {
     }
 }
 
+/// **A background job a verification line started ends with the line**: `sleep 900 &` exits the
+/// shell at once and leaves the sleep in its session, which is ended when the line is, as on
+/// expiry. Mutation: run the line `ReapOnly` and the sleep is still running.
+#[test]
+fn a_background_job_a_verification_line_started_is_gone_when_it_ends() {
+    let scratch = scratch("verif-background");
+    let pid_file = scratch.join("bg.pid");
+    let line = format!(
+        "sleep 900 </dev/null >/dev/null 2>&1 & echo $! > '{}'",
+        pid_file.display()
+    );
+    let cmd = one_command(&line, &scratch, StdDuration::from_secs(30));
+    let out = run_verification(std::slice::from_ref(&cmd));
+    assert_eq!(out[0].exit_code, Some(0), "{out:?}");
+    assert!(!out[0].timed_out);
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .expect("the line recorded its background job")
+        .trim()
+        .parse()
+        .expect("a pid");
+    let gone = || {
+        matches!(
+            crate::procid::run_state(pid),
+            crate::procid::RunState::Gone | crate::procid::RunState::Zombie
+        )
+    };
+    let deadline = Instant::now() + StdDuration::from_secs(3);
+    while !gone() && Instant::now() < deadline {
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+    let left = !gone();
+    let _ = unsafe { kill(pid, SIGKILL) };
+    assert!(
+        !left,
+        "the background sleep {pid} outlived the verification line"
+    );
+}
+
 #[test]
 fn a_passing_verification_command_records_exit_zero_and_its_stdout() {
     let scratch = scratch("verif-pass");
@@ -3246,9 +3284,9 @@ fn a_child_its_leader_left_behind_in_the_session_ends_with_the_node() {
     );
 }
 
-/// **A command marion runs for itself keeps what it started on purpose**: a verification line that
-/// starts a compiler cache's server, a version probe, a login status. Only a node's session is
-/// swept ([`run_bounded_watched`]); [`run_bounded`] reaps its child alone.
+/// **A command marion runs for itself keeps what it started on purpose**: a version probe, a login
+/// status, a session listing. Only a node's session (and a verification line's) is swept
+/// ([`run_bounded_watched`], [`run_verification`]); [`run_bounded`] reaps its child alone.
 #[test]
 fn a_daemon_a_non_node_command_started_outlives_the_command() {
     let alive = left_running_after(AfterExit::ReapOnly, "supervisor-session-daemon");

@@ -661,8 +661,11 @@ pub fn verification_process(command: &Command) -> SysCommand {
     sys
 }
 
-/// Run `commands` one after another, in order, each through [`run_bounded`] so an expired one is
-/// killed with its whole process group. Sequential on purpose: `cargo build` before `cargo test`
+/// Run `commands` one after another, in order, each bounded as [`run_bounded`] bounds a command so
+/// an expired one is killed with its whole process group, and each one's session ended when it
+/// exits ([`AfterExit::EndSession`]): what a line left running in the background (`cargo test &`)
+/// goes with it, as it does on expiry, rather than outliving the run that asked for it. Sequential
+/// on purpose: `cargo build` before `cargo test`
 /// is the ordinary shape, and a later line must see what an earlier one wrote.
 ///
 /// Every stream is recorded `Capped::whole`: the persisted contract is the uncapped record
@@ -675,16 +678,22 @@ pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
         .map(|command| {
             let started = Instant::now();
             let mut sys = verification_process(command);
-            let (exit_code, stdout, stderr, timed_out) =
-                match run_bounded(&mut sys, command.timeout.0) {
-                    Ok(out) => (
-                        out.code,
-                        String::from_utf8_lossy(&out.stdout).into_owned(),
-                        String::from_utf8_lossy(&out.stderr).into_owned(),
-                        out.timed_out,
-                    ),
-                    Err(e) => (None, String::new(), e.to_string(), false),
-                };
+            let (exit_code, stdout, stderr, timed_out) = match run_bounded_with(
+                &mut sys,
+                command.timeout.0,
+                kill_process_tree,
+                AfterExit::EndSession,
+                None,
+                None,
+            ) {
+                Ok(out) => (
+                    out.code,
+                    String::from_utf8_lossy(&out.stdout).into_owned(),
+                    String::from_utf8_lossy(&out.stderr).into_owned(),
+                    out.timed_out,
+                ),
+                Err(e) => (None, String::new(), e.to_string(), false),
+            };
             CommandOutcome {
                 command: command.clone(),
                 exit_code,
@@ -757,12 +766,12 @@ pub(crate) fn run_bounded_watched(
 /// What [`run_bounded_with`] does once its child is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AfterExit {
-    /// A node ([`run_bounded_watched`]): everything left in its session ends with it
-    /// ([`crate::kill::end_node`]).
+    /// A node ([`run_bounded_watched`]) or a verification line ([`run_verification`]): everything
+    /// left in its session ends with it ([`crate::kill::end_node`]). A verification line is a
+    /// node's evidence, and what it forked is the node's leftover, as on expiry.
     EndSession,
-    /// A command marion runs for itself ([`run_bounded`]): a verification line, a version probe, a
-    /// login status, a session listing. Reaped alone: a daemon it started on purpose (a compiler
-    /// cache's server) is the operator's, not a node's leftover.
+    /// A command marion runs for itself ([`run_bounded`]): a version probe, a login status, a
+    /// session listing. Reaped alone: a daemon it started on purpose is the operator's.
     ReapOnly,
 }
 
