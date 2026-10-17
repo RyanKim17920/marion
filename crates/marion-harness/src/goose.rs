@@ -331,10 +331,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
 /// call id, quoted back. The verdict is `toolResult.value.isError`, **not** `toolResult.status`:
 /// an `isError: true` answer was measured arriving under `status: "success"`.
 ///
-/// **No failure frame exists.** A provider 500 is an assistant `message` whose text begins `Ran
-/// into this error:` and a `complete` with zero tokens, exit 0; the grammar's conditions match
-/// whole values, so nothing here claims a failure from prose, and a provider fault reads as the
-/// report that never came (`StreamOutcome::narrative == None`).
+/// **A provider fault has two shapes.** Through 1.52.0 a 429 or 500 is an assistant `message` whose
+/// text begins `Ran into this error: ` and a `complete` with zero tokens, exit 0. 1.55.0 ends the
+/// run with a top-level `type: error` frame instead, no `complete`, exit 1
+/// (`tests/fixtures/conformance/goose-1.55.0/p-errors-*.jsonl`). Both are read as failures below:
+/// the error frame by its type, the older text by its fixed opening.
 pub const STREAM: StreamGrammar = StreamGrammar {
     call: Where {
         frame: &[Cond::Eq("/type", "message")],
@@ -381,9 +382,10 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             fallback: "goose ran into a provider error",
         },
     ],
-    // S37 (`goose-1.52.0/p-errors-*.jsonl`, s26): a refused key is a `type: error` frame; a 429
-    // or 500 is an assistant `text` block opening `Ran into this error: `, at exit 0 — goose
-    // gives up after ~7 s and says so nowhere else.
+    // s26 and conformance P-errors: a refused key is a `type: error` frame. Through 1.52.0 a 429
+    // or 500 is an assistant `text` block opening `Ran into this error: `, at exit 0, and nothing
+    // else says so; 1.55.0 (`goose-1.55.0/p-errors-*.jsonl`) gives up after ~7 s with a
+    // `type: error` frame and exit 1. The text rule stays for the listed releases before it.
     errors: &[
         ErrorRule {
             at: Where {
