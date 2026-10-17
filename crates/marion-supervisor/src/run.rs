@@ -1787,6 +1787,23 @@ pub fn tree_in<'a>(
     }
 }
 
+/// **`marion run`'s own flags, and whether each takes a value.** The `n` line splits the options
+/// typed before a task with it ([`crate::home::options`]), and `marion run`'s parser, which a test
+/// holds to this table, reads them when the line runs.
+pub const RUN_FLAGS: &[(&str, bool)] = &[
+    ("--prompt", true),
+    ("--model", true),
+    ("--timeout", true),
+    ("--profile", true),
+    ("--budget-tokens", true),
+    ("--worktree", false),
+    ("--verify", true),
+    ("--pane", false),
+    ("--detach", false),
+    ("--no-change-record", false),
+    ("--allow-wider-children", false),
+];
+
 /// Where a working tree declares its own agent types, relative to the tree's root.
 pub const AGENT_TYPES_FILE: &str = ".marion/agents.toml";
 

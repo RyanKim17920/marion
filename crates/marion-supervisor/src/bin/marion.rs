@@ -4829,6 +4829,57 @@ mod tests {
         assert!(!b.detach);
     }
 
+    /// **The `n` line splits options with `marion run`'s own arity**: every flag in
+    /// [`marion_supervisor::run::RUN_FLAGS`] is one `run` takes, taking a value exactly where the
+    /// table says, and every flag `marion run --help` lists is in the table — so a flag added to
+    /// `run` and not to the table, or the other way round, fails here rather than mis-splitting a
+    /// task on the screen.
+    #[test]
+    fn the_run_flag_table_is_marion_runs_own() {
+        use marion_supervisor::run::RUN_FLAGS;
+        for (flag, takes_value) in RUN_FLAGS {
+            let value = match *flag {
+                "--timeout" | "--budget-tokens" => "5",
+                _ => "v",
+            };
+            let mut words = vec!["run", "codex", "--prompt", "p", flag];
+            if *takes_value {
+                words.push(value);
+            }
+            match parse_args(&argv(&words)) {
+                Ok(_) => {}
+                // A contracted run refuses `--pane` and `--no-change-record`: they are still run's.
+                Err(Exit::Usage(why)) if why.contains("is for an agent in your checkout") => {}
+                Err(e) => panic!("{flag}: {e:?}"),
+            }
+            let inline = parse_args(&argv(&[
+                "run",
+                "codex",
+                "--prompt",
+                "p",
+                &format!("{flag}={value}"),
+            ]));
+            match inline {
+                Err(Exit::Usage(why)) if why.contains("takes no value") => {
+                    assert!(!takes_value, "{flag} takes a value but refused one")
+                }
+                _ => assert!(takes_value, "{flag} takes no value but accepted one"),
+            }
+        }
+        let help = cli::verb("run").map(|v| (v.help)()).unwrap();
+        for word in help.split_whitespace() {
+            let flag = word.trim_matches(['(', ')', ',', '.', ';', '`']);
+            if flag.starts_with("--") && flag.len() > 2 && !flag.contains('=') {
+                assert!(
+                    RUN_FLAGS.iter().any(|(f, _)| *f == flag)
+                        || cli::PLACE_HELP.contains(flag)
+                        || flag == "--help",
+                    "`marion run --help` lists {flag}, which RUN_FLAGS does not"
+                );
+            }
+        }
+    }
+
     /// **Every home-screen effect is the command its box echoes**: each effect's `argv`, parsed
     /// back through this binary's own parsers, names the same node, text, type and model. An
     /// effect that drifted from its echo would teach the operator a command that does something

@@ -377,7 +377,7 @@ impl Backend {
 
 /// `--repo`. `--state-dir` is still read and not shown: where marion keeps its state is
 /// `$MARION_STATE_DIR`'s to say (the guide documents it), not a flag every command lists.
-const PLACE_HELP: &str =
+pub const PLACE_HELP: &str =
     "  --repo <path>        the repository (default: the enclosing git repository, else here)";
 
 const ID_HELP: &str =
