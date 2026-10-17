@@ -56,7 +56,15 @@ if [ -n "$MARION_SHIM_TURN" ]; then
   sleep 0.3; echo '{started}'
   waited=0
   while [ ! -e {gate} ] && [ "$waited" -le 6000 ]; do sleep 0.05; waited=$((waited + 1)); done
-  echo '{completed}'; echo '{said}'
+  echo '{completed}'
+  # More than one activity page (1 MiB) of output, all at the end, for `ls --follow` to drain.
+  pad=$(printf '%0150000d' 0)
+  n=1
+  while [ "$n" -le 12 ]; do
+    printf '{{"method":"item/completed","params":{{"item":{{"type":"agentMessage","id":"msg_%s","text":"line %s %s"}}}}}}\n' "$n" "$n" "$pad"
+    n=$((n + 1))
+  done
+  echo '{said}'
   exit 0
 fi
 # A pane node's launch and token, as the headless branch records them: `n` runs a codex task in a
@@ -543,6 +551,49 @@ fn enter_attaches_to_a_pane_node_and_detaching_returns_home() {
         s.contains("enter attach") && !s.contains("HOMEE2E-PANE-READY")
     });
     op.type_in(b"\x03");
+}
+
+/// **`ls --follow` prints to the agent's last line**, even when the agent writes more than one
+/// activity page between two looks and then ends.
+#[test]
+fn ls_follow_drains_the_stream_before_it_stops() {
+    let bed = Bed::new("home-e2e-follow");
+    let out = bed.marion(&[
+        "run",
+        "codex",
+        "--prompt",
+        "HOMEE2E-FOLLOW hold",
+        "--detach",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    let id = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("marion: root "))
+        .and_then(|r| r.split_whitespace().next())
+        .unwrap_or_else(|| panic!("--detach names the root it started: {stdout}"))
+        .to_string();
+    let follow = bed
+        .command(&["ls", &id, "--follow"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("marion runs");
+    std::thread::sleep(Duration::from_millis(500));
+    std::fs::write(&bed.gate, "").unwrap();
+    let done = follow.wait_with_output().expect("--follow ends");
+    let printed = String::from_utf8_lossy(&done.stdout);
+    assert!(
+        done.status.success(),
+        "{printed}{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    for want in ["  line 1 0", "  line 12 0", "  done"] {
+        assert!(
+            printed.lines().any(|l| l.contains(want)),
+            "--follow lost `{want}`:\n{printed}"
+        );
+    }
 }
 
 /// `marion run --detach`, `marion ls <id>` and `marion cancel <short>` as plain commands.

@@ -641,12 +641,13 @@ fn ls_follow(target: &str, repo: &Path, state: &Path) -> ExitCode {
         let sock = socket::socket_paths(state, &socket::project_root(repo), socket::own_uid());
         let mut cursor = ActivityCursor::Tail;
         loop {
-            // Read the state first, so the page read after it holds every line written before
-            // the end was seen.
+            // Read the state first, then every page up to the end of the stream (a page is
+            // capped), so what is printed holds every line written before the end was seen.
             let ended = sub.nodes.iter().find(|n| n.agent_id == id).map(|n| n.state);
-            let got = marion_supervisor::courier::node_get_with(&sock, &id, Some(cursor))
-                .map_err(|e| e.to_string())?;
-            if let Some(page) = got.detail.stream {
+            loop {
+                let got = marion_supervisor::courier::node_get_with(&sock, &id, Some(cursor))
+                    .map_err(|e| e.to_string())?;
+                let Some(page) = got.detail.stream else { break };
                 let text: String = page
                     .lines
                     .iter()
@@ -658,6 +659,9 @@ fn ls_follow(target: &str, repo: &Path, state: &Path) -> ExitCode {
                     &marion_supervisor::printable::printable(&text),
                 );
                 cursor = ActivityCursor::From(page.next);
+                if page.next <= page.from {
+                    break;
+                }
             }
             match ended {
                 Some(marion_core::node::NodeState::Exited(s)) => {
