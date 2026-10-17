@@ -1189,25 +1189,40 @@ fn cat_blobs(wt: Tree<'_>, oids: &[&str]) -> Option<Vec<Vec<u8>>> {
     rest.is_empty().then_some(blobs)
 }
 
-/// The most files [`plain_files`] gathers under one config path: past it the path is not
-/// something marion holds a generation to, and a directory of a million files is not walked.
-const MAX_CONFIG_FILES: usize = 1024;
+/// The most entries [`plain_files`] visits under one config path, each file and each directory
+/// one: past it the path is not something marion holds a generation to, and neither a directory of
+/// a million files nor a forest of empty directories is walked.
+const MAX_CONFIG_ENTRIES: usize = 1024;
 
 /// Every plain file at or under `at` into `found`, keyed by its path relative to the tree (`rel`
 /// for `at`), following no link: `false` at a link, at anything but a file or directory, and past
-/// [`MAX_CONFIG_FILES`].
+/// [`MAX_CONFIG_ENTRIES`].
 fn plain_files(
     at: &Path,
     rel: &Path,
     found: &mut std::collections::BTreeMap<PathBuf, PathBuf>,
 ) -> bool {
+    plain_files_counted(at, rel, found, &mut 0)
+}
+
+/// [`plain_files`], with `seen` the entries visited so far.
+fn plain_files_counted(
+    at: &Path,
+    rel: &Path,
+    found: &mut std::collections::BTreeMap<PathBuf, PathBuf>,
+    seen: &mut usize,
+) -> bool {
+    *seen += 1;
+    if *seen > MAX_CONFIG_ENTRIES {
+        return false;
+    }
     let Ok(meta) = std::fs::symlink_metadata(at) else {
         return false;
     };
     let kind = meta.file_type();
     if kind.is_file() {
         found.insert(rel.to_path_buf(), at.to_path_buf());
-        return found.len() <= MAX_CONFIG_FILES;
+        return true;
     }
     if !kind.is_dir() {
         return false;
@@ -1215,9 +1230,9 @@ fn plain_files(
     let Ok(entries) = std::fs::read_dir(at) else {
         return false;
     };
-    entries
-        .into_iter()
-        .all(|e| e.is_ok_and(|e| plain_files(&e.path(), &rel.join(e.file_name()), found)))
+    entries.into_iter().all(|e| {
+        e.is_ok_and(|e| plain_files_counted(&e.path(), &rel.join(e.file_name()), found, seen))
+    })
 }
 
 /// **What a node launched in the operator's checkout `dir` is held to**, taken now, before it
@@ -3111,13 +3126,22 @@ mod tests {
         assert!(same());
 
         std::fs::create_dir_all(wt.join(".pi")).unwrap();
-        for i in 0..=MAX_CONFIG_FILES {
+        for i in 0..=MAX_CONFIG_ENTRIES {
             std::fs::write(wt.join(format!(".pi/{i}")), "").unwrap();
         }
         assert_eq!(
             repo_config_snapshot(&wt, None, &[".pi"]).0[".pi"],
             None,
             "more files than marion reads"
+        );
+        std::fs::remove_dir_all(wt.join(".pi")).unwrap();
+        for i in 0..=MAX_CONFIG_ENTRIES {
+            std::fs::create_dir_all(wt.join(format!(".pi/{i}"))).unwrap();
+        }
+        assert_eq!(
+            repo_config_snapshot(&wt, None, &[".pi"]).0[".pi"],
+            None,
+            "more directories than marion walks, though they hold no file"
         );
         std::fs::remove_dir_all(wt.join(".pi")).unwrap();
 
