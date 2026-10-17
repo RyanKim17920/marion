@@ -439,6 +439,13 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         input_includes_cache: true,
         fold: UsageFold::Last,
         in_flight: None,
+        // Conformance P-activity on 1.55.0: three requests, and `complete` totals the two that
+        // offered tools. The third — no tools, the user's messages under a `BEGIN HINTS` header —
+        // is goose naming its session, made under `--no-session` too, and the frame's total does
+        // not include it. 1.52.0's figure left it out the same way.
+        uncounted: Some(
+            "goose's session-naming request (no tools, the user's messages only), one per run",
+        ),
     }),
     // An assistant `message`'s content blocks (`s26/goose-report.stdout.jsonl`): `toolRequest` is a
     // call to any extension's tool, `text` the model's words.

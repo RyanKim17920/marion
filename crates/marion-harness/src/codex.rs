@@ -598,6 +598,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         input_includes_cache: true,
         fold: UsageFold::Session,
         in_flight: None,
+        uncounted: None,
     }),
     // Every item kind the captures show work as (`s6/exec-*.stream.jsonl`, `s7`): an MCP call on
     // any server, a shell command, a patch. Each appears as `item.started` then `item.completed`
@@ -870,6 +871,7 @@ pub const APP_STREAM: StreamGrammar = StreamGrammar {
         // The thread's running total follows every response, so a turn cut short has already
         // been counted up to its last one.
         in_flight: None,
+        uncounted: None,
     }),
     rate_limit: None,
     activity: Some(ActivityRule {

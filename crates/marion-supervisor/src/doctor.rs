@@ -300,6 +300,7 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     ));
     notes.push(abort_note(adapter.spec()));
+    notes.extend(usage_note(adapter.spec()));
 
     let resolved = locate_binary(adapter.as_ref(), opts, agent, &mut notes);
     let identity = identify(
@@ -479,6 +480,13 @@ fn abort_note(row: &marion_harness::spec::HarnessSpec) -> String {
         one(row.abort.headless),
         one(row.abort.interactive)
     )
+}
+
+/// The requests the row's usage figure leaves out (`UsageRule::uncounted`), for an operator
+/// setting a token budget on it: a budget reads that figure alone. `None` where it counts them all.
+fn usage_note(row: &marion_harness::spec::HarnessSpec) -> Option<String> {
+    let rule = row.stream?.usage.as_ref()?;
+    rule.uncounted.map(|n| format!("usage leaves out: {n}"))
 }
 
 /// **The row's approval grant, as doctor reports it** — one line per row, whatever the shape.
@@ -2143,6 +2151,33 @@ pub fn render(rows: &[Row], environment: &[crate::preflight::Check]) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// A row whose usage figure leaves requests out says so, in its own words; one that counts
+    /// every request prints nothing about it.
+    #[test]
+    fn a_row_s_uncounted_requests_are_named_and_a_complete_figure_says_nothing() {
+        for h in Harness::ALL {
+            let row = marion_harness::adapter::harness_spec(h);
+            let uncounted = row
+                .stream
+                .and_then(|g| g.usage.as_ref())
+                .and_then(|u| u.uncounted);
+            assert_eq!(
+                usage_note(row),
+                uncounted.map(|n| format!("usage leaves out: {n}")),
+                "{h}"
+            );
+        }
+        let goose = usage_note(marion_harness::adapter::harness_spec(Harness::Goose));
+        assert!(
+            goose.is_some_and(|n| n.contains("session-naming")),
+            "goose's figure leaves out its session-naming request"
+        );
+        assert_eq!(
+            usage_note(marion_harness::adapter::harness_spec(Harness::Codex)),
+            None
+        );
+    }
 
     /// **Every row's approval grant is reported, and a grant only the operator can give is read
     /// from their own settings and never written.** The file is a scratch one handed in as

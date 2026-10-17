@@ -495,6 +495,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         input_includes_cache: false,
         fold: UsageFold::Sum,
         in_flight: None,
+        uncounted: None,
     }),
     // A `tool_use` frame per finished call, any tool, and a `text` frame per finished text part
     // (`s13/README.md`). No call id is read: opencode emits each call once, terminal only.

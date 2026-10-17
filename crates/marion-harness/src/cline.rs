@@ -392,6 +392,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         input_includes_cache: false,
         fold: UsageFold::Last,
         in_flight: None,
+        uncounted: None,
     }),
     // A tool's `content_start` and a text block's `content_end`, which carries the finished text
     // (`s27/cline-report-ok.stdout.jsonl`).

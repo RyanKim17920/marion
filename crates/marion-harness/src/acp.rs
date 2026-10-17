@@ -1382,6 +1382,7 @@ pub const USAGE: UsageRule = UsageRule {
     input_includes_cache: false,
     fold: UsageFold::Sum,
     in_flight: None,
+    uncounted: None,
 };
 
 /// Where the protocol's usage object counts reasoning tokens, on the agents that report them.

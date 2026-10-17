@@ -509,6 +509,12 @@ pub struct UsageRule {
     /// a run that ends mid-turn — killed, timed out — and so never reaches that unit. `None` where
     /// the row's units arrive as the spend happens, or where no such frame was measured.
     pub in_flight: Option<&'static InFlight>,
+    /// The requests the harness makes **outside its agent turn** — offering the model no tools,
+    /// such as naming the session — that its figure leaves out, and what they are. `None`: the
+    /// figure counts every request the harness sent. A budget reads the figure alone, so a row
+    /// that says `Some` is stating spend marion does not see; conformance P-activity holds the
+    /// figure to the tool-offering requests then, and to every request otherwise.
+    pub uncounted: Option<&'static str>,
 }
 
 /// A row's in-flight counters: the units that carry one request's spend while its turn is still
@@ -1439,6 +1445,7 @@ mod tests {
         input_includes_cache: false,
         fold: UsageFold::Last,
         in_flight: None,
+        uncounted: None,
     };
 
     fn done(input: u64, output: u64, cached: u64) -> Value {
@@ -1498,6 +1505,7 @@ mod tests {
         let sum = UsageRule {
             fold: UsageFold::Sum,
             in_flight: None,
+            uncounted: None,
             ..RULE
         };
         assert_eq!(usage(&sum, &frames), Some(tokens(40, 4, 6)));
@@ -1588,11 +1596,13 @@ mod tests {
     static SUM: UsageRule = UsageRule {
         fold: UsageFold::Sum,
         in_flight: None,
+        uncounted: None,
         ..RULE
     };
     static SESSION: UsageRule = UsageRule {
         fold: UsageFold::Session,
         in_flight: None,
+        uncounted: None,
         ..RULE
     };
 
@@ -1778,6 +1788,7 @@ mod tests {
         let sum = UsageRule {
             fold: UsageFold::Sum,
             in_flight: None,
+            uncounted: None,
             ..within
         };
         assert_eq!(

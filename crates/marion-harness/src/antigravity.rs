@@ -308,6 +308,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         input_includes_cache: false,
         fold: UsageFold::Last,
         in_flight: None,
+        uncounted: None,
     }),
     // Every step is a `step_update` revised in place by `step_index`, so a tool seen `ACTIVE` and
     // then `DONE` is one call; the model's words stream as `agent_response` steps' `text_delta`s

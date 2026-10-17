@@ -536,6 +536,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         input_includes_cache: false,
         fold: UsageFold::Sum,
         in_flight: None,
+        uncounted: None,
     }),
     activity: Some(ActivityRule {
         calls: &[ToolUnit {

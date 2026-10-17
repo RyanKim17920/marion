@@ -561,6 +561,7 @@ pub const USAGE: UsageRule = UsageRule {
     input_includes_cache: false,
     fold: UsageFold::Sum,
     in_flight: None,
+    uncounted: None,
 };
 
 /// A turn's requests before its `result`: each `assistant` frame's `message.usage`, repeated per
@@ -582,6 +583,7 @@ pub const IN_FLIGHT: InFlight = InFlight {
         input_includes_cache: false,
         fold: UsageFold::Last,
         in_flight: None,
+        uncounted: None,
     },
     id: "/message/id",
 };
@@ -756,6 +758,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // frame's `message.usage` states its request's spend (see [`IN_FLIGHT`]).
     usage: Some(UsageRule {
         in_flight: Some(&IN_FLIGHT),
+        uncounted: None,
         ..USAGE
     }),
     // `assistant` frames' content blocks (`s9/can-use-tool-*.stdout.jsonl`): a `tool_use` block is
