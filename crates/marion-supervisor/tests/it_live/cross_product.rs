@@ -128,7 +128,7 @@
 //! skip when a binary is missing: §9's standing rule is that *a criterion that quietly passes on a
 //! machine that cannot run it is worth less than no criterion.*
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -551,6 +551,9 @@ struct Evidence {
     stderr: String,
     /// The persisted `contracts/*.json`, read back as JSON before the scratch dir was removed.
     persisted: Vec<Value>,
+    /// Where each of [`Self::persisted`] was read from, in the same order. The files are gone by
+    /// the time a cell asserts, so a path the root was handed is checked against these.
+    persisted_files: Vec<PathBuf>,
     /// The state-relative directory each contract sat under, so `requester` can be checked against
     /// an agent-dir that really existed rather than against a path rebuilt from guesses.
     agent_dirs_present: Vec<String>,
@@ -857,7 +860,10 @@ fn drive_run(root: &Node, child: &Node, script: Script, opt_in: bool) -> Evidenc
     // safe to fail on — and it must: §6.7 makes a contract an audit record, and one marion cannot
     // read back is a defect whichever half is wrong.
     let walked = walked.unwrap_or_else(|e| panic!("{e}"));
-    let contracts: Vec<Value> = judge(&walked).into_iter().map(|(_, v)| v.clone()).collect();
+    let (persisted_files, contracts): (Vec<PathBuf>, Vec<Value>) = judge(&walked)
+        .into_iter()
+        .map(|(path, v)| (path.to_path_buf(), v.clone()))
+        .unzip();
 
     Evidence {
         timed_out: out.timed_out,
@@ -865,6 +871,7 @@ fn drive_run(root: &Node, child: &Node, script: Script, opt_in: bool) -> Evidenc
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         persisted: contracts,
+        persisted_files,
         agent_dirs_present,
         requests,
         journal,
@@ -1185,15 +1192,21 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
     let mut returned: serde_json::Value = serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
         panic!("{cell}: the root's tool result does not carry a contract document: {e}\n{result_text}")
     });
-    // The view names the persisted file, and that file is the record compared against below.
+    // The view names the persisted file: the absolute path the record compared against below was
+    // read from while the run's state dir still existed (it is removed before a cell asserts).
     let file = returned
         .as_object_mut()
         .and_then(|o| o.remove(marion_supervisor::bridge::CONTRACT_FILE_KEY))
         .unwrap_or_else(|| panic!("{cell}: the result names its contract file:\n{result_text}"));
-    let on_disk: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(file.as_str().unwrap()).unwrap()).unwrap();
+    let file = Path::new(file.as_str().expect("contract_file is a string"));
+    assert!(
+        file.is_absolute(),
+        "{cell}: contract_file {} is absolute",
+        file.display()
+    );
     assert_eq!(
-        on_disk, ev.persisted[0],
+        ev.persisted_files,
+        [file],
         "{cell}: the named file is the persisted contract"
     );
     assert_eq!(
