@@ -3771,6 +3771,78 @@ mod tests {
         assert!(!top.contains("  tree"), "an old spelling is listed:\n{top}");
     }
 
+    /// **CLI/TUI parity, as one table**: every command `marion --help` lists is a key on the home
+    /// screen, whose row in [`marion_supervisor::home::view::KEYS`] names `marion <verb>`, or one
+    /// of a few gaps saying why; and every command a key names is a command this binary runs.
+    /// `run`'s options are all the `n` line's, through its options row. A key with no command is
+    /// one only a screen has. So a new verb without a key, a gap that got one, or a key whose
+    /// command was renamed, fails here rather than drifting.
+    #[test]
+    fn every_command_is_a_key_and_every_keys_command_is_a_command() {
+        use marion_supervisor::home::view::KEYS;
+        const GAPS: &[(&str, &str)] = &[
+            ("race", "the n line's --on makes a race; not built yet"),
+            (
+                "workflow",
+                "workflows join the n line's tab cycle; not built yet",
+            ),
+            (
+                "harness",
+                "Setup's rows for your own harness files; not built yet",
+            ),
+            ("export", "e exports the selected agent; not built yet"),
+            (
+                "trust",
+                "Setup's allow and deny on a file row; not built yet",
+            ),
+            ("mcp", "an MCP client's server, not something a person does"),
+        ];
+        // Keys a screen has and a command line does not need: moving, paging, the line's own
+        // keys, and `/`, which filters what is on screen (`marion ls --plain` is greppable).
+        const SCREEN_ONLY: &[&str] = &["j/k", "pgup/dn", ",", "?", "q", "tab", "enter", "esc", "/"];
+        let rows: Vec<_> = KEYS.iter().flat_map(|(_, rows)| rows.iter()).collect();
+        let named: Vec<&str> = rows
+            .iter()
+            .filter_map(|(_, _, command)| command.strip_prefix("marion "))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .collect();
+        for v in cli::VERBS.iter().filter(|v| v.summary.is_some()) {
+            let keyed = named.contains(&v.name);
+            let gap = GAPS.iter().any(|(g, _)| *g == v.name);
+            assert!(
+                keyed != gap,
+                "`marion {}` {}",
+                v.name,
+                if keyed {
+                    "has a key now: take it off GAPS"
+                } else {
+                    "has no key on the home screen and is not a listed gap"
+                }
+            );
+        }
+        for verb in &named {
+            assert!(
+                cli::verb(verb).is_some(),
+                "a key names `marion {verb}`, which is no command"
+            );
+        }
+        for (key, what, command) in &rows {
+            assert!(
+                !command.is_empty() || SCREEN_ONLY.contains(key),
+                "`{key}` ({what}) names no command and is not a screen-only key"
+            );
+        }
+        assert!(
+            rows.iter().any(|(_, _, c)| *c == "marion run --help"),
+            "the n line's options row is how every run flag is reached"
+        );
+        assert!(
+            rows.iter()
+                .any(|(k, _, c)| *k == "--detach" && *c == "marion run --detach"),
+            "--detach has its own row"
+        );
+    }
+
     /// **Each command's `--help` is its own**, short enough to read, and names the command it
     /// belongs to — not one screen of every command's details.
     #[test]
