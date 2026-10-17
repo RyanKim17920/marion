@@ -2298,7 +2298,7 @@ fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
     let record = TrustRecord {
         branch: None,
         checkout_root: None,
-        repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
+        repo_config: Some(crate::spawn::repo_config_snapshot(&repo, None, &paths)),
     };
     let gen0 = repo_trust(&env, &repo, None, &record);
     assert!(
@@ -2345,6 +2345,35 @@ fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
     );
 }
 
+/// **A node running in a subdirectory of the operator's checkout is held to every level up to the
+/// checkout's top level**: a `.mcp.json` it plants at the root, above its cwd, is not the
+/// operator's in its next generation, as claude would load it from there.
+///
+/// Mutation: snapshot `dir` alone in `repo_config_snapshot` and this fails.
+#[test]
+fn an_operator_tree_node_in_a_subdirectory_is_held_to_each_level_up_to_the_checkout_root() {
+    let root = scratch("supervisor-operator-trust-levels");
+    let repo = fixture_repo(&root);
+    let sub = repo.join("src");
+    let record = crate::spawn::trust_record_taken(&sub);
+    assert_eq!(
+        record.checkout_root,
+        Some(std::fs::canonicalize(&repo).unwrap())
+    );
+    let now = || {
+        repo_trust_of(
+            crate::spawn::Tree::Operator(&sub),
+            &crate::socket::project_root(&repo),
+            None,
+            &record,
+        )
+    };
+    assert!(now().own);
+    std::fs::write(repo.join(".mcp.json"), r#"{"mcpServers":{"x":{}}}"#).unwrap();
+    let trust = now();
+    assert!(!trust.own, "{trust:?}");
+}
+
 /// **A link in the checkout's config is never held to a snapshot**: what it points at is outside
 /// what was fingerprinted, so a later generation does not count it as the operator's.
 #[test]
@@ -2359,7 +2388,7 @@ fn a_linked_config_in_the_operator_tree_is_not_the_operators_after_generation_0(
     let record = TrustRecord {
         branch: None,
         checkout_root: None,
-        repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
+        repo_config: Some(crate::spawn::repo_config_snapshot(&repo, None, &paths)),
     };
     let trust = repo_trust_of(
         crate::spawn::Tree::Operator(&repo),

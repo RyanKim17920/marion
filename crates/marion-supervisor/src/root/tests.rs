@@ -2547,6 +2547,7 @@ fn a_root_that_plants_repo_config_in_generation_0_is_untrusted_in_generation_1()
         checkout_root: None,
         repo_config: Some(crate::spawn::repo_config_snapshot(
             &checkout,
+            None,
             &crate::trust::repo_config_paths(),
         )),
     };

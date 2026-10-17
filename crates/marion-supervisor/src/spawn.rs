@@ -1198,19 +1198,53 @@ fn plain_files(
         .all(|e| e.is_ok_and(|e| plain_files(&e.path(), &rel.join(e.file_name()), found)))
 }
 
+/// **What a node launched in the operator's checkout `dir` is held to**, taken now, before it
+/// runs ([`marion_core::journal::TrustRecord`]): the checkout's branch ([`trust_branch`]), its
+/// top level, and its repository config at every level from `dir` up to that top level.
+pub fn trust_record_taken(dir: &Path) -> marion_core::journal::TrustRecord {
+    let checkout_root = toplevel(Tree::Operator(dir));
+    marion_core::journal::TrustRecord {
+        branch: trust_branch(Tree::Operator(dir)),
+        repo_config: Some(repo_config_snapshot(
+            dir,
+            checkout_root.as_deref(),
+            &crate::trust::repo_config_paths(),
+        )),
+        checkout_root,
+    }
+}
+
 /// **The repository's own harness config `paths` in the operator's checkout `dir`, as it is
 /// now** ([`marion_core::journal::RepoConfigSnapshot`]): each path to a digest of the plain files
 /// at or under it — none, where it is absent — read as [`config_as_committed`] reads a child's,
 /// following no link. A link at any component, or anything but a plain file or directory, is
 /// `None`: what it points at is not something marion can hold a later generation to.
+///
+/// Every level from `dir` up to `up_to` (the checkout's top level, where `dir` is under it) is
+/// read, each path keyed `../` once per level above `dir`: a harness reading up from its cwd
+/// (claude's `.mcp.json`, copilot's and agy's config) loads them all.
 pub fn repo_config_snapshot(
     dir: &Path,
+    up_to: Option<&Path>,
     paths: &[&str],
 ) -> marion_core::journal::RepoConfigSnapshot {
+    let real = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let levels: Vec<&Path> = match up_to {
+        Some(root) if real.starts_with(root) => real
+            .ancestors()
+            .take_while(|level| level.starts_with(root))
+            .collect(),
+        _ => vec![dir],
+    };
     marion_core::journal::RepoConfigSnapshot(
-        paths
+        levels
             .iter()
-            .map(|p| (p.to_string(), config_digest(dir, p)))
+            .enumerate()
+            .flat_map(|(up, level)| {
+                paths
+                    .iter()
+                    .map(move |p| (format!("{}{p}", "../".repeat(up)), config_digest(level, p)))
+            })
             .collect(),
     )
 }

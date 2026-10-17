@@ -808,14 +808,7 @@ pub fn prepare_watched(
     // or, on a resume, what its first launch took, never what the root may have written since.
     let trust_record = match &spec.resume {
         Some(r) => r.trust.clone(),
-        None => TrustRecord {
-            branch: crate::spawn::trust_branch(crate::spawn::Tree::Operator(&spec.repo)),
-            checkout_root: crate::spawn::toplevel(crate::spawn::Tree::Operator(&spec.repo)),
-            repo_config: Some(crate::spawn::repo_config_snapshot(
-                &spec.repo,
-                &crate::trust::repo_config_paths(),
-            )),
-        },
+        None => crate::spawn::trust_record_taken(&spec.repo),
     };
     observer.trust_recorded(&agent_id, &trust_record);
     // §2: *"both the supervisor and its state are keyed on the project root (git common-dir,

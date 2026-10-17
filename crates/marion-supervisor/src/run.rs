@@ -1877,7 +1877,11 @@ pub(crate) fn repo_trust_of(
             held
         }
         crate::spawn::Tree::Operator(dir) => match &record.repo_config {
-            Some(was) => was.held(&crate::spawn::repo_config_snapshot(dir, &paths)),
+            Some(was) => was.held(&crate::spawn::repo_config_snapshot(
+                dir,
+                record.checkout_root.as_deref(),
+                &paths,
+            )),
             None => crate::spawn::config_held_unverified(dir, &paths),
         },
     };
@@ -2303,14 +2307,7 @@ pub fn run_spawn_watched(
         None => requester
             .parent_id()
             .and_then(|parent| observer.trust_record(&parent))
-            .unwrap_or_else(|| TrustRecord {
-                branch: crate::spawn::trust_branch(crate::spawn::Tree::Operator(&req.repo)),
-                checkout_root: crate::spawn::toplevel(crate::spawn::Tree::Operator(&req.repo)),
-                repo_config: Some(crate::spawn::repo_config_snapshot(
-                    &req.repo,
-                    &crate::trust::repo_config_paths(),
-                )),
-            }),
+            .unwrap_or_else(|| crate::spawn::trust_record_taken(&req.repo)),
     };
     crate::journal::append(
         &env.project_dir,
