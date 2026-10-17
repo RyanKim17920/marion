@@ -34,12 +34,16 @@ impl SpawnReceiveGate {
     }
 
     pub(crate) fn spawn(&self, command: &mut Command) -> std::io::Result<Child> {
-        #[cfg(test)]
-        notify_spawn_test_hook(SpawnTestEvent::Attempting);
-        let _guard = self.acquire_for_spawn().map_err(std::io::Error::other)?;
-        #[cfg(test)]
-        pause_spawn_test_hook_after_acquire();
-        command.spawn()
+        // A program still open for writing in a forked sibling is tried again, the gate taken
+        // anew each time ([`marion_harness::probe::spawn_past_busy_text`]).
+        marion_harness::probe::spawn_past_busy_text(|| {
+            #[cfg(test)]
+            notify_spawn_test_hook(SpawnTestEvent::Attempting);
+            let _guard = self.acquire_for_spawn().map_err(std::io::Error::other)?;
+            #[cfg(test)]
+            pause_spawn_test_hook_after_acquire();
+            command.spawn()
+        })
     }
 
     fn acquire_for_spawn(&self) -> Result<OwnedGateGuard<'_>, SpawnReceiveGateReentry> {
