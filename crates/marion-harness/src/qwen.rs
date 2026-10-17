@@ -204,6 +204,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         modes: Modes::Overlay,
         base: r#"{"memory":{"enableManagedAutoMemory":false}}"#,
         servers: Some(MCP_SERVERS),
+        servers_key: crate::spec::MCP_SERVERS_KEY,
         pretty: true,
     }],
     overlay_documents: &[],

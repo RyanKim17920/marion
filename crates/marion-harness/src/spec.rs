@@ -2264,8 +2264,8 @@ impl McpServers {
 pub const MCP_SERVERS_KEY: &str = "mcpServers";
 
 /// **One document a row writes under the node's directory**, as data: a JSON object, and marion's
-/// server added under [`MCP_SERVERS_KEY`] where a bridge is declared and the document carries the
-/// declaration. Rendered structurally — the base is parsed and the entry inserted — never by
+/// server added under [`Self::servers_key`] where a bridge is declared and the document carries
+/// the declaration. Rendered structurally — the base is parsed and the entry inserted — never by
 /// splicing text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigFile {
@@ -2277,6 +2277,9 @@ pub struct ConfigFile {
     pub base: &'static str,
     /// marion's server entry in the harness's dialect, where this document is the declaration.
     pub servers: Option<McpServers>,
+    /// The top-level key the harness reads its servers under: [`MCP_SERVERS_KEY`] on every row
+    /// but one that spells it otherwise (Hermes' `mcp_servers`).
+    pub servers_key: &'static str,
     pub pretty: bool,
 }
 
@@ -2287,7 +2290,7 @@ impl ConfigFile {
         let mut doc: serde_json::Value = serde_json::from_str(self.base).ok()?;
         doc.as_object()?;
         if let (Some(servers), Some(b)) = (self.servers, bridge) {
-            doc[MCP_SERVERS_KEY] = serde_json::json!({ MCP_ALIAS: servers.entry(b) });
+            doc[self.servers_key] = serde_json::json!({ MCP_ALIAS: servers.entry(b) });
         }
         Some(if self.pretty {
             serde_json::to_string_pretty(&doc).expect("a Value always serialises")

@@ -1133,6 +1133,9 @@ pub struct ConfigFileDto {
     pub base: String,
     #[serde(default)]
     pub servers: Option<McpServersDto>,
+    /// The key the servers go under; `mcpServers` where unstated.
+    #[serde(default)]
+    pub servers_key: Option<String>,
     #[serde(default)]
     pub pretty: bool,
 }
@@ -1916,6 +1919,7 @@ impl RowDto {
                         modes: f.modes.modes(),
                         base: leak(f.base),
                         servers: f.servers.map(McpServersDto::servers),
+                        servers_key: f.servers_key.map_or(spec::MCP_SERVERS_KEY, leak),
                         pretty: f.pretty,
                     })
                     .collect(),

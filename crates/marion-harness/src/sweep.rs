@@ -260,6 +260,12 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
                 format!("{:?}'s base is not a JSON object", file.path),
             );
         }
+        if file.servers.is_some() && file.servers_key.trim().is_empty() {
+            fault(
+                "files",
+                format!("{:?} declares servers under no key", file.path),
+            );
+        }
     }
     let mut seen = Vec::new();
     for r in row.wires {
@@ -459,6 +465,17 @@ mod tests {
                 },
                 "files",
                 "files: \"home/settings.json\"'s base is not a JSON object",
+            ),
+            (
+                HarnessSpec {
+                    files: Box::leak(Box::new([spec::ConfigFile {
+                        servers_key: " ",
+                        ..qwen.files[0]
+                    }])),
+                    ..qwen
+                },
+                "files",
+                "files: \"home/settings.json\" declares servers under no key",
             ),
             (
                 HarnessSpec {

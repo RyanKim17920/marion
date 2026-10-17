@@ -9281,6 +9281,34 @@ mod tests {
         assert_eq!(generic.boot().budget(), crate::spec::BOOT_FLOOR);
     }
 
+    /// **A document declares marion's server under the key its harness reads** — `mcpServers`
+    /// on qwen's row, and whatever a row spells instead (Hermes reads `mcp_servers`), with the
+    /// base document kept either way.
+    #[test]
+    fn a_document_declares_its_servers_under_the_rows_key() {
+        let file = qwen::SPEC.files[0];
+        let bridge = bridge_env(&spec_for(Harness::Qwen), &ctx());
+        let render = |f: spec::ConfigFile| -> serde_json::Value {
+            serde_json::from_str(&f.render(Some(&bridge)).unwrap()).unwrap()
+        };
+        let default = render(file);
+        assert!(
+            default[spec::MCP_SERVERS_KEY][spec::MCP_ALIAS].is_object(),
+            "{default}"
+        );
+        let spelled = render(spec::ConfigFile {
+            servers_key: "mcp_servers",
+            ..file
+        });
+        assert_eq!(
+            spelled["mcp_servers"],
+            default[spec::MCP_SERVERS_KEY],
+            "{spelled}"
+        );
+        assert!(spelled.get(spec::MCP_SERVERS_KEY).is_none(), "{spelled}");
+        assert_eq!(spelled["memory"], default["memory"]);
+    }
+
     #[test]
     fn every_row_states_its_update_policy_and_renders_it_into_every_launch_shape() {
         use crate::spec::UpdatePolicy;
