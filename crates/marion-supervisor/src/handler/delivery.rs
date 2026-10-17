@@ -247,6 +247,7 @@ impl RegistryHandle {
                 repo,
                 branch: None,
                 trust_branch,
+                trust: None,
                 pid: None,
                 pgid: None,
                 started_at: None,

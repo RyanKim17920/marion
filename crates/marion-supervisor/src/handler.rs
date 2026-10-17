@@ -212,6 +212,10 @@ pub struct NodeHandle {
     /// it ([`crate::run::SpawnObserver::trust_branch`]). Never re-read from a tree later, since a
     /// root can write its checkout's HEAD.
     trust_branch: Option<String>,
+    /// **What this node's repository-config trust is held to**, as it recorded before its process
+    /// existed ([`crate::run::SpawnObserver::trust_recorded`]): what a node it spawns inherits.
+    /// `None` between its claim and that record.
+    trust: Option<marion_core::journal::TrustRecord>,
     /// `None` until the process exists. The window is one `write(2)` plus one fsync wide — step 1
     /// made `Spawned` durable at `command.spawn()`, and this is filled from the same hook.
     pid: Option<i32>,

@@ -141,6 +141,7 @@ fn write_journal(p: &ProjectDir) {
             race: None,
             budget: None,
             workflow: None,
+            trust: Default::default(),
         })
     };
     let spawned = |agent: &str, version: &str, model: &str, credential: Option<&str>| {

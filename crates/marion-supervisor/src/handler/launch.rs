@@ -301,6 +301,18 @@ impl crate::run::SpawnObserver for NodeOwner {
             .and_then(|n| n.trust_branch.clone())
     }
 
+    fn trust_record(&self, agent_id: &AgentId) -> Option<marion_core::journal::TrustRecord> {
+        lock(&self.handle.nodes)
+            .get(agent_id)
+            .and_then(|n| n.trust.clone())
+    }
+
+    fn trust_recorded(&self, agent_id: &AgentId, record: &marion_core::journal::TrustRecord) {
+        if let Some(node) = lock(&self.handle.nodes).get_mut(agent_id) {
+            node.trust = Some(record.clone());
+        }
+    }
+
     fn identified(&self, agent_id: &AgentId) -> Option<Secret> {
         let token = self
             .handle
@@ -2563,6 +2575,11 @@ impl RegistryHandle {
                 agent_id: node.agent_id.clone(),
                 session,
                 usage: node.usage,
+                trust: node
+                    .intent
+                    .as_ref()
+                    .map(|i| i.trust.clone())
+                    .unwrap_or_default(),
             }),
             // **The node's own bound, from its own journal** — the same discipline the two fields
             // above follow. A relaunch that re-resolved this from the agent type would put a root
@@ -2815,6 +2832,11 @@ impl RegistryHandle {
                 session,
                 workspace,
                 usage: node.usage,
+                trust: node
+                    .intent
+                    .as_ref()
+                    .map(|i| i.trust.clone())
+                    .unwrap_or_default(),
             }),
             // The account the session was recorded under, never a re-resolved one.
             profile: node.profile.clone(),

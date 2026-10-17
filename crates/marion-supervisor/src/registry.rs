@@ -643,6 +643,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         })
     }
 

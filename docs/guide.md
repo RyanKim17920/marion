@@ -400,7 +400,10 @@ directory) records the repository's git directory, which covers every worktree o
 `marion trust deny --repo [<dir>]` declines it; `marion trust list` shows each repository you
 decided about. In a child's worktree the config must also be exactly what your history holds (as
 of where the child's base meets your `HEAD`): a child that edited or added any of it, or carried
-such an edit in from its parent, runs as in an untrusted repository.
+such an edit in from its parent, runs as in an untrusted repository. In your own checkout, which a
+root or a `shared-cwd` node can write, the config loads as it stood when you launched the root:
+marion fingerprints it then, and a continuation, a resume, or a node below that finds it changed
+(or finds a link in it) runs as in an untrusted repository.
 
 When `marion` or `marion run` starts at your terminal, on your own login, in a repository that
 holds any of that config and that you have not decided about, it asks once: `this repository has

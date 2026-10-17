@@ -1270,6 +1270,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("root"),
@@ -1294,6 +1295,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("child"),
@@ -2012,6 +2014,7 @@ mod tests {
                     verification: vec![],
                     race: None,
                     workflow: None,
+                    trust: Default::default(),
                 }),
             ),
             record(
@@ -2110,6 +2113,7 @@ mod tests {
                     verification: vec![],
                     race: None,
                     workflow: None,
+                    trust: Default::default(),
                 }),
             ),
             at(
@@ -2334,6 +2338,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             }),
         )];
         if let Some(observation) = change {
@@ -2632,6 +2637,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         })
     }
 
@@ -2951,6 +2957,7 @@ mod tests {
                 }),
                 budget: None,
                 workflow: None,
+                trust: Default::default(),
             })
         };
         let opened = RecordKind::RaceOpened(RaceOpened {
@@ -3033,6 +3040,7 @@ mod tests {
                     round,
                     part: 0,
                 }),
+                trust: Default::default(),
             })
         };
         let decided = |step: u8, round: u8, verdict: StepVerdict, nodes: &[&str]| {
@@ -3131,6 +3139,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             })
         };
         let early = RecordKind::StateChanged(StateChanged {

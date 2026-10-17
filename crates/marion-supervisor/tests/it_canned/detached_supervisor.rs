@@ -834,6 +834,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         }),
     );
     seed(

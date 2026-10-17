@@ -70,6 +70,7 @@ pub fn a_finished_node(
         verification: vec![],
         race: None,
         workflow: None,
+        trust: Default::default(),
     }));
     next(RecordKind::Spawned(Spawned {
         agent_id: id.clone(),

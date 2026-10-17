@@ -381,6 +381,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             }));
             self.push(RecordKind::Spawned(Spawned {
                 agent_id: id(agent),
@@ -457,6 +458,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         }));
         log.push(RecordKind::SpawnAborted(SpawnAborted {
             agent_id: id("nevergot"),

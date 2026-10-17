@@ -1017,16 +1017,7 @@ pub fn repo_config_held(
     });
     let against = recorded.as_deref().unwrap_or("HEAD");
     let Ok(reference) = git(operator, &["merge-base", against, &base.0]) else {
-        let present: Vec<String> = paths
-            .iter()
-            .filter(|p| std::fs::symlink_metadata(wt.dir().join(p)).is_ok())
-            .map(|p| p.to_string())
-            .collect();
-        return if present.is_empty() {
-            vec![paths[0].to_string()]
-        } else {
-            present
-        };
+        return config_held_unverified(wt.dir(), paths);
     };
     let reference = reference.trim();
     paths
@@ -1034,6 +1025,21 @@ pub fn repo_config_held(
         .filter(|p| !config_as_committed(wt, reference, p))
         .map(|p| p.to_string())
         .collect()
+}
+
+/// **What is held where nothing says the config in `dir` is the operator's**: every path present
+/// there, and with none present the first path stands for the lot, so the answer is never "none
+/// held". Empty only for no `paths`.
+pub fn config_held_unverified(dir: &Path, paths: &[&str]) -> Vec<String> {
+    let present: Vec<String> = paths
+        .iter()
+        .filter(|p| std::fs::symlink_metadata(dir.join(p)).is_ok())
+        .map(|p| p.to_string())
+        .collect();
+    match (present.is_empty(), paths.first()) {
+        (true, Some(first)) => vec![first.to_string()],
+        _ => present,
+    }
 }
 
 /// **Whether `rel` in `wt` is, byte for byte, what `reference` holds there**: the same plain
@@ -1110,6 +1116,56 @@ fn plain_files(
     entries
         .into_iter()
         .all(|e| e.is_ok_and(|e| plain_files(&e.path(), &rel.join(e.file_name()), found)))
+}
+
+/// **The repository's own harness config `paths` in the operator's checkout `dir`, as it is
+/// now** ([`marion_core::journal::RepoConfigSnapshot`]): each path to a digest of the plain files
+/// at or under it — none, where it is absent — read as [`config_as_committed`] reads a child's,
+/// following no link. A link at any component, or anything but a plain file or directory, is
+/// `None`: what it points at is not something marion can hold a later generation to.
+pub fn repo_config_snapshot(
+    dir: &Path,
+    paths: &[&str],
+) -> marion_core::journal::RepoConfigSnapshot {
+    marion_core::journal::RepoConfigSnapshot(
+        paths
+            .iter()
+            .map(|p| (p.to_string(), config_digest(dir, p)))
+            .collect(),
+    )
+}
+
+/// One path's digest for [`repo_config_snapshot`]: every plain file at or under `rel`, by name
+/// and content, length-prefixed so no two file sets hash alike.
+fn config_digest(dir: &Path, rel: &str) -> Option<String> {
+    let mut at = dir.to_path_buf();
+    let mut found = std::collections::BTreeMap::new();
+    let mut absent = false;
+    for part in Path::new(rel).components() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => return None,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                absent = true;
+                break;
+            }
+            Err(_) => return None,
+        }
+    }
+    if !absent && !plain_files(&at, Path::new(rel), &mut found) {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    for (path, on_disk) in &found {
+        let name = path.as_os_str().as_bytes();
+        let bytes = std::fs::read(on_disk).ok()?;
+        hasher.update(&(name.len() as u64).to_le_bytes());
+        hasher.update(name);
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Some(hasher.finalize().to_hex().to_string())
 }
 
 /// The commit `refs/heads/<branch>` names now.

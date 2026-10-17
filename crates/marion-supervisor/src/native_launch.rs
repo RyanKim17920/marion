@@ -395,6 +395,7 @@ impl NativeNodeJournal {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             }))
     }
 

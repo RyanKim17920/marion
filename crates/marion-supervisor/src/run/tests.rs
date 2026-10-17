@@ -302,6 +302,7 @@ fn a_resume_takes_the_recorded_workspace_instead_of_cutting_a_second_one() {
         session: "sess-1".into(),
         workspace: recorded.clone(),
         usage: None,
+        trust: Default::default(),
     });
     let (workspace, _base, _claim, _prelaunch) = select_workspace(
         &req,
@@ -2200,7 +2201,8 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     .expect("the child's worktree");
     let mut first = launch_spec(None);
     first.cwd = wt.clone();
-    let trust = repo_trust(&env, &wt, Some(&base), None);
+    let record = TrustRecord::default();
+    let trust = repo_trust(&env, &wt, Some(&base), None, &record);
     (first.extra.repo_config_own, first.extra.repo_trusted) = (trust.own, trust.trusted);
     assert!(
         first.extra.repo_config_own,
@@ -2215,7 +2217,7 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     let (next, _) = continuation_launch(
         &env,
         &wt,
-        (Some(&base), None),
+        (Some(&base), None, &record),
         &first,
         "s1".into(),
         "go on".into(),
@@ -2226,6 +2228,103 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     );
     assert_eq!(next.resume.as_deref(), Some("s1"));
     assert_eq!(next.prompt, "go on");
+}
+
+/// **In the operator's own checkout, a later generation is held to what the checkout held at the
+/// first launch**: a node running there (a root, a `shared-cwd` child) that plants a repository
+/// config in generation 0 does not have it load as the operator's in generation 1, and a resume
+/// with nothing recorded loads none.
+///
+/// Mutation: answer the operator's tree as its own unconditionally (`Tree::Operator(_) =>
+/// Vec::new()`) and the second assertion fails.
+#[test]
+fn an_operator_tree_continuation_is_held_to_its_first_launchs_config() {
+    let root = scratch("supervisor-continuation-operator-trust");
+    let repo = fixture_repo(&root);
+    let state = root.join("state");
+    let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
+    let env = Env {
+        os_sandbox: true,
+        project_dir: project.clone(),
+        state: state.clone(),
+        project_root: crate::socket::project_root(&repo),
+        bridge: PathBuf::from("/bin/marion-supervisor"),
+        base_url: None,
+        auth: Auth::Inherited,
+    };
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+    std::fs::write(repo.join(".claude/settings.json"), "{}\n").unwrap();
+    let paths = crate::trust::repo_config_paths();
+    let record = TrustRecord {
+        repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
+    };
+    let gen0 = repo_trust(&env, &repo, None, None, &record);
+    assert!(
+        gen0.own,
+        "the operator's checkout as they launched it is theirs, uncommitted config included"
+    );
+
+    std::fs::create_dir_all(repo.join(".codex")).unwrap();
+    std::fs::write(
+        repo.join(".codex/config.toml"),
+        "[mcp_servers.x]\ncommand = \"x\"\n",
+    )
+    .unwrap();
+    let mut first = launch_spec(None);
+    first.cwd = repo.clone();
+    (first.extra.repo_config_own, first.extra.repo_trusted) = (gen0.own, gen0.trusted);
+    let (next, _) = continuation_launch(
+        &env,
+        &repo,
+        (None, None, &record),
+        &first,
+        "s1".into(),
+        "go on".into(),
+    );
+    assert!(
+        !next.extra.repo_config_own && !next.extra.repo_trusted,
+        "a config planted in the operator's checkout in generation 0 is not theirs in generation 1"
+    );
+
+    std::fs::remove_dir_all(repo.join(".codex")).unwrap();
+    assert!(
+        repo_trust(&env, &repo, None, None, &record).own,
+        "put back exactly as it was, it is the operator's again"
+    );
+    std::fs::write(repo.join(".claude/settings.json"), "{\"hooks\":{}}\n").unwrap();
+    assert!(
+        !repo_trust(&env, &repo, None, None, &record).own,
+        "an edit to a config the operator had is held too"
+    );
+    std::fs::write(repo.join(".claude/settings.json"), "{}\n").unwrap();
+    assert!(
+        !repo_trust(&env, &repo, None, None, &TrustRecord::default()).own,
+        "a resume whose intent recorded nothing has nothing to hold the checkout to"
+    );
+}
+
+/// **A link in the checkout's config is never held to a snapshot**: what it points at is outside
+/// what was fingerprinted, so a later generation does not count it as the operator's.
+#[test]
+fn a_linked_config_in_the_operator_tree_is_not_the_operators_after_generation_0() {
+    let root = scratch("supervisor-operator-trust-link");
+    let repo = fixture_repo(&root);
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("settings.json"), "{}\n").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, repo.join(".claude")).unwrap();
+    let paths = crate::trust::repo_config_paths();
+    let record = TrustRecord {
+        repo_config: Some(crate::spawn::repo_config_snapshot(&repo, &paths)),
+    };
+    let trust = repo_trust_of(
+        crate::spawn::Tree::Operator(&repo),
+        &crate::socket::project_root(&repo),
+        None,
+        None,
+        &record,
+    );
+    assert!(!trust.own);
 }
 
 fn launch_spec(model: Option<String>) -> LaunchSpec {

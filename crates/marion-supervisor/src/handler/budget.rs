@@ -253,6 +253,7 @@ mod tests {
                 budget: None,
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             }),
         )
         .unwrap();

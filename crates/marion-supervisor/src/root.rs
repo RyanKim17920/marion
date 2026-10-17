@@ -64,7 +64,7 @@ use marion_core::contract::{
 };
 use marion_core::harness::Harness;
 use marion_core::ids::uuid_v7;
-use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
+use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned, TrustRecord};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::proto::NativeLaunchContext;
 use marion_core::root_change::{
@@ -220,6 +220,9 @@ pub struct RootResume {
     pub session: String,
     /// What the node's earlier runs recorded spending (`ReplayedNode::usage`).
     pub usage: Option<TokenUsage>,
+    /// What the root's repository-config trust was held to at its first launch, from its intent:
+    /// carried, never re-taken, since the root may have written its checkout since.
+    pub trust: TrustRecord,
 }
 
 /// What `marion run` was asked for.
@@ -476,6 +479,39 @@ pub struct RootNode {
     /// applied, and its context. `Some` only for a headless root whose endpoint has another stated
     /// credential to move to ([`rotated`]); a pane root's operator sees a refused key directly.
     pub rotation: Option<RootRelaunch>,
+    /// What every later launch of this root asks its repository-config trust of ([`RootTrust`]).
+    pub trust: RootTrust,
+}
+
+/// **A root's repository-config trust, for its later launches**: its checkout, and what the
+/// checkout held at the root's first launch ([`TrustRecord`]). A root runs in the operator's own
+/// checkout and can write it, so a continuation, a rotation or a resume loads the repository's
+/// config only while it is still exactly that.
+#[derive(Debug, Clone)]
+pub struct RootTrust {
+    checkout: PathBuf,
+    project_root: PathBuf,
+    record: TrustRecord,
+}
+
+impl RootTrust {
+    /// The checkout's standing as it is now, against what the first launch recorded.
+    fn now(&self) -> crate::run::RepoTrust {
+        crate::run::repo_trust_of(
+            crate::spawn::Tree::Operator(&self.checkout),
+            &self.project_root,
+            None,
+            None,
+            &self.record,
+        )
+    }
+
+    /// `launch`, with its trust asked again of the checkout as it is now.
+    fn applied(&self, mut launch: LaunchSpec) -> LaunchSpec {
+        let now = self.now();
+        (launch.extra.repo_config_own, launch.extra.repo_trusted) = (now.own, now.trusted);
+        launch
+    }
 }
 
 impl RootNode {
@@ -769,6 +805,18 @@ pub fn prepare_watched(
     };
     // **Before `create_dir_all`, which is this function's first side effect.** See the doc above.
     let node_token = observer.identified(&agent_id);
+    // **What the operator's checkout held when they launched this root**, taken before it runs —
+    // or, on a resume, what its first launch took, never what the root may have written since.
+    let trust_record = match &spec.resume {
+        Some(r) => r.trust.clone(),
+        None => TrustRecord {
+            repo_config: Some(crate::spawn::repo_config_snapshot(
+                &spec.repo,
+                &crate::trust::repo_config_paths(),
+            )),
+        },
+    };
+    observer.trust_recorded(&agent_id, &trust_record);
     // §2: *"both the supervisor and its state are keyed on the project root (git common-dir,
     // falling back to cwd)"*. `spec.repo` is the root's cwd and the base of §6.6's worktrees, which
     // is a different question — keying the journal on it gave a linked worktree its own tree while
@@ -888,7 +936,8 @@ pub fn prepare_watched(
             os_sandbox: spec.os_sandbox,
             // The repository's own harness config loads only where the operator trusted it.
             repo_trusted: crate::trust::repo_trusted(&project_root),
-            // A root runs in the operator's own checkout: its config is theirs.
+            // A root runs in the operator's own checkout: its config is theirs as they launched
+            // it. A resume asks again below ([`RootTrust`]).
             repo_config_own: true,
             // The only admin dir the sandbox writes: proven against the registration.
             git_admin_dir: crate::gitcmd::admin_dir(&spec.repo, &project_root),
@@ -900,6 +949,14 @@ pub fn prepare_watched(
             ..Extras::default()
         },
     );
+    let trust = RootTrust {
+        checkout: spec.repo.clone(),
+        project_root: project_root.clone(),
+        record: trust_record.clone(),
+    };
+    if spec.resume.is_some() {
+        launch = trust.applied(launch);
+    }
     let gateway = match &endpoint {
         Some(ep) => crate::endpoint::open(ep)?.map(std::sync::Arc::new),
         None => None,
@@ -999,6 +1056,7 @@ pub fn prepare_watched(
             verification: vec![],
             race: None,
             workflow: None,
+            trust: trust_record,
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {
@@ -1052,6 +1110,7 @@ pub fn prepare_watched(
         turns,
         relaunch,
         rotation,
+        trust,
         agent_id,
         project,
         agent_dir,
@@ -1771,7 +1830,8 @@ fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode,
         .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     let gateway = crate::endpoint::open(&next)?.map(std::sync::Arc::new);
-    let mut launch = r.launch.clone();
+    // The process it replaces ran in the checkout: its trust is asked again.
+    let mut launch = node.trust.applied(r.launch.clone());
     crate::endpoint::apply(&mut launch, &next, gateway.as_deref());
     crate::run::write_config_documents(adapter.launch_documents(&launch, &r.ctx)?)?;
     let invocation = compile_root(adapter.as_ref(), false, &launch, &r.ctx)?;
@@ -2440,11 +2500,12 @@ fn launch_only(
         };
         generation += 1;
         let via = format!("continuation:gen{generation}");
-        let launch = LaunchSpec {
+        // Asked again of the checkout, which the generation before could write.
+        let launch = node.trust.applied(LaunchSpec {
             resume: Some(resume),
             prompt: crate::inbox::render(&message),
             ..relaunch.launch.clone()
-        };
+        });
         let inv = adapter
             .launch_documents(&launch, &relaunch.ctx)
             .map_err(RootError::from)

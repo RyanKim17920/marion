@@ -4908,6 +4908,7 @@ mod tests {
                             verification: vec![],
                             race: None,
                             workflow: None,
+                            trust: Default::default(),
                         }),
                     ),
                     // Written after the run is over, in the window between the stop and the last
@@ -6034,6 +6035,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             })
         };
         let session = |pane: bool| {

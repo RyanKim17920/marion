@@ -70,6 +70,7 @@ fn intent(agent: &str, parent: Option<&str>, ty: &str, depth: u32) -> RecordKind
         verification: vec![],
         race: None,
         workflow: None,
+        trust: Default::default(),
     })
 }
 
@@ -455,6 +456,7 @@ fn an_unknown_type_projects_from_its_recorded_bound_and_not_otherwise() {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         })
     };
     let bounded = node_of(&[line(0, 1, intent_with(Some(120)))], "r");
@@ -495,6 +497,7 @@ fn a_recorded_type_is_resumed_only_under_the_harness_it_was_journaled_with() {
         verification: vec![],
         race: None,
         workflow: None,
+        trust: Default::default(),
     };
     std::fs::write(&file, row("codex")).unwrap();
     assert_eq!(
@@ -8545,6 +8548,7 @@ mod owns_nodes {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             }),
             spawned("child"),
             session("child", workspace),
@@ -9052,4 +9056,32 @@ fn a_roots_branch_is_recorded_at_its_claim_and_inherited_below_it() {
         Some("main"),
         "the child inherits the root's, not the HEAD the root moved"
     );
+}
+
+/// **A node's trust record is kept by its owner for the nodes it spawns**: what the root recorded
+/// before it ran is what its child inherits, and a node with none recorded hands down none.
+#[test]
+fn a_nodes_trust_record_is_kept_for_the_nodes_it_spawns() {
+    use crate::run::SpawnObserver;
+    let fx = fx("handler-trust-record");
+    let (progress, _rx) = std::sync::mpsc::channel();
+    let owner = NodeOwner {
+        handle: Arc::clone(&fx.handle),
+        task_id: None,
+        repo: "/repo".into(),
+        tx: progress,
+        identified: Mutex::new(None),
+        announce_to: None,
+        owes: Default::default(),
+    };
+    owner.identified(&id("root"));
+    assert_eq!(owner.trust_record(&id("root")), None, "none until recorded");
+    let record = marion_core::journal::TrustRecord {
+        repo_config: Some(marion_core::journal::RepoConfigSnapshot(
+            [(".mcp.json".to_string(), Some("aa".to_string()))].into(),
+        )),
+    };
+    owner.trust_recorded(&id("root"), &record);
+    assert_eq!(owner.trust_record(&id("root")), Some(record));
+    assert_eq!(owner.trust_record(&id("nobody")), None);
 }

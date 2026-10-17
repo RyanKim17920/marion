@@ -501,6 +501,7 @@ mod tests {
                 race: None,
                 review_of: None,
                 workflow: None,
+                trust: Default::default(),
             }));
             self.write(RecordKind::Spawned(Spawned {
                 agent_id: id(agent),
@@ -936,6 +937,7 @@ mod tests {
             race: None,
             review_of: None,
             workflow: None,
+            trust: Default::default(),
         }));
         fx.handle.live.refresh();
         let e = fx.cancel("root", None).expect_err("a node without a pid");

@@ -34,6 +34,7 @@ fn a_tree() -> Vec<RecordKind> {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         }),
         RecordKind::Spawned(Spawned {
             agent_id: AgentId("root".into()),
@@ -61,6 +62,7 @@ fn a_tree() -> Vec<RecordKind> {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         }));
         kinds.push(RecordKind::Spawned(Spawned {
             agent_id: child.clone(),

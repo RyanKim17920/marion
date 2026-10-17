@@ -424,6 +424,55 @@ pub struct SpawnIntent {
     /// what the previous build wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<crate::budget::Budget>,
+    /// **What this node's repository-config trust is held to** ([`TrustRecord`]): taken at its
+    /// root's first launch, inherited below it, and carried, never re-taken, across a resume.
+    ///
+    /// **Additive**: absent on the wire when empty, so a node that records none is byte-identical
+    /// to what the previous build wrote, and an older intent replays as recording none.
+    #[serde(default, skip_serializing_if = "TrustRecord::is_empty")]
+    pub trust: TrustRecord,
+}
+
+/// **What a node's repository-config trust is held to, decided once for its tree and never
+/// re-read from a tree it runs in.** A root runs in the operator's own checkout and can write it,
+/// so what the operator's checkout held when they launched the root is recorded before the root
+/// runs; every later generation, every resume, and every node below it running in that checkout
+/// counts the repository's config as the operator's only while it is still exactly that.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustRecord {
+    /// The repository's own harness config in the operator's checkout at the root's first launch.
+    /// `None` where none was taken (an older intent): nothing to hold a tree to, so no config in
+    /// the operator's checkout counts as theirs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_config: Option<RepoConfigSnapshot>,
+}
+
+impl TrustRecord {
+    pub fn is_empty(&self) -> bool {
+        self.repo_config.is_none()
+    }
+}
+
+/// **Each repository-config path's content, fingerprinted**: the path (relative to the checkout)
+/// to a digest of every plain file at or under it, or `None` where it could not be read safely (a
+/// link at any component, anything but a plain file or directory, a read error).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RepoConfigSnapshot(pub std::collections::BTreeMap<String, Option<String>>);
+
+impl RepoConfigSnapshot {
+    /// **The paths of `now` not exactly as recorded here**: each whose digest differs, is new, or
+    /// was not readable then or is not now — an unreadable path is never the operator's, since
+    /// nothing says it is unchanged.
+    pub fn held(&self, now: &RepoConfigSnapshot) -> Vec<String> {
+        now.0
+            .iter()
+            .filter(|(path, is)| {
+                !matches!((self.0.get(*path), is), (Some(Some(was)), Some(is)) if was == is)
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
 }
 
 impl SpawnIntent {
@@ -1018,6 +1067,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         })
     }
 
@@ -1243,6 +1293,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         };
         assert!(intent(None, None).is_root(), "the operator's own session");
         assert!(
@@ -1269,6 +1320,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         };
         let plain = serde_json::to_string(&RecordKind::SpawnIntent(intent.clone())).unwrap();
         assert!(!plain.contains("workflow"), "{plain}");
@@ -1306,6 +1358,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 workflow: None,
+                trust: Default::default(),
             })
             .is_barrier()
         );
@@ -1467,6 +1520,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(without)).unwrap(),
@@ -1488,6 +1542,7 @@ mod tests {
             verification: vec![],
             race: None,
             workflow: None,
+            trust: Default::default(),
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(with.clone())).unwrap();
         assert!(
@@ -1513,6 +1568,70 @@ mod tests {
         }
     }
 
+    /// **A repository-config path is the operator's only while its digest is exactly as
+    /// recorded**: changed, new, or unreadable on either side is held, and the record round-trips
+    /// on the intent so a resume holds the tree to the same snapshot.
+    #[test]
+    fn a_trust_record_holds_every_path_not_exactly_as_recorded() {
+        let snap = |rows: &[(&str, Option<&str>)]| {
+            RepoConfigSnapshot(
+                rows.iter()
+                    .map(|(p, d)| (p.to_string(), d.map(str::to_string)))
+                    .collect(),
+            )
+        };
+        let was = snap(&[
+            (".mcp.json", Some("aa")),
+            (".codex/config.toml", Some("bb")),
+            (".pi", None),
+        ]);
+        assert!(was.held(&snap(&[(".mcp.json", Some("aa"))])).is_empty());
+        assert_eq!(
+            was.held(&snap(&[
+                (".mcp.json", Some("aa")),
+                (".codex/config.toml", Some("cc")),
+                (".pi", None),
+                (".opencode", Some("dd")),
+            ])),
+            vec![".codex/config.toml", ".opencode", ".pi"],
+            "changed, unrecorded and unreadable are each held"
+        );
+        assert_eq!(
+            was.held(&snap(&[(".mcp.json", None)])),
+            vec![".mcp.json"],
+            "a path unreadable now is held even where it was recorded"
+        );
+
+        let intent = SpawnIntent {
+            budget: None,
+            review_of: None,
+            agent_id: AgentId("a-1".into()),
+            parent_id: None,
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: 0,
+            task_id: None,
+            timeout_secs: None,
+            verification: vec![],
+            race: None,
+            workflow: None,
+            trust: TrustRecord {
+                repo_config: Some(was),
+            },
+        };
+        let line = serde_json::to_string(&RecordKind::SpawnIntent(intent.clone())).unwrap();
+        assert!(
+            line.contains(
+                r#""trust":{"repo_config":{".codex/config.toml":"bb",".mcp.json":"aa",".pi":null}}"#
+            ),
+            "{line}"
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&line).unwrap(),
+            RecordKind::SpawnIntent(intent)
+        );
+    }
+
     /// **The verification lines are additive in both directions, for the bound's reasons.** An
     /// intent written before the field existed replays as *no lines* — which is what a resumed
     /// child ran with before the lines were journaled — and an intent with none writes the
@@ -1532,6 +1651,7 @@ mod tests {
             verification,
             race: None,
             workflow: None,
+            trust: Default::default(),
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(intent(vec![]))).unwrap(),
@@ -1580,6 +1700,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             workflow: None,
+            trust: Default::default(),
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(intent(None))).unwrap(),
@@ -1862,6 +1983,7 @@ mod tests {
             }),
             budget: None,
             workflow: None,
+            trust: Default::default(),
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(seat.clone())).unwrap();
         assert!(line.contains(r#""race":{"race_id":"019f0000-0000-7000-8000-00000000000a","role":{"Candidate":3}}"#), "{line}");

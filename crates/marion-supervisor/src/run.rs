@@ -27,7 +27,7 @@ use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, Millis, SystemTime};
 use marion_core::journal::{
-    ContractPersisted, Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned,
+    ContractPersisted, Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned, TrustRecord,
 };
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
@@ -252,6 +252,9 @@ pub struct ChildResume {
     /// What the node's earlier runs recorded spending (`ReplayedNode::usage`) — the total a row
     /// whose counters run over the session subtracts (`UsageMeter::resumed_from`).
     pub usage: Option<TokenUsage>,
+    /// What the node's repository-config trust was held to, from its intent: carried, never
+    /// re-taken, since the node may have written its tree since.
+    pub trust: TrustRecord,
 }
 
 /// The node whose `spawn` this is — §6.1 step 2's gates read the **caller's** agent type, never
@@ -1723,6 +1726,16 @@ pub trait SpawnObserver: Sync {
     fn trust_branch(&self, _tree: &Path) -> Option<String> {
         None
     }
+    /// **What the node `agent_id`'s repository-config trust is held to**
+    /// ([`marion_core::journal::TrustRecord`]), as it recorded at its launch — what a node it
+    /// spawns inherits. `None` for an owner that records none, and then the child takes its own
+    /// at its launch.
+    fn trust_record(&self, _agent_id: &AgentId) -> Option<TrustRecord> {
+        None
+    }
+    /// The node `agent_id`'s [`TrustRecord`], decided before its process exists: kept by an owner
+    /// for [`Self::trust_record`].
+    fn trust_recorded(&self, _agent_id: &AgentId, _record: &TrustRecord) {}
     /// **§7.6's subtree scan, answered by whoever holds the tree.** The live descendants of
     /// `agent_id` — the whole subtree, in the gating sense `descendant_gate::live_descendants`
     /// states — or `None` for an owner that holds no registry and so cannot see the tree at all.
@@ -1816,16 +1829,16 @@ pub fn tree_of<'a>(env: &'a Env, dir: &'a Path) -> crate::spawn::Tree<'a> {
 
 /// One generation's standing on the repository's own harness config ([`repo_trust`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RepoTrust {
+pub(crate) struct RepoTrust {
     /// The tree's config is the operator's.
-    own: bool,
+    pub own: bool,
     /// It loads: the operator's, in a repository they trusted.
-    trusted: bool,
+    pub trusted: bool,
     /// **What was held back that the operator would expect to load**: in a repository they
     /// trusted, the config paths the tree holds otherwise than their branch. Empty anywhere else
     /// — an untrusted repository loads none, and Setup says why. The contract's
     /// `repo_config_held`.
-    held: Vec<String>,
+    pub held: Vec<String>,
 }
 
 /// **Whether the repository's own harness config in `wt` is the operator's, and whether it
@@ -1834,17 +1847,42 @@ struct RepoTrust {
 /// again for every generation of a node, never carried from an earlier one: a child that planted
 /// a config in one generation must not have it load in the next as the operator's. `branch` is
 /// the root's, recorded at its launch ([`SpawnObserver::trust_branch`]).
-fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>, branch: Option<&str>) -> RepoTrust {
+///
+/// The operator's own checkout is theirs, but a root (or a `shared-cwd` node) runs in it and can
+/// write it: there the config is the operator's only while it is exactly what `record` took at
+/// the root's first launch ([`marion_core::journal::RepoConfigSnapshot::held`]).
+fn repo_trust(
+    env: &Env,
+    wt: &Path,
+    base: Option<&Oid>,
+    branch: Option<&str>,
+    record: &TrustRecord,
+) -> RepoTrust {
+    repo_trust_of(tree_of(env, wt), &env.project_root, base, branch, record)
+}
+
+/// [`repo_trust`] of a tree already placed: a root's checkout is always
+/// [`crate::spawn::Tree::Operator`], wherever it is.
+pub(crate) fn repo_trust_of(
+    tree: crate::spawn::Tree<'_>,
+    project_root: &Path,
+    base: Option<&Oid>,
+    branch: Option<&str>,
+    record: &TrustRecord,
+) -> RepoTrust {
     let paths = crate::trust::repo_config_paths();
-    let differs = match tree_of(env, wt) {
-        tree @ crate::spawn::Tree::Child { .. } => match base {
-            Some(b) => crate::spawn::repo_config_held(tree, b, &env.project_root, branch, &paths),
+    let differs = match tree {
+        crate::spawn::Tree::Child { .. } => match base {
+            Some(b) => crate::spawn::repo_config_held(tree, b, project_root, branch, &paths),
             None => paths.iter().take(1).map(|p| p.to_string()).collect(),
         },
-        crate::spawn::Tree::Operator(_) => Vec::new(),
+        crate::spawn::Tree::Operator(dir) => match &record.repo_config {
+            Some(was) => was.held(&crate::spawn::repo_config_snapshot(dir, &paths)),
+            None => crate::spawn::config_held_unverified(dir, &paths),
+        },
     };
     let own = differs.is_empty();
-    let in_trusted_repo = crate::trust::repo_trusted(&env.project_root);
+    let in_trusted_repo = crate::trust::repo_trusted(project_root);
     RepoTrust {
         own,
         trusted: own && in_trusted_repo,
@@ -1858,7 +1896,7 @@ fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>, branch: Option<&str>) ->
 fn continuation_launch(
     env: &Env,
     wt: &Path,
-    (base, branch): (Option<&Oid>, Option<&str>),
+    (base, branch, record): (Option<&Oid>, Option<&str>, &TrustRecord),
     launch: &LaunchSpec,
     resume: String,
     prompt: String,
@@ -1868,7 +1906,7 @@ fn continuation_launch(
         prompt,
         ..launch.clone()
     };
-    let trust = repo_trust(env, wt, base, branch);
+    let trust = repo_trust(env, wt, base, branch, record);
     (next.extra.repo_config_own, next.extra.repo_trusted) = (trust.own, trust.trusted);
     (next, trust.held)
 }
@@ -2258,6 +2296,20 @@ pub fn run_spawn_watched(
     // its intent was lost is invisible to a restart — the untracked live process this ordering
     // exists to prevent.
     check_budget_enforceable(agent_type.harness, req.budget.as_ref())?;
+    // **What this node's repository-config trust is held to**, decided before it exists: a
+    // resume's own, carried; below a node, that node's; else the operator's checkout as it is now.
+    let trust_record = match &req.resume {
+        Some(r) => r.trust.clone(),
+        None => requester
+            .parent_id()
+            .and_then(|parent| observer.trust_record(&parent))
+            .unwrap_or_else(|| TrustRecord {
+                repo_config: Some(crate::spawn::repo_config_snapshot(
+                    &req.repo,
+                    &crate::trust::repo_config_paths(),
+                )),
+            }),
+    };
     crate::journal::append(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
@@ -2285,6 +2337,7 @@ pub fn run_spawn_watched(
             // intent.
             race: req.race.clone(),
             workflow: req.workflow.as_ref().map(|w| w.seat.clone()),
+            trust: trust_record.clone(),
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {
@@ -2313,6 +2366,7 @@ pub fn run_spawn_watched(
     // written. Between the two there is exactly one durable fact and no side effect — which is the
     // only window in which "the node exists and nothing about it is irreversible" is true.
     let node_token = observer.identified(&agent_id);
+    observer.trust_recorded(&agent_id, &trust_record);
     // Every path out of this function from here on resolves that intent — including the `?`
     // returns below, which is what this guard is for. See [`AbortOnDrop`].
     let mut resolution = AbortOnDrop {
@@ -2582,7 +2636,13 @@ pub fn run_spawn_watched(
     let launched_at = Instant::now();
     // The root's branch at its launch, the trust reference for every generation of this node.
     let trust_branch = observer.trust_branch(&req.repo);
-    let trust = repo_trust(env, &wt, base.as_ref(), trust_branch.as_deref());
+    let trust = repo_trust(
+        env,
+        &wt,
+        base.as_ref(),
+        trust_branch.as_deref(),
+        &trust_record,
+    );
     let (repo_config_own, repo_trusted) = (trust.own, trust.trusted);
     // The latest generation's: what the contract records as held back.
     let mut repo_config_held = trust.held;
@@ -2940,7 +3000,7 @@ pub fn run_spawn_watched(
             let (next_launch, held) = continuation_launch(
                 env,
                 &wt,
-                (base.as_ref(), trust_branch.as_deref()),
+                (base.as_ref(), trust_branch.as_deref(), &trust_record),
                 &launch,
                 resume,
                 crate::inbox::render(&message),

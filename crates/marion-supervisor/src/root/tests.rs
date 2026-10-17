@@ -2531,3 +2531,35 @@ fn a_panes_screen_reads_as_blocked_on_its_dialog_or_ask_else_running() {
     assert_eq!(state, NodeState::Blocked(BlockReason::Permission));
     assert!(reason.unwrap().contains("answer it in its pane"));
 }
+
+/// **A root's later launch is held to what its checkout held at its first**: a root that plants
+/// `.codex/config.toml` in the operator's checkout during generation 0 does not have it load,
+/// trusted, in its continuation, a rotation or a resume.
+///
+/// Mutation: answer `Tree::Operator` as its own unconditionally in `run::repo_trust_of` and this
+/// fails.
+#[test]
+fn a_root_that_plants_repo_config_in_generation_0_is_untrusted_in_generation_1() {
+    let dir = marion_testsupport::scratch("root-trust-plant");
+    let checkout = dir.to_path_buf();
+    let record = TrustRecord {
+        repo_config: Some(crate::spawn::repo_config_snapshot(
+            &checkout,
+            &crate::trust::repo_config_paths(),
+        )),
+    };
+    let trust = RootTrust {
+        checkout: checkout.clone(),
+        project_root: checkout.clone(),
+        record,
+    };
+    assert!(trust.now().own, "nothing changed since the first launch");
+    std::fs::create_dir_all(checkout.join(".codex")).unwrap();
+    std::fs::write(
+        checkout.join(".codex/config.toml"),
+        "[mcp_servers.x]\ncommand = \"x\"\n",
+    )
+    .unwrap();
+    let now = trust.now();
+    assert!(!now.own && !now.trusted, "{now:?}");
+}
