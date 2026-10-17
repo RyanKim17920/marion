@@ -155,13 +155,16 @@ pub struct VersionProbe {
     _document: Option<PrivateDir>,
 }
 
-/// How many times [`spawn_past_busy_text`] tries, and how long it waits between tries.
-const BUSY_TEXT_TRIES: u32 = 20;
-const BUSY_TEXT_PAUSE: std::time::Duration = std::time::Duration::from_millis(5);
+/// [`spawn_past_busy_text`]'s first pause, doubled after each busy try, and the most it waits in
+/// all: 5, 10, 20 … 320 ms, then what is left of the second, nine tries.
+const BUSY_TEXT_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_millis(5);
+const BUSY_TEXT_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// **`spawn`, tried again while the file it executes is open for writing somewhere** (`ETXTBSY`,
-/// "Text file busy"), at most [`BUSY_TEXT_TRIES`] times [`BUSY_TEXT_PAUSE`] apart; any other
-/// outcome, and the last busy one, as it came.
+/// "Text file busy"), backing off from [`BUSY_TEXT_FIRST_PAUSE`] by doubling until
+/// [`BUSY_TEXT_BUDGET`] has been waited; any other outcome, and the last busy one, as it came.
+/// The usual wait is one short pause; the budget is for a loaded machine, where the fork that
+/// holds the descriptor can take long to reach its exec.
 ///
 /// Linux refuses to exec a file any process holds open for writing, and a multi-threaded process
 /// forks while another thread writes one: the forked child holds that write descriptor until its
@@ -170,12 +173,16 @@ const BUSY_TEXT_PAUSE: std::time::Duration = std::time::Duration::from_millis(5)
 /// safe. `spawn` is a closure so a caller can take a lock for each try and not hold it across the
 /// pause.
 pub fn spawn_past_busy_text<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    let mut tries = 1;
+    let (mut waited, mut pause) = (std::time::Duration::ZERO, BUSY_TEXT_FIRST_PAUSE);
     loop {
         match spawn() {
-            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < BUSY_TEXT_TRIES => {
-                tries += 1;
-                std::thread::sleep(BUSY_TEXT_PAUSE);
+            Err(e)
+                if e.kind() == io::ErrorKind::ExecutableFileBusy && waited < BUSY_TEXT_BUDGET =>
+            {
+                let this = pause.min(BUSY_TEXT_BUDGET - waited);
+                std::thread::sleep(this);
+                waited += this;
+                pause *= 2;
             }
             done => return done,
         }
@@ -428,7 +435,8 @@ mod tests {
             Err(busy())
         });
         assert_eq!(got.unwrap_err().kind(), io::ErrorKind::ExecutableFileBusy);
-        assert_eq!(tries, BUSY_TEXT_TRIES);
+        // 5 + 10 + 20 + 40 + 80 + 160 + 320 + 365 ms: eight pauses, a second, nine tries.
+        assert_eq!(tries, 9);
 
         let mut tries = 0;
         let got = spawn_past_busy_text(|| -> io::Result<()> {
