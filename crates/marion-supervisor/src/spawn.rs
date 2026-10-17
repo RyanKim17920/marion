@@ -1235,7 +1235,8 @@ pub fn trust_record_taken(dir: &Path) -> marion_core::journal::TrustRecord {
 ///
 /// Every level from `dir` up to `up_to` (the checkout's top level, where `dir` is under it) is
 /// read, each path keyed `../` once per level above `dir`: a harness reading up from its cwd
-/// (claude's `.mcp.json`, copilot's and agy's config) loads them all.
+/// (claude's `.mcp.json`, copilot's and agy's config) loads them all. A `dir` outside `up_to`
+/// reads nothing: every path is `None`, which is never the operator's.
 pub fn repo_config_snapshot(
     dir: &Path,
     up_to: Option<&Path>,
@@ -1247,7 +1248,14 @@ pub fn repo_config_snapshot(
             .ancestors()
             .take_while(|level| level.starts_with(root))
             .collect(),
-        _ => vec![dir],
+        // Outside the recorded top level: nothing bounds the levels a harness reads, so nothing
+        // is read and every path is held.
+        Some(_) => {
+            return marion_core::journal::RepoConfigSnapshot(
+                paths.iter().map(|p| (p.to_string(), None)).collect(),
+            );
+        }
+        None => vec![dir],
     };
     marion_core::journal::RepoConfigSnapshot(
         levels
@@ -2998,6 +3006,25 @@ mod tests {
             !same(grandchild, &carried),
             "a parent's carried edit is not the operator's"
         );
+    }
+
+    /// **A snapshot of a directory outside the recorded top level reads nothing and holds
+    /// everything**: the record bounds the levels a harness reads, and a launch elsewhere is not
+    /// bounded by it.
+    #[test]
+    fn a_snapshot_outside_the_recorded_top_level_holds_every_path() {
+        let (dir, repo, _) = committed_repo("spawn-snapshot-outside");
+        std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join(".mcp.json"), "{}\n").unwrap();
+        let root = std::fs::canonicalize(&repo).unwrap();
+        let paths = [".mcp.json", ".pi"];
+        let taken = repo_config_snapshot(&outside, Some(&root), &paths);
+        assert!(taken.0.values().all(Option::is_none), "{taken:?}");
+        assert_eq!(taken.held(&taken).len(), paths.len());
+        let inside = repo_config_snapshot(&repo, Some(&root), &paths);
+        assert!(inside.0[".mcp.json"].is_some());
     }
 
     /// **A planted config file is never read whole or waited on**: a FIFO (no writer, so a

@@ -1867,7 +1867,9 @@ pub fn repo_config_rule(f: &Fields) -> Option<bool> {
 /// `recorded` where the supervisor recorded one above `cwd` — a `.git` a node planted between the
 /// two does not cut the search short — else the nearest directory holding `.git`. Outside a
 /// checkout only `cwd` itself is looked at, so an operator's own config under their home never
-/// counts as a repository's.
+/// counts as a repository's. A cwd outside the recorded root, by either spelling, answers `true`:
+/// the record says where the checkout is, and a launch somewhere else is not one marion can bound,
+/// so it fails closed (refused where untrusted) rather than searching from a `.git` it finds.
 fn repo_config_in_checkout(paths: &[&str], cwd: &Path, recorded: Option<&Path>) -> bool {
     let holds = |dir: &Path| {
         paths
@@ -1879,7 +1881,8 @@ fn repo_config_in_checkout(paths: &[&str], cwd: &Path, recorded: Option<&Path>) 
     let (cwd, root) = match recorded {
         Some(r) if cwd.starts_with(r) => (cwd, Some(r)),
         Some(r) if real.starts_with(r) => (real.as_path(), Some(r)),
-        _ => (
+        Some(_) => return true,
+        None => (
             cwd,
             cwd.ancestors()
                 .find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok()),
@@ -2622,8 +2625,9 @@ mod tests {
         );
         assert!(repo_config_in_checkout(&paths, &sub, Some(&root)));
         assert!(
-            !repo_config_in_checkout(&paths, &sub, Some(&dir.join("elsewhere"))),
-            "a recorded root that is not above the cwd is not used"
+            repo_config_in_checkout(&paths, &dir.join("nothing-here"), Some(&root)),
+            "a cwd outside the recorded root is not searched but counts as holding config, so an \
+             untrusted launch there is refused rather than looked at in part"
         );
         assert!(repo_config_in_checkout(&paths, &root, Some(&root)));
         let real = std::fs::canonicalize(&root).unwrap();
