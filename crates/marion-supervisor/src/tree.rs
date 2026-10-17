@@ -586,6 +586,11 @@ pub fn subtree_words(t: &crate::rollup::Totals) -> String {
 
 /// Dial the supervisor for `repo`, **refusing to start one** (see `run`), and say how the status
 /// row should name the project and where a steer dials.
+///
+/// A supervisor found holding its lock with no listener is waited out for up to
+/// [`crate::socket::LEAVING`] ([`crate::client_auth::dial_unless_leaving`]). The TUI dials on its
+/// UI thread, so a lock holder that never lets go freezes the screen for that long per dial; one
+/// leaving after a run costs milliseconds.
 fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), Refusal> {
     let key = key.to_path_buf();
     let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
@@ -2119,10 +2124,39 @@ mod tests {
             panic!("nobody else can be serving a scratch project")
         };
         std::fs::remove_file(paths.socket()).unwrap();
+        let held = open_on(paths.lock());
         let refusal = Subscription::open_at(&key, &state)
             .err()
             .expect("nothing to dial");
         assert!(refusal.contains("dialling the supervisor"), "{refusal}");
+        // Nothing of the wait outlives it — no thread left blocked on the lock, holding it open —
+        // or the long-lived TUI would gather one per failed dial.
+        assert_eq!(
+            open_on(paths.lock()),
+            held,
+            "the wait left the lock file open"
+        );
+    }
+
+    /// How many of this process's descriptors are open on `path`'s file, by device and inode:
+    /// each one `/dev/fd` lists, `fstat`ed in place (a `stat` of `/dev/fd/<n>` names the device
+    /// on macOS, not the file).
+    fn open_on(path: &Path) -> usize {
+        let file = rustix::fs::stat(path).unwrap();
+        let fds: Vec<i32> = std::fs::read_dir("/dev/fd")
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse().ok())
+            .collect();
+        fds.into_iter()
+            .filter_map(|fd| {
+                // SAFETY: borrowed for one `fstat`, never closed; a descriptor gone since the
+                // listing (the listing's own among them) answers `EBADF`, which is skipped.
+                let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+                rustix::fs::fstat(fd).ok()
+            })
+            .filter(|st| (st.st_dev, st.st_ino) == (file.st_dev, file.st_ino))
+            .count()
     }
 
     /// **A cancel needs no one — unless its abort was ignored**: a node whose row had an abort and
