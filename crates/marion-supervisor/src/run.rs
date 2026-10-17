@@ -2017,25 +2017,14 @@ pub(crate) fn read_agent_types(tree: &Path) -> Result<Option<(PathBuf, String)>,
         path: path.clone(),
         error,
     };
-    // Resolved first, so the read below follows no link: an in-tree one is the tree's own and is
-    // read where it points, one leaving the tree is refused.
-    let real = match path.canonicalize() {
-        Ok(real) => real,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(refused(e.to_string())),
-    };
-    if let Ok(root) = tree.canonicalize()
-        && !real.starts_with(&root)
-    {
-        return Err(refused(format!(
-            "it is a link to {}, outside the tree it belongs to; marion reads a tree's agent \
-             types only from the tree itself",
-            real.display()
-        )));
-    }
-    match marion_harness::tree_file::read_to_string(&real) {
+    // Resolved first, so the read follows no link: an in-tree one is the tree's own and is read
+    // where it points, one leaving the tree is refused.
+    match marion_harness::tree_file::read_to_string_within(&path, tree) {
         Ok(text) => Ok(Some((path, text))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(refused(format!(
+            "{e}; marion reads a tree's agent types only from the tree itself"
+        ))),
         Err(e) => Err(refused(e.to_string())),
     }
 }

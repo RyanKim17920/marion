@@ -209,18 +209,8 @@ fn read(path: &Path) -> Result<String, LoadError> {
         path: path.to_path_buf(),
         why,
     };
-    if let (Ok(real), Some(dir)) = (path.canonicalize(), path.parent())
-        && let Ok(dir) = dir.canonicalize()
-        && !real.starts_with(&dir)
-    {
-        return Err(refuse(format!(
-            "it is a link to {}, outside the directory it is listed in",
-            real.display()
-        )));
-    }
-    // The resolved path, so the read itself follows no link; the check above placed it.
-    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    marion_harness::tree_file::read_to_string(&real).map_err(|e| refuse(e.to_string()))
+    let dir = path.parent().unwrap_or(Path::new("."));
+    marion_harness::tree_file::read_to_string_within(path, dir).map_err(|e| refuse(e.to_string()))
 }
 
 /// **The workflow named `name`, ready to run**: found, checked, and — a repository's — trusted by
