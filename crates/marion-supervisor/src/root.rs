@@ -1820,6 +1820,22 @@ fn roots_failure_cause(node: &RootNode, o: &RootOutcome) -> Option<FailureCause>
 /// pointed at `next` (through a fresh gateway where its route is translated), its documents
 /// written again and its invocation compiled again — everything else the node's own, its identity
 /// included.
+/// **A continuation generation's launch**: the root's relaunch resumed under `resume` with
+/// `message` as its prompt, its trust asked again of the checkout, which the generation before
+/// could write.
+fn continuation_spec(
+    node: &RootNode,
+    relaunch: &RootRelaunch,
+    resume: String,
+    message: &crate::inbox::Message,
+) -> LaunchSpec {
+    node.trust.applied(LaunchSpec {
+        resume: Some(resume),
+        prompt: crate::inbox::render(message),
+        ..relaunch.launch.clone()
+    })
+}
+
 fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode, RootError> {
     let r = node
         .rotation
@@ -2497,12 +2513,7 @@ fn launch_only(
         };
         generation += 1;
         let via = format!("continuation:gen{generation}");
-        // Asked again of the checkout, which the generation before could write.
-        let launch = node.trust.applied(LaunchSpec {
-            resume: Some(resume),
-            prompt: crate::inbox::render(&message),
-            ..relaunch.launch.clone()
-        });
+        let launch = continuation_spec(node, relaunch, resume, &message);
         let inv = adapter
             .launch_documents(&launch, &relaunch.ctx)
             .map_err(RootError::from)

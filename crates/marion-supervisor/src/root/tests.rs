@@ -2636,3 +2636,66 @@ fn a_resumed_root_keeps_its_first_launchs_trust_record() {
         "the config the root planted is not the operator's on its resume"
     );
 }
+
+/// **Every later launch of a root asks its trust again**, wired, not only computable: a config
+/// the root planted in its checkout after its first launch is not the operator's in the launch a
+/// continuation generation compiles, nor in a resume's. Driven on every built-in root type whose
+/// headless path continues, so a new one is covered by existing.
+///
+/// Mutation: build the continuation's launch from `relaunch.launch` without
+/// `RootTrust::applied`, or drop the resume branch's `trust.applied`, and this fails.
+#[test]
+fn a_continuation_and_a_resume_launch_ask_the_roots_trust_again() {
+    let mut continuing = 0;
+    for name in marion_core::agent_type::builtin_names() {
+        let (dir, repo) = temp_repo(&format!("trust-wired-{name}"));
+        let spec = |resume: Option<RootResume>| RootSpec {
+            repo: repo.clone(),
+            state: dir.join("state"),
+            resume,
+            ..root_spec(&dir, name)
+        };
+        let Ok(first) = prepare(&spec(None)) else {
+            continue;
+        };
+        let Some(relaunch) = first.relaunch.clone() else {
+            continue;
+        };
+        continuing += 1;
+        assert!(
+            relaunch.launch.extra.repo_config_own,
+            "{name}: gen 0 is the operator's"
+        );
+        std::fs::create_dir_all(repo.join(".codex")).unwrap();
+        std::fs::write(
+            repo.join(".codex/config.toml"),
+            "[mcp_servers.x]\ncommand = \"x\"\n",
+        )
+        .unwrap();
+        let message = crate::inbox::Message {
+            id: "m".into(),
+            source: crate::inbox::Source::Operator,
+            text: "go on".into(),
+            queued_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let next = continuation_spec(&first, &relaunch, "s1".into(), &message);
+        assert!(
+            !next.extra.repo_config_own && !next.extra.repo_trusted,
+            "{name}: a continuation after the plant"
+        );
+        assert_eq!(next.resume.as_deref(), Some("s1"));
+        let resumed = prepare(&spec(Some(RootResume {
+            agent_id: first.agent_id.clone(),
+            session: "s1".into(),
+            usage: None,
+            trust: first.trust.record.clone(),
+        })))
+        .expect("the resume compiles");
+        let launch = &resumed.relaunch.as_ref().expect("still continues").launch;
+        assert!(
+            !launch.extra.repo_config_own && !launch.extra.repo_trusted,
+            "{name}: a resume after the plant"
+        );
+    }
+    assert!(continuing > 0, "some built-in root continues headless");
+}
