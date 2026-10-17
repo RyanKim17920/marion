@@ -258,6 +258,45 @@ fn below_parent(path: &std::path::Path) -> Result<Grant, String> {
     })
 }
 
+/// **`path` inside the recorded checkout `root`, as a [`Grant`]**: the root as [`below_parent`]
+/// makes it, with `path`'s components below the root appended as written. Every directory inside
+/// the checkout is the node's to write, so resolving `path`'s parent would follow a link the node
+/// left at any level between the root and it (`<root>/a` to an operator directory, for a cwd of
+/// `<root>/a/b`); appended literally, [`Grant::check`] refuses that link by name. The root is
+/// found as the outermost of `path`'s ancestors resolving to it, so a link above the checkout,
+/// which is the operator's, still resolves. A `path` not inside the root, or the root itself, is
+/// [`below_parent`]'s.
+fn below_checkout(path: &std::path::Path, root: &std::path::Path) -> Result<Grant, String> {
+    use std::path::Component;
+    let Ok(resolved) = std::fs::canonicalize(root) else {
+        return below_parent(path);
+    };
+    let mut ancestors: Vec<_> = path.ancestors().collect();
+    ancestors.reverse();
+    let Some(at) = ancestors
+        .into_iter()
+        .find(|a| std::fs::canonicalize(a).is_ok_and(|c| c == resolved))
+    else {
+        return below_parent(path);
+    };
+    let rel = path.strip_prefix(at).unwrap_or(std::path::Path::new(""));
+    if rel.as_os_str().is_empty() {
+        return below_parent(path);
+    }
+    if !rel.components().all(|c| matches!(c, Component::Normal(_))) {
+        return Err(format!(
+            "{} is not a plain path inside the checkout {}; refusing to launch with it",
+            path.display(),
+            root.display()
+        ));
+    }
+    let base = below_parent(root)?;
+    Ok(Grant {
+        path: base.path.join(rel),
+        base: base.base,
+    })
+}
+
 /// The agents dir holding `agent_dir`, as named.
 fn agents_lexical(agent_dir: &std::path::Path) -> &std::path::Path {
     agent_dir.parent().unwrap_or(agent_dir)
@@ -295,14 +334,18 @@ impl SandboxPlan {
         let agents = canonical(agents)?;
         let own = agents.join(id);
         // A path inside the agent dir as the node's own components below the resolved agents
-        // dir; anything else as its own name below its resolved parent.
+        // dir; one deeper inside the recorded checkout as its components below the checkout's
+        // root; anything else as its own name below its resolved parent.
         let grant = |path: &std::path::Path| -> Result<Grant, String> {
             match path.strip_prefix(agent_dir) {
                 Ok(rel) => Ok(Grant {
                     base: agents.clone(),
                     path: own.join(rel),
                 }),
-                Err(_) => below_parent(path),
+                Err(_) => match spec.extra.checkout_root.as_deref() {
+                    Some(root) => below_checkout(path, root),
+                    None => below_parent(path),
+                },
             }
         };
         let cwd = grant(&inv.cwd)?;
@@ -889,9 +932,13 @@ mod tests {
     }
 
     /// **A link a node left where it may write grants nothing**: its agent dir moved aside for a
-    /// link, a worktree inside the agent dir, a row's path under its home, or the checkout it
-    /// works in, each swapped for a link to an outside dir, refuses the plan by name. A link
-    /// *above* a checkout, which is the operator's, still resolves.
+    /// link, a worktree inside the agent dir, a row's path under its home, the checkout it works
+    /// in, or a directory between the recorded checkout root and a deeper cwd, each swapped for a
+    /// link to an outside dir, refuses the plan by name. A link *above* a checkout, which is the
+    /// operator's, still resolves.
+    ///
+    /// Mutation: give a cwd inside the recorded checkout to `below_parent` and the plan grants
+    /// the outside dir's `b`.
     #[test]
     fn a_link_in_place_of_a_granted_dir_refuses_the_plan() {
         use std::os::unix::fs::symlink;
@@ -937,6 +984,25 @@ mod tests {
         symlink(victim(&dir), &checkout).unwrap();
         inv.cwd = checkout.clone();
         refused(&spec, &inv, &checkout);
+
+        // Two levels inside the recorded checkout, through a link the node left at the first:
+        // the cwd's parent resolves outside, and only the checkout's root may be resolved.
+        let dir = marion_testsupport::scratch("osb-link-inside-checkout");
+        let (mut spec, mut inv) = node_in(&dir, Auth::Canned);
+        let checkout = dir.join("checkout");
+        std::fs::create_dir_all(checkout.join("x/y")).unwrap();
+        std::fs::create_dir_all(victim(&dir).join("b")).unwrap();
+        let a = checkout.join("a");
+        symlink(victim(&dir), &a).unwrap();
+        spec.extra.checkout_root = Some(checkout.clone());
+        inv.cwd = a.join("b");
+        refused(&spec, &inv, &a);
+        inv.cwd = checkout.join("x/y");
+        let plan = SandboxPlan::for_launch(rule, &spec, &inv).expect("a real subdirectory");
+        assert_eq!(
+            plan.dirs()[1],
+            std::fs::canonicalize(&checkout).unwrap().join("x/y")
+        );
 
         let dir = marion_testsupport::scratch("osb-link-above-checkout");
         let (spec, mut inv) = node_in(&dir, Auth::Canned);
