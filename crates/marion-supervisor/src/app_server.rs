@@ -981,7 +981,7 @@ for line in sys.stdin:
         let run = run_app_server(bed.spec(Duration::from_secs(3), None)).expect("a session");
         assert!(run.exit.timed_out, "{run:?}");
         assert!(
-            !marion_testsupport::alive(bed.pid()),
+            marion_testsupport::until(|| !marion_testsupport::alive(bed.pid())),
             "the interrupted turn's command survived"
         );
         let (_, stop) = bed.read("turn/interrupt").expect("an interrupt was sent");
@@ -1001,7 +1001,7 @@ for line in sys.stdin:
         let bed = Bed::new("as-orphan", "orphan");
         let run = run_app_server(bed.spec(Duration::from_secs(3), None)).expect("a session");
         let orphan = bed.pid();
-        let survived = marion_testsupport::alive(orphan);
+        let survived = !marion_testsupport::until(|| !marion_testsupport::alive(orphan));
         marion_testsupport::kill_hard(orphan);
         assert!(run.exit.timed_out, "{run:?}");
         assert!(
@@ -1018,7 +1018,9 @@ for line in sys.stdin:
         let bed = Bed::new("as-leave", "leave");
         let run = run_app_server(bed.spec(Duration::from_secs(20), None)).expect("a session");
         let left = bed.pid();
-        let survived = marion_testsupport::alive(left);
+        // Polled, never asked once: a killed command stays a zombie until its new parent reaps it,
+        // and `kill(pid, 0)` cannot tell a zombie from a survivor (Linux's reaper is not instant).
+        let survived = !marion_testsupport::until(|| !marion_testsupport::alive(left));
         marion_testsupport::kill_hard(left);
         assert!(!run.exit.timed_out, "{run:?}");
         assert!(
@@ -1066,6 +1068,8 @@ for line in sys.stdin:
             INTERRUPTS,
             "every interrupt went out"
         );
-        assert!(!marion_testsupport::alive(bed.pid()));
+        assert!(marion_testsupport::until(|| !marion_testsupport::alive(
+            bed.pid()
+        )));
     }
 }
