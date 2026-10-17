@@ -1152,6 +1152,9 @@ pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result
         spec::Need::ApiKey => spec.api_key.is_some(),
         spec::Need::ModelOtherThan(canned) => spec.model.as_deref() != Some(canned),
         spec::Need::NoRecipe => false,
+        // The machine's, not the launch's: read where the node will run.
+        spec::Need::PathAbsent(path) => std::fs::symlink_metadata(path).is_err(),
+        spec::Need::EnvUnset(key) => std::env::var_os(key).is_none(),
     };
     match row
         .requires
@@ -1732,6 +1735,8 @@ mod tests {
                     Need::ApiKey => launch.api_key = None,
                     Need::ModelOtherThan(canned) => launch.model = Some(canned.into()),
                     Need::NoRecipe => {}
+                    // The machine's state, not the launch's: `requires_reads_the_machine`.
+                    Need::PathAbsent(_) | Need::EnvUnset(_) => continue,
                 }
                 let got = launch_adapter(h).unwrap().compile(&launch, &ctx());
                 assert!(
@@ -1743,6 +1748,35 @@ mod tests {
             }
         }
         assert!(checked > 0, "the sweep checked nothing");
+    }
+
+    /// **A requirement on the machine reads the machine**: a path that exists, or a variable
+    /// marion's own environment carries, refuses the launch in the row's words; an absent path and
+    /// an unset variable let it through. `/` and `PATH` are present wherever a test runs; the
+    /// absent ones are named for this test alone.
+    #[test]
+    fn requires_reads_the_machine() {
+        use crate::spec::{Modes, Need, Requirement};
+
+        let refused = |need: Need| {
+            let row = spec::HarnessSpec {
+                requires: Box::leak(Box::new([Requirement {
+                    modes: Modes::All,
+                    need,
+                    why: "synthetic: the machine's scope would be shadowed",
+                }])),
+                ..qwen::SPEC
+            };
+            requirements(&row, &spec_for(Harness::Qwen)).is_err()
+        };
+        assert!(refused(Need::PathAbsent("/")));
+        assert!(refused(Need::EnvUnset("PATH")));
+        assert!(!refused(Need::PathAbsent(
+            "/nonexistent/marion-requires-reads-the-machine"
+        )));
+        assert!(!refused(Need::EnvUnset(
+            "MARION_REQUIRES_READS_THE_MACHINE_UNSET"
+        )));
     }
 
     /// **Every harness answers the occupancy question itself**, named one at a time: a row copying

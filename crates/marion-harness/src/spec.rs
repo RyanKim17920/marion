@@ -408,6 +408,12 @@ pub enum Need {
     ModelOtherThan(&'static str),
     /// Nothing satisfies it: the row has no measured recipe for the mode.
     NoRecipe,
+    /// Nothing exists at this absolute path on the machine marion launches on — a scope of the
+    /// harness's own that the row's launch would shadow (an administrator's managed config dir).
+    PathAbsent(&'static str),
+    /// This variable is unset in marion's own environment, which the node inherits — one the
+    /// row's launch would overwrite, hiding the operator's setting.
+    EnvUnset(&'static str),
 }
 
 /// **How one harness speaks one wire in endpoint mode**: the wire, and the environment that

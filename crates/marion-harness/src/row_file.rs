@@ -1553,6 +1553,8 @@ pub enum NeedDto {
     ApiKey,
     ModelOtherThan(String),
     NoRecipe,
+    PathAbsent(String),
+    EnvUnset(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -1891,6 +1893,8 @@ impl RowDto {
                             NeedDto::ApiKey => Need::ApiKey,
                             NeedDto::ModelOtherThan(m) => Need::ModelOtherThan(leak(m)),
                             NeedDto::NoRecipe => Need::NoRecipe,
+                            NeedDto::PathAbsent(p) => Need::PathAbsent(leak(p)),
+                            NeedDto::EnvUnset(k) => Need::EnvUnset(leak(k)),
                         },
                         why: leak(r.why),
                     })

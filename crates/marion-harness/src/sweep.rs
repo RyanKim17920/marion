@@ -244,6 +244,18 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
     if (1..row.verified.len()).any(|i| row.verified[..i].contains(&row.verified[i])) {
         fault("version.verified", "a version repeats".into());
     }
+    for r in row.requires {
+        match r.need {
+            spec::Need::PathAbsent(p) if !std::path::Path::new(p).is_absolute() => fault(
+                "requires",
+                format!("{p:?} is not an absolute path, so it would be read from marion's cwd"),
+            ),
+            spec::Need::EnvUnset(k) if k.trim().is_empty() => {
+                fault("requires", "an env-unset need names no variable".into())
+            }
+            _ => {}
+        }
+    }
     for file in row.files {
         if !plain_relative(file.path) {
             fault(
@@ -465,6 +477,19 @@ mod tests {
                 },
                 "files",
                 "files: \"home/settings.json\"'s base is not a JSON object",
+            ),
+            (
+                HarnessSpec {
+                    requires: Box::leak(Box::new([spec::Requirement {
+                        modes: spec::Modes::All,
+                        need: spec::Need::PathAbsent("etc/hermes"),
+                        why: "synthetic",
+                    }])),
+                    ..qwen
+                },
+                "requires",
+                "requires: \"etc/hermes\" is not an absolute path, so it would be read from \
+                 marion's cwd",
             ),
             (
                 HarnessSpec {
