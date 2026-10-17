@@ -15,9 +15,9 @@
 //! `[symbol, fg, bg, flags]` per cell — for a rasteriser to turn into dark- and light-theme images.
 
 use marion_tui::home::{
-    self, AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, Hint, Input,
-    LineKind, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, Screen,
-    SetupView, StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
+    self, AgentTypeRow, Body, Expanded, FormField, FormView, HarnessRow, Hint, Input, LineKind,
+    LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, Screen, SetupView,
+    StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -356,39 +356,6 @@ fn stream(n: usize) -> Vec<StreamLine> {
         .collect()
 }
 
-fn feed() -> Vec<FeedRow> {
-    [
-        (
-            "14:31",
-            Tone::Done,
-            "3c33",
-            "landed marion/t-3c33 · 3 files +84 −12",
-        ),
-        (
-            "14:30",
-            Tone::Failed,
-            "7b2e",
-            "exit 101 · 3 tests failed in limits::bucket",
-        ),
-        (
-            "14:29",
-            Tone::Blocked,
-            "91cd",
-            "asks to write .github/workflows/ci.yml",
-        ),
-        ("14:29", Tone::Live, "a1f0", "spawned by 5e1a · codex impl"),
-        ("14:24", Tone::Live, "5e1a", "started · claude opus"),
-    ]
-    .iter()
-    .map(|(c, t, id, text)| FeedRow {
-        clock: s(c),
-        tone: *t,
-        short: s(id),
-        text: s(text),
-    })
-    .collect()
-}
-
 fn watch_view(cursor: usize, expanded: Option<Expanded>) -> WatchView {
     WatchView {
         total: Some(s("Σ2.1M")),
@@ -398,7 +365,6 @@ fn watch_view(cursor: usize, expanded: Option<Expanded>) -> WatchView {
         expanded,
         running: 2,
         attention: 2,
-        feed: feed(),
         attention_note: None,
         filter: None,
         full_stream: false,

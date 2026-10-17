@@ -34,7 +34,7 @@ pub use setup::{AgentTypeRow, FormField, FormView, LoginRow, ProfileRow, SetupVi
 pub use start::{HarnessRow, RecentRow, StartView};
 pub use theme::{Ready, Theme};
 pub use watch::{
-    Expanded, FeedRow, LineKind, MessageView, NodeRow, ResultView, StreamLine, TaskView, TokenView,
+    Expanded, LineKind, MessageView, NodeRow, ResultView, StreamLine, TaskView, TokenView,
     WatchView,
 };
 

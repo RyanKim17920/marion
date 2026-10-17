@@ -341,9 +341,6 @@ pub struct Watch {
     pub next: Option<u64>,
     /// Lines up from the newest the stream window is scrolled; 0 follows.
     pub scroll: usize,
-    /// What changed in the forest while the screen watched it, newest first, at most
-    /// [`FEED_MAX`].
-    pub feed: Vec<FeedItem>,
     /// Every node's subtree totals, rebuilt with the forest ([`crate::rollup`]).
     pub rollup: crate::rollup::Rollup,
     /// The selected agent's stream fills the screen: Enter on a headless agent, Esc back.
@@ -352,18 +349,6 @@ pub struct Watch {
     /// arrives.
     pub pending: Option<(AgentId, char)>,
 }
-
-/// One change in the forest, as the feed shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeedItem {
-    pub at: std::time::SystemTime,
-    pub tone: marion_tui::tree::Tone,
-    pub short: String,
-    pub text: String,
-}
-
-/// The most feed lines kept: more than any screen shows.
-pub const FEED_MAX: usize = 50;
 
 impl Default for Watch {
     fn default() -> Self {
@@ -375,7 +360,6 @@ impl Default for Watch {
             stream: Vec::new(),
             next: None,
             scroll: 0,
-            feed: Vec::new(),
             rollup: crate::rollup::Rollup::default(),
             full_stream: false,
             pending: None,
@@ -610,13 +594,6 @@ impl Home {
 
     /// A new snapshot of the forest, keeping the selection where the node survives.
     pub fn set_nodes(&mut self, nodes: Vec<NodeSummary>) {
-        if self.watch.supervisor {
-            let now = std::time::SystemTime::now();
-            for item in feed_items(&self.watch.nodes, &nodes) {
-                self.watch.feed.insert(0, FeedItem { at: now, ..item });
-            }
-            self.watch.feed.truncate(FEED_MAX);
-        }
         let keep = self.watch.tree.selected().map(|n| n.id.clone());
         self.watch.tree = crate::tree::build(&nodes, keep.as_deref());
         self.watch.rollup = crate::rollup::Rollup::build(&nodes);
@@ -1326,39 +1303,6 @@ fn cycle(choices: &[String], current: &str, by: isize) -> String {
         None => 0,
     };
     choices[next as usize].clone()
-}
-
-/// What moved between two snapshots, oldest first: a node that appeared, and a node that came
-/// to need the operator or ended. Other moves (spawning to running, a turn starting) are the row's
-/// to show, not news.
-fn feed_items(old: &[NodeSummary], new: &[NodeSummary]) -> Vec<FeedItem> {
-    use crate::tree::{attention_of, row, short_id};
-    use marion_core::node::NodeState;
-    let mut out = Vec::new();
-    for n in new {
-        let item = |text: String| FeedItem {
-            at: std::time::UNIX_EPOCH,
-            tone: row(n).tone,
-            short: short_id(&n.agent_id.0).to_string(),
-            text,
-        };
-        match old.iter().find(|o| o.agent_id == n.agent_id) {
-            None => out.push(item(match &n.parent_id {
-                Some(p) => format!("spawned by {} · {}", short_id(&p.0), n.agent_type),
-                None => format!("started · {}", n.agent_type),
-            })),
-            Some(o) if o.state != n.state => {
-                let text = match n.state {
-                    NodeState::Exited(s) => Some(s.word().to_string()),
-                    NodeState::Blocked(_) => attention_of(n),
-                    _ => None,
-                };
-                out.extend(text.map(item));
-            }
-            Some(_) => {}
-        }
-    }
-    out
 }
 
 /// **Why a `marion` command failed, in one line**: its own `marion: …` or `marion <verb>: …` refusal where it

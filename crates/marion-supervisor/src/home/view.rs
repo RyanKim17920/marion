@@ -9,9 +9,9 @@ use marion_core::proto::result::{ActionKind, ActionLine, NodeDetail};
 use marion_tui::home::help::KeyRow;
 use marion_tui::home::text::shell_line;
 use marion_tui::home::{
-    AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, HelpView, Hint, Input,
-    LineKind, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, SetupView,
-    StartView, StreamLine, Tab, TaskView, TokenView, WatchView,
+    AgentTypeRow, Body, Expanded, FormField, FormView, HarnessRow, HelpView, Hint, Input, LineKind,
+    LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, SetupView, StartView,
+    StreamLine, Tab, TaskView, TokenView, WatchView,
 };
 use marion_tui::tree::Tone;
 
@@ -279,16 +279,6 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
             .iter()
             .filter(|n| attention_of(n).is_some())
             .find_map(|n| n.attention.clone()),
-        feed: w
-            .feed
-            .iter()
-            .map(|f| FeedRow {
-                clock: local_clock(f.at),
-                tone: f.tone,
-                short: f.short.clone(),
-                text: f.text.clone(),
-            })
-            .collect(),
         filter: None,
         full_stream: w.full_stream && home.selected().is_some(),
     }

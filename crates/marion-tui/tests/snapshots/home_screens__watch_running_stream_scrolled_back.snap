@@ -109,14 +109,14 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
   └─ ✓ codex impl 3c33               6m41s    197k             landed marion/t-3c33
   ✓ claude review 88f2              1h ago     54k             landed marion/t-88f2
 
-  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ACTIVITY
 
-  14:31  ✓ 3c33  landed marion/t-3c33 · 3 files +84 −12
-  14:30  ✗ 7b2e  exit 101 · 3 tests failed in limits::bucket
-  14:29  ◐ 91cd  asks to write .github/workflows/ci.yml
-  14:29  ● a1f0  spawned by 5e1a · codex impl
-  14:24  ● 5e1a  started · claude opus
+
+
+
+
+
+
+
 
 
 
@@ -132,12 +132,12 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                                                                                 F1 help
 --- styles ---
-  430  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
+  409  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
-   25  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGACTIVIT"
- 1312  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   17  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNING"
+  987  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯J❯"
-    4  Style::new().green().bg(Color::Reset)  "●●●●"
-   22  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed✗"
-   39  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+    2  Style::new().green().bg(Color::Reset)  "●●"
+   21  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed"
+   38  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"

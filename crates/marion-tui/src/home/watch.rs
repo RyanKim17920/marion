@@ -5,7 +5,7 @@
 use super::GUTTER;
 use super::text::{clip, clip_left, fit, pad, rpad, spans_width, tokens, width, wrap};
 use super::theme::{CARET, Theme, bad, bold, dim, good, spinner, warn};
-use super::widgets::{centred, code_spans, context_bar, expansion, rule, section, span, sparkline};
+use super::widgets::{centred, code_spans, context_bar, expansion, section, span, sparkline};
 use crate::tree::Tone;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -138,15 +138,6 @@ pub struct ResultView {
     pub merge: Option<String>,
 }
 
-/// One line of the forest-wide activity feed, newest first.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeedRow {
-    pub clock: String,
-    pub tone: Tone,
-    pub short: String,
-    pub text: String,
-}
-
 /// Everything Watch draws.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WatchView {
@@ -164,7 +155,6 @@ pub struct WatchView {
     /// The first node's own words on what it needs, where the supervisor gave some — a held boot
     /// dialog's one action — drawn after the count so the operator reads it without selecting.
     pub attention_note: Option<String>,
-    pub feed: Vec<FeedRow>,
     /// The filter the operator typed after `/`, when one is on.
     pub filter: Option<String>,
     /// The selected agent's stream fills the screen (Enter on a headless agent), rather than the
@@ -269,21 +259,6 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
     for (lx, l) in lines.iter().skip(skip).take(list_h) {
         buf.set_line(*lx, y, l, area.right().saturating_sub(*lx));
         y += 1;
-    }
-
-    // The feed takes whatever rows the list left, and only if it gets at least two of them.
-    if y + 5 <= area.bottom() && !v.feed.is_empty() {
-        rule(buf, x, y + 1, w as u16);
-        buf.set_line(x, y + 2, &section("Activity", ""), w as u16);
-        for (fy, f) in (y + 4..area.bottom()).zip(&v.feed) {
-            let l = vec![
-                span(format!("{}  ", f.clock), dim()),
-                span(f.tone.glyph(), f.tone.style()),
-                span(format!(" {}  ", f.short), Style::default()),
-                span(f.text.clone(), dim()),
-            ];
-            buf.set_line(x, fy, &Line::from(fit(l, w)), w as u16);
-        }
     }
 }
 
