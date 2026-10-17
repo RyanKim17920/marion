@@ -46,6 +46,7 @@
 //! The operator's identity and global configuration are kept: `GIT_CONFIG_GLOBAL` and
 //! `GIT_CONFIG_NOSYSTEM` are not set, so commits carry their name and their own settings apply.
 
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -89,16 +90,25 @@ pub fn checkout_command(tree: &Tree<'_>, args: &[&str]) -> Result<Command, Spawn
 fn built(tree: &Tree<'_>, args: &[&str], makes_child_tree: bool) -> Result<Command, SpawnError> {
     let mut cmd = marion_harness::env_filter::git_command();
     cmd.env("GIT_TERMINAL_PROMPT", "0")
-        .current_dir(tree.dir())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     match tree {
         Tree::Child { wt, repo } => {
             let pinned = verified(wt, repo)?;
+            // **git runs in the directory proven, by its fd**, not by a name the child can point
+            // elsewhere after the proof: a process it left running could swap the tree for a link
+            // to another registered tree between the check and git, and git would stage, commit
+            // or diff that one. So the work tree is `.` after an `fchdir` to the pinned fd.
+            let tree = pinned.tree;
+            // SAFETY: `fchdir` is async-signal-safe and touches only the fd the closure owns.
+            unsafe {
+                use std::os::unix::process::CommandExt;
+                cmd.pre_exec(move || rustix::process::fchdir(&tree).map_err(Into::into));
+            }
             cmd.env("GIT_COMMON_DIR", &pinned.common)
                 .arg(format!("--git-dir={}", pinned.gitdir.display()))
-                .arg(format!("--work-tree={}", wt.display()))
+                .arg("--work-tree=.")
                 .args([
                     "-c",
                     "core.fsmonitor=false",
@@ -109,7 +119,7 @@ fn built(tree: &Tree<'_>, args: &[&str], makes_child_tree: bool) -> Result<Comma
             cmd.args(NO_MAINTENANCE);
         }
         Tree::Operator(repo) => {
-            cmd.args(["-c", "core.fsmonitor=false"]);
+            cmd.current_dir(repo).args(["-c", "core.fsmonitor=false"]);
             if makes_child_tree {
                 without_tree_attributes(&mut cmd, &common_dir(repo)?, repo)?;
                 cmd.args(NO_MAINTENANCE);
@@ -202,6 +212,9 @@ struct Pinned {
     gitdir: PathBuf,
     common: PathBuf,
     common_dir: CommonDir,
+    /// The tree itself, open ([`open_child_tree`]): what the proof was made of, and what git
+    /// runs in.
+    tree: OwnedFd,
 }
 
 /// **The git directory of child worktree `wt`, proven to be the one registered for it.**
@@ -218,22 +231,37 @@ struct Pinned {
 /// every [`Tree::Child`] call's proof, and asked on its own before a removal from the operator's
 /// checkout.
 pub fn check_child_tree(wt: &Path) -> Result<(), SpawnError> {
-    for at in [Some(wt), wt.parent()].into_iter().flatten() {
-        match std::fs::symlink_metadata(at) {
-            Ok(m) if m.is_dir() => {}
-            Ok(_) => {
-                return Err(tampered(
-                    wt,
-                    format!(
-                        "{} is a link or a file, not the directory marion made",
-                        at.display()
-                    ),
-                ));
-            }
-            Err(e) => return Err(tampered(wt, e)),
+    open_child_tree(wt).map(drop)
+}
+
+/// **A child's tree, open**: the agent dir above it `O_NOFOLLOW` by its path (the agents dir that
+/// holds it is no node's to write), then the tree `O_DIRECTORY | O_NOFOLLOW` below that, so a link
+/// or a file in place of either refuses the open. The fd is the tree whatever its name comes to
+/// hold afterwards.
+fn open_child_tree(wt: &Path) -> Result<OwnedFd, SpawnError> {
+    use rustix::fs::{Mode, OFlags};
+    const DIR: OFlags = OFlags::RDONLY
+        .union(OFlags::DIRECTORY)
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::CLOEXEC);
+    let (Some(parent), Some(name)) = (wt.parent(), wt.file_name()) else {
+        return Err(tampered(wt, "it is not a directory below another"));
+    };
+    let refused = |at: &Path, e: rustix::io::Errno| {
+        if matches!(e, rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) {
+            tampered(
+                wt,
+                format!(
+                    "{} is a link or a file, not the directory marion made",
+                    at.display()
+                ),
+            )
+        } else {
+            tampered(wt, std::io::Error::from(e))
         }
-    }
-    Ok(())
+    };
+    let above = rustix::fs::open(parent, DIR, Mode::empty()).map_err(|e| refused(parent, e))?;
+    rustix::fs::openat(&above, name, DIR, Mode::empty()).map_err(|e| refused(wt, e))
 }
 
 fn verified(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
@@ -257,13 +285,29 @@ pub fn admin_dir(wt: &Path, repo: &Path) -> Option<PathBuf> {
 
 /// [`verified`] without the `config.worktree` check: the gitfile and its registration alone.
 fn registered(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
-    check_child_tree(wt)?;
-    let dot_git = wt.join(".git");
-    let meta = std::fs::symlink_metadata(&dot_git).map_err(|e| tampered(wt, e))?;
-    if !meta.file_type().is_file() {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read;
+    let tree = open_child_tree(wt)?;
+    // Read through the tree's fd, so the gitfile judged is the one in the tree git will run in.
+    let dot_git = rustix::fs::openat(
+        &tree,
+        ".git",
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(|e| match e {
+        rustix::io::Errno::LOOP => tampered(wt, "it is not a regular file"),
+        e => tampered(wt, std::io::Error::from(e)),
+    })?;
+    if !dot_git.metadata().map_err(|e| tampered(wt, e))?.is_file() {
         return Err(tampered(wt, "it is not a regular file"));
     }
-    let text = std::fs::read_to_string(&dot_git).map_err(|e| tampered(wt, e))?;
+    let mut text = String::new();
+    dot_git
+        .take(GITFILE_CAP)
+        .read_to_string(&mut text)
+        .map_err(|e| tampered(wt, e))?;
     let named = text
         .strip_prefix("gitdir: ")
         .map(str::trim_end)
@@ -294,16 +338,29 @@ fn registered(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
     let back = Path::new(back.trim_end())
         .canonicalize()
         .map_err(|e| tampered(wt, e))?;
-    let ours = dot_git.canonicalize().map_err(|e| tampered(wt, e))?;
-    if back != ours {
+    // The registration names a `.git` in the very directory the fd holds: compared by device and
+    // inode, so a name swapped since the open cannot stand in for it.
+    let same_tree = || -> std::io::Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        let named = std::fs::metadata(back.parent().unwrap_or(&back))?;
+        let held = rustix::fs::fstat(&tree)?;
+        Ok(back.file_name() == Some(std::ffi::OsStr::new(".git"))
+            && named.dev() == held.st_dev as u64
+            && named.ino() == held.st_ino as u64)
+    };
+    if !same_tree().map_err(|e| tampered(wt, e))? {
         return Err(tampered(wt, "its registration names another tree"));
     }
     Ok(Pinned {
         gitdir,
         common,
         common_dir,
+        tree,
     })
 }
+
+/// The most of a gitfile marion reads: one `gitdir: <path>` line.
+const GITFILE_CAP: u64 = 4096;
 
 /// The `config.worktree` keys a child's admin directory may hold: the ones `git worktree add` and
 /// `git sparse-checkout` write. Any other key — a filter, a pager, an `include.path` — is
@@ -473,6 +530,63 @@ mod tests {
         assert_eq!(
             repo_drivers(&dir).unwrap(),
             ["filter.x.smudge", "merge.y.driver"]
+        );
+    }
+
+    /// **git runs in the tree that was proven, even after its name is swapped**: a process the
+    /// child left running renames the tree away and leaves a link to another registered tree in
+    /// its place between the check and git. The command, built before the swap, still lists the
+    /// child's own untracked file and never the other tree's.
+    ///
+    /// Mutation: give git `--work-tree=<wt>` by name (or drop the `fchdir`) and it lists the other
+    /// tree's file.
+    #[test]
+    fn a_child_command_runs_in_the_proven_tree_after_a_swap() {
+        let root = marion_testsupport::scratch("gitcmd-pinned-tree");
+        let repo = marion_testsupport::fixture_repo(&root);
+        let theirs = root.join("operator-wt");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "theirs",
+                &theirs.to_string_lossy(),
+            ],
+        );
+        std::fs::write(theirs.join("theirs.txt"), "operator's\n").unwrap();
+        let agent = root.join("agents/n");
+        std::fs::create_dir_all(&agent).unwrap();
+        let wt = agent.join("worktree");
+        crate::spawn::make_worktree(Tree::Operator(&repo), &wt, &["marion/n".into()], None)
+            .expect("the child's worktree");
+        std::fs::write(wt.join("ours.txt"), "child's\n").unwrap();
+
+        let mut cmd = command(
+            &Tree::Child {
+                wt: &wt,
+                repo: &repo,
+            },
+            &["ls-files", "--others", "--exclude-standard"],
+        )
+        .expect("the tree is proven");
+        std::fs::rename(&wt, agent.join("moved")).unwrap();
+        std::os::unix::fs::symlink(&theirs, &wt).unwrap();
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "ours.txt\n");
+        assert!(
+            command(
+                &Tree::Child {
+                    wt: &wt,
+                    repo: &repo,
+                },
+                &["status"],
+            )
+            .is_err(),
+            "and a command built after the swap is refused"
         );
     }
 }
