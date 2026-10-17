@@ -1530,23 +1530,31 @@ pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdap
     }
 }
 
-/// **The server names `<cwd>/.mcp.json` declares**, sorted: its `mcpServers` keys. Only the
-/// names are read, from the repository's own file — never the operator's configuration. Empty
-/// where there is no such file or it names no `mcpServers`; `None` where it is there and does not
-/// read as an object of servers (unreadable, not JSON, `mcpServers` not an object), which an
-/// untrusted launch refuses rather than rejecting no name ([`spec::Refusal::UnreadableRepoMcp`]).
+/// **The server names a `.mcp.json` declares, in `cwd` and in every directory above it**, sorted
+/// and each once: their `mcpServers` keys. claude 2.1.302 loads the file from each of those levels
+/// (`claude mcp list` from a checkout's subdirectory listed the subdirectory's, the checkout
+/// root's and one above the checkout as pending approval, and outside any checkout the same), so
+/// one above the tree — a node's own agent dir among them — is named here as one in it is. Only
+/// the names are read, never the operator's user configuration. Empty where no level has the file
+/// or names no `mcpServers`; `None` where any level's does not read as an object of servers
+/// (unreadable, not JSON, `mcpServers` not an object), which an untrusted launch refuses rather
+/// than rejecting no name ([`spec::Refusal::UnreadableRepoMcp`]).
 fn repo_mcp_servers(cwd: &std::path::Path) -> Option<Vec<String>> {
-    let file = cwd.join(".mcp.json");
-    if std::fs::symlink_metadata(&file).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
-        return Some(Vec::new());
+    let mut names: Vec<String> = Vec::new();
+    for dir in cwd.ancestors() {
+        let file = dir.join(".mcp.json");
+        if std::fs::symlink_metadata(&file).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).ok()?;
+        let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+        if let Some(servers) = doc.as_object()?.get("mcpServers") {
+            names.extend(servers.as_object()?.keys().cloned());
+        }
     }
-    let text = std::fs::read_to_string(&file).ok()?;
-    let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
-    let mut names: Vec<String> = match doc.as_object()?.get("mcpServers") {
-        None => Vec::new(),
-        Some(servers) => servers.as_object()?.keys().cloned().collect(),
-    };
     names.sort();
+    names.dedup();
     Some(names)
 }
 
@@ -1593,6 +1601,38 @@ mod tests {
     use crate::opencode::OpenCodeAdapter;
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
+
+    /// **A `.mcp.json` above the cwd is named as one in it is**: claude loads every level up to
+    /// `/`, so a server planted in a directory above the tree (a node's own agent dir) is rejected
+    /// in an untrusted repository and counted as unapproved in a pane like the tree's own; an
+    /// unreadable one at any level is unreadable.
+    #[test]
+    fn mcp_json_server_names_are_read_at_every_level_above_the_cwd() {
+        let dir = marion_testsupport::scratch("adapter-mcp-ancestors");
+        let tree = dir.join("agent").join("worktree");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(
+            dir.join("agent/.mcp.json"),
+            r#"{"mcpServers":{"planted":{"command":"x"},"same":{}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tree.join(".mcp.json"),
+            r#"{"mcpServers":{"own":{"command":"y"},"same":{}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            repo_mcp_servers(&tree),
+            Some(vec!["own".into(), "planted".into(), "same".into()])
+        );
+        assert_eq!(
+            repo_mcp_servers(&dir.join("agent")),
+            Some(vec!["planted".into(), "same".into()]),
+            "a level below is not read"
+        );
+        std::fs::write(dir.join("agent/.mcp.json"), "not json").unwrap();
+        assert_eq!(repo_mcp_servers(&tree), None);
+    }
 
     /// **Every requirement a row states is refused by name when unmet**, in the row's own words,
     /// and the launch is never compiled. Each is violated alone on a launch the row otherwise
