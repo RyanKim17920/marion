@@ -186,6 +186,9 @@ pub struct SandboxPlan {
     /// was spawned over ([`crate::adapter::Extras::parent_tree`]), which its bridge must resolve.
     /// `None` where there is none.
     parent_tree: Option<std::path::PathBuf>,
+    /// What the node may not write inside its own writable agent dir, resolved:
+    /// [`marion_core::paths::MARION_WRITTEN`] there. Empty for a plan that is no node's launch.
+    held: Vec<std::path::PathBuf>,
 }
 
 impl SandboxPlan {
@@ -226,7 +229,12 @@ impl SandboxPlan {
             .as_deref()
             .map(canonical)
             .transpose()?;
-        let mut dirs = vec![canonical(agent_dir)?, cwd.clone()];
+        let own = canonical(agent_dir)?;
+        let held = marion_core::paths::MARION_WRITTEN
+            .iter()
+            .map(|leaf| own.join(leaf))
+            .collect();
+        let mut dirs = vec![own, cwd.clone()];
         if let Some(admin) = &spec.extra.git_admin_dir {
             dirs.push(canonical(admin)?);
         }
@@ -247,6 +255,7 @@ impl SandboxPlan {
             dirs,
             siblings,
             parent_tree,
+            held,
         })
     }
 
@@ -263,6 +272,7 @@ impl SandboxPlan {
             dirs,
             siblings: None,
             parent_tree: None,
+            held: Vec::new(),
         })
     }
 
@@ -276,11 +286,12 @@ impl SandboxPlan {
     /// devices; reads are denied only inside another node's agent dir (`SIB/<id>/…`) but its
     /// `contracts/` and `events.jsonl`, and, with `parent_tree`, the one tree `PT` the node was
     /// spawned over; every writable directory stays readable, the node's own agent dir among them.
+    /// The `held` paths (`H0`…) inside a writable directory are then refused writes again.
     /// Everything else — reads, exec, the network, the supervisor's socket — is left as it was.
-    /// Paths arrive only as parameters (`W0`…, `SIB`, `PT`), quoted into the one regex by
+    /// Paths arrive only as parameters (`W0`…, `SIB`, `PT`, `H0`…), quoted into the one regex by
     /// Seatbelt's own `regex-quote`, never in the profile's text, so no path can change what the
     /// profile says.
-    pub fn seatbelt_profile(n: usize, siblings: bool, parent_tree: bool) -> String {
+    pub fn seatbelt_profile(n: usize, siblings: bool, parent_tree: bool, held: usize) -> String {
         let mut p = String::from(
             "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*\n  \
              (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\")\n  \
@@ -303,6 +314,10 @@ impl SandboxPlan {
                 p.push_str(&format!("(allow file-read* (subpath (param \"W{i}\")))\n"));
             }
         }
+        // After the allows: the last matching rule wins.
+        for i in 0..held {
+            p.push_str(&format!("(deny file-write* (subpath (param \"H{i}\")))\n"));
+        }
         p
     }
 
@@ -322,29 +337,24 @@ impl SandboxPlan {
         {
             dirs.push(t);
         }
-        platform_command(
-            &dirs,
-            self.siblings.as_deref(),
-            self.parent_tree.as_deref(),
-            program,
-            args,
-        )
+        platform_command(self, &dirs, program, args)
     }
 }
 
 #[cfg(target_os = "macos")]
 fn platform_command(
+    plan: &SandboxPlan,
     dirs: &[std::path::PathBuf],
-    siblings: Option<&std::path::Path>,
-    parent_tree: Option<&std::path::Path>,
     program: &str,
     args: &[String],
 ) -> std::process::Command {
+    let (siblings, parent_tree) = (plan.siblings.as_deref(), plan.parent_tree.as_deref());
     let mut cmd = std::process::Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(SandboxPlan::seatbelt_profile(
         dirs.len(),
         siblings.is_some(),
         parent_tree.is_some(),
+        plan.held.len(),
     ));
     let param = |name: &str, d: &std::path::Path| {
         let mut kv = std::ffi::OsString::from(format!("{name}="));
@@ -360,17 +370,20 @@ fn platform_command(
     for (i, d) in dirs.iter().enumerate() {
         cmd.arg("-D").arg(param(&format!("W{i}"), d));
     }
+    for (i, h) in plan.held.iter().enumerate() {
+        cmd.arg("-D").arg(param(&format!("H{i}"), h));
+    }
     cmd.arg(program).args(args);
     cmd
 }
 
 #[cfg(target_os = "linux")]
 fn platform_command(
+    // Landlock here grants whole directories and restricts writes only: reads of other nodes'
+    // agent dirs are not refused on Linux, nor are writes to the node's own `held` entries,
+    // which docs/os-sandbox.md states.
+    _plan: &SandboxPlan,
     dirs: &[std::path::PathBuf],
-    // Landlock here restricts writes only; reads of other nodes' agent dirs are not refused on
-    // Linux, which docs/os-sandbox.md states.
-    _siblings: Option<&std::path::Path>,
-    _parent_tree: Option<&std::path::Path>,
     program: &str,
     args: &[String],
 ) -> std::process::Command {
@@ -382,9 +395,8 @@ fn platform_command(
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn platform_command(
+    _plan: &SandboxPlan,
     _dirs: &[std::path::PathBuf],
-    _siblings: Option<&std::path::Path>,
-    _parent_tree: Option<&std::path::Path>,
     program: &str,
     args: &[String],
 ) -> std::process::Command {
@@ -628,7 +640,7 @@ mod tests {
     /// contains can change what the profile says.
     #[test]
     fn the_seatbelt_profile_names_no_path_only_parameters() {
-        let p = SandboxPlan::seatbelt_profile(3, true, true);
+        let p = SandboxPlan::seatbelt_profile(3, true, true, 2);
         assert!(p.contains("(deny file-write*)"));
         assert!(p.contains("(regex-quote (param \"SIB\"))"), "{p}");
         for i in 0..3 {
@@ -742,6 +754,51 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("Operation not permitted"),
             "{out:?}"
+        );
+    }
+
+    /// **A node does not write what marion shows of it**: its `contracts/`, its `events.jsonl`
+    /// and that file's rotated copy sit in its own writable agent dir, and a parent's bridge and
+    /// the operator's view read them, so its sandbox refuses writes there — creating, replacing
+    /// and removing alike — while the rest of its agent dir stays its own.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_process_under_its_plan_cannot_write_its_own_contracts_or_events() {
+        assert!(support().available(), "{}", support().describe());
+        let dir = marion_testsupport::scratch("osb-held");
+        let (spec, mut inv) = node_in(&dir, Auth::Canned);
+        let agent = dir.join("agent");
+        std::fs::create_dir_all(agent.join("contracts")).unwrap();
+        std::fs::write(agent.join("contracts/t.json"), "by marion").unwrap();
+        std::fs::write(agent.join("events.jsonl"), "by marion").unwrap();
+        inv.args = vec![
+            "-c".into(),
+            "echo forged > ../agent/contracts/t.json; echo forged > ../agent/contracts/new.json; \
+             echo forged >> ../agent/events.jsonl; echo forged > ../agent/events.jsonl.1; \
+             rm -f ../agent/contracts/t.json; mv ../agent/contracts ../agent/moved; \
+             echo own > ../agent/scratch.txt; true"
+                .into(),
+        ];
+        inv.sandbox = Some(
+            SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+        );
+        let tmp = agent.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = inv.command(&tmp).output().expect("the process runs");
+        let read = |p: &str| std::fs::read_to_string(agent.join(p)).ok();
+        assert_eq!(
+            read("contracts/t.json").as_deref(),
+            Some("by marion"),
+            "{out:?}"
+        );
+        assert_eq!(read("contracts/new.json"), None);
+        assert_eq!(read("events.jsonl").as_deref(), Some("by marion"));
+        assert_eq!(read("events.jsonl.1"), None);
+        assert!(!agent.join("moved").exists());
+        assert_eq!(
+            read("scratch.txt").as_deref(),
+            Some("own\n"),
+            "the rest is its own"
         );
     }
 

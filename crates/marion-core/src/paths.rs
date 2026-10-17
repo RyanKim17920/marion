@@ -224,6 +224,12 @@ impl WorkflowDir {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentDir(PathBuf);
 
+/// **The entries of an agent dir that marion alone writes and others read as the node's record**:
+/// its `contracts/` (a parent's bridge reads them), its `events.jsonl` and that file's rotated
+/// copy (the operator's view, and a parent's peek). The node's OS sandbox lets it write the rest
+/// of its agent dir but refuses these ([`AgentDir::contracts_dir`], [`AgentDir::events`]).
+pub const MARION_WRITTEN: [&str; 3] = ["contracts", "events.jsonl", "events.jsonl.1"];
+
 impl AgentDir {
     pub fn path(&self) -> &Path {
         &self.0

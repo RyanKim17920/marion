@@ -18,6 +18,12 @@
   resolves to reach the supervisor): no other node's `config/node-token`, prompt or recording. Its
   own agent dir and every dir it may write stay
   readable. On Linux, Landlock here restricts writes only, so these reads are not refused.
+- **What it may not write in its own agent dir.** Its `contracts/`, `events.jsonl` and
+  `events.jsonl.1` are marion's record of it, which a parent's bridge and the operator's view
+  read: on macOS the profile refuses the node's writes there (create, replace, remove, rename).
+  On Linux Landlock grants whole directories, so these stay writable to the node there: a
+  contract a parent's bridge reads back, or an event the view shows, is read as the node's own
+  process tree last left it.
 - **What it cannot change.** What the node may do and hand down (its tree's agent-types table, the
   scope its caller granted, the operator's opt-ins) is kept at `<state>/<project>/authority/<id>.json`,
   outside its agent dir, so rewriting its own agent dir widens nothing.
