@@ -148,9 +148,11 @@ author: a version line and a summary, no host names or catalogue.
 
 **2026-10-16, goose 1.55.0 conformance.** Homebrew replaced 1.52.0 in place; the battery was
 rerun canned for `goose` and `acp:goose` and admitted 1.55.0 on its record. No cell changed status.
-goose now exits 1 on a 429, a 500 and a cancel (1.52.0 exited 0), and its own usage frame reports
-200/40/20 tokens where 1.52.0 reported 747/81/45. `scripts/fixture-privacy.py` was clean; read by
-the author.
+goose now exits 1 on a 429, a 500 and a cancel (1.52.0 exited 0). Rerun the same day after the
+conformance provider was fixed to report one usage per stream (the 200/40/20 against 1.52.0's
+747/81/45 was goose keeping the last of two reports where 1.52.0 added both) and P-activity was
+held to the provider's counters: P-activity reads 522/41/25, the two tool-offering requests
+exactly. `scripts/fixture-privacy.py` was clean; read by the author.
 
 **2026-10-01, claude 2.1.286 conformance.** Two tool-probe transcripts named one of the operator's
 installed plugins; it reads as the same-length `plugin01xxxxxxxxxxx`.

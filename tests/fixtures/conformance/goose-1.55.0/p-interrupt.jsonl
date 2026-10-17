@@ -1,11 +1,11 @@
-{"dir":"note","msg":{"args":["run","-t","CONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.","--output-format","stream-json","-q","--no-session","--no-profile","--with-builtin","developer","--with-extension","marion:MARION_REPO=<SCRATCH>/p-interrupt/repo MARION_STATE_DIR=<SCRATCH>/p-interrupt/state MARION_AUTH=canned MARION_AGENT_ID=conformance-node MARION_AGENT_TYPE=goose MARION_DEPTH=1 MARION_BASE_URL=http://127.0.0.1:51976/v1 <WORKTREE>/target/debug/marion-supervisor mcp"],"pid":71954,"spawned":"goose"},"t":0.002}
-{"dir":"prov","msg":{"marion_tools":false,"offers_tools":false,"req":1,"turn":null,"user_texts":[],"wire":null},"t":0.053}
-{"dir":"prov","msg":{"marion_tools":false,"offers_tools":false,"req":2,"turn":["CONFINTERRUPT",0],"user_texts":["---BEGIN HINTS (optional signals like the working folder; use them only when they match the subject of the messages)---\nworking folder: repo\n---END HINTS---\n\n---BEGIN USER MESSAGES---\nCONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, wit…[205 more chars]"],"wire":"openai"},"t":0.053}
-{"dir":"note","msg":"holding provider request 2","t":0.053}
-{"dir":"note","msg":"signal 2 to process group 71954","t":0.087}
-{"dir":"raw","msg":"Yes — what would you like me to do?{\"type\":\"error\",\"error\":\"Headless run interrupted\"}","t":0.106}
-{"dir":"err","msg":"Error: Headless run interrupted","t":0.109}
-{"dir":"note","msg":{"code":1,"exited":71954,"signal":null},"t":0.127}
-{"dir":"note","msg":"signal 9 to process group 71954","t":0.275}
-{"dir":"note","msg":"released provider request 2","t":0.308}
-{"dir":"prov","msg":{"resp":"script","wire":"openai"},"t":0.308}
+{"dir":"note","msg":{"args":["run","-t","CONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.","--output-format","stream-json","-q","--no-session","--no-profile","--with-builtin","developer","--with-extension","marion:MARION_REPO=<SCRATCH>/p-interrupt/repo MARION_STATE_DIR=<SCRATCH>/p-interrupt/state MARION_AUTH=canned MARION_AGENT_ID=conformance-node MARION_AGENT_TYPE=goose MARION_DEPTH=1 MARION_BASE_URL=http://127.0.0.1:51188/v1 <WORKTREE>/target/debug/marion-supervisor mcp"],"pid":86202,"spawned":"goose"},"t":0.004}
+{"dir":"prov","msg":{"marion_tools":false,"offers_tools":false,"req":1,"turn":null,"user_texts":[],"wire":null},"t":0.05}
+{"dir":"prov","msg":{"marion_tools":false,"offers_tools":false,"req":2,"turn":["CONFINTERRUPT",0],"user_texts":["---BEGIN HINTS (optional signals like the working folder; use them only when they match the subject of the messages)---\nworking folder: repo\n---END HINTS---\n\n---BEGIN USER MESSAGES---\nCONFINTERRUPT: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, wit…[205 more chars]"],"wire":"openai"},"t":0.05}
+{"dir":"note","msg":"holding provider request 2","t":0.05}
+{"dir":"note","msg":"signal 2 to process group 86202","t":0.084}
+{"dir":"raw","msg":"Yes — what would you like me to do?{\"type\":\"error\",\"error\":\"Headless run interrupted\"}","t":0.098}
+{"dir":"err","msg":"Error: Headless run interrupted","t":0.099}
+{"dir":"note","msg":{"code":1,"exited":86202,"signal":null},"t":0.116}
+{"dir":"note","msg":"signal 9 to process group 86202","t":0.268}
+{"dir":"note","msg":"released provider request 2","t":0.345}
+{"dir":"prov","msg":{"resp":"script","wire":"openai"},"t":0.346}
