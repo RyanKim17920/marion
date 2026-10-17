@@ -1858,10 +1858,24 @@ pub(crate) fn repo_trust_of(
     let paths = crate::trust::repo_config_paths();
     let branch = record.branch.as_deref();
     let differs = match tree {
-        crate::spawn::Tree::Child { .. } => match base {
-            Some(b) => crate::spawn::repo_config_held(tree, b, project_root, branch, &paths),
-            None => paths.iter().take(1).map(|p| p.to_string()).collect(),
-        },
+        crate::spawn::Tree::Child { wt, .. } => {
+            let mut held = match base {
+                Some(b) => crate::spawn::repo_config_held(tree, b, project_root, branch, &paths),
+                None => paths.iter().take(1).map(|p| p.to_string()).collect(),
+            };
+            // The node's agent dir above its worktree, which its sandbox may write and a harness
+            // reading up from its cwd (claude's `.mcp.json`) loads: nothing there is the
+            // operator's. The levels above it are marion's own state, which no node writes.
+            if let Some(agent_dir) = wt.parent() {
+                held.extend(
+                    paths
+                        .iter()
+                        .filter(|p| std::fs::symlink_metadata(agent_dir.join(p)).is_ok())
+                        .map(|p| format!("../{p}")),
+                );
+            }
+            held
+        }
         crate::spawn::Tree::Operator(dir) => match &record.repo_config {
             Some(was) => was.held(&crate::spawn::repo_config_snapshot(dir, &paths)),
             None => crate::spawn::config_held_unverified(dir, &paths),

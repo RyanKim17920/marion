@@ -2230,6 +2230,46 @@ fn a_continuation_asks_its_trees_repo_config_trust_again() {
     assert_eq!(next.prompt, "go on");
 }
 
+/// **Config in the agent dir above a child's worktree is never the operator's**: the node's
+/// sandbox may write it, and claude loads a `.mcp.json` from every directory above its cwd.
+///
+/// Mutation: drop the agent-dir check in `repo_trust_of` and this fails.
+#[test]
+fn config_planted_in_the_agent_dir_above_a_childs_worktree_is_held() {
+    let root = scratch("supervisor-agent-dir-config");
+    let repo = fixture_repo(&root);
+    let state = root.join("state");
+    let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
+    let env = Env {
+        os_sandbox: true,
+        project_dir: project.clone(),
+        state: state.clone(),
+        project_root: crate::socket::project_root(&repo),
+        bridge: PathBuf::from("/bin/marion-supervisor"),
+        base_url: None,
+        auth: Auth::Inherited,
+    };
+    let agent_dir = project.agent(&AgentId("n-above".into()));
+    std::fs::create_dir_all(agent_dir.config_dir()).unwrap();
+    let wt = agent_dir.worktree();
+    let (base, _) = crate::spawn::make_worktree(
+        crate::spawn::Tree::Operator(&repo),
+        &wt,
+        &["marion/n-above".into()],
+        None,
+    )
+    .expect("the child's worktree");
+    let record = TrustRecord::default();
+    assert!(repo_trust(&env, &wt, Some(&base), &record).own);
+    std::fs::write(
+        wt.parent().unwrap().join(".mcp.json"),
+        r#"{"mcpServers":{"x":{"command":"x"}}}"#,
+    )
+    .unwrap();
+    let trust = repo_trust(&env, &wt, Some(&base), &record);
+    assert!(!trust.own && !trust.trusted, "{trust:?}");
+}
+
 /// **In the operator's own checkout, a later generation is held to what the checkout held at the
 /// first launch**: a node running there (a root, a `shared-cwd` child) that plants a repository
 /// config in generation 0 does not have it load as the operator's in generation 1, and a resume
