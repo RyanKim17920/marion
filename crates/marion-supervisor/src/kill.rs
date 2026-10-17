@@ -333,11 +333,19 @@ pub(crate) fn kill_groups(groups: &[i32]) {
 /// returned and nothing is signalled. A leader that led no session of its own has nothing in one:
 /// no process's session id is its pid.
 pub fn end_node(child: &mut Child) -> std::io::Result<ExitStatus> {
+    end_node_counting(child).map(|(status, _)| status)
+}
+
+/// [`end_node`], and how many processes left in the leader's session it had to kill: what a
+/// caller that reports on a process (`marion doctor`'s probe) says was left behind.
+pub fn end_node_counting(child: &mut Child) -> std::io::Result<(ExitStatus, usize)> {
     let leader = child.id() as i32;
-    if is_unreaped_child(leader) {
-        end_session(leader, DRAIN_GRACE);
-    }
-    child.wait()
+    let killed = if is_unreaped_child(leader) {
+        end_session(leader, DRAIN_GRACE)
+    } else {
+        0
+    };
+    Ok((child.wait()?, killed))
 }
 
 /// Whether `pid` is this process's own child and not yet reaped — running or a zombie. `waitid`
@@ -362,18 +370,20 @@ fn is_unreaped_child(pid: i32) -> bool {
 /// a group of its own, outlives it, and its parent's death leaves it under pid 1 in the same
 /// session. So this reads the session afresh each round — every process whose session is `sid`,
 /// with their descendants while their parents live — SIGKILLs what is still running, and repeats
-/// until a round finds nothing, or `bound` passes (`false`). A zombie counts as ended. Refuses
-/// marion's own session, and 0 or 1, returning `false` having signalled nothing.
+/// until a round finds nothing, or `bound` passes. A zombie counts as ended. Returns how many
+/// processes it signalled, each counted once however many rounds it took. Refuses marion's own
+/// session, and 0 or 1, returning 0 having signalled nothing.
 ///
 /// **Each signal is preceded by a fresh look at its target** ([`still_in_session`]): a process that
 /// ended after the `ps` snapshot leaves its pid free, and only one still in the session, or still
 /// below a process that is, is signalled.
-fn end_session(sid: i32, bound: Duration) -> bool {
+fn end_session(sid: i32, bound: Duration) -> usize {
     // SAFETY: `getsid(0)` reads this process's own session id.
     let own = unsafe { getsid(0) };
     if sid <= 1 || sid == own {
-        return false;
+        return 0;
     }
+    let mut killed: Vec<i32> = Vec::new();
     let session_of = |pid: i32| unsafe { getsid(pid) };
     let deadline = Instant::now() + bound;
     let mut pause = Duration::from_millis(1);
@@ -403,16 +413,19 @@ fn end_session(sid: i32, bound: Duration) -> bool {
             })
             .collect();
         if live.is_empty() {
-            return true;
+            return killed.len();
         }
         for pid in live {
-            if still_in_session(pid, sid, &members, session_of, crate::procid::lineage) {
-                let _ = unsafe { kill(pid, SIGKILL) };
+            if still_in_session(pid, sid, &members, session_of, crate::procid::lineage)
+                && unsafe { kill(pid, SIGKILL) } == 0
+                && !killed.contains(&pid)
+            {
+                killed.push(pid);
             }
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return false;
+            return killed.len();
         }
         std::thread::sleep(pause.min(left));
         pause = (pause * 2).min(OBSERVE_PAUSE_MAX);

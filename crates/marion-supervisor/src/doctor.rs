@@ -1034,8 +1034,8 @@ fn live_turn(
     let (out, timed_out) = read_bounded(&mut child, TURN_BUDGET);
     let mut trailing = Vec::new();
     let interrupted = interrupt_if_alive(&mut child, pid, timed_out, &mut trailing);
-    let exit = terminate(&mut child, interrupted, &mut trailing);
-    let (no_leak, leak_line) = leak_check(&mut child, pid, exit.is_some());
+    let (exit, left_behind) = terminate(&mut child, interrupted, &mut trailing);
+    let (no_leak, leak_line) = leak_check(&mut child, pid, exit.is_some(), left_behind);
     // The child is gone by now; a descendant still holding the pipe is not waited on past the bound.
     let stderr = stderr.recv_timeout(STDERR_GRACE).unwrap_or_default();
 
@@ -1097,16 +1097,21 @@ fn interrupt_if_alive(
     }
 }
 
-/// Wait out [`INTERRUPT_GRACE`] and say how the child ended, or that it did not.
+/// Wait out [`INTERRUPT_GRACE`] and say how the child ended, or that it did not; and how many
+/// processes it left in its session that the sweep had to kill.
 fn terminate(
     child: &mut std::process::Child,
     interrupted: bool,
     trailing: &mut Vec<String>,
-) -> Option<std::process::ExitStatus> {
+) -> (Option<std::process::ExitStatus>, usize) {
     // Waited on unreaped, then the session swept and the child reaped: a node's own end.
-    let exit = crate::wake::wait_exit(child, INTERRUPT_GRACE)
-        .then(|| crate::kill::end_node(child).ok())
+    let ended = crate::wake::wait_exit(child, INTERRUPT_GRACE)
+        .then(|| crate::kill::end_node_counting(child).ok())
         .flatten();
+    let (exit, left_behind) = match ended {
+        Some((status, left_behind)) => (Some(status), left_behind),
+        None => (None, 0),
+    };
     match &exit {
         Some(s) => trailing.push(format!(
             "termination: exit {}{}",
@@ -1123,15 +1128,23 @@ fn terminate(
             "termination: FAILED — still running {INTERRUPT_GRACE:?} after SIGINT"
         )),
     }
-    exit
+    (exit, left_behind)
 }
 
 /// The leak check, and it is unconditional: an ACP-style long-lived stdio agent that ignores
 /// SIGINT is exactly the shape this exists to catch, and a probe that leaves one behind has done
 /// more harm than the check was worth.
-fn leak_check(child: &mut std::process::Child, pid: i32, exited: bool) -> (bool, String) {
+///
+/// A probe that exited but left processes in its session had them ended by the sweep
+/// ([`terminate`]), so nothing leaked; the line says how many, rather than that there were none.
+fn leak_check(
+    child: &mut std::process::Child,
+    pid: i32,
+    exited: bool,
+    left_behind: usize,
+) -> (bool, String) {
     if exited {
-        (true, "leak check: no process outlived the probe".into())
+        (true, exited_leak_line(left_behind))
     } else {
         unsafe { kill(pid, SIGKILL) };
         let _ = crate::kill::end_node(child);
@@ -1140,6 +1153,14 @@ fn leak_check(child: &mut std::process::Child, pid: i32, exited: bool) -> (bool,
 }
 
 /// The leak check's failure line, shared by the argv and ACP probes.
+/// The leak line for a probe that exited, `left_behind` processes ended after it.
+fn exited_leak_line(left_behind: usize) -> String {
+    match left_behind {
+        0 => "leak check: no process outlived the probe".into(),
+        n => format!("leak check: the probe left {n} process(es) behind; marion ended them"),
+    }
+}
+
 fn leak_failed(pid: i32) -> String {
     format!("leak check: FAILED — pid {pid} ignored SIGINT and had to be killed with SIGKILL")
 }
@@ -2290,6 +2311,32 @@ mod tests {
             "{} was recreated after the probe ended: its session outlived it",
             dir.display()
         );
+    }
+
+    /// **A probe that exits and leaves a process in its session is reported as having done so**:
+    /// the sweep ends the leftover, and the leak line counts it instead of saying none outlived
+    /// the probe. One that leaves nothing says so.
+    #[test]
+    fn a_probe_that_left_processes_behind_is_reported_with_their_count() {
+        let run = |line: &str| {
+            let mut cmd = std::process::Command::new("/bin/sh");
+            cmd.args(["-c", line]);
+            crate::kill::lead_own_session(&mut cmd);
+            let mut child = cmd.spawn().expect("sh");
+            let pid = child.id() as i32;
+            let mut trailing = Vec::new();
+            let (exit, left_behind) = terminate(&mut child, false, &mut trailing);
+            leak_check(&mut child, pid, exit.is_some(), left_behind)
+        };
+        let (no_leak, line) = run("sleep 900 </dev/null >/dev/null 2>&1 & exit 0");
+        assert!(no_leak, "marion ended it: {line}");
+        assert_eq!(
+            line,
+            "leak check: the probe left 1 process(es) behind; marion ended them"
+        );
+        let (no_leak, line) = run("exit 0");
+        assert!(no_leak);
+        assert_eq!(line, "leak check: no process outlived the probe");
     }
 
     /// **Only a probe dir whose doctor is gone is swept**: one named for an exited pid goes, one of
