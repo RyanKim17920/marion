@@ -33,12 +33,13 @@ impl NodeTmp {
     /// `<agent-dir>/tmp`, 0700, created if absent. An existing one — a supervisor that died before
     /// its guard dropped — is adopted rather than refused: it is this node's and nobody else's,
     /// and this guard removes it with everything else.
+    ///
+    /// Made through [`crate::agent_fs::AgentFs`]: a link the node left in place of `tmp/` or of
+    /// its agent dir refuses the launch, rather than pointing the node's next process at whatever
+    /// it names.
     pub(crate) fn create(agent_dir: &AgentDir) -> std::io::Result<Self> {
         let path = agent_dir.tmp_dir();
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&path)?;
+        crate::agent_fs::AgentFs::open(agent_dir.path())?.dir(&path)?;
         Ok(Self(path))
     }
 
@@ -128,5 +129,37 @@ mod tests {
         drop(NodeTmp::create(&agent).unwrap());
 
         assert!(!agent.tmp_dir().exists());
+    }
+
+    /// **A link the node left in place of its `tmp/`, or of its agent dir, refuses the launch**,
+    /// and nothing is made, written or removed where it points.
+    #[test]
+    fn a_link_in_place_of_tmp_or_the_agent_dir_is_refused() {
+        let dir = marion_testsupport::scratch("node-tmp-link");
+        let victim = dir.join("operator");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("theirs"), b"kept").unwrap();
+        let untouched = || {
+            let names: Vec<_> = std::fs::read_dir(&victim)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(names, ["theirs"]);
+        };
+        let agent = ProjectDir::from_hash(&dir, "0123456789ab").agent(&AgentId("a-1".into()));
+        std::fs::create_dir_all(agent.path()).unwrap();
+        std::os::unix::fs::symlink(&victim, agent.tmp_dir()).unwrap();
+        assert!(NodeTmp::create(&agent).is_err());
+        untouched();
+
+        std::fs::remove_file(agent.tmp_dir()).unwrap();
+        std::fs::rename(agent.path(), dir.join("moved")).unwrap();
+        std::os::unix::fs::symlink(&victim, agent.path()).unwrap();
+        assert!(NodeTmp::create(&agent).is_err());
+        assert!(
+            crate::events::EventWriter::open(&agent, &AgentId("a-1".into())).is_err(),
+            "nor is the node's event stream opened through it"
+        );
+        untouched();
     }
 }

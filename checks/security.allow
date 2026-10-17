@@ -6,7 +6,6 @@
 
 # --- verified safe --------------------------------------------------------------------------------
 crates/marion-harness/src/acp.rs:AcpAdapter::config_files  safe: `api_key` is a field init inside the opencode config document, written 0600 by run::write_config_documents
-crates/marion-supervisor/src/root.rs:record_the_roots_change  safe: writes root-change.json (file counts only, no credential); root.rs is marked only because it asks for launch_documents
 
 # --- verified safe: login-p3 (2026-09-27) ---
 crates/marion-core/src/contract.rs:CredentialFailover  from/to are credential ids (`provider:label`), never keys; the contract records which credential ran, by id

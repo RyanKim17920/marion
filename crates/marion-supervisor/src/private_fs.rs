@@ -45,16 +45,11 @@ pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
 
 /// Open `path` for appending, creating it `0600` and its missing parents `0700`.
 ///
-/// A file an older marion created `0644` is narrowed on open, through the handle, so a journal or
-/// event stream that predates this rule stops being readable the next time marion writes to it.
+/// A file an older marion created `0644` is narrowed on open, through the handle, so a journal
+/// that predates this rule stops being readable the next time marion writes to it. Nothing under
+/// an agent dir is opened this way: see [`crate::agent_fs`].
 pub(crate) fn open_append(path: &Path) -> io::Result<File> {
     open(path, OpenOptions::new().append(true))
-}
-
-/// Create or truncate `path` for writing, `0600`, with its missing parents `0700`, narrowing a file
-/// that already existed with a wider mode the same way [`open_append`] does.
-pub(crate) fn create(path: &Path) -> io::Result<File> {
-    open(path, OpenOptions::new().write(true).truncate(true))
 }
 
 /// [`open_append`], **refusing anything but a regular file at `path`**: for a file in a directory
@@ -207,18 +202,6 @@ mod tests {
             b"old\n",
             "append, never truncate"
         );
-    }
-
-    #[test]
-    fn a_created_file_is_truncated_and_owner_only() {
-        let dir = scratch("private-fs-create");
-        let path = dir.join("nested").join("cast");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"a longer old body\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        std::io::Write::write_all(&mut create(&path).unwrap(), b"new\n").unwrap();
-        assert_eq!(mode(&path), 0o600);
-        assert_eq!(std::fs::read(&path).unwrap(), b"new\n");
     }
 
     #[test]

@@ -2222,7 +2222,9 @@ fn record_the_roots_change(node: &RootNode) -> RootChange {
     let record = match serde_json::to_vec_pretty(&change)
         .map_err(|e| e.to_string())
         .and_then(|bytes| {
-            std::fs::write(node.agent_dir.root_change(), bytes).map_err(|e| e.to_string())
+            crate::agent_fs::AgentFs::open(node.agent_dir.path())
+                .and_then(|dir| dir.replace(&node.agent_dir.root_change(), &bytes))
+                .map_err(|e| e.to_string())
         }) {
         Ok(()) => change.record(),
         Err(e) => {

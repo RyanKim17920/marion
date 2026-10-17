@@ -980,7 +980,9 @@ fn persist_then_cap(agent: &AgentDir, contract: &TaskContract) -> Result<TaskCon
     at_contract_write::fire();
     let mut body = serde_json::to_vec_pretty(contract)?;
     body.push(b'\n');
-    crate::private_fs::write_atomic(&agent.contract(&contract.task_id), &body)?;
+    // `contracts/` is the node's to write on Linux, where Landlock grants the whole agent dir.
+    crate::agent_fs::AgentFs::open(agent.path())?
+        .replace(&agent.contract(&contract.task_id), &body)?;
     Ok(cap_for_return(contract.clone()))
 }
 
@@ -3513,7 +3515,7 @@ fn select_workspace(
                 });
             }
             let wt = agent_dir.worktree();
-            crate::private_fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
+            crate::agent_fs::AgentFs::open(wt.parent().expect("agent worktree has a parent"))?;
             // A reviewer's tree is the reviewed work as it landed, so it reads what it judges.
             // A workflow step's tree is the earlier step's work it builds on.
             let at = req

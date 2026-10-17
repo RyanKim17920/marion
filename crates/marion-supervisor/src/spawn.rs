@@ -832,7 +832,8 @@ impl Drop for ScratchIndex {
 impl ScratchIndex {
     /// `GIT_INDEX_FILE=<tmp>` plus `git read-tree <base>`, §6.7's own recipe.
     fn seeded(wt: Tree<'_>, scratch_dir: &Path, base: &Oid) -> Result<Self, SpawnError> {
-        crate::private_fs::create_dir_all(scratch_dir)?;
+        // The node can write its agent dir, and so leave a link in its place.
+        crate::agent_fs::AgentFs::open(scratch_dir)?;
         let path = scratch_dir.join(format!(
             "diff-index-{}-{:?}",
             std::process::id(),
@@ -1569,7 +1570,8 @@ impl TreeSnapshot {
         }
         let real_objects = git_path(repo, "objects")?;
         let objects = agent_dir.join("objects");
-        std::fs::create_dir_all(&objects)?;
+        // A sandboxed root can write its agent dir, and so leave a link for either.
+        crate::agent_fs::AgentFs::open(agent_dir)?.dir(&objects)?;
 
         // **The repo's own alternates are carried forward.** `GIT_OBJECT_DIRECTORY` replaces the
         // main object store, and git reads `info/alternates` from *that* directory — so a repository
@@ -2152,6 +2154,28 @@ mod tests {
             codex_reads(s).file_change_paths,
             vec![PathBuf::from("/wt/a.rs")]
         );
+    }
+
+    /// **marion's git scratch never lands where a node's link points**: a root's snapshot store
+    /// and a child's scratch index live in the agent dir the node can write, so a link left for
+    /// `objects/`, or for the agent dir itself, refuses the measurement and writes nothing there.
+    #[test]
+    fn a_linked_scratch_dir_refuses_the_snapshot_and_the_scratch_index() {
+        let root = marion_testsupport::scratch("scratch-dir-links");
+        let repo = marion_testsupport::fixture_repo(&root);
+        let base = Oid(marion_testsupport::git(&repo, &["rev-parse", "HEAD"])
+            .trim()
+            .into());
+        let victim = root.join("operator");
+        std::fs::create_dir_all(&victim).unwrap();
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::os::unix::fs::symlink(&victim, agent_dir.join("objects")).unwrap();
+        assert!(TreeSnapshot::open(&repo, &agent_dir).is_err());
+        let linked = root.join("linked-agent");
+        std::os::unix::fs::symlink(&victim, &linked).unwrap();
+        assert!(diff_text(Tree::Operator(&repo), &linked, &base).is_err());
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
     }
 
     /// **A persisted patch is git's plain dialect, whatever the operator configured.** Task

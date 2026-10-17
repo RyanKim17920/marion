@@ -1401,6 +1401,15 @@ fn a_rewritten_contract_replaces_the_old_file_rather_than_truncating_it() {
         .filter(|n| n != path.file_name().unwrap())
         .collect();
     assert!(strays.is_empty(), "no staging file survives: {strays:?}");
+
+    // On Linux the node can write `contracts/`: one it swapped for a link refuses the write, and
+    // nothing lands where the link pointed.
+    let elsewhere = root.join("operator");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::remove_dir_all(agent.contracts_dir()).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, agent.contracts_dir()).unwrap();
+    assert!(persist_then_cap(&agent, &contract).is_err());
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
 }
 
 /// **A child whose `SpawnIntent` cannot be made durable is refused before its first side

@@ -258,7 +258,9 @@ fn parse_shortstat(out: &str) -> Option<DiffStat> {
 pub fn persist_root_prompt(dir: &marion_core::paths::AgentDir, prompt: &str) {
     use std::io::Write;
     let path = dir.prompt();
-    let written = crate::private_fs::create(&path).and_then(|mut f| f.write_all(prompt.as_bytes()));
+    let written = crate::agent_fs::AgentFs::open(dir.path())
+        .and_then(|d| d.create(&path))
+        .and_then(|mut f| f.write_all(prompt.as_bytes()));
     if let Err(e) = written {
         eprintln!(
             "marion: cannot keep the root's prompt at {}: {e}",

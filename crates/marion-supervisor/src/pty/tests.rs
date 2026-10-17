@@ -1143,6 +1143,31 @@ fn the_supervisor_and_not_the_client_holds_the_master() {
 /// The comparison is on *decoded* values, not bytes: `extract.py` used Python's `json.dumps`, which
 /// escapes every non-ASCII character, while `serde_json` emits UTF-8 directly. Both are valid JSON
 /// for the same string, and pinning the byte spelling would pin Python's defaults.
+/// **A pane's recording is never written through a link the node left at it**: a later attempt,
+/// generation or resume refuses to open a linked `pty.cast`, and the operator's file it named
+/// keeps its bytes and its mode.
+#[test]
+fn a_linked_cast_is_refused_and_its_target_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = marion_testsupport::scratch("pty-cast-link");
+    let theirs = dir.join(".zshrc");
+    std::fs::write(&theirs, b"operator's\n").unwrap();
+    std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let agent = dir.join("agents/n");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::os::unix::fs::symlink(&theirs, agent.join("pty.cast")).unwrap();
+    let opened = CastWriter::create(
+        &agent.join("pty.cast"),
+        WinSize::new(80, 24),
+        "xterm-256color",
+        Instant::now(),
+    );
+    assert!(opened.is_err());
+    assert_eq!(std::fs::read(&theirs).unwrap(), b"operator's\n");
+    let mode = std::fs::metadata(&theirs).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o644);
+}
+
 /// **No credential the node holds reaches its cast**: a key echoed whole, a key split across two
 /// reads, and a key's first bytes held until an exit are all written `***`; text that only began
 /// like a key is released as it was; input and other records are untouched.

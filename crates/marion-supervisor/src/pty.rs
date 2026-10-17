@@ -823,7 +823,9 @@ impl CastWriter {
     /// nothing on either file to say by how much. `mono_ns_and_the_cast_share_one_epoch` is the
     /// guard.
     pub fn create(path: &Path, size: WinSize, term: &str, origin: Instant) -> io::Result<Self> {
-        let mut file = crate::private_fs::create(path)?;
+        // In the node's agent dir, which the node can write.
+        let dir = crate::agent_fs::AgentFs::open(path.parent().unwrap_or(Path::new(".")))?;
+        let mut file = dir.create(path)?;
         let header = serde_json::json!({
             "version": 3,
             "term": {"cols": size.cols, "rows": size.rows, "type": term},
