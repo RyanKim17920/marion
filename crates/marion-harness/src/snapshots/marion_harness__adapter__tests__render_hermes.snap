@@ -1,0 +1,255 @@
+---
+source: crates/marion-harness/src/adapter.rs
+expression: out
+---
+## canned headless
+program: hermes
+cwd: /wt
+model: None
+session_mode: None
+args:
+  chat
+  -q
+  do the task
+  --format
+  stream-json
+  --yolo
+  --source
+  tool
+env:
+  HERMES_MANAGED_DIR=/state/x/config/managed
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}
+
+## live headless
+program: hermes
+cwd: /wt
+model: None
+session_mode: None
+args:
+  chat
+  -q
+  do the task
+  --format
+  stream-json
+  --yolo
+  --source
+  tool
+env:
+  HERMES_MANAGED_DIR=/state/x/config/managed
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}
+
+## canned tools=[read] headless
+refused: hermes: no mapping for marion tool `read`; this harness's adapter provides none
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}
+
+## canned tools=[write] headless
+refused: hermes: no mapping for marion tool `write`; this harness's adapter provides none
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}
+
+## canned tools=[edit] headless
+refused: hermes: no mapping for marion tool `edit`; this harness's adapter provides none
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}
+
+## canned tools=[bash] headless
+refused: hermes: no mapping for marion tool `bash`; this harness's adapter provides none
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}
+
+## canned tools=[all] headless
+refused: hermes: no mapping for marion tool `read`; this harness's adapter provides none
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}
+
+## live resume headless
+program: hermes
+cwd: /wt
+model: None
+session_mode: None
+args:
+  chat
+  --resume
+  session-1
+  -q
+  do the task
+  --format
+  stream-json
+  --yolo
+  --source
+  tool
+env:
+  HERMES_MANAGED_DIR=/state/x/config/managed
+file /state/x/config/managed/config.yaml:
+{
+  "auth": {
+    "adopt_external_logins": false
+  },
+  "mcp_servers": {
+    "marion": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/bin/marion-supervisor",
+      "env": {
+        "MARION_AGENT_ID": "019f-root",
+        "MARION_AGENT_TYPE": "claude",
+        "MARION_AUTH": "inherited",
+        "MARION_DEPTH": "0",
+        "MARION_READY_FILE": "/state/x/mcp-ready",
+        "MARION_REPO": "/repo",
+        "MARION_STATE_DIR": "/state"
+      }
+    }
+  }
+}

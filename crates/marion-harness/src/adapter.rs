@@ -26,6 +26,7 @@ use crate::codex;
 use crate::copilot;
 use crate::goose;
 use crate::grammar;
+use crate::hermes;
 use crate::invocation::Invocation;
 use crate::mcp_bridge::BridgeEnv;
 use crate::opencode;
@@ -1437,6 +1438,7 @@ pub const ROWS: [Row; Harness::ALL.len()] = [
     qwen::ROW,
     antigravity::ROW,
     pi::ROW,
+    hermes::ROW,
     acp::ROW,
 ];
 
@@ -1795,6 +1797,7 @@ mod tests {
                 ("qwen", false),
                 ("agy", false),
                 ("pi", false),
+                ("hermes", true),
                 ("acp", true),
             ]
         );
@@ -2521,6 +2524,18 @@ mod tests {
         );
         for trusted in [false, true] {
             assert!(switches(Auth::Canned, trusted).is_empty(), "{trusted}");
+        }
+    }
+
+    /// The operator's own login, the only route the row has, and no model, so the operator's
+    /// configured one runs.
+    fn hermes_spec() -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            model: None,
+            ..codex_spec()
         }
     }
 
@@ -3450,6 +3465,7 @@ mod tests {
             Harness::Qwen => qwen_spec(),
             Harness::Antigravity => agy_spec(),
             Harness::Pi => pi_spec(),
+            Harness::Hermes => hermes_spec(),
             Harness::Acp => acp_spec(),
         }
     }
@@ -3577,7 +3593,7 @@ mod tests {
                 Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
                     &[Wire::OpenAiChat]
                 }
-                Harness::Acp | Harness::Antigravity | Harness::Pi => &[],
+                Harness::Acp | Harness::Antigravity | Harness::Pi | Harness::Hermes => &[],
             };
             assert_eq!(wires, want, "{h}");
         }
@@ -6569,6 +6585,10 @@ mod tests {
                 Harness::Pi => format!(
                     r#"{{"type":"tool_execution_start","toolCallId":"c1","toolName":"{tool}","args":{args}}}"#
                 ),
+                // v0.22.2 `stream_json.py`'s `tool_use`: the arguments arrive parsed under `input`.
+                Harness::Hermes => format!(
+                    r#"{{"type":"tool_use","name":"{tool}","tool_call_id":"c1","input":{args}}}"#
+                ),
                 // Two frames, because ACP is the one wire where the verb and the arguments never
                 // arrive together: S21's opening `tool_call` carries the title and an empty
                 // `rawInput`, and the closing update carries the arguments and an empty title.
@@ -9044,6 +9064,19 @@ mod tests {
                 live.base_url.is_some(),
                 "{h}: the sweep hands every row an endpoint so live mode is seen dropping it"
             );
+            // The variable naming the row's own declaration directory points at marion's scope
+            // under the node's directory: the declaration itself, as cline's
+            // `CLINE_MCP_SETTINGS_PATH` is. What that scope would shadow, the row refuses by name.
+            let channel = match row.live_declaration {
+                Some(crate::spec::LiveDeclaration::EnvDir { key, .. }) => Some(key),
+                _ => None,
+            };
+            let without_channel = |vars: &[(String, String)]| -> Vec<(String, String)> {
+                vars.iter()
+                    .filter(|(k, _)| Some(k.as_str()) != channel)
+                    .cloned()
+                    .collect()
+            };
             let adapter = launch_adapter(h).unwrap();
             for repo_trusted in [false, true] {
                 let mut live = live.clone();
@@ -9057,7 +9090,7 @@ mod tests {
                     assert_leaves_the_auth_source_alone(
                         &format!("{h} {shape} trusted={repo_trusted}"),
                         &inv.args,
-                        &inv.env,
+                        &without_channel(&inv.env),
                         repo_trusted,
                     );
                 }
@@ -9089,7 +9122,12 @@ mod tests {
                 .map(|(k, v)| (lossy(k), lossy(v)))
                 .collect();
             let prefix: Vec<String> = injection.argv_prefix.iter().map(lossy).collect();
-            assert_leaves_the_auth_source_alone(&format!("{h} native"), &prefix, &overlay, true);
+            assert_leaves_the_auth_source_alone(
+                &format!("{h} native"),
+                &prefix,
+                &without_channel(&overlay),
+                true,
+            );
             for doc in &injection.documents {
                 assert_selects_no_auth(
                     &format!("{h} native {}", doc.path.display()),
@@ -9755,6 +9793,8 @@ mod tests {
             (Harness::Antigravity, "continuation", "paste"),
             // S34 item 12: `--mode rpc` folds a steer into the running turn.
             (Harness::Pi, "typed", "paste"),
+            // Read from the v0.22.2 source only, so neither shape is claimed.
+            (Harness::Hermes, "none", "none"),
             (Harness::Acp, "typed", "none"),
         ];
         assert_eq!(
@@ -10231,6 +10271,7 @@ mod tests {
                 ("qwen", "cli-flag"),
                 ("agy", "operator-allowlist"),
                 ("pi", "approve-all"),
+                ("hermes", "approve-all"),
                 ("acp", "session-mode"),
             ],
             "each row's measured grant, named one at a time so a new row cannot copy a neighbour"
@@ -10377,6 +10418,7 @@ mod tests {
                 ("qwen", "tools-axis"),
                 ("agy", "tools-axis"),
                 ("pi", "tools-axis"),
+                ("hermes", "scope-only"),
                 ("acp", "scope-only"),
             ],
             "each row's measured switch, named one at a time so a new row cannot copy a neighbour"
@@ -10389,7 +10431,7 @@ mod tests {
             .collect();
         assert_eq!(
             unguarded,
-            ["cline", "agy", "acp"],
+            ["cline", "agy", "hermes", "acp"],
             "a scope-only or unverified row records a write rather than refusing it"
         );
         for h in Harness::ALL {
@@ -10421,6 +10463,9 @@ mod tests {
                 // s34
                 Harness::Pi => json!({"type": "message_start", "message": {"role": "assistant",
                     "model": "claude-haiku-4-5-20251001"}}),
+                // v0.22.2 `stream_json.py` (read from source, not captured)
+                Harness::Hermes => json!({"type": "system", "subtype": "init",
+                    "model": "claude-haiku-4-5-20251001", "session_id": ""}),
                 Harness::Codex
                 | Harness::OpenCode
                 | Harness::Goose
@@ -10969,6 +11014,12 @@ mod tests {
                 r#"{"type":"result","timestamp":"<TS>","sessionId":"p-1","exitCode":0}"#,
                 "p-1",
             ),
+            // v0.22.2 `stream_json.py`, read from source: `system/init` may name none yet.
+            (
+                Harness::Hermes,
+                r#"{"type":"result","session_id":"20261017_abc","exit_code":0}"#,
+                "20261017_abc",
+            ),
         ];
         for (h, frame, want) in frames {
             let g = harness_spec(*h)
@@ -11009,7 +11060,10 @@ mod tests {
             });
             assert_eq!(
                 claims_early,
-                !matches!(h, Harness::Copilot | Harness::Goose | Harness::Cline),
+                !matches!(
+                    h,
+                    Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Hermes
+                ),
                 "{h}"
             );
         }

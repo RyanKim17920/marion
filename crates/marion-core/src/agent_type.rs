@@ -750,6 +750,19 @@ const BUILTINS: &[Builtin] = &[
         acp_agent: None,
         delegates_writes: true,
     },
+    // No `tools`, and no orchestrator: Hermes' default toolsets already read, write and run
+    // commands, and which `-t` toolsets withhold writes is unmeasured. The operator's own login
+    // and configured model.
+    Builtin {
+        canonical: "hermes",
+        aliases: &["hermes-impl"],
+        description: "Implementer on Nous Research's Hermes Agent: all of Hermes' own tools.",
+        harness: Harness::Hermes,
+        model: None,
+        tools: &[],
+        acp_agent: None,
+        delegates_writes: false,
+    },
 ];
 
 /// A built-in by name, or the one open-ended family: any ACP agent, named by its command.
@@ -1260,13 +1273,14 @@ mod tests {
             ("qwen-orchestrator", Harness::Qwen),
             ("agy", Harness::Antigravity),
             ("agy-orchestrator", Harness::Antigravity),
+            ("hermes", Harness::Hermes),
         ] {
             assert_eq!(builtin(name).unwrap().harness, h, "{name}");
             assert!(builtin_names().contains(&name), "{name} must be listed");
         }
         assert_eq!(
             builtin_names().len(),
-            25,
+            26,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }

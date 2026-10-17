@@ -129,6 +129,7 @@ the root's prompt is left out unless `--include-prompt`. See
 | goose | no | yes | none |
 | Cline (`cline`) | no | yes | none |
 | Antigravity (`agy`) | no | no canned route | one end-to-end run (2026-09-27) |
+| Hermes Agent (`hermes`) | no | no canned route | none: read from the 0.22.2 source, no capture yet |
 | any ACP agent (`acp:<command>`) | — | opencode's ACP mode | claude-acp, codex-acp (2026-09-27) |
 
 Every row's launch shape was measured against a real install, and the test suite drives the

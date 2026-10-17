@@ -586,6 +586,7 @@ only; canned runs keep marion's own isolation.
 | `opencode` | `XDG_DATA_HOME` | `opencode/auth.json` exists | — |
 | `pi` | `PI_CODING_AGENT_DIR` | `auth.json` exists | `settings.json`, `extensions`, `skills`, `prompts`, `themes`, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `npm`, `git`, `trust.json`, `keybindings.json` (links; never `auth.json` or `models.json`) |
 | `copilot` | none: a fresh `COPILOT_HOME` still authenticates (1.0.83), so a directory cannot choose an account | | |
+| `hermes` | `HERMES_HOME` | `auth.json` exists | — |
 | `goose`, `cline`, `qwen`, `agy`, `acp:` | none yet: unmeasured | | |
 
 ## Harness detail
@@ -607,7 +608,14 @@ per harness on your login, which makes a model call.
 | `goose` | 1.49.0 – 1.52.0 | `run -t` | no | no | disabled: interactive surface unmeasured |
 | `cline` | 3.0.61 | prompt + `--json` | no | no | disabled: interactive surface unmeasured |
 | `agy` (Antigravity) | 1.2.8 | `-p` stream-json; needs your own `permissions.allow` rule for `mcp(marion/*)`, which marion never writes | `--conversation` | next generation | disabled |
+| `hermes` | 0.22.2, read from source; conformance pending | `chat -q` stream-json, on your own login only | `--resume` | no | disabled |
 | `acp:<command>` | n/a | the Agent Client Protocol | `session/load` where offered | per agent | — |
+
+A Hermes child never adopts your Codex CLI or Claude Code login, whose refresh tokens are
+single-use: marion points `HERMES_MANAGED_DIR` at a scope of its own whose `config.yaml` sets
+`auth.adopt_external_logins: false` and declares marion's server, and the rest of your Hermes
+config stays as it is. That scope would hide an administrator's `/etc/hermes` or your own
+`HERMES_MANAGED_DIR`, so marion refuses to launch Hermes while either exists.
 
 On your own login a pi child runs on your agent dir as you configured it: your extensions, skills,
 prompts and packages load, and marion adds only its own `-e` extension. Canned pi keeps them out

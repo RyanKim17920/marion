@@ -27,6 +27,7 @@ pub const ROW_FILES: &[&str] = &[
     "crates/marion-harness/src/acp.rs",
     "crates/marion-harness/src/antigravity.rs",
     "crates/marion-harness/src/pi.rs",
+    "crates/marion-harness/src/hermes.rs",
 ];
 
 /// Agent names not (yet) in the enum's wire table, which a string comparison could still branch on.

@@ -42,6 +42,10 @@ pub enum Harness {
     /// 0.80.2, `tests/fixtures/s34-pi/`). The eleventh name and the tenth binary, and the first with
     /// no MCP client of its own: marion's declaration is an extension it loads per run.
     Pi,
+    /// Nous Research's Hermes Agent, headless `chat -q --format stream-json` (read from the
+    /// v0.22.2 source; no capture yet). The twelfth name and the eleventh binary, and the first
+    /// that borrows other harnesses' logins unless its config says not to.
+    Hermes,
     /// **A protocol, not a vendor** — §5.2's `acp` adapter row, *"one adapter serving many
     /// agents"*. The other four name a binary; this one names Agent Client Protocol and the binary
     /// arrives per launch (`Extras::acp_agent`), because the agent supplies its own identity in
@@ -120,6 +124,7 @@ impl Harness {
             Harness::Qwen => "qwen",
             Harness::Antigravity => "agy",
             Harness::Pi => "pi",
+            Harness::Hermes => "hermes",
             Harness::Acp => "acp",
             Harness::Named(id) => id.name(),
         }
@@ -137,7 +142,7 @@ impl Harness {
 
     /// Every harness marion ships — the built-ins. A loaded row's is [`Self::loaded`]; both are
     /// `marion_harness::adapter::every`.
-    pub const ALL: [Harness; 10] = [
+    pub const ALL: [Harness; 11] = [
         Harness::ClaudeCode,
         Harness::Codex,
         Harness::OpenCode,
@@ -147,6 +152,7 @@ impl Harness {
         Harness::Qwen,
         Harness::Antigravity,
         Harness::Pi,
+        Harness::Hermes,
         Harness::Acp,
     ];
 
@@ -364,7 +370,7 @@ impl<'de> Deserialize<'de> for RecordedHarness {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "unknown harness {0:?}; known harnesses are claude, codex, opencode, copilot, goose, cline, \
-     qwen, agy, pi, acp (claude-code is accepted for claude){loaded}",
+     qwen, agy, pi, hermes, acp (claude-code is accepted for claude){loaded}",
     loaded = loaded_names()
 )]
 pub struct UnknownHarness(pub String);
@@ -450,6 +456,7 @@ mod tests {
         // The binary's own name: Google's Antigravity CLI installs as `agy`.
         assert_eq!(Harness::Antigravity.as_str(), "agy");
         assert_eq!(Harness::Pi.as_str(), "pi");
+        assert_eq!(Harness::Hermes.as_str(), "hermes");
         // §5.2's adapter row is spelled `acp`, and it names the protocol rather than an agent.
         assert_eq!(Harness::Acp.as_str(), "acp");
     }

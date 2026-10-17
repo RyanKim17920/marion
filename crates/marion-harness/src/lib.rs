@@ -22,6 +22,7 @@ pub mod copilot;
 pub mod env_filter;
 pub mod goose;
 pub mod grammar;
+pub mod hermes;
 pub mod invocation;
 pub mod jsonl_channel;
 pub mod mcp_bridge;

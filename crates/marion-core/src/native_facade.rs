@@ -856,6 +856,18 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         )),
         structured: None,
     },
+    // Disabled 2026-10-17: the managed-scope declaration was read from the v0.22.2 source only;
+    // no Hermes TUI was measured reading it, and no working release is installed to measure.
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("hermes"),
+        command: "hermes",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("hermes", "hermes", NativeAdapterId::new("hermes")),
+        )),
+        structured: None,
+    },
 ];
 
 /// The production registry: [`PRODUCTION_NATIVE_FACADES`], validated.
