@@ -3029,6 +3029,9 @@ fn a_verification_process_withholds_marions_variables_and_provider_keys() {
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_CONFIG_PARAMETERS",
     ] {
         assert!(is_withheld_from_verification(key), "{key}");
     }

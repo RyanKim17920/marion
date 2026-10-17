@@ -636,11 +636,16 @@ pub fn verification_commands(
 }
 
 /// **What a verification process must not inherit**: marion's own variables (a node token, the
-/// state directory, a bridge's identity) and every provider key. A verification line is the
-/// parent's words run over the child's work — a `cargo test` whose `build.rs` the child wrote — so
-/// it runs with none of marion's credentials in reach, contained or not.
+/// state directory, a bridge's identity), every provider key, and every variable that would point
+/// its git at another repository ([`marion_harness::env_filter::is_git_redirect`]). A verification
+/// line is the parent's words run over the child's work — a `cargo test` whose `build.rs` the
+/// child wrote — so it runs with none of marion's credentials in reach, contained or not, and its
+/// git acts on the child's tree.
 pub fn is_withheld_from_verification(key: &str) -> bool {
-    key.starts_with("MARION_") || key.ends_with("_API_KEY") || key.ends_with("_AUTH_TOKEN")
+    key.starts_with("MARION_")
+        || key.ends_with("_API_KEY")
+        || key.ends_with("_AUTH_TOKEN")
+        || marion_harness::env_filter::is_git_redirect(key)
 }
 
 /// The process one verification [`Command`] runs as: its program, arguments and directory, with
