@@ -314,7 +314,14 @@ fn spawn_and_inspect(tag: &str, agent_type: &str, provider: &Provider) -> TaskCo
             .map(|(pid, _, _)| *pid)
             .collect();
         let token = observer.token.as_str();
+        // The supervisor's `PATH` reaches a bridge through the project's `spawn-path` file, never
+        // a node's argv, which every user can read.
+        let path = std::env::var("PATH").unwrap_or_default();
         for (pid, _, argv) in &table {
+            assert!(
+                path.is_empty() || !(tree.contains(pid) && argv.contains(path.as_str())),
+                "{agent_type}: the supervisor's PATH is on the argv of node process {pid}: {argv}"
+            );
             assert!(
                 !argv.contains(token),
                 "{agent_type}: the node token is on the argv of process {pid}: {argv}"
