@@ -27,7 +27,7 @@ path = "src/main.rs"
 # test targets that only drive it) without compiling alacritty, ratatui or the TUI at all.
 [features]
 default = ["client"]
-client = ["dep:base64", "dep:marion-term", "dep:marion-tui", "dep:ratatui", "dep:similar"]
+client = ["dep:marion-term", "dep:marion-tui", "dep:ratatui", "dep:similar"]
 
 # The user-facing command (§10). One crate, two binaries: M1 has no socket between them, so
 # sharing `run_spawn` by linkage is what keeps `marion run` and `marion-supervisor mcp` from
@@ -62,8 +62,6 @@ path = "tests/l45_tree.rs"
 required-features = ["client"]
 
 [dependencies]
-# The home screen's copy-to-clipboard: OSC 52 carries its text base64-encoded.
-base64 = { workspace = true, optional = true }
 blake3 = "1"
 getrandom = "0.4"
 marion-core = { path = "../marion-core" }
