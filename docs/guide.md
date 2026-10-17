@@ -417,7 +417,7 @@ under **repository**, shows the answer and the files; Enter runs `marion trust a
 
 | harness | untrusted repository | trusted repository |
 |---|---|---|
-| `claude` | `--setting-sources user` (your settings, not the repository's) and `.mcp.json` servers neither approved wholesale nor by name (each one it names is rejected, so your `enabledMcpjsonServers` approval of a name cannot run a cloned repository's server of that name) | every settings source |
+| `claude` | `--setting-sources user` (your settings, not the repository's) and `.mcp.json` servers neither approved wholesale nor by name (each one it names is rejected, so your `enabledMcpjsonServers` approval of a name cannot run a cloned repository's server of that name), so none of them start | every settings source; headless, the repository's `.mcp.json` servers run just as your own `claude -p` runs them, approved or not, while a pane skips any server the repository's own `.claude/settings*.json` do not approve rather than stall on the approval dialog |
 | `codex` | the trust your `config.toml` states for the checkout, else pinned `trust_level="untrusted"`; always pinned `untrusted` in a child tree whose config was edited | pinned `trusted`, unless your `config.toml` states a trust for it |
 | `opencode` | `OPENCODE_DISABLE_PROJECT_CONFIG=1` | the project config loads |
 | `pi` | no switch, so pi's own `trust.json` (or `defaultProjectTrust`) decides; `--no-approve` in a child tree whose `.pi/` was edited (your own extensions still load) | `--approve` |
