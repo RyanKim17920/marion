@@ -211,6 +211,31 @@ struct Pinned {
 /// its `gitdir` file — git's back-link — must name this tree's `.git`. A child can rewrite its
 /// gitfile, but not the operator's `worktrees/` directory, so it can point the gitfile neither at
 /// a repository of its own nor at a sibling's registration.
+/// **A child's tree is reached through no link.** The tree, and the agent dir above it, are the
+/// node's to write: a link left in place of either names another directory, and through it
+/// another registered tree (the operator's own linked worktree, a sibling's), whose state
+/// marion's git would stage and commit, or which `worktree remove --force` would delete. Part of
+/// every [`Tree::Child`] call's proof, and asked on its own before a removal from the operator's
+/// checkout.
+pub fn check_child_tree(wt: &Path) -> Result<(), SpawnError> {
+    for at in [Some(wt), wt.parent()].into_iter().flatten() {
+        match std::fs::symlink_metadata(at) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => {
+                return Err(tampered(
+                    wt,
+                    format!(
+                        "{} is a link or a file, not the directory marion made",
+                        at.display()
+                    ),
+                ));
+            }
+            Err(e) => return Err(tampered(wt, e)),
+        }
+    }
+    Ok(())
+}
+
 fn verified(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
     let pinned = registered(wt, repo)?;
     check_worktree_config(wt, &pinned.gitdir)?;
@@ -232,6 +257,7 @@ pub fn admin_dir(wt: &Path, repo: &Path) -> Option<PathBuf> {
 
 /// [`verified`] without the `config.worktree` check: the gitfile and its registration alone.
 fn registered(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
+    check_child_tree(wt)?;
     let dot_git = wt.join(".git");
     let meta = std::fs::symlink_metadata(&dot_git).map_err(|e| tampered(wt, e))?;
     if !meta.file_type().is_file() {

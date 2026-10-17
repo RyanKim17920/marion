@@ -2945,6 +2945,88 @@ fn a_continuation_writes_no_config_document_through_a_link_generation_0_left() {
     untouched();
 }
 
+/// **A worktree the node swapped for a link is neither committed nor removed**: linked to
+/// another registered tree with work of its own (the operator's linked worktree here),
+/// `commit_child_work` refuses it and `cleanup` leaves it, so that tree's files, untracked and
+/// ignored ones included, and its index stay exactly as they were.
+///
+/// Mutation: drop `check_child_tree` from `gitcmd::registered` and the commit stages the other
+/// tree; drop it from `cleanup` and `worktree remove --force` deletes it.
+#[test]
+fn a_worktree_swapped_for_a_link_is_neither_committed_nor_removed() {
+    let root = scratch("supervisor-worktree-link");
+    let repo = fixture_repo(&root);
+    let theirs = root.join("operator-wt");
+    marion_testsupport::git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "theirs",
+            &theirs.to_string_lossy(),
+        ],
+    );
+    std::fs::write(theirs.join("untracked.txt"), "operator's\n").unwrap();
+    std::fs::write(theirs.join("src/keep.txt"), "edited, not staged\n").unwrap();
+    let index_before = std::fs::read(
+        marion_testsupport::git(
+            &theirs,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )
+        .trim(),
+    )
+    .unwrap();
+
+    let agent = root.join("agents/n");
+    std::fs::create_dir_all(&agent).unwrap();
+    let wt = agent.join("worktree");
+    let (base, _) = crate::spawn::make_worktree(
+        crate::spawn::Tree::Operator(&repo),
+        &wt,
+        &["marion/n".into()],
+        None,
+    )
+    .expect("the child's worktree");
+    std::fs::rename(&wt, agent.join("moved")).unwrap();
+    std::os::unix::fs::symlink(&theirs, &wt).unwrap();
+
+    let committed = crate::spawn::commit_child_work(
+        crate::spawn::Tree::Child {
+            wt: &wt,
+            repo: &repo,
+        },
+        "marion/n",
+        &base,
+        "child work",
+    );
+    assert!(committed.is_err(), "{committed:?}");
+    cleanup(&repo, &wt, "marion/n", Some(&base));
+
+    assert_eq!(
+        std::fs::read_to_string(theirs.join("untracked.txt")).unwrap(),
+        "operator's\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(theirs.join("src/keep.txt")).unwrap(),
+        "edited, not staged\n"
+    );
+    let index_after = std::fs::read(
+        marion_testsupport::git(
+            &theirs,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )
+        .trim(),
+    )
+    .unwrap();
+    assert_eq!(index_before, index_after, "nothing staged in their tree");
+    assert!(
+        marion_testsupport::git(&repo, &["worktree", "list"]).contains("operator-wt"),
+        "their tree is still registered"
+    );
+}
+
 /// **A row's `provider` must be one the user has** — a built-in, or one in their own
 /// `providers.toml` — checked at load, so a tree naming a provider nobody defined refuses every
 /// spawn by name instead of failing only the node that reaches for it. The registry is read

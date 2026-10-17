@@ -4091,6 +4091,12 @@ fn persist_contract_and_close_stream(
 /// worktree whose configuration is the child's — through [`crate::gitcmd::command`].
 fn cleanup(repo: &Path, wt: &Path, branch: &str, base: Option<&Oid>) {
     let _serialized = crate::spawn::repo_write_guard();
+    // The node can write its agent dir: a link left in place of its worktree would have
+    // `--force` remove whichever registered tree it names. Such a tree is left, with its branch.
+    if let Err(e) = crate::gitcmd::check_child_tree(wt) {
+        eprintln!("marion: not removing {}: {e}", wt.display());
+        return;
+    }
     let git = |args: &[&str]| {
         crate::gitcmd::command(&crate::spawn::Tree::Operator(repo), args).is_ok_and(
             |mut command| {
