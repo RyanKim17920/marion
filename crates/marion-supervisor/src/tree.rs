@@ -768,6 +768,82 @@ pub fn attention_count(nodes: &[NodeSummary]) -> usize {
     nodes.iter().filter(|n| attention_of(n).is_some()).count()
 }
 
+/// **Whether `node` left work for the operator to land**: a child that ended well and changed
+/// files, which it did on a branch of its own. A root changed the operator's own checkout, so it
+/// has nothing to land.
+pub fn to_land(node: &NodeSummary) -> bool {
+    node.parent_id.is_some()
+        && node.state == NodeState::Exited(marion_core::contract::ExitStatus::Ok)
+        && node.changed.unwrap_or(0) > 0
+}
+
+/// How urgent one node is for the operator, most urgent first: it needs them, it has work to
+/// land, it is running, or none of those.
+fn urgency(node: &NodeSummary, landed: &dyn Fn(&NodeSummary) -> bool) -> u8 {
+    if attention_of(node).is_some() {
+        0
+    } else if landed(node) {
+        1
+    } else if !node.state.is_exited() {
+        2
+    } else {
+        3
+    }
+}
+
+/// **`nodes` in the order the home screen lists them**: every tree placed by its most urgent node
+/// and every set of siblings sorted the same way — needs the operator, then work to land, then
+/// running, then the rest — the newest first among equals. `landed` says which nodes still have
+/// work to land, so one the operator just merged can drop out of that rank.
+///
+/// [`marion_tui::tree::Tree::new`] walks roots and children in input order, so sorting the flat
+/// list by each node's subtree rank orders both at once. A node whose parent is not in the
+/// snapshot is ranked as a root; a cycle (which §7.5 rules out) cannot loop, since each subtree
+/// walk visits a node once.
+pub fn by_urgency(
+    nodes: &[NodeSummary],
+    landed: &dyn Fn(&NodeSummary) -> bool,
+) -> Vec<NodeSummary> {
+    let mut children: std::collections::HashMap<&AgentId, Vec<usize>> = Default::default();
+    for (i, n) in nodes.iter().enumerate() {
+        if let Some(p) = &n.parent_id {
+            children.entry(p).or_default().push(i);
+        }
+    }
+    // Each node's subtree rank, children before parents: one pass over the forest. A node met
+    // again while its own subtree is open is a cycle, and counts only for itself.
+    let mut rank: Vec<u8> = nodes.iter().map(|n| urgency(n, landed)).collect();
+    let mut done = vec![false; nodes.len()];
+    let mut open = vec![false; nodes.len()];
+    for root in 0..nodes.len() {
+        let mut stack = vec![(root, false)];
+        while let Some((i, kids_done)) = stack.pop() {
+            if done[i] {
+                continue;
+            }
+            let kids = children
+                .get(&nodes[i].agent_id)
+                .map_or(&[][..], Vec::as_slice);
+            if kids_done {
+                rank[i] = kids
+                    .iter()
+                    .filter(|&&k| done[k])
+                    .fold(rank[i], |r, &k| r.min(rank[k]));
+                done[i] = true;
+                open[i] = false;
+            } else if !open[i] {
+                open[i] = true;
+                stack.push((i, true));
+                stack.extend(kids.iter().filter(|&&k| !open[k]).map(|&k| (k, false)));
+            }
+        }
+    }
+    let newest_first = |i: usize| std::cmp::Reverse(nodes[i].started_at.map(|t| t.0));
+    let mut order: Vec<usize> = (0..nodes.len()).collect();
+    order.sort_by_key(|&i| (rank[i], newest_first(i), i));
+    order.into_iter().map(|i| nodes[i].clone()).collect()
+}
+
 /// Fold one subscription notification into a `tree/subscribe` snapshot. Returns whether `nodes`
 /// changed.
 ///
@@ -1075,6 +1151,106 @@ mod tests {
             cancel: None,
             workflow: None,
         }
+    }
+
+    fn at(
+        id: &str,
+        parent: Option<&str>,
+        state: NodeState,
+        started_secs: u64,
+        changed: Option<u32>,
+    ) -> NodeSummary {
+        NodeSummary {
+            parent_id: parent.map(|p| AgentId(p.into())),
+            state,
+            changed,
+            started_at: Some(marion_core::encoding::SystemTime::from_unix_millis(
+                started_secs * 1000,
+            )),
+            ..summary(id, Harness::Codex, false, None)
+        }
+    }
+
+    fn ids(nodes: &[NodeSummary]) -> Vec<&str> {
+        nodes.iter().map(|n| n.agent_id.0.as_str()).collect()
+    }
+
+    /// **The list leads with what needs the operator**: siblings go needs-you, then work to land,
+    /// then running, then done, the newest first among equals; and a tree is placed by its most
+    /// urgent node, so a root whose grandchild is blocked comes before a newer running root.
+    #[test]
+    fn the_list_orders_trees_and_siblings_by_their_most_urgent_node() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::BlockReason;
+        let ok = NodeState::Exited(ExitStatus::Ok);
+        let nodes = vec![
+            at("calm", None, NodeState::Running, 90, None),
+            at("busy", None, NodeState::Running, 10, None),
+            at("done", Some("busy"), ok, 20, None),
+            at("land", Some("busy"), ok, 21, Some(3)),
+            at("run-old", Some("busy"), NodeState::Running, 22, None),
+            at("run-new", Some("busy"), NodeState::Running, 23, None),
+            at(
+                "asks",
+                Some("run-old"),
+                NodeState::Blocked(BlockReason::Permission),
+                30,
+                None,
+            ),
+        ];
+        let sorted = by_urgency(&nodes, &to_land);
+        // Flat, by subtree rank then newest: `asks` lends its rank to `run-old` and `busy`.
+        assert_eq!(
+            ids(&sorted),
+            ["asks", "run-old", "busy", "land", "calm", "run-new", "done"]
+        );
+        let t = Tree::new(sorted.iter().map(row).collect());
+        let drawn: Vec<&str> = (0..t.rows())
+            .map(|i| t.row(i).unwrap().1.id.as_str())
+            .collect();
+        assert_eq!(
+            drawn,
+            ["busy", "run-old", "asks", "land", "run-new", "done", "calm"],
+            "the walk keeps each tree whole, in the sorted order"
+        );
+        // Once landed, a node is just done: the caller's predicate decides.
+        let merged = by_urgency(&nodes, &|n| to_land(n) && n.agent_id.0 != "land");
+        let t = Tree::new(merged.iter().map(row).collect());
+        let drawn: Vec<&str> = (0..t.rows())
+            .map(|i| t.row(i).unwrap().1.id.as_str())
+            .collect();
+        assert_eq!(
+            drawn,
+            ["busy", "run-old", "asks", "run-new", "land", "done", "calm"]
+        );
+    }
+
+    /// A root has nothing to land, however many files it changed: it worked in the operator's own
+    /// checkout.
+    #[test]
+    fn only_a_child_that_ended_well_and_changed_files_has_work_to_land() {
+        use marion_core::contract::ExitStatus;
+        let ok = NodeState::Exited(ExitStatus::Ok);
+        assert!(to_land(&at("c", Some("r"), ok, 0, Some(1))));
+        assert!(!to_land(&at("r", None, ok, 0, Some(1))));
+        assert!(!to_land(&at("c", Some("r"), ok, 0, Some(0))));
+        assert!(!to_land(&at("c", Some("r"), ok, 0, None)));
+        let failed = NodeState::Exited(ExitStatus::Failed);
+        assert!(!to_land(&at("c", Some("r"), failed, 0, Some(4))));
+    }
+
+    /// An orphan is ranked as the root it is drawn as, and a parent cycle (which the journal rules
+    /// out) neither loops nor drops a node.
+    #[test]
+    fn ordering_survives_a_missing_parent_and_a_cycle() {
+        let nodes = vec![
+            at("a", Some("b"), NodeState::Running, 1, None),
+            at("b", Some("a"), NodeState::Running, 2, None),
+            at("orphan", Some("gone"), NodeState::Running, 3, None),
+        ];
+        let sorted = by_urgency(&nodes, &to_land);
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(ids(&sorted)[0], "orphan", "the newest of three equals");
     }
 
     /// The snapshot is kept current by folding, and the fold is shared with the native relay's
