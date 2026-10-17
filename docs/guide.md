@@ -195,6 +195,13 @@ exactly as its harness normally does, in its own permission or auto mode, with n
 layered on, and the rules above stand as written: only codex counts as sandboxed. `marion doctor`
 says both, and `MARION_SANDBOX=off` turns marion's sandbox off everywhere.
 
+The sandbox keeps a node from writing what is not its own; it does not keep nodes apart from
+each other. A node cannot read another node's files on macOS, apart from its contracts and event
+stream, but on both macOS and Linux it can read the environment of any process running as you,
+including another node's marion bridge, which holds that node's token for most harnesses. On Linux
+it can also read other nodes' files. Treat nodes in one project as able to act as each other
+through marion.
+
 To let agents start wider ones, opt in for one run with `marion run --allow-wider-children`, or
 for every run in `~/.config/marion/config.toml`:
 
