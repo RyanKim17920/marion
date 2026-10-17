@@ -128,11 +128,16 @@ pub(crate) enum NativeRouteTestStage {
     SelectorSelected,
 }
 
+/// What a test runs at each [`NativeRouteTestStage`], on the serving thread, before the route goes
+/// on: a recorder, or a step that must land at exactly that point (a clock moved between the
+/// consumed capability and the launch deadline it mints).
+#[cfg(test)]
+type NativeRouteTestHook = Box<dyn Fn(NativeRouteTestStage)>;
+
 #[cfg(test)]
 thread_local! {
-    static NATIVE_ROUTE_TEST_SENDER: std::cell::RefCell<
-        Option<std::sync::mpsc::Sender<NativeRouteTestStage>>,
-    > = const { std::cell::RefCell::new(None) };
+    static NATIVE_ROUTE_TEST_HOOK: std::cell::RefCell<Option<NativeRouteTestHook>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -141,7 +146,7 @@ pub(crate) struct NativeRouteTestHookGuard;
 #[cfg(test)]
 impl Drop for NativeRouteTestHookGuard {
     fn drop(&mut self) {
-        NATIVE_ROUTE_TEST_SENDER.with(|slot| {
+        NATIVE_ROUTE_TEST_HOOK.with(|slot| {
             slot.borrow_mut().take();
         });
     }
@@ -149,19 +154,19 @@ impl Drop for NativeRouteTestHookGuard {
 
 #[cfg(test)]
 pub(crate) fn install_native_route_test_hook(
-    sender: std::sync::mpsc::Sender<NativeRouteTestStage>,
+    hook: impl Fn(NativeRouteTestStage) + 'static,
 ) -> NativeRouteTestHookGuard {
-    NATIVE_ROUTE_TEST_SENDER.with(|slot| {
-        assert!(slot.borrow_mut().replace(sender).is_none());
+    NATIVE_ROUTE_TEST_HOOK.with(|slot| {
+        assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
     });
     NativeRouteTestHookGuard
 }
 
 #[cfg(test)]
 pub(crate) fn observe_native_route_test_stage(stage: NativeRouteTestStage) {
-    NATIVE_ROUTE_TEST_SENDER.with(|slot| {
-        if let Some(sender) = slot.borrow().as_ref() {
-            let _ = sender.send(stage);
+    NATIVE_ROUTE_TEST_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow().as_ref() {
+            hook(stage);
         }
     });
 }

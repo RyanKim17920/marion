@@ -2018,7 +2018,9 @@ fn real_tty_bootstrap_alias_probe() {
         let service = Arc::clone(&service);
         let active = service.try_acquire_connection().expect("connection permit");
         std::thread::spawn(move || {
-            let _hook = install_native_route_test_hook(stage_tx);
+            let _hook = install_native_route_test_hook(move |stage| {
+                let _ = stage_tx.send(stage);
+            });
             service.serve_connection(ConnId(3_001), server_stream, active);
         })
     };
@@ -2817,7 +2819,6 @@ impl NativeBootstrapHandler for LateLaunchDecisionHandler {
         _stdin: BorrowedFd<'_>,
         _stdout: BorrowedFd<'_>,
     ) -> Result<TerminalGeometryObservation, BootstrapError> {
-        self.clock.set(Duration::from_secs(9));
         Ok(TerminalGeometryObservation::new(geometry()))
     }
 
@@ -2850,17 +2851,27 @@ fn launch_success_and_handler_refusal_use_a_fresh_result_deadline() {
                 request_context().canonical_project().to_path_buf(),
                 request_context().native_wire_version(),
                 handler,
-                clock,
+                Arc::clone(&clock) as Arc<dyn MonotonicClock>,
             ),
         );
         let (mut client, server) = UnixStream::pair().unwrap();
+        // A hang guard, not a measure: each read returns the moment the server writes.
         client
-            .set_read_timeout(Some(Duration::from_secs(1)))
+            .set_read_timeout(Some(Duration::from_secs(30)))
             .unwrap();
         let worker = {
             let service = Arc::clone(&service);
             let active = service.try_acquire_connection().unwrap();
+            let clock = Arc::clone(&clock);
             std::thread::spawn(move || {
+                // Nine of the handshake's ten seconds gone once the capability is consumed, and
+                // not before: the deadline turns into the socket's real read bound, so a jump
+                // made while the client still had a request to send left it one real second.
+                let _hook = install_native_route_test_hook(move |stage| {
+                    if stage == NativeRouteTestStage::CapabilityConsumed {
+                        clock.set(Duration::from_secs(9));
+                    }
+                });
                 service.serve_connection(ConnId(3_100 + u64::from(refuse)), server, active)
             })
         };
