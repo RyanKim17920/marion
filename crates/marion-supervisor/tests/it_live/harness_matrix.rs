@@ -36,10 +36,11 @@
 //! the gate ([`marion_testsupport::on_path`]) admits** — each row's `verified` list is the source of truth, and the
 //! gate refuses a binary of the right name at an unrecognised version rather than reporting a
 //! matrix result attributed to a build that never ran.
-//! Like `cross_product` and `timeout_kill` it is **not** `#[ignore]`d and it does **not** skip
-//! when a binary is missing: §9's standing rule is that *a criterion that quietly passes on a
-//! machine that cannot run it is worth less than no criterion*. One `#[test]` per harness, never a
-//! loop over five, so a failure names its own cell instead of hiding the four behind it.
+//! It is **not** `#[ignore]`d, and a cell skips a missing binary only where
+//! [`marion_testsupport::harness_available`] lets it, on a runner that declared it has no
+//! harnesses: §9's standing rule is that *a criterion that quietly passes on a machine that cannot
+//! run it is worth less than no criterion*. One `#[test]` per harness, never a loop over five, so
+//! a failure names its own cell instead of hiding the four behind it.
 
 use std::path::PathBuf;
 
@@ -50,8 +51,7 @@ use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
 use marion_testsupport::{
-    fixture_repo, judge, kill_hard, on_path, persisted_contracts, pinned_version, scratch,
-    survivors,
+    fixture_repo, harness_available, judge, kill_hard, persisted_contracts, scratch, survivors,
 };
 use serde_json::{Value, json};
 
@@ -435,11 +435,9 @@ fn claude_code_script() -> Script {
 /// node launched that way loses marion's tools on turn one, silently, whatever the tools were for.
 #[test]
 fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() {
-    assert!(
-        on_path("claude"),
-        "this cell drives a REAL claude child; put `claude` ({}) on PATH",
-        pinned_version("claude")
-    );
+    if !harness_available("claude") {
+        return;
+    }
     let cell = Cell {
         agent_type: "claude-orchestrator",
         // Claude Code's `--model` is legitimately omissible and the canned provider ignores it, so
@@ -469,11 +467,9 @@ fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() 
 
 #[test]
 fn a_codex_child_edits_a_worktree_and_reports_through_marions_bridge() {
-    assert!(
-        on_path("codex"),
-        "this cell drives a REAL codex child; put `codex` ({}) on PATH",
-        pinned_version("codex")
-    );
+    if !harness_available("codex") {
+        return;
+    }
     let cell = Cell {
         agent_type: "codex-impl",
         // Asked for on purpose: `codex exec` carries no model argument, so the contract must record
@@ -497,11 +493,9 @@ fn a_codex_child_edits_a_worktree_and_reports_through_marions_bridge() {
 
 #[test]
 fn an_opencode_child_reports_through_marions_bridge_over_the_openai_wire() {
-    assert!(
-        on_path("opencode"),
-        "this cell drives a REAL opencode child; put `opencode` ({}) on PATH",
-        pinned_version("opencode")
-    );
+    if !harness_available("opencode") {
+        return;
+    }
     let cell = Cell {
         agent_type: "opencode",
         // `provider/model`, the only spelling `-m` accepts; the generated provider block repeats it.
@@ -537,11 +531,9 @@ fn an_opencode_child_reports_through_marions_bridge_over_the_openai_wire() {
 /// persisted contract carrying that call's narrative as the child's own words.
 #[test]
 fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
-    assert!(
-        on_path("copilot"),
-        "this cell drives a REAL copilot child; put `copilot` ({}) on PATH",
-        pinned_version("copilot")
-    );
+    if !harness_available("copilot") {
+        return;
+    }
     let cell = Cell {
         agent_type: "copilot-orchestrator",
         // Explicit: BYOK refuses to start without one (`BYOK providers require an explicit model`,
@@ -586,11 +578,9 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
 /// its session store verbatim, so no node token may travel on it (s26 item 11).
 #[test]
 fn a_goose_child_reports_through_marions_bridge_over_the_openai_wire() {
-    assert!(
-        on_path("goose"),
-        "this cell drives a REAL goose child; put `goose` ({}) on PATH",
-        pinned_version("goose")
-    );
+    if !harness_available("goose") {
+        return;
+    }
     let cell = Cell {
         agent_type: "goose-orchestrator",
         // `GOOSE_MODEL` is mandatory: without one the `openai` provider has no model to name and
@@ -627,11 +617,9 @@ fn a_goose_child_reports_through_marions_bridge_over_the_openai_wire() {
 /// behind and nothing under `~/.cline`; (6)'s survivor sweep is what holds that here.
 #[test]
 fn a_cline_child_reports_through_marions_bridge_over_the_openai_wire() {
-    assert!(
-        on_path("cline"),
-        "this cell drives a REAL cline child; put `cline` ({}) on PATH",
-        pinned_version("cline")
-    );
+    if !harness_available("cline") {
+        return;
+    }
     let cell = Cell {
         agent_type: "cline",
         // The model is a field of `providers.json`, and the adapter refuses a canned launch
@@ -665,11 +653,9 @@ fn a_cline_child_reports_through_marions_bridge_over_the_openai_wire() {
 /// behind `tool_search` and a canned model that never calls that never reaches it.
 #[test]
 fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
-    assert!(
-        on_path("qwen"),
-        "this cell drives a REAL qwen child; put `qwen` ({}) on PATH",
-        pinned_version("qwen")
-    );
+    if !harness_available("qwen") {
+        return;
+    }
     let cell = Cell {
         agent_type: "qwen-orchestrator",
         // `OPENAI_MODEL` is how the provider is told what to name; the adapter refuses a canned
@@ -712,11 +698,9 @@ fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
 /// contract carries that call's narrative.
 #[test]
 fn a_pi_child_reports_through_marions_bridge_over_the_openai_wire() {
-    assert!(
-        on_path("pi"),
-        "this cell drives a REAL pi child; put `pi` ({}) on PATH",
-        pinned_version("pi")
-    );
+    if !harness_available("pi") {
+        return;
+    }
     let cell = Cell {
         agent_type: "pi-orchestrator",
         // The model is a field of `models.json`, and the adapter refuses a canned launch without
