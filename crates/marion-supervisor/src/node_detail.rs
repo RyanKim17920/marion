@@ -117,6 +117,10 @@ pub fn read(
         serde_json::from_slice::<TaskContract>(&bytes).ok()
     });
     let spent = crate::spending::shown(i.exited, &i.recorded, live);
+    let repo_config_held = contract
+        .as_ref()
+        .map(|c| c.repo_config_held.clone())
+        .unwrap_or_default();
     let workspace = contract
         .as_ref()
         .map(|c| c.workspace.clone())
@@ -147,6 +151,7 @@ pub fn read(
             })
         }),
         turns: spent.turns,
+        repo_config_held,
     }
 }
 

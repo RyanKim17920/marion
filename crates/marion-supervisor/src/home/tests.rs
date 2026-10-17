@@ -1307,6 +1307,35 @@ fn an_ended_agents_preview_shows_its_tokens_and_the_diff_it_landed() {
     assert_eq!(lines[2], "marion/t-1  +84 -12  3 files");
 }
 
+/// **A node a trusted repository's config was held back from says so in its preview**, dim, and
+/// one with nothing held back says nothing about it.
+#[test]
+fn a_preview_names_the_repository_config_held_back() {
+    let mut h = home();
+    h.set_nodes(vec![node("a", None, NodeState::Running)]);
+    h.absorb_detail(AgentId("a".into()), NodeDetail::default());
+    assert!(
+        !facts(&h).iter().any(|(t, _)| t.contains("held back")),
+        "{:?}",
+        facts(&h)
+    );
+    h.absorb_detail(
+        AgentId("a".into()),
+        NodeDetail {
+            repo_config_held: vec![".mcp.json".into()],
+            ..Default::default()
+        },
+    );
+    assert!(
+        facts(&h).contains(&(
+            "repository config held back: .mcp.json differs from your branch".into(),
+            vec![Ink::Dim]
+        )),
+        "{:?}",
+        facts(&h)
+    );
+}
+
 /// **An endpoint node says which model it runs on**: `provider:model` on its row, and with the
 /// route in its preview; a node on its harness's own configuration shows neither.
 #[test]

@@ -71,6 +71,7 @@ fn contract(comp: Completion) -> TaskContract {
             exited: None,
         },
         completion: Some(comp),
+        repo_config_held: Vec::new(),
     }
 }
 

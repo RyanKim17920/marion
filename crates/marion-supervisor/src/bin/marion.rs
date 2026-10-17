@@ -815,6 +815,9 @@ fn detail_text(
     if let Some(why) = &d.failure {
         kv("why", why);
     }
+    if let Some(held) = marion_core::proto::result::repo_config_held_line(&d.repo_config_held) {
+        kv("config", &held);
+    }
     if let Some(page) = &d.stream {
         if let Some(why) = &page.unread {
             kv("activity", why);

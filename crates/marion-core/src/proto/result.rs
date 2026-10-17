@@ -75,6 +75,22 @@ pub struct NodeDetail {
     /// a client then draws no sparkline rather than an empty one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turns: Vec<u64>,
+    /// The repository config its tree held back in a repository the operator trusted — its
+    /// contract's `repo_config_held`: paths only, empty where nothing was held back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repo_config_held: Vec<String>,
+}
+
+/// **The one line that says why a trusted repository's config did not load in a node**, or `None`
+/// where nothing was held back: what `marion ls <id>` and the home screen's node detail print.
+pub fn repo_config_held_line(held: &[String]) -> Option<String> {
+    (!held.is_empty()).then(|| {
+        let verb = if held.len() == 1 { "differs" } else { "differ" };
+        format!(
+            "repository config held back: {} {verb} from your branch",
+            held.join(", ")
+        )
+    })
 }
 
 /// The task as the node received it.
@@ -495,6 +511,20 @@ pub struct SessionHelloResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The held-back line names every path and says nothing where nothing was held back.
+    #[test]
+    fn the_held_back_line_names_the_paths_or_nothing() {
+        assert_eq!(repo_config_held_line(&[]), None);
+        assert_eq!(
+            repo_config_held_line(&[".codex/config.toml".into()]).as_deref(),
+            Some("repository config held back: .codex/config.toml differs from your branch")
+        );
+        assert_eq!(
+            repo_config_held_line(&[".mcp.json".into(), ".pi".into()]).as_deref(),
+            Some("repository config held back: .mcp.json, .pi differ from your branch")
+        );
+    }
     use crate::contract::ExitStatus;
     use crate::proto::model::{DetachGuidance, ResidentReason, SupervisorDisposition};
 
@@ -561,6 +591,7 @@ mod tests {
                 }),
                 failure: None,
                 turns: Vec::new(),
+                repo_config_held: vec![".mcp.json".into()],
             },
         };
         let s = serde_json::to_string(&full).unwrap();

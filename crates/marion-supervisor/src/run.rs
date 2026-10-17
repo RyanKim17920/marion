@@ -1814,26 +1814,42 @@ pub fn tree_of<'a>(env: &'a Env, dir: &'a Path) -> crate::spawn::Tree<'a> {
     tree_in(&env.project_dir, &env.project_root, dir)
 }
 
+/// One generation's standing on the repository's own harness config ([`repo_trust`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepoTrust {
+    /// The tree's config is the operator's.
+    own: bool,
+    /// It loads: the operator's, in a repository they trusted.
+    trusted: bool,
+    /// **What was held back that the operator would expect to load**: in a repository they
+    /// trusted, the config paths the tree holds otherwise than their branch. Empty anywhere else
+    /// — an untrusted repository loads none, and Setup says why. The contract's
+    /// `repo_config_held`.
+    held: Vec<String>,
+}
+
 /// **Whether the repository's own harness config in `wt` is the operator's, and whether it
-/// loads**: `(own, trusted)`. Trust is by place, and a child writes its own tree: in a worktree
-/// marion made, the config is the operator's only while it is exactly their commit, and loads only
-/// then. Asked again for every generation of a node, never carried from an earlier one: a child
-/// that planted a config in one generation must not have it load in the next as the operator's.
-/// `branch` is the root's, recorded at its launch ([`SpawnObserver::trust_branch`]).
-fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>, branch: Option<&str>) -> (bool, bool) {
-    let own = match tree_of(env, wt) {
-        tree @ crate::spawn::Tree::Child { .. } => base.is_some_and(|b| {
-            crate::spawn::repo_config_unchanged(
-                tree,
-                b,
-                &env.project_root,
-                branch,
-                &crate::trust::repo_config_paths(),
-            )
-        }),
-        crate::spawn::Tree::Operator(_) => true,
+/// loads**. Trust is by place, and a child writes its own tree: in a worktree marion made, the
+/// config is the operator's only while it is exactly their commit, and loads only then. Asked
+/// again for every generation of a node, never carried from an earlier one: a child that planted
+/// a config in one generation must not have it load in the next as the operator's. `branch` is
+/// the root's, recorded at its launch ([`SpawnObserver::trust_branch`]).
+fn repo_trust(env: &Env, wt: &Path, base: Option<&Oid>, branch: Option<&str>) -> RepoTrust {
+    let paths = crate::trust::repo_config_paths();
+    let differs = match tree_of(env, wt) {
+        tree @ crate::spawn::Tree::Child { .. } => match base {
+            Some(b) => crate::spawn::repo_config_held(tree, b, &env.project_root, branch, &paths),
+            None => paths.iter().take(1).map(|p| p.to_string()).collect(),
+        },
+        crate::spawn::Tree::Operator(_) => Vec::new(),
     };
-    (own, own && crate::trust::repo_trusted(&env.project_root))
+    let own = differs.is_empty();
+    let in_trusted_repo = crate::trust::repo_trusted(&env.project_root);
+    RepoTrust {
+        own,
+        trusted: own && in_trusted_repo,
+        held: if in_trusted_repo { differs } else { Vec::new() },
+    }
 }
 
 /// A continuation generation's launch: `launch` resumed under `resume` with `prompt` — the
@@ -1846,14 +1862,15 @@ fn continuation_launch(
     launch: &LaunchSpec,
     resume: String,
     prompt: String,
-) -> LaunchSpec {
+) -> (LaunchSpec, Vec<String>) {
     let mut next = LaunchSpec {
         resume: Some(resume),
         prompt,
         ..launch.clone()
     };
-    (next.extra.repo_config_own, next.extra.repo_trusted) = repo_trust(env, wt, base, branch);
-    next
+    let trust = repo_trust(env, wt, base, branch);
+    (next.extra.repo_config_own, next.extra.repo_trusted) = (trust.own, trust.trusted);
+    (next, trust.held)
 }
 
 /// [`tree_of`] from its two parts: the project's state directory and the operator's repository.
@@ -2565,8 +2582,10 @@ pub fn run_spawn_watched(
     let launched_at = Instant::now();
     // The root's branch at its launch, the trust reference for every generation of this node.
     let trust_branch = observer.trust_branch(&req.repo);
-    let (repo_config_own, repo_trusted) =
-        repo_trust(env, &wt, base.as_ref(), trust_branch.as_deref());
+    let trust = repo_trust(env, &wt, base.as_ref(), trust_branch.as_deref());
+    let (repo_config_own, repo_trusted) = (trust.own, trust.trusted);
+    // The latest generation's: what the contract records as held back.
+    let mut repo_config_held = trust.held;
     // The profile this attempt runs on: an index into `profiles`, 0 for the first.
     let mut at = 0;
     let (launch, inv, mut run, version) = loop {
@@ -2918,7 +2937,7 @@ pub fn run_spawn_watched(
             let via = format!("continuation:gen{generation}");
             // The same launch, resumed: `node/resume`'s spelling (the row's resume grammar), with the
             // message as the prompt, compiled and declared exactly as the first generation was.
-            let next_launch = continuation_launch(
+            let (next_launch, held) = continuation_launch(
                 env,
                 &wt,
                 (base.as_ref(), trust_branch.as_deref()),
@@ -2926,6 +2945,7 @@ pub fn run_spawn_watched(
                 resume,
                 crate::inbox::render(&message),
             );
+            repo_config_held = held;
             let next_inv = match declare_and_compile(adapter.as_ref(), &next_launch, &ctx) {
                 Ok(inv) => inv,
                 Err(e) => {
@@ -3090,6 +3110,7 @@ pub fn run_spawn_watched(
         verification,
         evidence,
     );
+    contract.repo_config_held = repo_config_held;
     // Said plainly beside the evidence it describes: whether those lines were kept to the
     // workspace, or ran as the operator.
     if let Some(completion) = contract.completion.as_mut()

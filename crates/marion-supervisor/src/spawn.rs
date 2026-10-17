@@ -990,8 +990,22 @@ pub fn repo_config_unchanged(
     branch: Option<&str>,
     paths: &[&str],
 ) -> bool {
+    repo_config_held(wt, base, common, branch, paths).is_empty()
+}
+
+/// **The config `paths` the child tree `wt` holds otherwise than the operator's branch**, by
+/// [`repo_config_unchanged`]'s rule: each path that is not as the reference has it. Where the
+/// reference cannot be read at all, every path present in the tree is held, and with none present
+/// the first path stands for the lot, so an unreadable reference never reads as the operator's.
+pub fn repo_config_held(
+    wt: Tree<'_>,
+    base: &Oid,
+    common: &Path,
+    branch: Option<&str>,
+    paths: &[&str],
+) -> Vec<String> {
     if paths.is_empty() {
-        return true;
+        return Vec::new();
     }
     let operator = Tree::Operator(common);
     let recorded = branch.map(|b| format!("refs/heads/{b}")).filter(|tip| {
@@ -1003,10 +1017,23 @@ pub fn repo_config_unchanged(
     });
     let against = recorded.as_deref().unwrap_or("HEAD");
     let Ok(reference) = git(operator, &["merge-base", against, &base.0]) else {
-        return false;
+        let present: Vec<String> = paths
+            .iter()
+            .filter(|p| std::fs::symlink_metadata(wt.dir().join(p)).is_ok())
+            .map(|p| p.to_string())
+            .collect();
+        return if present.is_empty() {
+            vec![paths[0].to_string()]
+        } else {
+            present
+        };
     };
     let reference = reference.trim();
-    paths.iter().all(|p| config_as_committed(wt, reference, p))
+    paths
+        .iter()
+        .filter(|p| !config_as_committed(wt, reference, p))
+        .map(|p| p.to_string())
+        .collect()
 }
 
 /// **Whether `rel` in `wt` is, byte for byte, what `reference` holds there**: the same plain
@@ -1801,6 +1828,7 @@ pub fn build_contract(
             exited: Some(now()),
         },
         completion: Some(completion),
+        repo_config_held: Vec::new(),
     }
 }
 
@@ -2747,6 +2775,11 @@ mod tests {
         assert!(repo_config_unchanged(child, &base, &common, None, &[]));
         std::fs::write(wt.join(".mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
         assert!(!same(child, &base), "an edit");
+        assert_eq!(
+            repo_config_held(child, &base, &common, None, &paths),
+            [".mcp.json"],
+            "and the held paths name it alone"
+        );
         tgit(&wt, &["checkout", "--", ".mcp.json"]);
         std::fs::create_dir_all(wt.join(".pi")).unwrap();
         std::fs::write(wt.join(".pi/secret"), "x").unwrap();
