@@ -179,7 +179,9 @@ fn live_nodes(repo: &Path, state: &Path, key: &Path) -> Result<Vec<NodeSummary>,
 /// **The tripwire for `--all`**: every other project whose root is known and whose supervisor is
 /// serving is dialled with an operator hello, which refuses a process inside one of its nodes. A
 /// project nobody serves is never dialled, and none is started. Not a boundary: the file mode on
-/// `<state>/private/` is.
+/// `<state>/private/` is. Two known gaps until `socket::discover` lists live projects itself:
+/// learning the roots ([`search::every`]) reads each project's `project.json` or digest header
+/// first, and a live project whose root neither records is not dialled.
 fn hello_every_live(state: &Path, projects: &[Project], current: &Project) -> Result<(), String> {
     for p in projects.iter().filter(|p| p.hash() != current.hash()) {
         let Some(root) = &p.root else { continue };

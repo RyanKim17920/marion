@@ -12,6 +12,12 @@
 //! `root-change.json`) through [`open`], writes the lines oldest-ended first to a staging file
 //! in the same private dir, and renames it into place.
 //!
+//! **What a rebuild masks.** The run path masks a line with the keys its stream was scrubbed of,
+//! which nothing records; a rebuild has only the persisted files, which the run path redacted of
+//! those keys before writing them, so it masks by credential shape and by secret-named
+//! environment values. A key that is neither and that a persisted file still holds is in the
+//! rebuilt line exactly as it is on disk (§6: the digest widens no one's access).
+//!
 //! [`open`]: crate::search::open
 
 use std::fs::TryLockError;
@@ -352,6 +358,25 @@ mod tests {
             header.root, None,
             "/repo/.git does not hash to this project"
         );
+    }
+
+    /// A credential-shaped key a persisted contract still holds is masked by the rebuild too.
+    #[test]
+    fn a_rebuilt_line_masks_a_shaped_key_the_contract_holds() {
+        let (_state, project, mut contract) = child_project("rebuild-masks");
+        contract.completion.as_mut().unwrap().narrative = Some(Capped {
+            value: "used sk-ant-SENTINELabcdefghijklmnop0123 here".into(),
+            truncated: false,
+            original_bytes: 44,
+        });
+        let path = project
+            .agent(&AgentId(CHILD.into()))
+            .contract(&contract.task_id);
+        std::fs::write(&path, serde_json::to_vec(&contract).unwrap()).unwrap();
+        rebuild(&project, None).unwrap();
+        let text = std::fs::read_to_string(Place::of(&project).unwrap().digest()).unwrap();
+        assert!(!text.contains("SENTINEL"), "{text}");
+        assert!(text.contains("used *** here"), "{text}");
     }
 
     /// No header, or a stale marker, makes the next search rebuild; a rebuild clears both.
