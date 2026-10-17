@@ -146,6 +146,56 @@ pub fn credential_values(env: impl IntoIterator<Item = (String, String)>) -> Vec
     values
 }
 
+/// **The git variables that point git at another repository, index or object store, or inject
+/// configuration into it.** Inherited, they make a `git` run in one tree act on another: a test
+/// suite run from a git hook (which exports `GIT_DIR` and `GIT_INDEX_FILE`) once had a fixture's
+/// `git init` reinitialise the developer's own repository as bare. No git process marion starts
+/// inherits one, and neither does a node or a verification line, whose own git must act on the
+/// tree they run in; marion sets what it means explicitly. `GIT_CONFIG_GLOBAL` and
+/// `GIT_CONFIG_SYSTEM` are deliberately left out: they name the operator's own config files, which
+/// carry the identity marion's commits are made under, not another repository.
+pub const GIT_REDIRECTING: [&str; 10] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+];
+
+/// Whether `name` is one of [`GIT_REDIRECTING`], or a `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`
+/// pair that `GIT_CONFIG_COUNT` injects.
+pub fn is_git_redirect(name: &str) -> bool {
+    GIT_REDIRECTING.contains(&name)
+        || name.starts_with("GIT_CONFIG_KEY_")
+        || name.starts_with("GIT_CONFIG_VALUE_")
+}
+
+/// **A `git` command that inherits none of [`GIT_REDIRECTING`]** from this process: the one way
+/// marion, and its tests, start git.
+pub fn git_command() -> std::process::Command {
+    git_command_from(std::env::vars_os().map(|(name, _)| name))
+}
+
+/// [`git_command`] over an explicit list of inherited names: every one of [`GIT_REDIRECTING`]
+/// removed whether inherited or not, and each injected `GIT_CONFIG_KEY_<n>`/`VALUE_<n>` inherited.
+fn git_command_from(inherited: impl Iterator<Item = OsString>) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    for name in GIT_REDIRECTING {
+        cmd.env_remove(name);
+    }
+    for name in inherited {
+        if name.to_str().is_some_and(is_git_redirect) {
+            cmd.env_remove(name);
+        }
+    }
+    cmd
+}
+
 /// **The filter one launch applies to what it inherits**: the row's login, the launch's auth mode
 /// and the operator's passthrough for its agent type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +209,10 @@ impl InheritFilter {
     /// Whether this launch withholds `name`, with `is_set` answering whether another variable is
     /// set in the same environment (for [`EnvGrant::when_set`]).
     pub fn withholds(&self, name: &str, is_set: &dyn Fn(&str) -> bool) -> bool {
+        // Before the passthrough: a node's git must act on the tree it runs in.
+        if is_git_redirect(name) {
+            return true;
+        }
         if self.passthrough.iter().any(|p| matches(p, name)) {
             return false;
         }
@@ -251,6 +305,48 @@ mod tests {
         "KUBECONFIG",
         "STRIPE_SECRET_KEY",
     ];
+
+    /// **No git redirect reaches a launched node or a git marion starts**: each of
+    /// [`GIT_REDIRECTING`] and an injected `GIT_CONFIG_KEY_0`/`VALUE_0` pair is withheld under
+    /// every auth, passthrough included, while the operator's own global config file passes.
+    #[test]
+    fn git_redirecting_variables_are_withheld_and_removed_from_git() {
+        for auth in [Auth::Inherited, Auth::Canned, Auth::Endpoint] {
+            let f = InheritFilter {
+                login: CLAUDE,
+                auth,
+                passthrough: vec!["GIT_*".into()],
+            };
+            for name in GIT_REDIRECTING
+                .iter()
+                .copied()
+                .chain(["GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"])
+            {
+                assert!(f.withholds(name, &|_| false), "{auth:?} {name}");
+            }
+            assert!(!f.withholds("GIT_CONFIG_GLOBAL", &|_| false));
+            assert!(!f.withholds("GIT_AUTHOR_NAME", &|_| false));
+        }
+        let cmd = git_command_from(
+            [
+                "GIT_DIR",
+                "GIT_INDEX_FILE",
+                "GIT_CONFIG_KEY_3",
+                "GIT_AUTHOR_NAME",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        let removed: Vec<_> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed.len(), GIT_REDIRECTING.len() + 1, "{removed:?}");
+        assert!(removed.contains(&"GIT_CONFIG_KEY_3".to_string()));
+        assert!(!removed.contains(&"GIT_AUTHOR_NAME".to_string()));
+        assert_eq!(cmd.get_program(), "git");
+    }
 
     /// **On the operator's own login a single-provider harness keeps its own key and nothing
     /// else credential-shaped**; the runtime (`HOME`, `PATH`, locale, proxies) always passes.
