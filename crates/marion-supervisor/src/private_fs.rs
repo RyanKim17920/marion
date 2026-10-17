@@ -57,17 +57,31 @@ pub(crate) fn create(path: &Path) -> io::Result<File> {
     open(path, OpenOptions::new().write(true).truncate(true))
 }
 
-/// [`open_append`], **refusing a symlink at `path`** (`O_NOFOLLOW`): for a file in a directory a
-/// process other than marion could have written into, where a planted link would turn marion's
-/// append into a write to whatever it names.
+/// [`open_append`], **refusing anything but a regular file at `path`**: for a file in a directory
+/// a process other than marion could have written into. A planted link is refused by
+/// `O_NOFOLLOW`, so the append never lands in whatever it names; a planted FIFO is opened
+/// `O_NONBLOCK`, so with no reader the open fails at once (`ENXIO`) instead of waiting for one,
+/// and with a reader it is refused by `fstat` before anything is written or narrowed. The flag
+/// stays set: it changes nothing for a regular file.
 pub(crate) fn open_append_no_follow(path: &Path) -> io::Result<File> {
     use rustix::fs::OFlags;
-    open(
-        path,
-        OpenOptions::new()
-            .append(true)
-            .custom_flags(OFlags::NOFOLLOW.bits() as i32),
-    )
+    if let Some(dir) = path.parent() {
+        create_dir_all(dir)?;
+    }
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
+        .open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
 }
 
 fn open(path: &Path, options: &mut OpenOptions) -> io::Result<File> {
@@ -309,6 +323,27 @@ mod tests {
         open_append_no_follow(&plain).unwrap();
         assert_eq!(mode(&plain), 0o600);
         assert_eq!(mode(plain.parent().unwrap()), 0o700);
+    }
+
+    /// A FIFO is refused at once, with no reader (`ENXIO`) and with one (`fstat`). Mutation: drop
+    /// `NONBLOCK` and the first case hangs; drop the `fstat` and the second opens it.
+    #[test]
+    fn a_no_follow_append_refuses_a_fifo_without_waiting() {
+        let dir = scratch("private-fs-no-follow-fifo");
+        let fifo = dir.join("runs.jsonl");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        assert!(open_append_no_follow(&fifo).is_err(), "no reader");
+        let reader = OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+            .open(&fifo)
+            .unwrap();
+        assert!(open_append_no_follow(&fifo).is_err(), "a reader waiting");
+        drop(reader);
     }
 
     #[test]

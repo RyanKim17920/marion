@@ -387,15 +387,21 @@ fn cut(text: &mut String, max: usize) -> usize {
 }
 
 /// **Append `run` to `project`'s digest**, masked by `scrub`. Best-effort by the policy every
-/// view of a run follows: a digest that cannot be written is said on stderr and the run's end goes
-/// on, and the next `marion search --reindex` (or rebuild) recovers the line from the journal.
+/// view of a run follows: a digest that cannot be written is said on stderr, `runs.stale` is left
+/// where it can be, and the run's end goes on; the next search rebuilds the line from the journal.
 pub fn append(project: &ProjectDir, run: Run, scrub: &Scrubber) {
     let line = run.encode(scrub);
-    if let Err(e) = Place::of(project).and_then(|place| append_line(&place, &line)) {
-        eprintln!(
-            "marion: search digest for {}: {e}",
-            project.path().display()
-        );
+    let place = match Place::of(project) {
+        Ok(place) => place,
+        Err(e) => {
+            eprintln!("marion: search digest: {e}");
+            return;
+        }
+    };
+    if let Err(e) = append_line(&place, &line) {
+        eprintln!("marion: search digest at {}: {e}", place.digest().display());
+        // Best-effort: the marker makes the next search rebuild the line from the journal.
+        let _ = crate::private_fs::open_append_no_follow(&place.stale());
     }
 }
 
@@ -604,6 +610,28 @@ pub(crate) mod tests {
         append_line(&place, &run("a").encode(&nobody())).unwrap();
         assert!(place.stale().exists());
         assert!(!place.digest().exists());
+    }
+
+    /// **A FIFO at the digest or its lock never holds up a run's end**: the append fails at once,
+    /// and the stale marker asks the next search to rebuild. Mutation: open them blocking and this
+    /// test hangs.
+    #[test]
+    fn a_fifo_at_the_digest_or_its_lock_fails_at_once_and_marks_stale() {
+        for leaf in ["runs.jsonl", "runs.lock"] {
+            let state = scratch(&format!("digest-fifo-{leaf}"));
+            let project = ProjectDir::from_hash(&state, HASH);
+            let place = Place::of(&project).unwrap();
+            place.ensure().unwrap();
+            crate::search::open::tests::mkfifo(&place.dir().join(leaf));
+            let started = std::time::Instant::now();
+            assert!(
+                append_line(&place, &run("a").encode(&nobody())).is_err(),
+                "{leaf}"
+            );
+            append(&project, run("a"), &nobody());
+            assert!(started.elapsed() < Duration::from_secs(5), "{leaf}");
+            assert!(place.stale().is_file(), "{leaf}");
+        }
     }
 
     /// A symlinked `private/<hash>` is refused, and the link's target is never written.
