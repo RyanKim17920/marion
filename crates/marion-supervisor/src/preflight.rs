@@ -117,7 +117,7 @@ pub fn gather() -> Facts {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         socket::socket_paths(dir, &socket::project_root(&cwd), socket::own_uid())
     });
-    let git = Command::new("git")
+    let git = marion_harness::env_filter::git_command()
         .arg("--version")
         .output()
         .ok()

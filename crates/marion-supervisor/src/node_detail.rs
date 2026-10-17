@@ -179,7 +179,7 @@ fn diff_stat(git_dir: &Path, base: &Oid, commit: &Oid) -> Option<DiffStat> {
     {
         return *hit;
     }
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = marion_harness::env_filter::git_command();
     cmd.arg("--git-dir")
         .arg(git_dir)
         .args([
@@ -755,7 +755,7 @@ mod tests {
         let dir = marion_testsupport::scratch("detail-diffstat");
         let repo = marion_testsupport::fixture_repo(&dir);
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = marion_harness::env_filter::git_command()
                 .current_dir(&repo)
                 .args(args)
                 .output()
@@ -803,7 +803,7 @@ mod tests {
         let dir = marion_testsupport::scratch("detail-diffstat-textconv");
         let repo = marion_testsupport::fixture_repo(&dir);
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = marion_harness::env_filter::git_command()
                 .current_dir(&repo)
                 .args(args)
                 .output()

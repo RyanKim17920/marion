@@ -21,8 +21,9 @@
 //!   differ from one they made by hand. fsmonitor is disabled even here because it runs on reads
 //!   marion makes on the operator's behalf, and nothing marion reads needs it;
 //! * always sets `GIT_TERMINAL_PROMPT=0`, so no call can stop and ask for a password, and clears
-//!   the variables that would redirect git elsewhere (`GIT_DIR`, `GIT_WORK_TREE`,
-//!   `GIT_COMMON_DIR`).
+//!   every variable that would redirect git elsewhere or inject configuration
+//!   ([`marion_harness::env_filter::GIT_REDIRECTING`], through
+//!   [`marion_harness::env_filter::git_command`]).
 //!
 //! The operator's identity and global configuration are kept: `GIT_CONFIG_GLOBAL` and
 //! `GIT_CONFIG_NOSYSTEM` are not set, so commits carry their name and their own settings apply.
@@ -52,17 +53,11 @@ impl<'a> Tree<'a> {
     }
 }
 
-/// The variables that would point git at another repository, index or tree than the one named.
-const REDIRECTING: [&str; 3] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"];
-
 /// A `git` command for `args` on `tree`, hardened as the module doc says, with stdin closed and
 /// both outputs piped. A child tree whose `.git` is not the gitfile git wrote is refused here,
 /// before any git process runs in it.
 pub fn command(tree: &Tree<'_>, args: &[&str]) -> Result<Command, SpawnError> {
-    let mut cmd = Command::new("git");
-    for key in REDIRECTING {
-        cmd.env_remove(key);
-    }
+    let mut cmd = marion_harness::env_filter::git_command();
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(tree.dir())
         .stdin(std::process::Stdio::null())
@@ -206,7 +201,7 @@ mod tests {
     use super::*;
 
     fn git(dir: &Path, args: &[&str]) {
-        let st = Command::new("git")
+        let st = marion_harness::env_filter::git_command()
             .current_dir(dir)
             .args(args)
             .stdout(std::process::Stdio::null())
