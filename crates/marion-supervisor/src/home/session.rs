@@ -629,12 +629,44 @@ impl Session {
         c
     }
 
+    /// The commit a `:diff` line's branch is at (`marion diff <id> --tip`), or `None` where the
+    /// diff would refuse — the diff then runs as typed and says why itself.
+    fn diff_tip(&self, words: &[String]) -> Option<String> {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("marion"));
+        let out = std::process::Command::new(exe)
+            .args(words)
+            .arg("--tip")
+            .current_dir(&self.repo)
+            .env("MARION_STATE_DIR", &self.state)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success()
+            && commit.len() >= 40
+            && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(commit)
+    }
+
     /// **The `:` line's command, with the terminal**: this binary in the project's directory, its
     /// state directory in `$MARION_STATE_DIR` — how every command finds its place without a flag,
     /// so a command that takes no `--repo` (`key`, `profile`) runs as typed. The line it runs is
     /// printed first; then the operator reads what it said and presses enter to come back. Setup's
     /// lists are read again the next time it opens, since a command may have changed them.
     fn command(&mut self, words: &[String]) {
+        let mut words = words.to_vec();
+        if words.first().map(String::as_str) == Some("diff")
+            && !super::pins_commit(&words)
+            && let Some(commit) = self.diff_tip(&words)
+        {
+            // Shown pinned to the commit it resolved, and remembered for this agent's `:merge`.
+            if let Some((id, _)) = self.home.command_agent(&words) {
+                self.home.reviewed.insert(id, commit.clone());
+            }
+            words.extend(["--at".to_string(), commit]);
+        }
+        let words = &words[..];
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("marion"));
         let mut c = std::process::Command::new(exe);
         c.args(words)

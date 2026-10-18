@@ -412,6 +412,15 @@ pub struct Home {
     pub help_from: Page,
     /// Rows help is scrolled down, where it does not fit the screen.
     pub help_scroll: usize,
+    /// **The commit each agent's last `:diff` showed**, which its `:merge` then pins with
+    /// `--at`, so what lands is what the operator read and not what the agent moved its branch to
+    /// after.
+    pub reviewed: std::collections::HashMap<AgentId, String>,
+}
+
+/// Whether a `diff` or `merge` line already names the commit it is pinned to (`--at`).
+pub fn pins_commit(words: &[String]) -> bool {
+    words.iter().any(|w| w == "--at" || w.starts_with("--at="))
 }
 
 /// How many output lines a Page Up / Page Down moves.
@@ -433,6 +442,7 @@ impl Home {
             notice_sticky: false,
             help_from: Page::Agents,
             help_scroll: 0,
+            reviewed: std::collections::HashMap::new(),
         }
     }
 
@@ -1115,6 +1125,14 @@ impl Home {
             && let Some((id, false)) = self.command_agent(&words)
         {
             words.insert(1, id.0);
+        }
+        // A merge after a diff lands the commit that diff showed, and says so on the line asked.
+        if spec.name == "merge"
+            && !pins_commit(&words)
+            && let Some((id, _)) = self.command_agent(&words)
+            && let Some(commit) = self.reviewed.get(&id)
+        {
+            words.extend(["--at".to_string(), commit.clone()]);
         }
         Ok(words)
     }

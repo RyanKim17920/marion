@@ -1021,6 +1021,36 @@ fn colon_asks_first_where_the_commands_table_says() {
     }
 }
 
+/// **A `:merge` after a `:diff` lands the commit that diff showed**, and the confirm line shows
+/// it: the session records the commit its `:diff` ran pinned to (`reviewed`), and the agent's
+/// `:merge` then carries `--at` that commit. A line that already names its `--at` is left as
+/// typed, and another agent's merge is not pinned to this one's diff.
+#[test]
+fn colon_merge_after_a_diff_is_pinned_to_the_commit_shown() {
+    let mut h = home();
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    h.reviewed.insert(AgentId("root".into()), sha.into());
+
+    assert_eq!(colon(&mut h, "merge"), Effect::None);
+    let pinned = Effect::Command(words(&["merge", "root", "--at", sha]));
+    assert_eq!(h.mode, Mode::Confirm(pinned.clone()));
+    let Footer::Confirm { command, .. } = frame(&h).footer else {
+        panic!("a confirm line")
+    };
+    assert_eq!(command, format!("marion merge root --at {sha}"));
+    assert_eq!(h.key(Key::Char('y')), pinned);
+
+    for (text, run) in [
+        ("merge --at abc", words(&["merge", "root", "--at", "abc"])),
+        ("merge --at=abc", words(&["merge", "root", "--at=abc"])),
+        ("merge child", words(&["merge", "child"])),
+        ("diff", words(&["diff", "root"])),
+    ] {
+        assert_eq!(h.command_line(text), Ok(run), "{text}");
+    }
+}
+
 /// **A line that names no command, or one the screen does not run, stays open with why**, so the
 /// text is not lost.
 #[test]
