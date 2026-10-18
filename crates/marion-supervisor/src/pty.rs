@@ -3107,6 +3107,10 @@ impl PtyHost {
         }
     }
 
+    /// Run `hook` on the reader's next `WouldBlock`, and **make there be one**. The reader starts
+    /// with the host, so it may already be parked in its wait, past the `WouldBlock` the hook
+    /// observes, and with nothing written it would never come back to one. A ring of the resize
+    /// pipe (no resize queued) sends it round to read, find nothing, and call the hook.
     #[cfg(test)]
     pub(crate) fn set_reader_would_block_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
         *self
@@ -3114,6 +3118,11 @@ impl PtyHost {
             .reader_would_block_hook
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+        self.shared
+            .resize_wake
+            .as_ref()
+            .expect("the reader's wake pipe, without which the hook could never be reached")
+            .wake();
     }
 
     #[cfg(test)]
