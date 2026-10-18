@@ -699,6 +699,18 @@ impl Fixture {
         )
     }
 
+    /// A bridge that holds the root's real token in `MARION_NODE_TOKEN` and names no token file:
+    /// what a build that still read the token from its environment would accept.
+    fn bridge_with_the_token_only_in_its_environment(&self) -> Bridge {
+        let mut declaration = self.declaration.clone();
+        declaration.remove(marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV);
+        let token = common::node_token_of(&self.declaration);
+        Bridge::start(
+            &declaration,
+            &[(marion_harness::mcp_bridge::NODE_TOKEN_ENV, &token)],
+        )
+    }
+
     /// A bridge pointed at a project whose supervisor does not exist.
     ///
     /// The socket path is *derived* from `MARION_STATE_DIR` and the tree, so this is the only way to
@@ -1318,6 +1330,34 @@ fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
         "the intent is still resolved as an abort — §7.2: a node marion decided the fate of is \
          never one marion lost: {journal}"
     );
+    assert!(bridge.close().success());
+}
+
+/// **A bridge holding the node's real token only in `MARION_NODE_TOKEN` is refused, and journals
+/// nothing.** Every process running as the operator can read another's environment, so the bridge
+/// reads its token from the file the declaration names and nowhere else: a build that fell back to
+/// the variable would spawn here.
+#[test]
+fn a_bridge_holding_its_token_only_in_its_environment_is_refused_and_journals_nothing() {
+    let fx = fixture("bg-env-token");
+    let before = fx.journal_text().lines().count();
+    let mut bridge = fx.bridge_with_the_token_only_in_its_environment();
+    let reply = bridge.tool("spawn", spawn_args(true));
+    assert!(
+        is_error(&reply),
+        "a token in the environment is no proof: {reply}"
+    );
+    let text = text_of(&reply);
+    assert!(
+        text.contains(marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV),
+        "the refusal names the file the bridge was not pointed at: {text}"
+    );
+    assert_eq!(
+        fx.journal_text().lines().count(),
+        before,
+        "an unproven spawn is refused before every side effect, so the journal records nothing"
+    );
+    assert_eq!(fx.started_children(), 0, "and no child process ever ran");
     assert!(bridge.close().success());
 }
 

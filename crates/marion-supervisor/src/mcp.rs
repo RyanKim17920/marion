@@ -20,8 +20,7 @@ use std::time::Duration;
 use marion_core::contract::{AgentId, Isolation, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_harness::mcp_bridge::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, NODE_TOKEN_ENV, NODE_TOKEN_FILE_ENV, READY_FILE_ENV,
-    REPO_ENV,
+    AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, NODE_TOKEN_FILE_ENV, READY_FILE_ENV, REPO_ENV,
 };
 use marion_harness::spec::Push;
 
@@ -160,7 +159,7 @@ impl Principal {
     ///
     /// **[`Principal::Node`] refuses, and starting one there would be useless before it was
     /// wrong.** A bridge exists because a supervisor made its node; nothing listening means *that*
-    /// supervisor is gone. A fresh one did not mint this bridge's `MARION_NODE_TOKEN`, so
+    /// supervisor is gone. A fresh one did not mint this bridge's node token, so
     /// `RegistryHandle::resolve_caller` would refuse the very next `agent/spawn` — the new process
     /// buys no capability at all. And the node the bridge serves is still gone with its owner, so
     /// what a successful start would produce is a supervisor that has never heard of this node,
@@ -1634,19 +1633,15 @@ fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
 fn node_identity() -> Result<marion_core::proto::SpawnCaller, String> {
     identity_from(
         non_empty(AGENT_ID_ENV),
-        token_from(non_empty(NODE_TOKEN_ENV), non_empty(NODE_TOKEN_FILE_ENV))?,
+        token_from(non_empty(NODE_TOKEN_FILE_ENV))?,
     )
 }
 
-/// The node token: the declaration's own value where it carries one, else the contents of the
-/// 0600 file the harness's environment points at ([`NODE_TOKEN_FILE_ENV`]) — the carrier a row
-/// uses when its declaration cannot hold the token, so the harness's environment (and every shell
-/// command its model runs) never does. A file that is named and cannot be read is a refusal
-/// naming it; an empty one is no token.
-fn token_from(declared: Option<String>, file: Option<String>) -> Result<Option<String>, String> {
-    if declared.is_some() {
-        return Ok(declared);
-    }
+/// The node token: the contents of the 0600 file the declaration or the harness's environment
+/// points at ([`NODE_TOKEN_FILE_ENV`]). The token itself is never in this process's environment,
+/// which every process running as the operator can read ([`marion_harness::spec::TokenCarrier`]).
+/// A file that is named and cannot be read is a refusal naming it; an empty one is no token.
+fn token_from(file: Option<String>) -> Result<Option<String>, String> {
     let Some(file) = file else {
         return Ok(None);
     };
@@ -1678,7 +1673,7 @@ fn identity_from(
     })?;
     let node_token = node_token.ok_or_else(|| {
         format!(
-            "marion: {NODE_TOKEN_ENV} is not set, so this bridge holds no proof that it serves \
+            "marion: {NODE_TOKEN_FILE_ENV} is not set, so this bridge holds no proof that it serves \
              node {agent_id}. marion binds a capability token to each node and the supervisor \
              checks it, so an unproven claim would be refused on the socket anyway — and sending an \
              empty one would present a secret every process on this machine already has. A node \
@@ -2771,7 +2766,7 @@ mod tests {
                 "an id with no proof behind it",
                 Some("019f-node".to_string()),
                 None,
-                NODE_TOKEN_ENV,
+                NODE_TOKEN_FILE_ENV,
             ),
             (
                 "a token attached to nobody",
@@ -3455,30 +3450,24 @@ mod tests {
         );
     }
 
-    /// **The bridge reads a withheld token from its 0600 file.** The declaration's own value wins
-    /// where it carries one; otherwise the file the harness's environment names is read and
-    /// trimmed; an unreadable file is a refusal naming it, and an empty one is no token.
+    /// **The bridge reads its token only from its 0600 file.** The file the declaration or the
+    /// harness's environment names is read and trimmed; an unreadable file is a refusal naming it,
+    /// an empty one is no token, and no file named is no token — which [`identity_from`] refuses.
     #[test]
-    fn the_bridge_reads_a_withheld_token_from_the_file_its_environment_names() {
+    fn the_bridge_reads_its_token_only_from_the_file_it_is_pointed_at() {
         let dir = marion_testsupport::scratch("bridge-token-file");
         let file = dir.join(marion_harness::mcp_bridge::NODE_TOKEN_FILE);
         std::fs::write(&file, "tok-from-file\n").unwrap();
         let path = || Some(file.to_string_lossy().into_owned());
         assert_eq!(
-            token_from(Some("declared".into()), path())
-                .unwrap()
-                .as_deref(),
-            Some("declared")
-        );
-        assert_eq!(
-            token_from(None, path()).unwrap().as_deref(),
+            token_from(path()).unwrap().as_deref(),
             Some("tok-from-file")
         );
-        assert_eq!(token_from(None, None).unwrap(), None);
+        assert_eq!(token_from(None).unwrap(), None);
         std::fs::write(&file, "  \n").unwrap();
-        assert_eq!(token_from(None, path()).unwrap(), None);
+        assert_eq!(token_from(path()).unwrap(), None);
         let gone = dir.join("gone").to_string_lossy().into_owned();
-        let e = token_from(None, Some(gone.clone())).unwrap_err();
+        let e = token_from(Some(gone.clone())).unwrap_err();
         assert!(e.contains(&gone) && e.contains(NODE_TOKEN_FILE_ENV), "{e}");
     }
 }
