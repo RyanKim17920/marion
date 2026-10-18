@@ -718,7 +718,10 @@ once pointed at a model provider through its own configuration. **Refused** rows
 An ACP agent that runs a built-in harness's binary (`acp:goose`, `goose acp`, or a full path to
 goose) reads that harness's repository config, listed above. ACP passes no switch to keep it out,
 so in an untrusted repository holding any of it every launch of the agent is refused, whatever
-provider it runs on, until you trust the repository.
+provider it runs on, until you trust the repository. That holds even where the config is your own:
+`acp:pi-acp` is refused in an untrusted repository holding `.pi/`, though the built-in `pi` row
+would load a copy that is yours, and `acp:claude-acp` is refused for `.claude/settings.json` or
+`.mcp.json` the same way, until you run `marion trust allow --repo` there.
 
 Any command that runs Hermes (`hermes`, `hermes-acp` or `hermes-agent`, by any path) is held as
 the `hermes` row is, and once the hold lifts carries its switch against adopting your Codex CLI or
