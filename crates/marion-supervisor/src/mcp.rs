@@ -1641,11 +1641,19 @@ fn node_identity() -> Result<marion_core::proto::SpawnCaller, String> {
 /// points at ([`NODE_TOKEN_FILE_ENV`]). The token itself is never in this process's environment,
 /// which every process running as the operator can read ([`marion_harness::spec::TokenCarrier`]).
 /// A file that is named and cannot be read is a refusal naming it; an empty one is no token.
+///
+/// Read as a tree file is ([`marion_harness::tree_file::read_capped`]): a regular file, no link,
+/// at most [`NODE_TOKEN_CAP`] bytes, so a path that names a FIFO, `/dev/zero` or a link elsewhere
+/// is a refusal rather than a hang or an unbounded read.
 fn token_from(file: Option<String>) -> Result<Option<String>, String> {
     let Some(file) = file else {
         return Ok(None);
     };
-    let text = std::fs::read_to_string(&file).map_err(|e| {
+    let text = marion_harness::tree_file::read_capped(std::path::Path::new(&file), NODE_TOKEN_CAP)
+        .and_then(|b| {
+            String::from_utf8(b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })
+        .map_err(|e| {
         format!(
             "marion: {NODE_TOKEN_FILE_ENV} names {file}, which this bridge cannot read ({e}), so \
              it holds no proof of the node it serves. The file is written 0600 in the node's own \
@@ -1654,6 +1662,9 @@ fn token_from(file: Option<String>) -> Result<Option<String>, String> {
     })?;
     Ok(Some(text.trim().to_string()).filter(|t| !t.is_empty()))
 }
+
+/// The most a node token's file may hold: a minted token is 64 characters.
+const NODE_TOKEN_CAP: u64 = 4096;
 
 /// The pure half, so the resolution is testable without an environment — the same split
 /// [`report_refusal`] and [`caller_depth`] keep, and for the same reason: a refusal is a sentence
@@ -3469,5 +3480,38 @@ mod tests {
         let gone = dir.join("gone").to_string_lossy().into_owned();
         let e = token_from(Some(gone.clone())).unwrap_err();
         assert!(e.contains(&gone) && e.contains(NODE_TOKEN_FILE_ENV), "{e}");
+    }
+
+    /// **A token path that is not a small regular file is refused, never followed or read
+    /// unbounded**: a link (even to a real token), a FIFO (which must not hold the open), and a
+    /// file past the cap.
+    #[test]
+    fn a_token_path_that_is_not_a_small_regular_file_is_refused() {
+        let dir = marion_testsupport::scratch("bridge-token-shape");
+        let real = dir.join("real");
+        std::fs::write(&real, "tok").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let fifo = dir.join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let big = dir.join("big");
+        std::fs::write(&big, "x".repeat(NODE_TOKEN_CAP as usize + 1)).unwrap();
+        for path in [&link, &fifo, &big] {
+            let p = path.to_string_lossy().into_owned();
+            let e = token_from(Some(p.clone())).expect_err(&p);
+            assert!(e.contains(&p) && e.contains(NODE_TOKEN_FILE_ENV), "{e}");
+        }
+        assert_eq!(
+            token_from(Some(real.to_string_lossy().into_owned()))
+                .unwrap()
+                .as_deref(),
+            Some("tok")
+        );
     }
 }
