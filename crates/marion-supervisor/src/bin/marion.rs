@@ -590,9 +590,46 @@ fn shell_main(argv: &[String]) -> Result<ExitCode, Exit> {
     landed_main(argv, Landed::Shell)
 }
 
+/// `diff`'s words: `parse_attach`'s, plus `--at <commit>` (shown only while the branch is still
+/// at that commit) and `--tip` (print only the commit the branch is at).
+struct LandedArgs {
+    attach: AttachArgs,
+    at: Option<String>,
+    tip: bool,
+}
+
+fn parse_landed(argv: &[String], what: &Landed) -> Result<LandedArgs, Exit> {
+    let mut words = Words::after_verb(argv);
+    let (mut target, mut place, mut at, mut tip) = (None, Place::default(), None, false);
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag(f, v) if place.take(f, v, &mut words)? => {}
+            Word::Flag("--at", v) if matches!(what, Landed::Diff) => {
+                at = Some(words.value("--at", v)?);
+            }
+            Word::Flag("--tip", None) if matches!(what, Landed::Diff) => tip = true,
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(id) if target.is_none() => target = Some(id),
+            Word::Plain(extra) => return Err(Exit::Usage(format!("unexpected `{extra}`"))),
+        }
+    }
+    Ok(LandedArgs {
+        attach: AttachArgs {
+            agent_id: cli::required(target, "an agent <id>")?,
+            place,
+        },
+        at,
+        tip,
+    })
+}
+
 fn landed_main(argv: &[String], what: Landed) -> Result<ExitCode, Exit> {
     use marion_supervisor::landing::{branch_log, branch_merge, reviewed_tip};
-    let args = parse_attach(argv)?;
+    let LandedArgs {
+        attach: args,
+        at,
+        tip,
+    } = parse_landed(argv, &what)?;
     let Some((repo, state)) = resolve_project(&args.place) else {
         return Ok(ExitCode::FAILURE);
     };
@@ -609,9 +646,15 @@ fn landed_main(argv: &[String], what: Landed) -> Result<ExitCode, Exit> {
         match what {
             Landed::Diff => {
                 let branch = branch()?;
-                let commit =
-                    reviewed_tip(&repo, &branch, None).map_err(|e| format!("not shown: {e}"))?;
-                run_status(branch_log(&repo, &commit), "git log")
+                let commit = reviewed_tip(&repo, &branch, at.as_deref())
+                    .map_err(|e| format!("not shown: {e}"))?;
+                if tip {
+                    out!("{commit}");
+                    return Ok(());
+                }
+                run_status(branch_log(&repo, &commit), "git log")?;
+                err!("marion: that is {branch} at {commit}");
+                Ok(())
             }
             Landed::Merge => {
                 let branch = branch()?;

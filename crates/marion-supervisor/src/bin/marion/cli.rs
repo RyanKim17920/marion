@@ -617,11 +617,15 @@ fn attach_help() -> String {
 
 fn diff_help() -> String {
     format!(
-        "usage: marion diff <id> [--repo <path>]\n\
+        "usage: marion diff <id> [--at <commit>] [--tip] [--repo <path>]\n\
          \n\
          Show what an agent's branch added over your HEAD, commit by commit with its patch. The\n\
          patch is shown raw: no diff driver or textconv program the branch names runs, and no\n\
-         pager; pipe it to one. Only a branch marion made for a task is shown.\n\
+         pager; pipe it to one. It ends naming the commit shown. Only a branch marion made for a\n\
+         task is shown.\n\
+         \n\
+         --at <commit>   show the branch only if it is still at <commit>\n\
+         --tip           print only the commit the branch is at\n\
          \n\
          {PLACE_HELP}\n\
          \n\

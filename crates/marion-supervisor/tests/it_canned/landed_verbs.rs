@@ -130,6 +130,48 @@ fn merge_refuses_a_branch_the_contract_names_that_marion_did_not_make() {
     }
 }
 
+/// **A diff names the commit it showed, and `--at` shows the branch only while it is still
+/// there.** `--tip` prints only that commit; the agent then moves its branch, and `diff --at` the
+/// commit read is refused naming both, while `--at` the new tip shows it.
+#[test]
+fn diff_names_the_commit_it_shows_and_refuses_a_branch_moved_since() {
+    let (_dir, repo, state, fx) = bed("landed-verbs-diff-at");
+    let tip = marion(&["diff", &fx.child.0, "--tip"], &repo, &state);
+    assert!(tip.status.success(), "{tip:?}");
+    let reviewed = String::from_utf8_lossy(&tip.stdout).trim().to_string();
+    assert_eq!(reviewed, git(&repo, &["rev-parse", &fx.branch]).trim());
+    let diff = marion(&["diff", &fx.child.0], &repo, &state);
+    assert!(
+        String::from_utf8_lossy(&diff.stderr)
+            .contains(&format!("that is {} at {reviewed}", fx.branch)),
+        "the diff names the commit it showed: {diff:?}"
+    );
+
+    // The agent moves its branch after the operator read it.
+    git(&repo, &["checkout", "-q", &fx.branch]);
+    std::fs::write(repo.join("c.txt"), "written after the review\n").unwrap();
+    git(&repo, &["add", "c.txt"]);
+    git(&repo, &["commit", "-q", "-m", "add c"]);
+    git(&repo, &["checkout", "-q", "main"]);
+    let moved = git(&repo, &["rev-parse", &fx.branch]).trim().to_string();
+
+    let out = marion(&["diff", &fx.child.0, "--at", &reviewed], &repo, &state);
+    assert!(!out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("moved since it was reviewed")
+            && stderr.contains(&reviewed)
+            && stderr.contains(&moved),
+        "{out:?}"
+    );
+    let shown = marion(&["diff", &fx.child.0, "--at", &moved], &repo, &state);
+    assert!(shown.status.success(), "{shown:?}");
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("add c"),
+        "{shown:?}"
+    );
+}
+
 /// The contract file under `state` that names `branch`.
 fn contract_naming(state: &Path, branch: &str) -> PathBuf {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
