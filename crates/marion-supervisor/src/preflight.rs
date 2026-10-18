@@ -1,5 +1,6 @@
 //! What `doctor` checks about this machine before any harness: the two marion binaries, the OS,
-//! the state directory and its socket path, and git.
+//! the state directory and its socket path, git, the node sandbox, and on Linux who may attach to
+//! a process (Yama).
 //!
 //! Split in two so the verdicts are testable without the machine: [`gather`] reads the facts
 //! (it runs `--version` on marion and git, and creates the state directory as any marion verb
@@ -88,6 +89,25 @@ pub struct Facts {
     pub keychain_unowned: Vec<String>,
     /// What this host offers marion's own sandbox ([`marion_harness::os_sandbox::support`]).
     pub sandbox: marion_harness::os_sandbox::Support,
+    /// Whether the operator leaves that sandbox on
+    /// ([`marion_harness::os_sandbox::enabled_by_operator`]).
+    pub sandbox_by_operator: bool,
+    /// Who may attach to a process of this user's, on Linux ([`Yama`]).
+    pub yama: Yama,
+}
+
+/// Where Linux's Yama says who may attach to a process.
+pub const YAMA_PTRACE_SCOPE: &str = "/proc/sys/kernel/yama/ptrace_scope";
+
+/// [`YAMA_PTRACE_SCOPE`], as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Yama {
+    /// Not Linux: no Yama, and no line.
+    NotLinux,
+    /// Linux without the file: this kernel has no Yama.
+    Absent,
+    /// The file's contents, trimmed.
+    Scope(String),
 }
 
 /// Read the facts from this process and machine.
@@ -134,6 +154,13 @@ pub fn gather() -> Facts {
         git,
         keychain_unowned: keychain_unowned(),
         sandbox: marion_harness::os_sandbox::support().clone(),
+        sandbox_by_operator: marion_harness::os_sandbox::enabled_by_operator(),
+        yama: if cfg!(target_os = "linux") {
+            std::fs::read_to_string(YAMA_PTRACE_SCOPE)
+                .map_or(Yama::Absent, |s| Yama::Scope(s.trim().to_string()))
+        } else {
+            Yama::NotLinux
+        },
     }
 }
 
@@ -173,6 +200,10 @@ pub fn checks(f: &Facts) -> Vec<Check> {
         },
         sandbox(&f.sandbox),
     ];
+    all.extend(ptrace_scope(
+        &f.yama,
+        f.sandbox.available() && f.sandbox_by_operator,
+    ));
     if !f.keychain_unowned.is_empty() {
         let commands: Vec<String> = f
             .keychain_unowned
@@ -270,6 +301,55 @@ fn sandbox(s: &marion_harness::os_sandbox::Support) -> Check {
             marion_harness::os_sandbox::ON_OWN_LOGIN
         ),
     )
+}
+
+/// **Whether a node can attach to a sibling's process**, and so act inside that sibling's tree,
+/// where the sibling's token is good (§5.4: a token is bound to its node's process tree, not to the
+/// process). Landlock holds a sandboxed node out of every other domain's processes whatever Yama
+/// says, so a permissive scope is a weakening only where the sandbox is off.
+fn ptrace_scope(yama: &Yama, sandbox_on: bool) -> Option<Check> {
+    let permissive = match yama {
+        Yama::NotLinux => return None,
+        Yama::Scope(s) if matches!(s.as_str(), "1" | "2" | "3") => {
+            let who = match s.as_str() {
+                "1" => "only to its own descendants",
+                "2" => "only with CAP_SYS_PTRACE",
+                _ => "to none",
+            };
+            return Some(Check::new(
+                Level::Ok,
+                format!(
+                    "kernel.yama.ptrace_scope {s}: a process attaches {who}, so no node attaches \
+                     to a sibling's process"
+                ),
+            ));
+        }
+        Yama::Scope(s) if s == "0" => "kernel.yama.ptrace_scope is 0".to_string(),
+        Yama::Scope(s) => {
+            format!("kernel.yama.ptrace_scope reads {s:?}, which marion does not know")
+        }
+        Yama::Absent => format!("this kernel has no Yama ({YAMA_PTRACE_SCOPE} is absent)"),
+    };
+    Some(if sandbox_on {
+        Check::new(
+            Level::Ok,
+            format!(
+                "{permissive}: any process of yours may attach to any other, but the node sandbox \
+                 holds a sandboxed node out of every process outside it; a node on your own login \
+                 runs unsandboxed and is not held out"
+            ),
+        )
+    } else {
+        Check::new(
+            Level::Warn,
+            format!(
+                "{permissive} and the node sandbox is off: any node may attach to a sibling's \
+                 process and act inside its process tree, where the sibling's token is good. \
+                 `sudo sysctl kernel.yama.ptrace_scope=1` lets a process attach only to its own \
+                 descendants"
+            ),
+        )
+    })
 }
 
 fn os(os: &str) -> Check {
@@ -406,6 +486,66 @@ mod tests {
             git: Some("git version 2.50.0".into()),
             keychain_unowned: vec![],
             sandbox: marion_harness::os_sandbox::Support::Seatbelt,
+            sandbox_by_operator: true,
+            yama: Yama::NotLinux,
+        }
+    }
+
+    /// **The Yama line, on Linux only**: 1, 2 and 3 are ok; 0, an unknown value and no Yama at all
+    /// warn only where the node sandbox is off — unavailable or turned off by the operator — and
+    /// are named either way.
+    #[test]
+    fn yamas_ptrace_scope_weakens_siblings_only_where_the_sandbox_is_off() {
+        let line = |yama: Yama, available: bool, by_operator: bool| {
+            let f = Facts {
+                os: "linux".into(),
+                sandbox: if available {
+                    marion_harness::os_sandbox::Support::Landlock { abi: 4 }
+                } else {
+                    marion_harness::os_sandbox::Support::Unavailable("no Landlock".into())
+                },
+                sandbox_by_operator: by_operator,
+                yama,
+                ..facts()
+            };
+            let all = checks(&f);
+            let found: Vec<Check> = all
+                .into_iter()
+                .filter(|c| c.text.contains("Yama") || c.text.contains("ptrace_scope"))
+                .collect();
+            assert!(found.len() <= 1, "{found:?}");
+            found.into_iter().next()
+        };
+        assert_eq!(line(Yama::NotLinux, false, true), None);
+        for (s, who) in [
+            ("1", "own descendants"),
+            ("2", "CAP_SYS_PTRACE"),
+            ("3", "to none"),
+        ] {
+            let c = line(Yama::Scope(s.into()), false, false).expect("a line");
+            assert_eq!(c.level, Level::Ok, "{c:?}");
+            assert!(c.text.contains(who), "{c:?}");
+        }
+        for (yama, named) in [
+            (Yama::Scope("0".into()), "is 0"),
+            (Yama::Scope("7".into()), "\"7\""),
+            (Yama::Absent, "no Yama"),
+        ] {
+            let on = line(yama.clone(), true, true).expect("a line");
+            assert_eq!(on.level, Level::Ok, "{on:?}");
+            assert!(
+                on.text.contains(named) && on.text.contains("own login"),
+                "{on:?}"
+            );
+            for (available, by_operator) in [(false, true), (true, false)] {
+                let off = line(yama.clone(), available, by_operator).expect("a line");
+                assert_eq!(off.level, Level::Warn, "{off:?}");
+                assert!(
+                    off.text.contains(named) && off.text.contains("ptrace_scope=1"),
+                    "{off:?}"
+                );
+                assert!(!off.text.contains("  "), "one sentence: {off:?}");
+            }
         }
     }
 
