@@ -35,7 +35,7 @@
 //! [`marion_core::proto::result::TreeSubscribeResult`] says why the two travel together: *"a client that
 //! renders a tree and **then** starts listening has a window it cannot account for."*
 //!
-//! Here that is a lock, not a promise. [`RegistryHandle::subscribe`] takes the shared state's lock,
+//! Here that is a lock, not a promise. `RegistryHandle::subscribe` takes the shared state's lock,
 //! performs **one** read of the registry, and from that single view it (a) flushes to existing
 //! subscribers everything that changed since the last flush, (b) builds this subscriber's snapshot,
 //! and (c) records the snapshot as the point this subscriber has been told about. A notification
@@ -66,7 +66,6 @@
 //!
 //! [`NodeSummary`]: marion_core::proto::NodeSummary
 //! [`summarize`]: crate::handler::summarize
-//! [`RegistryHandle::subscribe`]: crate::handler::RegistryHandle::subscribe
 //! [`Call::SessionQuit`]: marion_core::proto::Call::SessionQuit
 //! [`Handle::gone`]: crate::serve::Handle::gone
 //! [`ClientGone::Quit`]: marion_core::proto::ClientGone::Quit
@@ -372,7 +371,7 @@ mod panes;
 mod summary;
 mod workflow;
 
-/// A [`Handle`](crate::serve::Handle) backed by a running registry.
+/// A [`Handle`] backed by a running registry.
 ///
 /// Descriptions still come only from the journal. Quit is the deliberately different half: it
 /// uses the journal's PID to apply §6.7's process-tree kill, observes death, and writes that new
@@ -490,7 +489,7 @@ pub struct RegistryHandle {
 }
 
 impl RegistryHandle {
-    /// A handle that describes nodes and does not own any. See [`Self::spawn_env`].
+    /// A handle that describes nodes and does not own any. See `Self::spawn_env`.
     ///
     /// It serves no socket of its own, so the socket its guidance names is the journal-adjacent
     /// default rather than one a listener bound.
@@ -502,7 +501,7 @@ impl RegistryHandle {
     /// A handle that **owns the nodes it spawns**: §2's `agent/spawn`, answered rather than refused.
     ///
     /// The environment is passed in rather than derived because it cannot be derived — see
-    /// [`Self::spawn_env`]. So is `socket_path`, the socket the server in front of this handle
+    /// `Self::spawn_env`. So is `socket_path`, the socket the server in front of this handle
     /// actually bound: §2 moves a socket whose path would exceed `sun_path` to a `/tmp` fallback
     /// while the journal stays under the state root, so the journal cannot say where clients dial.
     pub fn owning(
@@ -731,9 +730,9 @@ impl RegistryHandle {
     /// [`Handle::next_deadline`].
     ///
     /// Journal changes, connections, node completions, a followed node's `events.jsonl`
-    /// ([`AttachWatch`](panes::AttachWatch)) and a moved token figure ([`crate::spending::Spending::notifying`]) wake
+    /// (`AttachWatch`) and a moved token figure ([`crate::spending::Spending::notifying`]) wake
     /// the loop through [`LiveRegistry::changes`], so what is left is the work that is still
-    /// *time*-driven: a figure deferred by [`TOKEN_PUSH_DELAY`] is due when it ends, and a
+    /// *time*-driven: a figure deferred by `TOKEN_PUSH_DELAY` is due when it ends, and a
     /// Completed pane expires at its TTL or is evicted at once when the cache is over budget.
     /// `None` means nothing is due. An attachment whose watch thread could not be started is
     /// re-read at [`crate::wake::DEGRADED_RECHECK`].
@@ -1126,7 +1125,7 @@ impl Handle for RegistryHandle {
     /// departure §7.3.1 is actually about — a client that was killed and could say nothing — left
     /// a supervisor that could never exit at all, over a journal with nothing left in it. That is
     /// not §7.3.1's invariant. §7.3.1 is about **nodes**, and this touches none: an empty registry
-    /// has nothing to touch, and a non-empty one is what [`Self::resident_reason`] answers with.
+    /// has nothing to touch, and a non-empty one is what `Self::resident_reason` answers with.
     ///
     /// The waiting is the accept loop's, and it is what covers the window before the starting
     /// client has connected: a supervisor is published and dialled within milliseconds, and §5.7's
@@ -1135,7 +1134,7 @@ impl Handle for RegistryHandle {
     /// `marion run` no longer asks for one.
     /// **The node table is a second guard, not a replacement for the journal's.**
     ///
-    /// §5.7's clause is *"zero non-terminal nodes"*, and [`Self::residency`] answers it from the
+    /// §5.7's clause is *"zero non-terminal nodes"*, and `Self::residency` answers it from the
     /// journal — which is the right primary source, because it is the only one that survives a
     /// restart and the only one that knows about nodes this process did not start.
     ///

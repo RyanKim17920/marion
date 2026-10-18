@@ -134,7 +134,7 @@ pub enum Marking {
     /// abort written *after* a terminal record, which is `run.rs`'s own commonest way to reach the
     /// guard (`persist_then_cap` returning while it is still armed): the whole content of this
     /// variant is *"marion cannot say whether a process was still running"*, and beside an observed
-    /// exit marion can, so [`classify`] asks that first.
+    /// exit marion can, so `classify` asks that first.
     AbortedOverALiveSpawn,
 }
 

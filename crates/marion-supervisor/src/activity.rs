@@ -217,7 +217,7 @@ fn outcome(ok: bool, exit: Option<i64>) -> String {
     }
 }
 
-/// Whether an [`ActionKind::Ended`] line is a call that succeeded: [`outcome`]'s `✓`.
+/// Whether an [`ActionKind::Ended`] line is a call that succeeded: `outcome`'s `✓`.
 pub fn succeeded(line: &ActionLine) -> bool {
     line.kind == ActionKind::Ended && line.text.starts_with('✓')
 }

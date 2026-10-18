@@ -314,7 +314,7 @@ pub fn prune_branch(repo: &Path, project: &ProjectDir, row: &marion_core::race::
         .is_ok_and(|o| o.status.success())
 }
 
-/// `races/<race_id>.json`, replaced whole through [`crate::private_fs::write_atomic`] (owner-only,
+/// `races/<race_id>.json`, replaced whole through `crate::private_fs::write_atomic` (owner-only,
 /// fsynced, renamed into place), so a reader never sees half a scoreboard.
 pub fn write_result(project: &ProjectDir, result: &RaceResult) -> std::io::Result<()> {
     let mut bytes = serde_json::to_vec_pretty(result).map_err(std::io::Error::other)?;

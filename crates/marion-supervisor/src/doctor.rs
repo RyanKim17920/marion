@@ -166,7 +166,7 @@ pub fn surfaces_at(harness: Harness, role: SurfaceRole) -> Option<ExecutionSurfa
 /// *key* into the same one, which agrees on every row until it does not.
 ///
 /// `version` is `Option` because that is the shape both callers actually have: a probe that could
-/// not run the binary has none, and a node still `Spawning` has none. [`keyed_version`] is the one
+/// not run the binary has none, and a node still `Spawning` has none. `keyed_version` is the one
 /// decision about what that means, and it lives here rather than at either call site.
 ///
 /// Stage **two** is deliberately not here. Refinement needs an `initialize` answer from a specific

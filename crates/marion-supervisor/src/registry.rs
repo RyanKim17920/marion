@@ -414,7 +414,7 @@ fn unparsable_reason(path: &Path, offset: u64) -> String {
 /// **Woken, not ticking.** The follower blocks until the journal can have changed: this process's
 /// own appends wake it through [`crate::journal::append_at`], another process's through the file's
 /// change notification ([`crate::wake::Watch`]) — which sees every writer, and a replaced or
-/// removed journal re-arms it — and [`Self::halt`] through its stop flag's own descriptor. With
+/// removed journal re-arms it — and `Self::halt` through its stop flag's own descriptor. With
 /// every descriptor it waits with no timeout at all; only when one could not be had does it
 /// re-check at [`crate::wake::DEGRADED_RECHECK`]. It used to poll every 10 ms, which on an idle supervisor was
 /// a hundred `open`s and a hundred wakeups a second of pure cost. Every decision point

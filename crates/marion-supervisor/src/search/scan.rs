@@ -41,7 +41,7 @@ pub struct Hit {
     pub run: Run,
     /// The field the first word was found in; empty for a query with no words.
     pub field: &'static str,
-    /// About [`SNIPPET`] characters of that field around the match, whitespace folded to spaces.
+    /// About `SNIPPET` characters of that field around the match, whitespace folded to spaces.
     pub snippet: String,
 }
 

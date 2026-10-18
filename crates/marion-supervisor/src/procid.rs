@@ -318,7 +318,7 @@ fn recorded_start_id(node: &marion_core::registry::ReplayedNode) -> Option<&Star
 
 /// **The process start identity the kernel reports for `pid`, right now.**
 ///
-/// See [`read_impl`] for the platform arm and what it was measured against.
+/// See `read_impl` for the platform arm and what it was measured against.
 pub fn read(pid: i32) -> Read {
     if pid <= 0 {
         // Not a process. `kill(0, …)` addresses the caller's whole process group and negative pids

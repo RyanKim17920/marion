@@ -650,7 +650,7 @@ pub struct JournalView {
 impl JournalView {
     /// The journal of the project `repo` names under `state_dir` — **only when nobody is serving
     /// it**. `Ok(None)` is a supervisor serving: its answer is the live one, and the caller dials
-    /// it. A project whose journal records no node refuses as [`dial`] does, because an empty
+    /// it. A project whose journal records no node refuses as `dial` does, because an empty
     /// listing would read as "nothing ran here" when the likelier fact is a different
     /// `--state-dir`.
     pub fn open(repo: &Path, state_dir: &Path) -> Result<Option<JournalView>, Refusal> {

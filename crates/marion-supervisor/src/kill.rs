@@ -21,7 +21,7 @@ unsafe extern "C" {
 /// **Start `command` leading a session of its own**, and so a process group of its own: what
 /// every node marion runs under a bound needs. The group is what the expiry kill addresses without
 /// touching marion's own (`signal_targets` refuses marion's group); the session is what still
-/// names a descendant that changed its group and lost its parent ([`session_orphans`]). A node has
+/// names a descendant that changed its group and lost its parent (`session_orphans`). A node has
 /// no controlling terminal to lose: marion gives a headless node none (§5.2).
 pub fn lead_own_session(command: &mut Command) -> &mut Command {
     use std::os::unix::process::CommandExt;
@@ -326,7 +326,7 @@ pub(crate) fn kill_groups(groups: &[i32]) {
 /// leader, whether it exited or is to be ended now.
 ///
 /// **The sweep runs before the reap, and that order is the safety.** An unreaped leader keeps its
-/// pid, and so its session id, from being issued again, so every process [`end_session`] finds in
+/// pid, and so its session id, from being issued again, so every process `end_session` finds in
 /// that session is the node's own. Swept after the reap, the id is the kernel's to hand out: a
 /// stranger that took the pid and led a session of its own would be signalled. A leader already
 /// reaped (an earlier `wait`, or not this caller's child) is not swept at all; its status is
@@ -453,13 +453,13 @@ fn still_in_session(
 /// The journal's confirmation means *observed dead*, not merely "SIGKILL was sent". A zombie is
 /// dead for that purpose — it can run no code and its parent alone owns the remaining wait record
 /// — while `kill(pid, 0)` would misclassify it as alive, so the process table's own state is read
-/// ([`crate::procid::run_state`]: one `sysctl` or one `/proc` read, no fork). The bound is a safety
+/// (`crate::procid::run_state`: one `sysctl` or one `/proc` read, no fork). The bound is a safety
 /// refusal, not a grace period: SIGKILL has no graceful leg, and a caller that cannot observe death
 /// leaves its already-durable intent unconfirmed for §7.2-style recovery.
 ///
 /// This used to fork `ps -o stat=` in a `yield_now` loop — up to five seconds of back-to-back
 /// forks per kill. A SIGKILLed process is usually gone within a millisecond, so the reads back off
-/// from 1 ms to [`OBSERVE_PAUSE_MAX`].
+/// from 1 ms to `OBSERVE_PAUSE_MAX`.
 pub fn kill_process_tree_and_wait(child_pid: i32) -> bool {
     kill_process_tree(child_pid);
     observe_dead(child_pid, Instant::now() + Duration::from_secs(5))

@@ -241,7 +241,7 @@ pub struct Ensured {
 
 /// §5.7's start: dial, and start one **only** if nothing answers.
 ///
-/// Each start blocks on its chain's ready pipe ([`start_and_wait`]) rather than re-dialing on a
+/// Each start blocks on its chain's ready pipe (`start_and_wait`) rather than re-dialing on a
 /// timer: one byte means a supervisor is serving, and the pipe's end means the chain is over
 /// without one. Either way the dial that follows is the authority, and another start is made only
 /// on the lock's proof that nobody holds it.

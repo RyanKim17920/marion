@@ -674,7 +674,7 @@ fn harnesses_tail(home: &Home, lines: &mut Vec<SetupLine>) {
 /// The widest a path is shown on Setup: its start and its end, the middle elided.
 const PLACE_W: usize = 36;
 
-/// Every absolute path in `text` `~`-shortened and, past [`PLACE_W`], middle-elided: a state
+/// Every absolute path in `text` `~`-shortened and, past `PLACE_W`, middle-elided: a state
 /// directory under `/private/tmp/…` is recognisable by its ends.
 pub fn short_place(text: &str) -> String {
     text.split(' ')

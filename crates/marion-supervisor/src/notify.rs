@@ -246,7 +246,7 @@ pub enum Backend {
 impl Backend {
     /// Resolved once: the override, else the platform's notifier where it exists, else the
     /// terminal. `record:` only in a build with debug assertions — the tests' builds — see
-    /// [`Backend::resolve_with`].
+    /// `Backend::resolve_with`.
     pub fn resolve(env: Option<&str>) -> Backend {
         Self::resolve_with(env, cfg!(debug_assertions))
     }

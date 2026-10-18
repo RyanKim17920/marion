@@ -112,7 +112,7 @@ impl Journal {
     ///
     /// **Not the door production uses.** A `Journal` owns `seq` and `mono_ns`'s origin, so a second
     /// one on the same file restarts both; [`append_at`] and [`record`] go through the process-wide
-    /// [`OPEN`] pool for exactly that reason and this is what the pool calls. It stays public for
+    /// `OPEN` pool for exactly that reason and this is what the pool calls. It stays public for
     /// tests that mean to open twice — `a_second_open_appends_rather_than_truncating` is
     /// about the *file* not being truncated — and for a replay tool pointed at a journal outside a
     /// state directory.

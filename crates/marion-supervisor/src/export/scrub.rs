@@ -250,8 +250,8 @@ impl Scrubber {
     }
 
     /// `text` with every known key, every secret-shaped run and the home directory taken out.
-    /// Terminal escape sequences and control characters go first ([`without_escapes`]), and keys
-    /// and shapes are matched as a reader sees the rest ([`Shown`]): a key with a colour change or
+    /// Terminal escape sequences and control characters go first (`without_escapes`), and keys
+    /// and shapes are matched as a reader sees the rest (`Shown`): a key with a colour change or
     /// a zero-width joiner inside it reads whole on the screen, and is masked whole.
     pub fn clean(&self, text: &str) -> String {
         let mut out = mask_keys(&without_escapes(text), &self.keys);

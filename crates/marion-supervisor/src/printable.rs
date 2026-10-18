@@ -33,7 +33,7 @@ pub fn err_text(text: &str) {
     let _ = show(&mut std::io::stderr(), &format!("{text}\n"));
 }
 
-/// What starts each further row of a [`line`] whose text carries a line break: indented and
+/// What starts each further row of a [`line()`] whose text carries a line break: indented and
 /// barred, so a value's own rows read as the continuation they are and never as a line the CLI
 /// wrote (`marion: …` cannot start a row).
 pub const CONTINUATION: &str = "\n    | ";
@@ -54,7 +54,7 @@ pub fn line(text: &str) -> String {
     out
 }
 
-/// `println!` as one [`line`] to stdout. A closed stdout is not an error the caller can act on.
+/// `println!` as one [`line()`] to stdout. A closed stdout is not an error the caller can act on.
 #[macro_export]
 macro_rules! out {
     () => { $crate::out!("") };
@@ -65,7 +65,7 @@ macro_rules! out {
     }};
 }
 
-/// `eprintln!` as one [`line`] to stderr.
+/// `eprintln!` as one [`line()`] to stderr.
 #[macro_export]
 macro_rules! err {
     () => { $crate::err!("") };
@@ -76,7 +76,7 @@ macro_rules! err {
     }};
 }
 
-/// `writeln!(w, …)` as one [`line`]: the same `io::Result<()>`, and `w` taken as `writeln!` takes
+/// `writeln!(w, …)` as one [`line()`]: the same `io::Result<()>`, and `w` taken as `writeln!` takes
 /// it (a `&mut dyn Write`, a `&mut Vec<u8>` or a writer by value).
 #[macro_export]
 macro_rules! out_to {

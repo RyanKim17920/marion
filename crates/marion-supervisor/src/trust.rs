@@ -24,7 +24,7 @@
 //! `.opencode/`, `.pi/`, `.codex/config.toml`, `.mcp.json` — loads into a node on the operator's
 //! login only once they have trusted the repository itself: `marion trust allow --repo` records
 //! its canonical git directory ([`crate::socket::project_root`], shared by every worktree of it)
-//! in the same store, and [`repo_trusted`] is what each launch asks. Trust here is by **place**,
+//! in the same store, and [`repo_trusted`](crate::trust::repo_trusted) is what each launch asks. Trust here is by **place**,
 //! as a harness's own folder trust is, because the files it covers are many and the repository
 //! edits them; any repository not recorded is untrusted. In a worktree marion made for a child,
 //! place is not enough, since the child writes its tree: the config there must also be exactly
@@ -39,7 +39,7 @@
 //! **Never a prompt.** A spawn arrives over MCP from a model, which cannot consent on the
 //! operator's behalf; the refusal names the one command the operator runs instead. The one
 //! question marion asks is the operator's own, at their terminal, before a run starts: whether to
-//! trust a repository that holds harness configuration of its own ([`offer_repo_trust`]), asked
+//! trust a repository that holds harness configuration of its own ([`offer_repo_trust`](crate::trust::offer_repo_trust)), asked
 //! once and recorded either way.
 //!
 //! [`require_model_named`]: crate::trust::require_model_named
@@ -570,7 +570,7 @@ impl Store {
     }
 
     /// The store at `path`, read under its lock for a change: the lock (`<store>.lock` beside it,
-    /// `0600`) is held until the returned store drops, after its [`Self::save`].
+    /// `0600`) is held until the returned store drops, after its `Self::save`.
     pub fn edit(path: PathBuf) -> Result<Self, TrustError> {
         let io = |e: std::io::Error| TrustError::Io(format!("{}: {e}", path.display()));
         let mut lock_path = path.clone().into_os_string();
@@ -938,7 +938,7 @@ fn operator_hello_refusal(cwd: &Path) -> Option<String> {
     }
 }
 
-/// **Why `args` may not run from `cwd` in this process** ([`node_refusal`] over this process's
+/// **Why `args` may not run from `cwd` in this process** (`node_refusal` over this process's
 /// environment): the one check before [`run`] changes the store, made by [`cli_main`] and by the
 /// home screen's Setup row ([`answer_repo`]) alike.
 pub fn refusal_here(args: &[String], cwd: &Path) -> Option<String> {

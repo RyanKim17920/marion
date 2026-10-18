@@ -26,7 +26,7 @@
 //!
 //! Pass-through was not a stub and the ledger is not one-sided:
 //!
-//! * **Kept — but this bullet was wrong until [`View::mirror_modes`] existed, and the correction
+//! * **Kept — but this bullet was wrong until `View::mirror_modes` existed, and the correction
 //!   is the interesting part.** It read *"the mouse still works with no encoder … the operator's
 //!   terminal is put into SGR-1006 by `Sticky`'s mirrored preamble"*, and the first half is true:
 //!   a mouse report is input, [`Keys`] forwards it verbatim, and nothing on the render side

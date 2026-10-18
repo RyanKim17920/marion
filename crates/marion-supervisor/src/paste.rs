@@ -31,7 +31,7 @@
 //! 2.1.283's defaults to `No, exit`, so paste + CR quits the session; codex 0.155.1's swallows the
 //! paste. Where the row marks the dialog answerable **and** the host was licensed — for folder
 //! trust, the child runs in a worktree marion created; for first-run setup, marion owns the
-//! harness config ([`crate::pty::PtyHost::license_boot_dialog_answers`], [`Answers`]) — the
+//! harness config ([`crate::pty::PtyHost::license_boot_dialog_answers`], [`Answers`](crate::paste::Answers)) — the
 //! injector types the row's keys alone ([`Gate::Answer`]), once per dialog, and waits for the TUI
 //! to redraw and settle before pasting. A dialog whose answer only declines and records nothing
 //! ([`marion_harness::spec::DialogAnswer::Decline`]: codex's `Open restricted` for a checkout

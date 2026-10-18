@@ -165,7 +165,7 @@ pub struct WatchTarget {
     pub agent_id: AgentId,
     pub agent_type: String,
     pub bound: Duration,
-    /// See [`Handed::contract`]: `None` is a root, whose end is its own bookend.
+    /// See `Handed::contract`: `None` is a root, whose end is its own bookend.
     pub contract: Option<TaskId>,
 }
 
@@ -176,7 +176,7 @@ pub enum Wait {
         agent_id: AgentId,
         agent_type: String,
         bound: Duration,
-        /// See [`Handed::contract`]: `None` is a root, whose wait ends at the node's own bookend.
+        /// See `Handed::contract`: `None` is a root, whose wait ends at the node's own bookend.
         contract: Option<TaskId>,
     },
     /// **This bridge process's table has no row with that id**, which is narrower than "you may not

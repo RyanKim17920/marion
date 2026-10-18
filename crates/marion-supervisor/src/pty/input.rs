@@ -632,24 +632,24 @@ impl ModeScan {
 /// the host's write lock so no operator keystroke can land between the reading and the typing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputState {
-    /// The node asked for bracketed paste ([`ModeScan`]).
+    /// The node asked for bracketed paste (`ModeScan`).
     pub bracketed_paste: bool,
     /// When the operator last typed a key — `None` if nobody has.
     pub last_operator_input: Option<Instant>,
     /// The operator's last key submitted (or nobody has typed): the composer is **presumed**
     /// empty. Presumed, because only the harness knows its composer; marion knows the keys.
     pub composer_empty: bool,
-    /// The node has drawn text since it turned bracketed paste on ([`ModeScan::drawn`]).
+    /// The node has drawn text since it turned bracketed paste on (`ModeScan::drawn`).
     pub screen_drawn: bool,
     /// The node has set its window title since it turned bracketed paste on
-    /// ([`ModeScan::titled`]).
+    /// (`ModeScan::titled`).
     pub titled: bool,
     /// When the node last wrote anything — `None` before its first byte.
     pub last_output: Option<Instant>,
     /// The row's boot dialog drawn since anyone last typed, before the first paste
-    /// ([`ModeScan::showing`]).
+    /// (`ModeScan::showing`).
     pub boot_dialog: Option<&'static BootDialog>,
-    /// The row's mid-session ask on the screen now ([`ModeScan::read_asks`]).
+    /// The row's mid-session ask on the screen now (`ModeScan::read_asks`).
     pub ask: Option<&'static Ask>,
 }
 

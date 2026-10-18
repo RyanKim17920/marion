@@ -164,7 +164,7 @@ fn named_provider(
 
 /// **The provider an agent type selects by itself**: its `provider`, else the one its `model`'s
 /// prefix names in `registry`, with the model that prefix leaves. What a launch that asks for no
-/// model of its own runs on ([`named_provider`]), and so what a repository's type is trusted for
+/// model of its own runs on (`named_provider`), and so what a repository's type is trusted for
 /// before it may spend the operator's keys ([`crate::trust::widening`]) — one function, so the
 /// two cannot disagree on which spellings select one.
 pub fn type_provider(registry: &Registry, ty: &AgentType) -> Option<(String, Option<String>)> {

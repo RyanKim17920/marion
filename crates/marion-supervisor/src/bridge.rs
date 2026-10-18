@@ -302,7 +302,7 @@ pub fn workflow_names_description(names: &[String]) -> String {
 /// type's description. A free-form `acp:<command>` is not offered: a model may run one only where
 /// the operator listed it (`trust::require_model_named`).
 ///
-/// **Only the built-ins this host can launch** ([`installed_on`] the [`spawn_path`]): the list is paid in every
+/// **Only the built-ins this host can launch** (`installed_on` the `spawn_path`): the list is paid in every
 /// context on every turn, and a type whose program is not installed is one a spawn of would only
 /// fail. The rest are counted, not named. A row of the tree's own file is always listed — the
 /// operator wrote it on purpose, and a missing program is then a refusal worth reading.
@@ -1057,9 +1057,9 @@ fn verification_passed(c: &TaskContract) -> Option<usize> {
 ///    compact JSON, `isError: false`.
 /// 2. **A child that ran and did not finish `Ok`** returns the same shape, the line opening with
 ///    its account of the failure, and `isError: true` — except an `Unreported` child whose
-///    declared verification all passed, which says so and is `isError: false` ([`failure_line`]).
+///    declared verification all passed, which says so and is `isError: false` (`failure_line`).
 ///    Every summary line ends `| <type> · <status> · <checks> · <changed> · <where>`
-///    ([`summary_facts`]).
+///    (`summary_facts`).
 /// 3. **A spawn that never launched** returns that same shape with no contract to print, and
 ///    `isError: true` — which it already did, and which is why the two now read alike.
 ///
@@ -1099,7 +1099,7 @@ pub fn spawn_result(
 }
 
 /// Opens the child's contract in a `spawn` or `wait` result. It contains `<`, and the close
-/// contains `>`, which the fenced JSON never does ([`fence_contract`] writes each as a `\u` escape),
+/// contains `>`, which the fenced JSON never does (`fence_contract` writes each as a `\u` escape),
 /// so nothing a child wrote can close the fence early or open a second one.
 pub const CONTRACT_OPEN: &str = "<<<marion:child-contract";
 /// Closes the child's contract. See [`CONTRACT_OPEN`].
@@ -1182,7 +1182,7 @@ pub fn spawn_text_of(
 }
 
 /// **The contract as the parent model reads it**: the persisted document less the completion
-/// flags at their uninformative default ([`QUIET_AT_DEFAULT`]), paid again in every `spawn` and
+/// flags at their uninformative default (`QUIET_AT_DEFAULT`), paid again in every `spawn` and
 /// `wait` result in the parent's context.
 ///
 /// What the parent sent (task, criteria, scope, checks) stays even though it is an echo: a parent
@@ -1266,7 +1266,7 @@ fn headline(agent_type: &str, contract: &TaskContract) -> (String, bool) {
 }
 
 /// **What a backgrounded child's end is announced as** — to its parent's next turn, or on the
-/// parent's MCP push: [`headline`] and the narrative, never the contract. The parent acts on
+/// parent's MCP push: `headline` and the narrative, never the contract. The parent acts on
 /// status, narrative, verification, branch and merge command, and `wait` on the handle still
 /// returns the whole document ([`spawn_text_of`]). A spawn that never ran has only its line.
 pub fn announcement_of(agent_type: &str, outcome: &Result<TaskContract, SpawnError>) -> String {
@@ -1317,7 +1317,7 @@ pub fn announcement_of(agent_type: &str, outcome: &Result<TaskContract, SpawnErr
 /// and it is a place a caller can actually go — unlike a summary this function would have to make up
 /// from a stream it never read.
 ///
-/// `isError` follows [`failure_line`]'s rule, for the same measured reason: `Ok` is `false`,
+/// `isError` follows `failure_line`'s rule, for the same measured reason: `Ok` is `false`,
 /// everything else is `true`, because S9 recorded that a harness renders an error-shaped result
 /// verbatim and continues the turn. A root that timed out reported as success is the silent-failure
 /// shape §12 names.
@@ -1740,7 +1740,7 @@ pub fn status_result(
 
 /// **`status` against a handle this bridge process has no row for.**
 ///
-/// The same lookup as [`wait_unknown`] ([`unknown_handle`]), with its own last sentence: a `wait`
+/// The same lookup as [`wait_unknown`] (`unknown_handle`), with its own last sentence: a `wait`
 /// that cannot resolve a handle has *not delivered an outcome*, while a `status` that cannot has
 /// merely failed to read one, so the advice at the end differs and nothing before it does.
 pub fn status_unknown(id: &Value, task_id: &str) -> Value {

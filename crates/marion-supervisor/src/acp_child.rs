@@ -152,7 +152,7 @@ pub struct AcpChildSpec<'a> {
     pub on_line: Option<&'a dyn Fn(&str)>,
     /// **The node's inbox**, for every prompt after the first, or `None` for a session that takes
     /// only [`Self::prompt`]. With a feed the session ends only when every prompt has settled and
-    /// a `take_or_seal` seals the inbox; see [`prompt_session`].
+    /// a `take_or_seal` seals the inbox; see `prompt_session`.
     pub turns: Option<crate::inbox::TurnFeed>,
     /// What marion's client lets the agent do through it: which tree its file calls reach and which
     /// of its tools a permission request is approved for.

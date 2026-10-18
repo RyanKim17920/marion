@@ -4,7 +4,7 @@
 //!
 //! The conversation, each step bounded and refused by name rather than falling through:
 //!
-//! 1. spawn in its own process group ([`crate::rpc::Driver`]) and confirm the pid before one byte
+//! 1. spawn in its own process group (`crate::rpc::Driver`) and confirm the pid before one byte
 //!    goes out;
 //! 2. the handshake, then the row's `initialized` notification;
 //! 3. the adapter's opening request — `thread/start`, or `thread/resume` of the node's session —
@@ -61,7 +61,7 @@ const STDERR_EXCERPT: usize = 2000;
 pub struct AppServerSpec<'a> {
     /// Program, args, env and cwd, compiled by the adapter from the row.
     pub inv: &'a Invocation,
-    /// The node's own `TMPDIR` ([`crate::node_tmp`]).
+    /// The node's own `TMPDIR` (`crate::node_tmp`).
     pub tmpdir: &'a std::path::Path,
     /// The row's vocabulary.
     pub channel: &'static RpcChannel,

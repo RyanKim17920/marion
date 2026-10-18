@@ -302,7 +302,7 @@ fn verified(wt: &Path, repo: &Path) -> Result<Pinned, SpawnError> {
 
 /// **The admin dir of the linked worktree `wt`, proven registered under `repo`** — the one a
 /// node's OS sandbox may write ([`marion_harness::adapter::Extras::git_admin_dir`]). The same
-/// proof as [`verified`]'s gitfile check, so a node that rewrote its `.git` to name the
+/// proof as `verified`'s gitfile check, so a node that rewrote its `.git` to name the
 /// operator's repository (or anything else) is granted nothing. `None` for a main checkout,
 /// whose `.git` is a directory inside `wt` already, and for any tree that fails the proof.
 pub fn admin_dir(wt: &Path, repo: &Path) -> Option<PathBuf> {

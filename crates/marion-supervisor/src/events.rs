@@ -565,7 +565,7 @@ impl EventWriter {
     /// **`agent_seq` is seeded from the file's own tail, not from 0.** A resume opens this file
     /// again, and a writer that restarted the sequence would put two events with one ordinal in one
     /// file — §7.3.3's seam is stated in ordinals, so that is not a cosmetic duplicate but an
-    /// ambiguous read point. Only the end of the file is read ([`SEQ_TAIL_BYTES`]): the next
+    /// ambiguous read point. Only the end of the file is read (`SEQ_TAIL_BYTES`): the next
     /// ordinal is the last whole event's, and parsing up to 64 MiB to learn one number cost up to a
     /// second per open.
     ///
@@ -574,7 +574,7 @@ impl EventWriter {
     /// read as it always was. Refusing to open would mean a node could not record what it is doing
     /// now because of a line written before it started.
     ///
-    /// The file's directory (the agent dir) is opened through [`crate::agent_fs::AgentFs`], and
+    /// The file's directory (the agent dir) is opened through `crate::agent_fs::AgentFs`, and
     /// both halves of the stream are read, appended to and rotated through it, so a link the node
     /// left at either name, or in place of the agent dir, is refused rather than followed.
     pub fn open_path(path: &Path, agent_id: &AgentId) -> Result<Self, EventError> {

@@ -514,7 +514,7 @@ pub fn read_identity(paths: &SocketPaths) -> Option<SupervisorIdentity> {
     serde_json::from_str(&raw).ok()
 }
 
-/// The negation of [`someone_is_serving`], for the one caller outside this module that has to ask.
+/// The negation of `someone_is_serving`, for the one caller outside this module that has to ask.
 ///
 /// `true` is a **proof**, not a guess: the lock was free at the moment of the call, and a supervisor
 /// holds its lock for its entire serving life, so no supervisor existed then. It says nothing about
@@ -959,7 +959,7 @@ fn bind_configured_listeners(
 ///    darwin's release lag, and a holder that has just died all let go at once.
 ///
 /// The only outcome this can fail with, short of a real filesystem error, is [`SocketError::Wedged`]
-/// — a lock held past [`START_DEADLINE`] by something that does not answer. marion reports that
+/// — a lock held past `START_DEADLINE` by something that does not answer. marion reports that
 /// rather than unlinking, which is the one move that could take a socket away from a supervisor that
 /// is merely slow.
 pub fn acquire(paths: &SocketPaths) -> Result<Acquired, SocketError> {
@@ -1306,7 +1306,7 @@ fn audit_fallback_dir(
     }
 }
 
-/// [`audit_fallback_dir`] for a client about to start a supervisor: a directory that exists and
+/// `audit_fallback_dir` for a client about to start a supervisor: a directory that exists and
 /// fails the audit is refused now, by name, rather than by a supervisor that could not open its
 /// log there. A directory that does not exist yet passes — the supervisor creates it.
 pub fn check_fallback_dir(paths: &SocketPaths) -> Result<(), SocketError> {

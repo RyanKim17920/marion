@@ -508,7 +508,7 @@ impl Steered {
 /// discovery composes over; a sixteenth method for the snapshot alone would be a second way to ask
 /// one question. Its answer carries the snapshot (`nodes`) and the journal position it was read at,
 /// and the subscription it also opens dies with the connection this courier hangs up — see
-/// [`Conn`]'s own note on why one errand is one connection.
+/// `Conn`'s own note on why one errand is one connection.
 pub fn tree(sock: &SocketPaths) -> Result<TreeSubscribeResult, SpawnError> {
     match Conn::dial(sock)?.ask(
         Call::TreeSubscribe(TreeSubscribeParams {}),

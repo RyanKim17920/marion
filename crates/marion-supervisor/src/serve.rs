@@ -323,7 +323,7 @@ pub trait Handle: Send + Sync + 'static {
     ///
     /// Returns nothing, and that is the whole shape of it. A notification has no `id`, so there is
     /// no frame in which an answer could be correlated — see [`marion_core::proto::input`] for why a
-    /// keystroke must not be a request, and [`answer_one`]'s `None` for what the transport does
+    /// keystroke must not be a request, and `answer_one`'s `None` for what the transport does
     /// with an id-less line either way. A handler that cannot deliver the bytes says so on the
     /// channel the operator is already watching: the node's own pty stream, or the refusal already
     /// given in `node/attach`'s answer.

@@ -3,7 +3,7 @@
 //! **The bound is finite by construction, and does not depend on the kill sweep being complete.**
 //! `run_bounded` returns within `timeout + DRAIN_GRACE` no matter what survives: the deadline is
 //! enforced by `kill_process_tree`, and the *output drain* is enforced separately by its own bound
-//! (see [`Drain`]). That separation is deliberate. A drain thread blocks until every holder of the
+//! (see `Drain`). That separation is deliberate. A drain thread blocks until every holder of the
 //! pipe's write end closes it, and an escaped descendant inherits that write end — so joining the
 //! drains unconditionally would make marion's liveness rest on the sweep's completeness, which has
 //! a known residual race (a child forking into a fresh group between the `ps` snapshot and the
@@ -170,7 +170,7 @@ pub struct SpawnRequest {
     pub writable_scope: Vec<String>,
     pub timeout_secs: u64,
     /// The model to run the child on, in marion's request vocabulary. **Optional, with the agent
-    /// type's own `model` key as the default** (§3.1) — see [`resolve_model`].
+    /// type's own `model` key as the default** (§3.1) — see `resolve_model`.
     pub model: Option<String>,
     /// §5.4's `isolation`: **which of §6.6's two workspaces this child gets** (see
     /// [`marion_core::contract::Isolation`]).
@@ -194,7 +194,7 @@ pub struct SpawnRequest {
     /// `Some` makes this launch the **second life of a node that already exists** rather than a new
     /// one: `run_spawn_watched` reuses the recorded id instead of minting one (so the second
     /// `Spawned` lands on the node every earlier record names, which replay folds as generation
-    /// two), [`select_workspace`] reuses the recorded workspace instead of cutting a new worktree,
+    /// two), `select_workspace` reuses the recorded workspace instead of cutting a new worktree,
     /// and the session reaches the harness through its row's measured resume flag.
     ///
     /// One field carrying all three, because they are one decision. Splitting it into three
@@ -690,7 +690,7 @@ pub fn verification_process(command: &Command, under: Option<VerifyUnder<'_>>) -
 /// before `cargo test` is the ordinary shape, and a later line must see what an earlier one wrote.
 ///
 /// **Each line is self-contained.** Its session is ended when it exits
-/// ([`AfterExit::EndSession`]), as on expiry: what it left running in the background (`cargo test
+/// (`AfterExit::EndSession`), as on expiry: what it left running in the background (`cargo test
 /// &`, a server it started) goes with it, so a later line cannot rely on a server an earlier one
 /// left up, and nothing outlives the run that asked for it.
 ///
@@ -1711,7 +1711,7 @@ impl Drop for AbortOnDrop<'_> {
 ///
 /// Neither hook may block or panic. Both run on the spawning thread inside the node's own critical
 /// path — a hook that blocks delays a real process's launch, and one that panics unwinds through
-/// [`AbortOnDrop`], journaling `SpawnAborted` for a node that was fine.
+/// `AbortOnDrop`, journaling `SpawnAborted` for a node that was fine.
 pub trait SpawnObserver: Sync {
     /// The node's identity, the instant it has one and nothing more. Returns §5.4's per-node
     /// capability token to write into its declaration, or `None` for an owner that mints none.
@@ -1811,7 +1811,7 @@ impl SpawnObserver for Unwatched {
 /// [`run_spawn_watched`] for a caller that owns the node by holding this call.
 ///
 /// Kept as the name with the plain signature — rather than making every caller pass [`Unwatched`] —
-/// for the reason [`run_bounded`] keeps its own next to [`run_bounded_watched`]: it is `pub`, it
+/// for the reason [`run_bounded`] keeps its own next to `run_bounded_watched`: it is `pub`, it
 /// has callers outside this crate's spawn path, and a widened signature would make five integration
 /// files re-state a parameter none of them has an opinion about.
 pub fn run_spawn(

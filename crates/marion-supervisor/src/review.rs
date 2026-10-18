@@ -51,7 +51,7 @@ pub fn unguarded(harness: Harness) -> Option<&'static str> {
     .then_some(UNGUARDED)
 }
 
-/// **Who reviews when nobody said**: of the [`REVIEWERS`] whose row refuses a write, the first
+/// **Who reviews when nobody said**: of the `REVIEWERS` whose row refuses a write, the first
 /// from a different model family than the reviewed node's ([`review::model_family`]) — a second
 /// opinion from the same model is the weakest one — else the first of them, where the node's
 /// family is unknown or every candidate shares it. Unknown is never taken for different.

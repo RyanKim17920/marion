@@ -73,7 +73,7 @@ const TOP_LEVEL_REPORT: &str = "marion: `report` is a node's return path and thi
 /// | `agent/spawn`'s `caller` | `Some`, proved by the node token marion minted (§5.4) | `None` — a **root**, authorized by the socket's peer credentials (`66c8d0e`) |
 /// | `agent/spawn`'s `repo` | forbidden: the supervisor knows which tree the node lives in | required, and checked against the socket's own project key |
 /// | which supervisor | derived from the declaration marion wrote (`MARION_REPO`) | resolved by the entry point from `--repo`, the same way `marion run` resolves it |
-/// | nothing listening | **refuse** | **start one** — see [`Principal::ensure_supervisor`] |
+/// | nothing listening | **refuse** | **start one** — see `Principal::ensure_supervisor` |
 /// | `report` | §5.4's rule, on this node's depth | refused: an MCP client is not a node and has no contract |
 /// | `status` with no id (§5.4's `list`) | this node's own subtree, filtered | this project's whole tree, which is what peer credentials on this socket authorize |
 pub enum Principal {
@@ -110,7 +110,7 @@ pub struct TopLevel {
     /// meant; and since `66c8d0e` the supervisor refuses a `repo` that is not its own project, so
     /// this is a statement it checks rather than one it believes.
     pub repo: std::path::PathBuf,
-    /// What to start when nothing is listening. See [`Principal::ensure_supervisor`].
+    /// What to start when nothing is listening. See `Principal::ensure_supervisor`.
     pub launch: crate::detach::Launch,
     /// **The connection that makes this process a client for as long as it runs.**
     ///
@@ -1712,7 +1712,7 @@ fn non_empty(key: &str) -> Option<String> {
 const WAIT_GRACE: Duration = Duration::from_secs(120);
 
 /// The bound a `spawn` or a `wait` on this child may block for: **the node's own clock, plus
-/// [`WAIT_GRACE`]**.
+/// `WAIT_GRACE`**.
 ///
 /// Derived from the request rather than invented beside it, and resolved through the same two
 /// functions the supervisor resolves the node's real bound with — `handler`'s default for an absent

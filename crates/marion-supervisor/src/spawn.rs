@@ -221,7 +221,7 @@ pub enum SpawnError {
     /// **`isolation: "worktree"` where there is no repository to add a worktree to.**
     ///
     /// The refusal that replaces a leaked `git command failed: fatal: not a git repository`. That
-    /// message came out of [`git`]'s generic stderr passthrough inside `make_worktree`, and it named
+    /// message came out of `git`'s generic stderr passthrough inside `make_worktree`, and it named
     /// neither the command marion ran nor the directory it ran it in — so an operator saw git's
     /// words about a directory git did not mention, from a tool they did not invoke, and had no way
     /// to tell which of `--repo`, their cwd, or marion itself was wrong. It also arrived *after* the
@@ -519,7 +519,7 @@ fn now() -> SystemTime {
 /// spawn for the rest of the process's life would be a larger failure than the one it guards.
 static REPO_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Hold [`REPO_WRITE`] for the duration of a repository-mutating git call.
+/// Hold `REPO_WRITE` for the duration of a repository-mutating git call.
 pub fn repo_write_guard() -> std::sync::MutexGuard<'static, ()> {
     REPO_WRITE.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -556,7 +556,7 @@ static CWD_HOLDERS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, A
 /// refuses every future spawn into that directory for the life of the supervisor, naming a node that
 /// has long since exited, and an operator cannot clear it without restarting.
 ///
-/// `None` in [`Self::cwd`] is the un-claimed case — a `worktree` child, a read-only `shared-cwd`
+/// `None` in `Self::cwd` is the un-claimed case — a `worktree` child, a read-only `shared-cwd`
 /// child, or one that passed `allow_concurrent_writes: true`. Carrying the guard unconditionally and
 /// letting it be empty keeps the release path single, rather than making every caller remember
 /// whether it took a claim.
@@ -997,7 +997,7 @@ pub fn commit_child_work(
 /// ([`marion_core::journal::TrustRecord::head`], by [`trust_head`]) — never a branch or HEAD as
 /// it is now, which a root running in that checkout can move. So a carried or resumed tree, or one
 /// cut from a commit the root made, is held to the operator's commit. Each path is read as the
-/// harness reads it ([`config_as_committed`]). With no `head`, or on any git failure, nothing is
+/// harness reads it (`config_as_committed`). With no `head`, or on any git failure, nothing is
 /// the operator's.
 ///
 /// The reference is only as much the operator's as that commit is: an operator who launched a
@@ -1253,7 +1253,7 @@ pub fn trust_record_taken(dir: &Path) -> marion_core::journal::TrustRecord {
 
 /// **The repository's own harness config `paths` in the operator's checkout `dir`, as it is
 /// now** ([`marion_core::journal::RepoConfigSnapshot`]): each path to a digest of the plain files
-/// at or under it — none, where it is absent — read as [`config_as_committed`] reads a child's,
+/// at or under it — none, where it is absent — read as `config_as_committed` reads a child's,
 /// following no link. A link at any component, or anything but a plain file or directory, is
 /// `None`: what it points at is not something marion can hold a later generation to.
 ///
@@ -1696,7 +1696,7 @@ impl TreeSnapshot {
     }
 
     /// The patch between two trees — the same two revisions [`Self::changed_paths`] is asked about,
-    /// so the two share one dialect by construction rather than by agreement. See [`PLAIN_PATCH`].
+    /// so the two share one dialect by construction rather than by agreement. See `PLAIN_PATCH`.
     pub fn diff(&self, repo: &Path, a: &Oid, b: &Oid) -> Result<String, SpawnError> {
         git_env(
             Tree::Operator(repo),
@@ -1709,7 +1709,7 @@ impl TreeSnapshot {
     ///
     /// Explicit rather than a `Drop` impl: this outlives a `prepare` and is used again at exit, so
     /// the scope that would run `Drop` is not the scope that finishes with it. Best-effort for
-    /// [`ScratchIndex`]'s reason — a leftover index costs disk in marion's own state dir and must
+    /// `ScratchIndex`'s reason — a leftover index costs disk in marion's own state dir and must
     /// not turn a finished run into a failed one.
     pub fn release(&self) {
         let _ = std::fs::remove_file(&self.index);

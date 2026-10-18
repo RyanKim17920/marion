@@ -277,7 +277,7 @@ impl RegistryHandle {
         lock(&self.nodes).len()
     }
 
-    /// How many of them are still running, by [`NodeHandle::running`]'s reading.
+    /// How many of them are still running, by `NodeHandle::running`'s reading.
     pub fn running_nodes(&self) -> usize {
         lock(&self.nodes).values().filter(|n| n.running()).count()
     }

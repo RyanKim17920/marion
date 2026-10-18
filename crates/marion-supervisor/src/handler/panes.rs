@@ -912,7 +912,7 @@ impl RegistryHandle {
     /// authority on what exists.
     ///
     /// A newly published terminal is also where turn delivery starts for a row that takes turns
-    /// by pasting ([`Self::attach_paste_delivery`]): a pane and a native session both arrive here,
+    /// by pasting (`Self::attach_paste_delivery`): a pane and a native session both arrive here,
     /// so one call covers both, and a replacement host gets a fresh injector.
     pub fn register_pane(&self, id: &AgentId, host: Arc<crate::pty::PtyHost>) {
         if self.publish_pane(id, Arc::clone(&host)) {

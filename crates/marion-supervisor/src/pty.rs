@@ -390,7 +390,7 @@ impl PtyMaster {
     /// read failure, and a host that stops on the first "error" stops on every clean exit.
     /// `EINTR` is retried, because a signal arriving mid-read is not information. `EAGAIN` is
     /// surfaced as [`io::ErrorKind::WouldBlock`] — the master is non-blocking, see
-    /// [`Self::set_nonblocking`] — and is the reader loop's cue to wait, never to stop.
+    /// `Self::set_nonblocking` — and is the reader loop's cue to wait, never to stop.
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             // SAFETY: `fd` is open and `buf` is a live slice whose length is passed exactly.
@@ -532,7 +532,7 @@ impl PtyChild {
     }
 
     /// The three descriptors the parent handed the child and then closed. `-1` where the child was
-    /// not given the slave for that stream. See [`PtyChild::handed`].
+    /// not given the slave for that stream. See `PtyChild::handed`.
     pub fn handed_fds(&self) -> [RawFd; 3] {
         self.handed
     }
@@ -578,7 +578,7 @@ impl PtyChild {
     ///
     /// The one place the two owners of a pty child agree: [`PtyHost::shutdown`] calls it to get the
     /// status it records, [`Drop`] calls it to make sure somebody did. A second call after the
-    /// process has been reaped does nothing at all — see [`Self::reaped`], because the pid is the
+    /// process has been reaped does nothing at all — see `Self::reaped`, because the pid is the
     /// kernel's to reissue the instant the first `wait` returns.
     pub fn kill_and_reap(&mut self) -> io::Result<std::process::ExitStatus> {
         if let Some(status) = self.reaped {
@@ -1112,7 +1112,7 @@ const RESIZE_APPLY_GRACE: Duration = Duration::from_secs(2);
 type WriterSlot = Mutex<Option<ConnId>>;
 
 /// **Proof that its holder is this node's one writer.** Required by
-/// [`PtyHost::admit_opaque_input`].
+/// `PtyHost::admit_opaque_input`.
 ///
 /// # Why a token and not a check
 ///
@@ -2968,7 +2968,7 @@ impl PtyHost {
     }
 
     /// How many terminal probes this node has emitted and marion has not answered. See
-    /// [`ProbeScan`]: a counter, deliberately, and not a responder.
+    /// `ProbeScan`: a counter, deliberately, and not a responder.
     pub fn unanswered_probes(&self) -> u64 {
         self.shared.probes.load(Ordering::SeqCst)
     }
@@ -3558,7 +3558,7 @@ impl PtyHost {
     /// mid-session asks ([`input::InputState::ask`]) on this terminal, over what it has drawn
     /// already.
     /// Boot ends at `boot`, where the row has one, if no paste ends it first
-    /// ([`input::ModeScan::settle_boot`]).
+    /// (`input::ModeScan::settle_boot`).
     pub fn watch_dialogs(
         &self,
         dialogs: &'static [marion_harness::spec::BootDialog],
@@ -3569,7 +3569,7 @@ impl PtyHost {
     }
 
     /// End boot if the row's mark and settle say it is over; otherwise when they will, as the
-    /// screen stands — a waiter looks again then ([`input::ModeScan::boot_due`]).
+    /// screen stands — a waiter looks again then (`input::ModeScan::boot_due`).
     pub fn settle_boot(&self) -> Option<Instant> {
         self.shared.with_modes(|m| m.settle_boot(Instant::now()))
     }
@@ -3627,7 +3627,7 @@ impl PtyHost {
     /// under the lock, so no operator key can land between them — `submit` after `submit_delay`
     /// (nothing, when `submit` is empty: an answer to a boot dialog is its keys alone). Like any
     /// key, it clears the screen text boot dialogs are read from, and the drawn screen with it, so
-    /// a first paste after it waits for the TUI to redraw ([`input::ModeScan::marion_typed`]).
+    /// a first paste after it waits for the TUI to redraw (`input::ModeScan::marion_typed`).
     /// The lock is held across the delay on purpose: an operator key in that gap would be
     /// submitted as part of marion's message. It costs the operator at most that delay of latency.
     ///
@@ -3777,7 +3777,7 @@ impl PtyHost {
     /// **And the wait for the reader is bounded.** Handing the work to another thread is a
     /// labelling improvement; *waiting forever* for that thread is a liveness bet, and this caller
     /// is a `serve.rs` connection thread the accept loop joins before the supervisor can stop. So
-    /// the wait carries [`RESIZE_APPLY_GRACE`], after which the same fallback runs. The bound is
+    /// the wait carries `RESIZE_APPLY_GRACE`, after which the same fallback runs. The bound is
     /// four hundred reader polls wide, so it costs nothing on a loaded machine and only replaces a
     /// hung supervisor with a slightly less precisely labelled `r`.
     ///

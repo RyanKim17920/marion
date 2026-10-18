@@ -4,15 +4,15 @@
 //! Both protocols put a long-lived server on the child's stdin/stdout, one JSON frame per line:
 //! marion's requests carry an id the answer echoes, the server's notifications carry none, and the
 //! server sends requests of its own mid-turn that stall the turn until marion answers them. What the
-//! two do *not* share is what the requests and notifications mean, so that is a [`Peer`] and
+//! two do *not* share is what the requests and notifications mean, so that is a `Peer` and
 //! everything else is here: the spawn into its own process group, the reader, the id-correlated
 //! wait, the answering, and the shutdown that kills the group.
 //!
 //! # Waits are events, not a tick
 //!
 //! The reader thread signals a condvar on every line and at EOF, and the node's inbox signals the
-//! same condvar through [`Driver::wake_port`], so a wait wakes when there is something to read, a
-//! message to deliver, or its deadline — plus one coarse [`LIVENESS_TICK`] to notice a server that
+//! same condvar through `Driver::wake_port`, so a wait wakes when there is something to read, a
+//! message to deliver, or its deadline — plus one coarse `LIVENESS_TICK` to notice a server that
 //! died while something it started still holds its stdout open.
 
 use std::io::{BufRead, Write};

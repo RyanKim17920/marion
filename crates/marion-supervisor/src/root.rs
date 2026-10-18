@@ -269,7 +269,7 @@ pub struct RootSpec {
     /// or one the operator would rather marion did not walk — and what it costs is the grant: a
     /// root launched this way gets `tools: []` whatever its agent type declares, and journals
     /// `RootObservation::NotAttempted` naming the flag. It is the escape hatch on
-    /// [`availability_axis`]'s gate and never a way past it.
+    /// `availability_axis`'s gate and never a way past it.
     pub no_change_record: bool,
     /// `marion run --pane`: run this root in a terminal marion owns, so a client can `marion
     /// attach` to it and drive it by keystrokes (§9's M3).
@@ -342,7 +342,7 @@ fn read_only_session(spec: &RootSpec) -> bool {
 
 /// The base point of the root's change record, or why there is none (§9).
 ///
-/// Taken at `prepare`, **before** the launch spec is compiled, because [`availability_axis`] reads
+/// Taken at `prepare`, **before** the launch spec is compiled, because `availability_axis` reads
 /// it: what a root may do has to be decided after marion knows whether it can record what was done.
 ///
 /// Two arms and not an `Option<Oid>`: an absence has to say *why*, or the record it produces is
@@ -370,7 +370,7 @@ pub enum RootChangeBase {
     /// `RootObservation::NotAttempted` is *marion did not look, here is why*, and `Failed` is
     /// *marion looked and could not see*. Collapsing them would put a false event in the audit
     /// record — a git failure that never happened — for the one run where the absence was a
-    /// decision. It also decides the gate differently: [`availability_axis`] refuses a declared
+    /// decision. It also decides the gate differently: `availability_axis` refuses a declared
     /// grant on `Unavailable` and simply withholds it here, since a run with no tools is precisely
     /// what the operator asked for.
     NotAttempted { reason: String },
@@ -477,14 +477,14 @@ pub struct RootNode {
     pub relaunch: Option<RootRelaunch>,
     /// **What a key rotation recompiles the root from**: its launch before any endpoint was
     /// applied, and its context. `Some` only for a headless root whose endpoint has another stated
-    /// credential to move to ([`rotated`]); a pane root's operator sees a refused key directly.
+    /// credential to move to (`rotated`); a pane root's operator sees a refused key directly.
     pub rotation: Option<RootRelaunch>,
     /// What every later launch of this root asks its repository-config trust of ([`RootTrust`]).
     pub trust: RootTrust,
     /// **What this launch held back of the repository's config** that a trusted repository would
-    /// load ([`crate::run::RepoTrust::held`]): its `Spawned`'s. Empty on a first launch, which
+    /// load (`crate::run::RepoTrust::held`): its `Spawned`'s. Empty on a first launch, which
     /// is what the trust record was taken from; asked again on a resume and a rotation, and per
-    /// generation by a continuation ([`launch_only`]).
+    /// generation by a continuation (`launch_only`).
     pub repo_config_held: marion_core::journal::ConfigHeld,
 }
 
@@ -555,7 +555,7 @@ pub struct RootOutcome {
     /// readiness was gated *before* the turn instead and this would only restate it.
     ///
     /// The outcome is carried, not just the verb, because a verb that was *called* is not evidence
-    /// the root could delegate — see [`assert_a_verb_was_answered`].
+    /// the root could delegate — see `assert_a_verb_was_answered`.
     pub marion_calls: Vec<MarionCall>,
     /// marion's own wall-clock bound expired and the root's process group was killed.
     pub timed_out: bool,
@@ -623,7 +623,7 @@ pub enum RootError {
     /// first place the narrowing has to appear.
     ///
     /// It fires **only** when a grant would otherwise be issued. A root whose type declares no tool
-    /// never reaches it — see [`availability_axis`] for why the gate is co-extensive with the grant
+    /// never reaches it — see `availability_axis` for why the gate is co-extensive with the grant
     /// rather than with the snapshot.
     #[error(
         "the agent type declares built-in tool(s) [{declared}] and marion cannot record what a \
@@ -1476,7 +1476,7 @@ pub trait PaneOwner: Send + Sync {
 /// about a process that must not be made before one exists.
 ///
 /// **The journal does not depend on it.** `Spawned { pid: Some(_) }` is written from the same
-/// instant whether or not anybody is listening — see [`launch_inner`] — so the record is a property
+/// instant whether or not anybody is listening — see `launch_inner` — so the record is a property
 /// of the run rather than of who asked for it.
 /// `pane` is the same idea on §3.4's display axis — see [`PaneOwner`]. `None` is a caller with
 /// nowhere to put a pty, and on [`RootPath::Terminal`] it means the node runs and records exactly

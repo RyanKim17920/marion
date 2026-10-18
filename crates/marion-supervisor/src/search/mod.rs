@@ -2,7 +2,7 @@
 //!
 //! Every project keeps one small append-only digest, `<state>/private/<hash>/runs.jsonl`, with one
 //! line per run that ended: its metadata, its task, its report, its checks, its findings and the
-//! paths it changed ([`digest`]). A search scans that file newest-first. No index, no daemon and
+//! paths it changed ([`digest`](crate::search::digest)). A search scans that file newest-first. No index, no daemon and
 //! nothing resident between searches: idle costs nothing.
 //!
 //! The digest is a **projection**, never a source of truth. Everything in it is already in the

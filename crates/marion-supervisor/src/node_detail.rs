@@ -320,7 +320,7 @@ fn messages(journal: &Path, id: &AgentId) -> Vec<MessageLine> {
         .unwrap_or_default()
 }
 
-/// [`messages`] for every node at once, from journal bytes already read: one pass, for a reader
+/// `messages` for every node at once, from journal bytes already read: one pass, for a reader
 /// that wants the whole tree's steers (`marion export`) rather than one node's.
 pub fn messages_by_node(journal: &[u8]) -> HashMap<AgentId, Vec<MessageLine>> {
     fold_messages(journal, |_| true)

@@ -25,7 +25,7 @@
 //!
 //! The bound is shared. Every node, root or child, runs under one **wall clock** — a child's
 //! contract `timeout_secs`, a root's `marion run --timeout` — enforced here by
-//! [`DuplexSpec::wall_clock`] and [`crate::kill::kill_process_tree`], the one kill in the workspace
+//! [`DuplexSpec::wall_clock`] and `crate::kill::kill_process_tree`, the one kill in the workspace
 //! measured to leave no survivors (S7). A permission ask nobody can answer spends none of it: it is
 //! denied the moment it arrives, on every node.
 //!
@@ -332,7 +332,7 @@ pub fn unsupported_request_response(request_id: &str, subtype: &str) -> String {
 /// node's wall clock and then deny it anyway.
 ///
 /// A constant because it is one of two answers rather than the only one: see
-/// [`decided_permission`] for the asks a rule decides, and why saying this about one of them would
+/// `decided_permission` for the asks a rule decides, and why saying this about one of them would
 /// be a false diagnosis.
 pub const NO_ANSWERER: &str =
     "marion: denied, because marion has nobody to ask for permission to use this tool";
@@ -610,7 +610,7 @@ pub fn last_words(stderr: &str) -> String {
 ///    because §5.2 says each of them expects a `control_response` and one that never arrives stalls
 ///    the node until its wall clock — and, for a node with a [`DuplexSpec::turns`] feed, every turn after it:
 ///    the next queued message after each `result`, a hold while a background child's end is owed,
-///    and on a folding row a message written into the running turn (see [`drive`]);
+///    and on a folding row a message written into the running turn (see `drive`);
 /// 6. `drop(stdin)`, which is what ends a `--input-format stream-json` session.
 pub fn run_duplex(
     command: &mut SysCommand,
