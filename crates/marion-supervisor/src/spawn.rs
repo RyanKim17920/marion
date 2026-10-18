@@ -53,7 +53,8 @@ pub enum SpawnError {
          any budgeted tree, or on a harness that reports token usage."
     )]
     BudgetUnenforceable {
-        harness: marion_core::harness::Harness,
+        /// The harness, and for ACP the agent: `acp agent \`cursor\``.
+        harness: String,
     },
     /// The launch names a provider marion cannot point it at — unknown, logged out, no model, or
     /// no wire shared with the harness. Refused before the node exists.

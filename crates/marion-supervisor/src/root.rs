@@ -862,7 +862,11 @@ pub fn prepare_watched(
     snapshot
         .write(&project, &agent_id)
         .map_err(RootError::Run)?;
-    crate::run::check_budget_enforceable(agent_type.harness, spec.budget.as_ref())?;
+    crate::run::check_budget_enforceable(
+        agent_type.harness,
+        agent_type.acp_agent.as_deref(),
+        spec.budget.as_ref(),
+    )?;
     // The type's standing instruction, once, exactly where `run_spawn_watched` applies it; `spec`
     // is the prefixed spec from this line on, so the node and the record read one prompt.
     let spec = &RootSpec {

@@ -692,6 +692,11 @@ pub struct Agent {
     /// **beside** `outputTokens` or **within** it — refining [`USAGE`], which says nothing about
     /// reasoning. `None` where no split was measured. One of [`USAGES`]' rules, by the sweep test.
     pub reasoning: Option<Reasoning>,
+    /// **Why this agent's `session/prompt` answers carry no usage at all**, or `None` for an agent
+    /// read under [`USAGE`]. Where it is `Some` the agent is read under no usage rule
+    /// ([`Binding::usage`]): its figure is not a claim of zero, and a token budget on it is
+    /// refused, since a budget that could never trip is not one.
+    pub unreported_usage: Option<&'static str>,
     /// Where this agent's no-self-update switch comes from, applied to every launch of it
     /// ([`AcpAdapter`]'s `fields`): the built-in row of the binary it runs, or its own.
     pub updates: AgentUpdates,
@@ -860,6 +865,7 @@ pub const OPENCODE: Agent = Agent {
     // s36 (1.18.32): the prompt response's `thoughtTokens` 7 sits beside `outputTokens` 43 of the
     // provider's 50 completion tokens, and `totalTokens` 1050 counts both.
     reasoning: Some(Reasoning::Beside(THOUGHT_TOKENS)),
+    unreported_usage: None,
     // The same binary as opencode's row, one subcommand over.
     updates: AgentUpdates::Twin(Harness::OpenCode),
     login_guard: None,
@@ -894,6 +900,7 @@ pub const CLAUDE_ACP: Agent = Agent {
     // second prompt is folded or queued into the running loop, both responses at the drain.
     mid_turn: Some(MidTurn::Fold),
     reasoning: None,
+    unreported_usage: None,
     // The shim runs the claude build its SDK bundles (`claudeCliPath`, 0.81.2 acp-agent.js:515),
     // not the operator's `claude`, unless CLAUDE_CODE_EXECUTABLE names one. It is a sibling build
     // with the same updater, and the shim spreads its own process environment into the child's
@@ -938,6 +945,7 @@ pub const CODEX_ACP: Agent = Agent {
     // `reasoningOutputTokens` (the response's `_meta.quota` carries both, and `thoughtTokens` is
     // the latter).
     reasoning: Some(Reasoning::Within(THOUGHT_TOKENS)),
+    unreported_usage: None,
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in codex-acp 1.13.1, which runs its own bundled \
                `codex app-server` (@openai/codex ^0.156.1), not the operator's codex; codex's \
@@ -988,6 +996,7 @@ pub const COPILOT: Agent = Agent {
     // empty `end_turn` with stale usage, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
     reasoning: None,
+    unreported_usage: None,
     // The same binary as copilot's row: S33 ran it with this switch set by hand.
     updates: AgentUpdates::Twin(Harness::Copilot),
     login_guard: None,
@@ -1019,6 +1028,7 @@ pub const KILO: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no switch was searched for in kilo 7.8.1; it is an opencode fork, and opencode's \
                variable is not assumed to be its",
@@ -1048,6 +1058,7 @@ pub const QWEN: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     // The same binary as qwen's row.
     updates: AgentUpdates::Twin(Harness::Qwen),
     login_guard: None,
@@ -1076,6 +1087,7 @@ pub const GOOSE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     // The same binary as goose's row, which never updates itself.
     updates: AgentUpdates::Twin(Harness::Goose),
     login_guard: None,
@@ -1106,6 +1118,7 @@ pub const FAST_AGENT: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in fast-agent-acp 0.10.37",
     }),
@@ -1135,6 +1148,7 @@ pub const VIBE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in mistral-vibe 2.25.8",
     }),
@@ -1162,6 +1176,7 @@ pub const VTCODE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in vtcode 0.169.0",
     }),
@@ -1191,6 +1206,7 @@ pub const AUGGIE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in auggie 0.36.0",
     }),
@@ -1214,6 +1230,7 @@ pub const QODER: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     updates: AgentUpdates::Own(UpdatePolicy::None {
         note: "no updater was searched for in qoder-cli 1.1.64",
     }),
@@ -1237,6 +1254,7 @@ pub const CLINE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     // The same binary as cline's row, at the release that row measured.
     updates: AgentUpdates::Twin(Harness::Cline),
     login_guard: None,
@@ -1260,6 +1278,7 @@ pub const PI_ACP: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     // A shim over the operator's `pi`, which 0.0.34 starts as `pi --mode rpc` with its own
     // environment (dist/index.js:137), so the pi row's variable reaches it. The shim itself has
     // no updater, but it asks npm for pi's latest version on every new session
@@ -1290,6 +1309,7 @@ pub const HERMES: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
+    unreported_usage: None,
     // The same binary as the `hermes` row, in-process at v0.22.2 (a later release turns `acp`
     // into a viewer of a gateway daemon, which the row's pin keeps out).
     updates: AgentUpdates::Twin(Harness::Hermes),
@@ -1442,13 +1462,24 @@ impl Binding {
     /// The usage rule this agent is read under: [`USAGE`], refined by the row's measured
     /// [`Agent::reasoning`] split. A split no rule in [`USAGES`] states — which the sweep test
     /// forbids — is read under the protocol's own rule rather than guessed at.
-    pub fn usage(&self) -> &'static UsageRule {
+    ///
+    /// `None` for a row whose agent reports no usage ([`Agent::unreported_usage`]): there is no
+    /// figure to read, and a budget on it is refused.
+    pub fn usage(&self) -> Option<&'static UsageRule> {
+        if self
+            .refinement
+            .is_some_and(|a| a.unreported_usage.is_some())
+        {
+            return None;
+        }
         let reasoning = self.refinement.and_then(|a| a.reasoning);
-        USAGES
-            .iter()
-            .copied()
-            .find(|rule| rule.reasoning == reasoning)
-            .unwrap_or(&USAGE)
+        Some(
+            USAGES
+                .iter()
+                .copied()
+                .find(|rule| rule.reasoning == reasoning)
+                .unwrap_or(&USAGE),
+        )
     }
 
     /// The agent's no-self-update switch, where a row states one — the bound row's, or, on the
@@ -2700,10 +2731,10 @@ impl HarnessAdapter for AcpAdapter {
     }
 
     /// The protocol's own `session/prompt` response shape ([`USAGE`]), bound or not: spend is
-    /// a protocol fact. How a bound agent's counters split its reasoning is the one refinement
-    /// ([`Binding::usage`]).
+    /// a protocol fact. How a bound agent's counters split its reasoning is one refinement, and
+    /// an agent that reports none at all the other ([`Binding::usage`]).
     fn usage_rule(&self) -> Option<&'static grammar::UsageRule> {
-        Some(self.binding.as_ref().map_or(&USAGE, Binding::usage))
+        self.binding.as_ref().map_or(Some(&USAGE), Binding::usage)
     }
 
     /// The protocol's own `session/new` answer ([`SESSION`]), whatever the agent: where a
@@ -4391,6 +4422,31 @@ mod tests {
                 a.id
             );
         }
+    }
+
+    /// **An agent that reports no usage is read under no rule**, bound by id: its figure is not a
+    /// claim of zero, and the adapter's missing rule is what refuses a budget on it. A command
+    /// line, and every agent that reports usage, is read under the protocol's.
+    #[test]
+    fn an_agent_that_reports_no_usage_is_read_under_no_rule() {
+        let silent = Agent {
+            unreported_usage: Some("its prompt answers carry only stopReason"),
+            ..KILO
+        };
+        assert!(Binding::refined(silent).usage().is_none());
+        let adapter = AcpAdapter {
+            binding: Some(Binding::refined(silent)),
+        };
+        assert!(adapter.usage_rule().is_none());
+        assert_eq!(
+            AcpAdapter::unbound().usage_rule().map(|r| r.input),
+            Some(USAGE.input)
+        );
+        for a in AGENTS.iter().filter(|a| a.unreported_usage.is_none()) {
+            assert!(Binding::refined(*a).usage().is_some(), "`{}`", a.id);
+            assert!(a.reasoning.is_none() || a.unreported_usage.is_none());
+        }
+        assert!(Binding::resolve("kilo acp").unwrap().usage().is_some());
     }
 
     /// The request marion sends is the request S20 measured both agents answering.

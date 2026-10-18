@@ -309,12 +309,14 @@ fn an_acp_agents_thought_tokens_are_counted_once_as_output_and_stated_as_reasoni
 }
 
 /// Every ACP row's reasoning split is one a usage rule states, so no measured split is silently
-/// read under the protocol's rule instead.
+/// read under the protocol's rule instead; and a row that reports no usage is read under none.
 #[test]
 fn every_acp_rows_reasoning_split_is_one_a_usage_rule_states() {
     for agent in marion_harness::acp::AGENTS {
-        let rule = marion_harness::acp::Binding::refined(agent).usage();
-        assert_eq!(rule.reasoning, agent.reasoning, "{}", agent.id);
+        match marion_harness::acp::Binding::refined(agent).usage() {
+            Some(rule) => assert_eq!(rule.reasoning, agent.reasoning, "{}", agent.id),
+            None => assert!(agent.unreported_usage.is_some(), "{}", agent.id),
+        }
     }
 }
 

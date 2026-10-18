@@ -109,17 +109,25 @@ pub fn effective_timeout(secs: u64) -> StdDuration {
 }
 
 /// **A budget is only as real as the spend marion can read**: refused on a harness whose row states
-/// no usage rule, before the node exists. The one check for a child and a root.
+/// no usage rule, before the node exists. The one check for a child and a root. Asked of the
+/// adapter bound to the type's ACP agent, since one ACP agent can report no usage where the
+/// protocol's others do.
 pub(crate) fn check_budget_enforceable(
     harness: marion_core::harness::Harness,
+    acp_agent: Option<&str>,
     budget: Option<&marion_core::budget::Budget>,
 ) -> Result<(), SpawnError> {
-    let counted = marion_harness::adapter_for(harness)
+    let counted = adapter_for_type(harness, acp_agent)
         .ok()
         .and_then(|a| a.usage_rule())
         .is_some();
     match budget {
-        Some(_) if !counted => Err(SpawnError::BudgetUnenforceable { harness }),
+        Some(_) if !counted => Err(SpawnError::BudgetUnenforceable {
+            harness: match acp_agent {
+                Some(agent) => format!("{harness} agent `{agent}`"),
+                None => harness.to_string(),
+            },
+        }),
         _ => Ok(()),
     }
 }
@@ -2343,7 +2351,11 @@ pub fn run_spawn_watched(
     // intent is the only record naming the node before anything exists, so a child launched after
     // its intent was lost is invisible to a restart — the untracked live process this ordering
     // exists to prevent.
-    check_budget_enforceable(agent_type.harness, req.budget.as_ref())?;
+    check_budget_enforceable(
+        agent_type.harness,
+        agent_type.acp_agent.as_deref(),
+        req.budget.as_ref(),
+    )?;
     let trust_record = trust_record_for(
         req.resume.as_ref().map(|r| &r.trust),
         requester,

@@ -846,13 +846,30 @@ fn a_budget_is_refused_where_marion_cannot_count_the_spend() {
         })
         .expect("some row states no usage rule");
     assert!(matches!(
-        check_budget_enforceable(uncounted, Some(&budget)),
+        check_budget_enforceable(uncounted, None, Some(&budget)),
         Err(SpawnError::BudgetUnenforceable { .. })
     ));
-    assert!(check_budget_enforceable(uncounted, None).is_ok());
+    assert!(check_budget_enforceable(uncounted, None, None).is_ok());
     assert!(
-        check_budget_enforceable(marion_core::harness::Harness::ClaudeCode, Some(&budget)).is_ok()
+        check_budget_enforceable(
+            marion_core::harness::Harness::ClaudeCode,
+            None,
+            Some(&budget)
+        )
+        .is_ok()
     );
+    // An ACP agent is asked as bound: one that reports the protocol's usage takes a budget.
+    for agent in ["kilo", "kilo acp"] {
+        assert!(
+            check_budget_enforceable(
+                marion_core::harness::Harness::Acp,
+                Some(agent),
+                Some(&budget)
+            )
+            .is_ok(),
+            "{agent}"
+        );
+    }
 }
 
 /// A `LaunchOnly` child that writes `frame` every 100 ms and never ends on its own, run under a
