@@ -2121,6 +2121,7 @@ impl Surfaces {
 /// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
 /// | goose 1.49.0, cline 3.0.61 | `marion__report` | S26, S27 |
 /// | agy 1.2.8 | `call_mcp_tool{ServerName: marion, ToolName: report}`, shown as `marion/report` | s32 |
+/// | Cursor `agent acp` 2026.10.16 | `marion: report` — **read from source, unmeasured** | — |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSpelling {
     /// `mcp__<server>__<tool>`.
@@ -2137,6 +2138,9 @@ pub enum ToolSpelling {
     /// (`mcp(marion/report)`). The model calls it through the generic `call_mcp_tool` with the
     /// two halves as separate arguments, so a stream is read by server and verb, not this string.
     ServerSlashTool,
+    /// `<server>: <tool>` — the title Cursor's `agent acp` gives an MCP call, its `rawInput`
+    /// `{providerIdentifier, toolName, args}` (2026.10.16-e3cb207 source; unmeasured).
+    ServerColonTool,
 }
 
 impl ToolSpelling {
@@ -2148,6 +2152,7 @@ impl ToolSpelling {
             Self::McpDotted => format!("mcp.{MCP_ALIAS}.{tool}"),
             Self::ServerDoubleUnderscoreTool => format!("{MCP_ALIAS}__{tool}"),
             Self::ServerSlashTool => format!("{MCP_ALIAS}/{tool}"),
+            Self::ServerColonTool => format!("{MCP_ALIAS}: {tool}"),
         }
     }
 }

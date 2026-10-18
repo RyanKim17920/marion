@@ -527,6 +527,8 @@ impl ToolSpelling {
     pub fn arguments(self, raw_input: &Value) -> Option<&Value> {
         match self {
             Self::McpDotted => raw_input.get("arguments"),
+            // Cursor's `{providerIdentifier, toolName, args}` (source; unmeasured).
+            Self::ServerColonTool => raw_input.get("args"),
             _ => Some(raw_input),
         }
         .filter(|a| a.as_object().is_some_and(|o| !o.is_empty()))
@@ -1394,7 +1396,10 @@ pub const CURSOR: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "cursor",
     argv: &["agent", "acp"],
-    // Unmeasured: source titles an MCP call `"<server>: <tool>"`, which no spelling reads yet.
+    // Unmeasured: source titles an MCP call `"<server>: <tool>"`, its arguments under `args`
+    // ([`ToolSpelling::ServerColonTool`]). A row's spelling is one marion watched it type, so the
+    // capture that measures it sets this; the generic reading finds the verb but not the nested
+    // arguments, so that capture must set it before the hold lifts.
     tools: None,
     // No canned route: the operator's login, or their CURSOR_API_KEY / CURSOR_AUTH_TOKEN.
     canned: None,
@@ -3662,6 +3667,43 @@ mod tests {
                 std::fs::read_to_string(&s28).unwrap_or_else(|e| panic!("{s28}: {e}")),
             ),
         ]
+    }
+
+    /// **Cursor's spelling reads a call shaped as its source writes one** — no capture backs it,
+    /// so the row does not carry it yet: the title `marion: report`, and the arguments under
+    /// `rawInput.args` beside `providerIdentifier` and `toolName`. The spelling finds the verb, its
+    /// outcome and the narrative; a neighbour's finds nothing.
+    #[test]
+    fn cursors_source_shaped_call_is_read_in_its_spelling() {
+        let session = [
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"marion: report","kind":"other","status":"pending","rawInput":{"providerIdentifier":"marion","toolName":"report","args":{"narrative":"hello from cursor"}}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            ToolSpelling::ServerColonTool.spell("report"),
+            "marion: report"
+        );
+        let reading = Reading::Measured(ToolSpelling::ServerColonTool);
+        assert_eq!(
+            marion_calls(&session, reading),
+            [MarionCall {
+                verb: "report".into(),
+                outcome: CallOutcome::Answered,
+            }]
+        );
+        let out = parse_stream(&session, ChildExit::default(), reading);
+        assert_eq!(out.narrative.as_deref(), Some("hello from cursor"));
+        assert!(marion_calls(&session, ToolSpelling::ServerHyphenTool).is_empty());
+        // The generic reading finds the verb in the title but not the arguments nested under
+        // `args`, which is why the capture that lifts Cursor's hold must set the row's spelling.
+        assert_eq!(
+            marion_calls(&session, Reading::Generic),
+            marion_calls(&session, reading)
+        );
+        let generic = parse_stream(&session, ChildExit::default(), Reading::Generic);
+        assert_eq!(generic.narrative, None);
     }
 
     /// **The baseline reads every measured transcript, and reads it as its own row does.**

@@ -956,6 +956,7 @@ pub enum ToolSpellingDto {
     McpDotted,
     ServerDoubleUnderscoreTool,
     ServerSlashTool,
+    ServerColonTool,
 }
 
 impl ToolSpellingDto {
@@ -967,6 +968,7 @@ impl ToolSpellingDto {
             ToolSpellingDto::McpDotted => ToolSpelling::McpDotted,
             ToolSpellingDto::ServerDoubleUnderscoreTool => ToolSpelling::ServerDoubleUnderscoreTool,
             ToolSpellingDto::ServerSlashTool => ToolSpelling::ServerSlashTool,
+            ToolSpellingDto::ServerColonTool => ToolSpelling::ServerColonTool,
         }
     }
 }
