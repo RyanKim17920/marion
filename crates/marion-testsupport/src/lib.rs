@@ -853,7 +853,7 @@ fn thread_tag() -> String {
 /// Four properties, each of which some copy of this had and some did not:
 ///
 /// - **the thread id is in the name**, so two tests in one binary — which `cargo test` runs in
-///   parallel by default — cannot collide on a tag. See [`thread_tag`] for why it is not spelled
+///   parallel by default — cannot collide on a tag. See `thread_tag` for why it is not spelled
 ///   the obvious way;
 /// - **the dir is removed on the way *in* as well**, because a run killed hard enough to skip
 ///   `Drop` leaves a name behind and pids recycle, so a later run can inherit that exact name;
