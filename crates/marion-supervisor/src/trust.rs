@@ -45,6 +45,7 @@
 //! [`require_model_named`]: crate::trust::require_model_named
 //! [`ACP_ALLOW_FILE`]: crate::trust::ACP_ALLOW_FILE
 
+use crate::verbs::sub;
 use crate::{err, out_to};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -864,7 +865,7 @@ fn node_refusal(
     var: impl Fn(&str) -> Option<String>,
     operator_hello: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
-    if !matches!(args.first().map(String::as_str), Some("allow" | "deny")) {
+    if !matches!(args.first().map(String::as_str), Some(sub::ALLOW | "deny")) {
         return None;
     }
     use marion_harness::mcp_bridge::{AGENT_ID_ENV, NODE_TOKEN_ENV, NODE_TOKEN_FILE_ENV};
@@ -886,7 +887,7 @@ fn node_refusal(
 fn target_dir(args: &[String], cwd: &Path) -> PathBuf {
     let resolved = match args {
         [_, flag, rest @ ..] if flag == "--repo" => repo_target(rest, cwd).ok(),
-        [verb, rest @ ..] if verb == "allow" || verb == "deny" => file_target(rest, cwd)
+        [verb, rest @ ..] if verb == sub::ALLOW || verb == "deny" => file_target(rest, cwd)
             .ok()
             .and_then(|f| f.parent().map(Path::to_path_buf)),
         _ => None,
@@ -1037,7 +1038,7 @@ pub fn run(
     let err = |e: TrustError| Some(e.to_string());
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
     match args {
-        [verb, flag, rest @ ..] if verb == "allow" && flag == "--repo" => {
+        [verb, flag, rest @ ..] if verb == sub::ALLOW && flag == "--repo" => {
             let root = repo_target(rest, cwd)?;
             let mut store = Store::edit(store).map_err(err)?;
             let added = store.allow_repo(root.clone());
@@ -1067,7 +1068,7 @@ pub fn run(
                 ))
             }
         }
-        [verb, rest @ ..] if verb == "allow" => {
+        [verb, rest @ ..] if verb == sub::ALLOW => {
             let canonical = file_target(rest, cwd)?;
             let text = marion_harness::tree_file::read_to_string(&canonical)
                 .map_err(|e| Some(format!("{}: {e}", canonical.display())))?;

@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use marion_core::provider::{self, AuthKind, CredentialId, ProviderDef, Registry, Wire};
 
 use crate::credentials::{self, CredentialStore, Logins, Secret, parse_key};
+use crate::verbs::sub;
 
 /// `marion key --help`'s first half, and what a malformed `key` prints. `--label <label>` is still
 /// accepted as the other spelling of `:<label>`, `--base-url` as `--url`, and neither is shown.
@@ -44,7 +45,7 @@ pub fn main(argv: &[String]) -> ExitCode {
     ) {
         (Some("key"), Some("add")) => login(&argv[2..], &mut out),
         (Some("key"), Some("list" | "ls")) if argv.len() == 2 => list(&mut out),
-        (Some("key"), Some("rm" | "remove")) => logout(&argv[2..], &mut out),
+        (Some("key"), Some(sub::RM | sub::REMOVE)) => logout(&argv[2..], &mut out),
         (Some("logout"), _) => logout(&argv[1..], &mut out),
         (Some("login"), _) => login(&argv[1..], &mut out),
         _ => Err(Failure::Usage),

@@ -17,6 +17,7 @@
 //! Every function takes its paths and writes to a caller's `Write`, so the verbs are tested without
 //! a terminal or a real home.
 
+use crate::verbs::sub;
 use crate::{err, out_to};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -104,15 +105,15 @@ pub fn run(
             list(&paths, out)
         }
         ["use", harness, name] => use_default(paths, harness, name, out),
-        ["rm" | "remove", harness, name] if *name != "--purge" => {
+        [sub::RM | sub::REMOVE, harness, name] if *name != "--purge" => {
             remove(paths, Some(harness), name, false, out)
         }
-        ["rm" | "remove", harness, name, "--purge"] => {
+        [sub::RM | sub::REMOVE, harness, name, "--purge"] => {
             remove(paths, Some(harness), name, true, out)
         }
         // The old spelling: the name alone.
-        ["remove", name] => remove(paths, None, name, false, out),
-        ["remove", name, "--purge"] => remove(paths, None, name, true, out),
+        [sub::REMOVE, name] => remove(paths, None, name, false, out),
+        [sub::REMOVE, name, "--purge"] => remove(paths, None, name, true, out),
         _ => Err(Refusal::Usage),
     }
 }

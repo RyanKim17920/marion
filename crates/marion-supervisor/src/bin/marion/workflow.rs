@@ -5,6 +5,7 @@ use marion_supervisor::{err, out, out_to};
 use std::path::Path;
 use std::process::ExitCode;
 
+use marion_supervisor::verbs::sub;
 use marion_supervisor::workflow_file::{self, LoadError, Source};
 
 use super::cli::{self, Backend, Exit, Place, Word, Words};
@@ -63,7 +64,7 @@ pub fn parse(argv: &[String]) -> Result<WorkflowArgs, Exit> {
             1,
             "usage: marion workflow run <name> [--input name=text]… [--detach]",
         )?,
-        "cancel" => want(1, "usage: marion workflow cancel <run id> [--force]")?,
+        sub::CANCEL => want(1, "usage: marion workflow cancel <run id> [--force]")?,
         "" => {
             return Err(Exit::Usage(
                 "say list, show <name>, check <file>, run <name> or cancel <run id>".into(),
@@ -86,7 +87,7 @@ pub fn main(argv: &[String]) -> Result<ExitCode, Exit> {
     if args.verb == "run" {
         return Ok(run_workflow(&args, &repo, &state).unwrap_or_else(|code| code));
     }
-    if args.verb == "cancel" {
+    if args.verb == sub::CANCEL {
         return Ok(cancel_workflow(&args, &repo, &state));
     }
     let user = workflow_file::user_dir();

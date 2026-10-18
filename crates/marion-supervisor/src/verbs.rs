@@ -27,7 +27,7 @@ pub enum Asks {
     Never,
     Always,
     /// Only these subcommands, each by every spelling the command takes: the word after the
-    /// command's own.
+    /// command's own, from [`sub`].
     Sub(&'static [&'static str]),
 }
 
@@ -44,6 +44,20 @@ impl Spec {
     const fn asking(self, asks: Asks) -> Spec {
         Spec { asks, ..self }
     }
+}
+
+/// **The subcommand words a `:` line asks first for**, which the commands' own parsers match on
+/// too: each spelling is written once and read in both places, so a new one is added here and
+/// cannot run from the `:` line without its `y`.
+pub mod sub {
+    /// `marion key rm` and `marion profile rm`.
+    pub const RM: &str = "rm";
+    /// The other spelling `marion key` and `marion profile` take for `rm`.
+    pub const REMOVE: &str = "remove";
+    /// `marion trust allow`.
+    pub const ALLOW: &str = "allow";
+    /// `marion workflow cancel`.
+    pub const CANCEL: &str = "cancel";
 }
 
 const fn verb(name: &'static str, summary: &'static str, on_agent: bool) -> Spec {
@@ -83,7 +97,7 @@ pub const SPECS: &[Spec] = &[
         "list, check, run or cancel the workflows this project defines",
         false,
     )
-    .asking(Asks::Sub(&["cancel"])),
+    .asking(Asks::Sub(&[sub::CANCEL])),
     verb(
         "harness",
         "list or check the harness rows your own files define",
@@ -106,7 +120,7 @@ pub const SPECS: &[Spec] = &[
         "add, list or remove API keys for model providers",
         false,
     )
-    .asking(Asks::Sub(&["rm", "remove"])),
+    .asking(Asks::Sub(&[sub::RM, sub::REMOVE])),
     // The old spellings of `key add` and `key rm`, listed nowhere; scripts and docs still use them.
     hidden("login"),
     hidden("logout").asking(Asks::Always),
@@ -115,7 +129,7 @@ pub const SPECS: &[Spec] = &[
         "add, list or choose your logins for a harness",
         false,
     )
-    .asking(Asks::Sub(&["rm", "remove"])),
+    .asking(Asks::Sub(&[sub::RM, sub::REMOVE])),
     verb(
         "export",
         "write a shareable report of an agent and everything under it",
@@ -126,7 +140,7 @@ pub const SPECS: &[Spec] = &[
         "allow the commands a repository's agent types run",
         false,
     )
-    .asking(Asks::Sub(&["allow"])),
+    .asking(Asks::Sub(&[sub::ALLOW])),
     verb(
         "notify",
         "turn desktop notices of an agent's end on or off",
