@@ -741,6 +741,11 @@ browser login. Cursor reports no token usage over ACP, so a token budget on it i
 untrusted repository holding `.cursor/hooks.json`, `.cursor/mcp.json` or a `.claude/settings`
 file refuses its launch, because Cursor runs them without asking.
 
+auggie is held by every route too. Once the hold lifts it runs on your own `auggie login`, with
+its auto-update off (`AUGMENT_DISABLE_AUTO_UPDATE=1`), and a token budget on it is refused,
+since it reports no token usage over ACP. An untrusted repository holding
+`.augment/settings.json`, `.augment/settings.local.json` or `.mcp.json` refuses its launch.
+
 `marion doctor --harness acp` probes every row and names the MCP transports each
 agent advertises; `marion-supervisor doctor --acp-command "<cmd>"` probes your own agent and says
 when it turns out to be one of these rows.

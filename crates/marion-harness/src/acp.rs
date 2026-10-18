@@ -1263,9 +1263,19 @@ pub const AUGGIE: Agent = Agent {
     declaration: Declaration::Session,
     mid_turn: None,
     reasoning: None,
-    unreported_usage: None,
-    updates: AgentUpdates::Own(UpdatePolicy::None {
-        note: "no updater was searched for in auggie 0.36.0",
+    // Unmeasured: 0.36.0's bundle answers `session/prompt` with `{stopReason}` alone and sends no
+    // usage_update; `--print --output-format json` states only billing, with `--show-cost`.
+    unreported_usage: Some(
+        "auggie reports no token usage over ACP (0.36.0 source, unmeasured); its --print json \
+         states only billing, in credits or usd, with --show-cost",
+    ),
+    // Unmeasured: the TUI and daemon updaters read `AUGMENT_DISABLE_AUTO_UPDATE` (any value);
+    // no ACP-mode call site was found in 0.36.0's bundle.
+    updates: AgentUpdates::Own(UpdatePolicy::Env {
+        key: "AUGMENT_DISABLE_AUTO_UPDATE",
+        value: "1",
+        note: "auggie 0.36.0 source (unmeasured): the updaters skip on any non-empty \
+               AUGMENT_DISABLE_AUTO_UPDATE",
     }),
     login_guard: None,
     // Source-only (u), auggie 0.36.0's bundle: an untrusted repository's `.augment/settings*.json`
@@ -1276,9 +1286,20 @@ pub const AUGGIE: Agent = Agent {
          indexing (auggie 0.36.0 source, unmeasured): marion launches no auggie until a capture \
          shows its repository config refused and indexing declined",
     ),
-    login_refusal: None,
+    // Measured (S33's auggie.jsonl): logged out, session/new answers -32000 "Authentication
+    // required … run `auggie login`".
+    login_refusal: Some(LoginRefusal {
+        code: -32000,
+        hint: "log in to Augment yourself (`auggie login` in a terminal); marion never logs in",
+    }),
     residuals: &[],
-    repo_config: &[],
+    // Unmeasured: hooks in the merged settings run, with no trust gate in 0.36.0's bundle, and a
+    // plugin's `.mcp.json` adds servers.
+    repo_config: &[
+        ".augment/settings.json",
+        ".augment/settings.local.json",
+        ".mcp.json",
+    ],
     agent_info: "auggie",
     install: "npm i -g @augmentcode/auggie",
     reach: Reach::Refused,
@@ -4727,7 +4748,8 @@ mod tests {
 
     /// **An ACP agent carries its twin row's repository config by every route to its binary**,
     /// unioned with its own: `acp:goose`, `goose acp` and a full path all hold the `goose` row's,
-    /// and Hermes' comes through its twin alone. A command no row's binary starts carries none.
+    /// and Hermes' comes through its twin alone; auggie's three files are pinned by every route.
+    /// A command no row's binary starts carries none.
     #[test]
     fn an_agent_carries_its_twin_rows_repo_config_by_every_route() {
         for selector in ["goose", "goose acp", "/opt/bin/goose acp --verbose"] {
@@ -4750,6 +4772,17 @@ mod tests {
             Binding::resolve("cursor").unwrap().repo_config(),
             CURSOR.repo_config
         );
+        for selector in ["auggie", "auggie --acp", "/opt/bin/auggie --acp --verbose"] {
+            assert_eq!(
+                Binding::resolve(selector).unwrap().repo_config(),
+                [
+                    ".augment/settings.json",
+                    ".augment/settings.local.json",
+                    ".mcp.json"
+                ],
+                "{selector}"
+            );
+        }
         assert!(
             Binding::resolve("some-agent --acp")
                 .unwrap()

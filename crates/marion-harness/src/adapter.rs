@@ -4693,6 +4693,7 @@ mod tests {
                 "copilot",
                 "qwen",
                 "goose",
+                "auggie",
                 "cline",
                 "pi-acp",
                 "hermes",
