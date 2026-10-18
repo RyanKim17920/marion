@@ -1628,10 +1628,44 @@ default topology is enforced against honest mistakes and confused-deputy routing
 are logged and surfaced, and a process **holding no valid token** cannot drive the supervisor at
 all. That last clause is deliberately narrow: a same-uid process can lift a token from another
 process's argv or environment, or read the 0600 hook-token file, and then it *is* indistinguishable
-from the node it stole from. The token excludes the unprivileged and the accidental, not a local
-attacker already running as the user.
+from the node it stole from — or was, until the token was bound to its node's process tree (below).
+The token excludes the unprivileged and the accidental, not a local attacker already running as the
+user.
 **Isolation that must survive a hostile child requires a different uid or a sandbox, which marion
 does not yet do; until then `allow_peers` and the star topology are policy, not containment.**
+
+**A node's token is good only from inside that node's process tree — 2026-10-17.** On Linux the
+token file is readable by a same-uid sibling: Landlock restricts writes, not reads. So a node's
+`session/hello` must also come from a process whose ppid walk reaches that node's own root first
+(`crates/marion-supervisor/src/peer_tree.rs`). Each hop is a sandwich: the child's parent and start
+are read, then the parent, then the child again, which must name the same parent and start; and a
+parent must be no younger than its child, so a recycled pid on the chain refuses. The walk never
+uses session or process-group membership, because a sibling can `setpgid` into another node's group
+and codex `setsid`s its tools. The first live node root met
+decides, so a node's own children are their own trees. The supervisor's own pid refuses. The peer is
+pinned at accept (`SO_PEERPIDFD`, else `pidfd_open`), and its start time must be no later than the
+accept. A miss, or a peer the kernel did not name, is journaled as `ForeignPeer` with the pid and
+the reason. It ships recording only (`PEER_BINDING_ENFORCED`);
+`crates/marion-supervisor/tests/it_live/cross_product.rs` holds every harness as a root to no
+`ForeignPeer`, and the switch turns to refusing after one canary cycle with every installed harness
+passing.
+**What it buys:** a token read off disk by a sibling grants nothing from the sibling's own tree, and
+the attempt is on the record by name (`crates/marion-supervisor/tests/it_canned/peer_binding.rs`).
+**What it does not:**
+- a sibling still *reads* another node's files on Linux: its transcript, contracts, events and the
+  token itself. Only using the token is bound, not its secrecy;
+- a process that can attach to a node's process acts *inside* that node's tree, where its token is
+  good. A sandboxed node cannot attach to another node's process, because Landlock confines ptrace
+  to the tracer's own domain (`crates/marion-harness/src/os_sandbox.rs`,
+  `a_process_under_its_plan_cannot_read_a_sibling_nodes_environment_or_memory`). An unsandboxed
+  node — the sandbox unavailable, `MARION_SANDBOX=off`, or a node on the operator's own login —
+  relies on `kernel.yama.ptrace_scope` ≥ 1, which `marion doctor` reports;
+- nodes that share a checkout (`SharedCwd`) are co-tenants: one can plant repo-local configuration
+  (hooks, `.mcp.json`, a harness's project settings) that the other's harness loads and runs inside
+  its own tree. The tree binding cannot tell that from the node itself;
+- on macOS the token file is already unreadable to a sandboxed sibling, and this check adds the same
+  binding there; an audit token (`LOCAL_PEERTOKEN`) would pin the peer more firmly than a pid and is
+  not used yet.
 
 **The token's promise above is delivered, and an independent system shows what its absence costs —
 REPORTED 2026-08-06.** Provenance, in this document's own register: this is neither *measured* here
