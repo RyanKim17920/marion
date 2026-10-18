@@ -1402,7 +1402,7 @@ impl Binding {
     }
 
     /// The built-in row of the binary this agent runs ([`AgentUpdates::Twin`]) — the bound row's,
-    /// or the one whose program the command runs ([`same_program`]). `None` for an agent with no
+    /// or the one whose program the command runs (`same_program`). `None` for an agent with no
     /// built-in twin.
     pub fn twin(&self) -> Option<&'static HarnessSpec> {
         match self
