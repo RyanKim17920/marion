@@ -1592,11 +1592,13 @@ harness writes to.
 **SUPERSEDED 2026-10-17: no token value is in any declaration or process environment.** A
 sandboxed node was measured on macOS reading a same-uid process's environment (`KERN_PROCARGS2`),
 so an `env` block holding the token handed it to every node. marion now writes the token to a 0600
-file in the node's own `config/` directory (`node-token`), which the macOS sandbox keeps from every
-other node, and the declaration or the harness's environment carries only that file's path,
-`MARION_NODE_TOKEN_FILE` (`marion_harness::spec::TokenCarrier`). The bridge reads the token from
-that file and nowhere else; a bridge pointed at no file refuses. The table below records the
-decision as it was made.
+`node-token` file in the node's own directory (`config/node-token` for a managed node, beside the
+documents of a native root), which the macOS sandbox keeps from every other node, and the
+declaration or the harness's environment carries only that file's path, `MARION_NODE_TOKEN_FILE`
+(`marion_harness::spec::TokenCarrier`). The bridge reads the token from that file and nowhere else,
+as a small regular file it does not follow a link to; a bridge pointed at no file refuses. On Linux
+a sibling node can still read the file: this closes the environment route, not same-uid reads. The
+table below records the decision as it was made.
 
 | placement | reaches | verdict |
 |---|---|---|
