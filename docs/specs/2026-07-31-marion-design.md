@@ -1589,6 +1589,15 @@ fd is impossible (marion is not the bridge's parent, extra fds are `CLOEXEC`, an
 config has a "pass fd N" field), and the bridge's stdin is already the MCP JSON-RPC transport the
 harness writes to.
 
+**SUPERSEDED 2026-10-17: no token value is in any declaration or process environment.** A
+sandboxed node was measured on macOS reading a same-uid process's environment (`KERN_PROCARGS2`),
+so an `env` block holding the token handed it to every node. marion now writes the token to a 0600
+file in the node's own `config/` directory (`node-token`), which the macOS sandbox keeps from every
+other node, and the declaration or the harness's environment carries only that file's path,
+`MARION_NODE_TOKEN_FILE` (`marion_harness::spec::TokenCarrier`). The bridge reads the token from
+that file and nowhere else; a bridge pointed at no file refuses. The table below records the
+decision as it was made.
+
 | placement | reaches | verdict |
 |---|---|---|
 | **`env` on the server declaration** | the bridge process and its descendants — **not** the agent's own tools, which are children of the *harness*, not of the bridge | **chosen** — but see the fileless caveat below |
