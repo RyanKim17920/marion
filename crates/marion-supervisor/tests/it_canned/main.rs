@@ -39,6 +39,7 @@ mod native_injection_binding;
 mod native_mode_matrix;
 mod node_kill;
 mod notify_cli;
+mod peer_binding;
 mod profiles;
 mod report_on_a_root;
 mod root_change_record;
