@@ -1181,6 +1181,71 @@ mod tests {
         assert!(!open("agent"), "a linked grant root is refused");
     }
 
+    /// **A node under its plan reads no sibling node's process**: Landlock lets a sandboxed
+    /// process ptrace only into its own domain, so a sibling's `/proc/<pid>/environ` and
+    /// `/proc/<pid>/mem` refuse it whatever `kernel.yama.ptrace_scope` says. Files are another
+    /// matter on Linux (`platform_command`); this is what peer binding's residuals rest on (§5.4).
+    /// The same read from an unsandboxed sibling succeeds, so the refusal is the sandbox's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_under_its_plan_cannot_read_a_sibling_nodes_environment_or_memory() {
+        if !support().available() {
+            eprintln!("skipped: {}", support().describe());
+            return;
+        }
+        const SECRET: &str = "PEER-SECRET-7f3a";
+        let under_plan = |tag: &str, script: String| {
+            let dir = marion_testsupport::scratch(tag);
+            let (spec, mut inv) = node_in(&dir, Auth::Canned);
+            inv.args = vec!["-c".into(), script];
+            inv.env.push(("MARION_TEST_SECRET".into(), SECRET.into()));
+            inv.sandbox = Some(
+                SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+            );
+            let tmp = dir.join("agent/tmp");
+            std::fs::create_dir_all(&tmp).unwrap();
+            (dir, inv.command(&tmp))
+        };
+        let (_victim_dir, mut victim) = under_plan("osb-ptrace-victim", "exec sleep 30".into());
+        let mut victim = victim.spawn().expect("the victim runs");
+        let pid = victim.id();
+        let environ = format!("/proc/{pid}/environ");
+        // The test is the victim's parent and unsandboxed; once it reads the secret, the
+        // victim's environment is in place for the reads below.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !std::fs::read(&environ).is_ok_and(|e| String::from_utf8_lossy(&e).contains(SECRET)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the victim never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let read = format!("cat {environ} 2>&1; echo '|'; head -c1 /proc/{pid}/mem 2>&1; true");
+        let (_dir, mut sandboxed) = under_plan("osb-ptrace-reader", read.clone());
+        let out = sandboxed.output().expect("the reader runs");
+        let unsandboxed = std::process::Command::new("/bin/sh")
+            .args(["-c", &read])
+            .output()
+            .expect("the control runs");
+        let _ = victim.kill();
+        let _ = victim.wait();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let reads: Vec<&str> = stdout.split('|').map(str::trim).collect();
+        assert_eq!(reads.len(), 2, "{out:?}");
+        for (what, read) in ["environ", "mem"].iter().zip(&reads) {
+            assert!(
+                !read.contains(SECRET)
+                    && (read.contains("denied") || read.contains("not permitted")),
+                "a sandboxed sibling read the victim's {what}: {read:?}"
+            );
+        }
+        assert!(
+            String::from_utf8_lossy(&unsandboxed.stdout).contains(SECRET),
+            "an unsandboxed sibling reads the environment, so the refusal is Landlock's: \
+             {unsandboxed:?}"
+        );
+    }
+
     /// **The worktree admin dir a plan writes is the one marion verified, never what the tree's
     /// `.git` names.** The node can rewrite its own gitfile; pointed at the operator's whole
     /// repository, it would otherwise be granted that repository's config on its next launch.
