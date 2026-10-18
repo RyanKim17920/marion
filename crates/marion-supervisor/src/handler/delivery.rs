@@ -234,6 +234,7 @@ impl RegistryHandle {
                 branch: None,
                 trust: None,
                 pid: None,
+                tree_root: None,
                 pgid: None,
                 started_at: None,
                 join: None,

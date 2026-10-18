@@ -14,6 +14,8 @@
 //! Each method's own check still runs after this one (a node's `caller` is re-proved there): this
 //! is the gate in front of it, not a replacement for it.
 
+use std::sync::atomic::Ordering;
+
 use marion_core::AgentId;
 use marion_core::proto::params::SessionHelloParams;
 use marion_core::proto::result::{SessionHelloResult, SessionPrincipal};
@@ -30,8 +32,9 @@ impl RegistryHandle {
         &self,
         conn: ConnId,
         p: &SessionHelloParams,
-        peer_pid: Option<u32>,
+        out: &crate::serve::Outbound,
     ) -> Result<SessionHelloResult, RpcError> {
+        let peer_pid = out.peer_pid();
         if lock(&self.shared).principals.contains_key(&conn) {
             return Err(RpcError::refused(
                 "session/hello",
@@ -44,7 +47,10 @@ impl RegistryHandle {
         let principal = match (&p.operator, &p.node) {
             (Some(key), None) => self.prove_operator_from(peer_pid, key)?,
             (None, Some(caller)) => match self.authenticate(caller) {
-                Some(_) => SessionPrincipal::Node(caller.agent_id.clone()),
+                Some(_) => {
+                    self.bind_to_tree(&caller.agent_id, out)?;
+                    SessionPrincipal::Node(caller.agent_id.clone())
+                }
                 None => return Err(unminted_token(&caller.agent_id)),
             },
             _ => {
@@ -105,6 +111,86 @@ impl RegistryHandle {
                 ),
                 "§2, §5.4",
             )),
+        }
+    }
+
+    /// **A node's token is good only from inside that node's process tree** ([`crate::peer_tree`]):
+    /// the first live node root above the connecting process must be `me`'s. A miss is journaled
+    /// ([`marion_core::journal::RecordKind::ForeignPeer`]) and said on the supervisor's log, and
+    /// refused while [`super::PEER_BINDING_ENFORCED`] is on.
+    fn bind_to_tree(&self, me: &AgentId, out: &crate::serve::Outbound) -> Result<(), RpcError> {
+        let why = match out.accepted() {
+            None => "the kernel did not name the connecting process".to_string(),
+            Some(peer) => {
+                self.await_root_pid(me);
+                let roots: Vec<(i32, AgentId)> = lock(&self.nodes)
+                    .iter()
+                    .filter(|(_, n)| n.running())
+                    .filter_map(|(id, n)| n.tree_root.map(|pid| (pid, id.clone())))
+                    .collect();
+                let supervisor = std::process::id() as i32;
+                match peer.root_of(&roots, supervisor) {
+                    Ok(found) if &found == me => return Ok(()),
+                    Ok(found) => format!(
+                        "process {} is in node `{}`'s process tree, not node `{}`'s",
+                        peer.pid(),
+                        found.0,
+                        me.0
+                    ),
+                    Err(why) => why,
+                }
+            }
+        };
+        let refused = self.peer_binding_enforced.load(Ordering::SeqCst);
+        eprintln!(
+            "marion-supervisor: node `{}`'s token was presented from outside its process tree \
+             ({why}){}",
+            me.0,
+            if refused {
+                "; refused"
+            } else {
+                "; let through while the check only records"
+            }
+        );
+        let record =
+            marion_core::journal::RecordKind::ForeignPeer(marion_core::journal::ForeignPeer {
+                agent_id: me.clone(),
+                peer_pid: out.peer_pid(),
+                why: why.clone(),
+                refused,
+            });
+        if let Err(e) = self.journal_now(record) {
+            eprintln!("marion-supervisor: could not journal that foreign peer: {e}");
+        }
+        if !refused {
+            return Ok(());
+        }
+        Err(RpcError::refused(
+            "session/hello",
+            format!(
+                "node `{}`'s token was presented from a process outside that node's process tree \
+                 ({why}). A node's token works only from below the process marion launched for it, \
+                 so one read by another process grants nothing; the attempt is journaled.",
+                me.0
+            ),
+            "§5.4",
+        ))
+    }
+
+    /// The window between a node's process existing and its pid being recorded is one journal
+    /// write wide ([`RegistryHandle::mark_started`]); a bridge fast enough to say hello inside it
+    /// waits, bounded, rather than being refused for marion's own lag.
+    fn await_root_pid(&self, me: &AgentId) {
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + BOUND;
+        let mut pause = std::time::Duration::from_millis(1);
+        while lock(&self.nodes)
+            .get(me)
+            .is_some_and(|n| n.running() && n.tree_root.is_none())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(std::time::Duration::from_millis(50));
         }
     }
 

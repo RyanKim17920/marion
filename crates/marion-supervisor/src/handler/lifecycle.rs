@@ -230,10 +230,19 @@ impl RegistryHandle {
         let pgid = unsafe { getpgid(pid) };
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.pid = Some(pid);
+            node.tree_root = Some(pid);
             node.pgid = (pgid > 0).then_some(pgid);
             node.started_at = Some(std::time::SystemTime::now());
         }
         self.register_budget(agent_id);
+    }
+
+    /// A native root's process exists: the root its bridge's `session/hello` must descend from
+    /// (§5.4). Only that — its `pid` stays unset, as the kill and quit paths have always read it.
+    pub(crate) fn record_native_root(&self, agent_id: &AgentId, pid: i32) {
+        if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
+            node.tree_root = Some(pid);
+        }
     }
 
     /// `run_spawn` returned. **The entry is kept, not removed**: it is what tells a later caller

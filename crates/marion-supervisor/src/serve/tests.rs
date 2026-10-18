@@ -230,6 +230,7 @@ fn a_departure_wakes_an_idle_writer_after_it_drains_what_was_queued() {
         conn: ConnId(9),
         peer: Peer::Unknown,
         peer_pid: None,
+        accepted: None,
         tx,
         departed: Arc::new(Mutex::new(None)),
         shutdown: None,

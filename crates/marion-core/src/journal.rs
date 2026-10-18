@@ -153,6 +153,10 @@ pub enum RecordKind {
     /// delegation is on the record, with the axes it widened, and the node can say so wherever it
     /// is shown.
     WiderDelegation(WiderDelegation),
+    /// §5.4: **a node's token was presented from a process outside that node's process tree** —
+    /// a sibling that read the token file, or a harness whose bridge runs where marion does not
+    /// look. The lateral attempt §5.4 promises to record, with whether it was refused.
+    ForeignPeer(ForeignPeer),
     /// §9: what a **root** did to the operator's own repository, and whether marion looked at all.
     ///
     /// The same shape as [`Self::ContractPersisted`], for the same reason: this record is O(1) in
@@ -295,6 +299,7 @@ impl RecordKind {
             RecordKind::ContractPersisted(r) => Some(&r.agent_id),
             RecordKind::PermissionDenied(r) => Some(&r.agent_id),
             RecordKind::WiderDelegation(r) => Some(&r.agent_id),
+            RecordKind::ForeignPeer(r) => Some(&r.agent_id),
             RecordKind::RootChanged(r) => Some(&r.agent_id),
             RecordKind::RootGrantDecided(r) => Some(&r.agent_id),
             RecordKind::SessionObserved(r) => Some(&r.agent_id),
@@ -905,6 +910,19 @@ pub struct WiderDelegation {
     /// `approval-mode`, `writable-scope`).
     #[serde(default)]
     pub axes: Vec<String>,
+}
+
+/// See [`RecordKind::ForeignPeer`]. `agent_id` is the node whose token was presented.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignPeer {
+    pub agent_id: AgentId,
+    /// The process that presented it, as the kernel named it at connect; `None` where it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_pid: Option<u32>,
+    /// Why the process is not in the node's tree, in a sentence.
+    pub why: String,
+    /// Whether the hello was refused (`true`) or only recorded and let through.
+    pub refused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -213,6 +213,10 @@ pub struct NodeHandle {
     /// `None` until the process exists. The window is one `write(2)` plus one fsync wide — step 1
     /// made `Spawned` durable at `command.spawn()`, and this is filled from the same hook.
     pid: Option<i32>,
+    /// **The process this node's tree hangs from**: what its bridge's `session/hello` must descend
+    /// from (§5.4, [`crate::peer_tree`]). [`Self::pid`] for a managed node; a native root's pane
+    /// process, which `pid` leaves unset for the kill and quit paths.
+    tree_root: Option<i32>,
     /// The node's own process group, read with `getpgid(2)` rather than assumed equal to the pid.
     /// `socket.rs` already records why assuming it is wrong: a reader that *computes* `getpgid(pid)`
     /// and then treats it as `pid` has checked nothing. `None` where the call failed.
@@ -377,6 +381,11 @@ mod workflow;
 /// uses the journal's PID to apply §6.7's process-tree kill, observes death, and writes that new
 /// fact back before any client can learn it. The handle remembers only connection/exit bookkeeping,
 /// never a second copy of node state.
+/// **The node token's ancestry check refuses, rather than only journals, a hello from outside the
+/// node's process tree.** Off for one canary cycle, so every harness's bridge is measured before a
+/// bridge that runs outside its node's tree stops working (tasks/todo.md records the flip).
+pub(crate) const PEER_BINDING_ENFORCED: bool = false;
+
 pub struct RegistryHandle {
     /// This handle, as its own nodes' threads hold it. A node's thread outlives the `Handle::call`
     /// that started it, so it cannot borrow; `Weak` rather than `Arc` because the alternative is a
@@ -448,6 +457,10 @@ pub struct RegistryHandle {
     /// serves no state root); `Err` names why there is none, and then no connection can speak for
     /// the operator. See [`session`].
     operator_key: Result<Secret, String>,
+    /// **Whether a node hello from outside its node's process tree is refused**, or journaled and
+    /// let through ([`session`]'s peer-binding check). One internal switch, starting at
+    /// [`PEER_BINDING_ENFORCED`]; tests flip it.
+    peer_binding_enforced: AtomicBool,
     /// **The races this supervisor is driving**; empty, and silent, with none open.
     races: crate::race::Races,
     /// Every workflow run this supervisor is stepping ([`crate::workflow`]).
@@ -631,6 +644,7 @@ impl RegistryHandle {
                 pane_attach_selection_hook: Mutex::new(None),
                 spawn_decision: Mutex::new(()),
                 operator_key,
+                peer_binding_enforced: AtomicBool::new(PEER_BINDING_ENFORCED),
                 races: crate::race::Races::default(),
                 workflows: crate::workflow::Workflows::default(),
                 sent: Mutex::new(HashMap::new()),
@@ -959,7 +973,7 @@ impl Handle for RegistryHandle {
     fn call(&self, conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError> {
         if let Call::SessionHello(p) = call {
             return self
-                .session_hello(conn, p, out.peer_pid())
+                .session_hello(conn, p, out)
                 .map(MethodResult::SessionHello);
         }
         self.authorize(conn, call)?;

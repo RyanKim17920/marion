@@ -91,7 +91,7 @@ marion-term = { path = "../marion-term", optional = true }
 # and `marion-term` take it that way: none of the four shipped backends is wanted, and the one
 # marion uses is its own.
 ratatui = { version = "0.30", default-features = false, optional = true }
-rustix = { version = "1", features = ["event", "fs", "net", "process", "termios"] }
+rustix = { version = "1", features = ["event", "fs", "net", "param", "process", "termios", "time"] }
 # `trust` quotes the strings its refusals name with it, on the daemon's side; already in the build
 # through `toml`.
 toml_edit = "0.22"

@@ -452,6 +452,8 @@ impl ReplayedNode {
             RecordKind::ContractPersisted(c) => self.fold_contract_persisted(c),
             // An audit line: the cancel that follows a `Stop` is what changes the node.
             RecordKind::BudgetCrossed(_) => {}
+            // An audit line about who presented the node's token, not a change to the node.
+            RecordKind::ForeignPeer(_) => {}
             RecordKind::PermissionDenied(d) => self.denied_permissions.push(d),
             RecordKind::WiderDelegation(d) => self.widened = d.axes,
             // Last record wins. A root is snapshotted twice in one run and journalled once, so a

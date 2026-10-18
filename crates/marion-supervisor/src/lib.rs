@@ -135,6 +135,8 @@ pub mod operator_key;
 mod pane_client;
 /// Turn delivery into an interactive node: a bracketed paste into its pty.
 pub mod paste;
+/// Which node's process tree a connection comes from: the node token's ancestry check.
+pub(crate) mod peer_tree;
 /// `doctor`'s checks of the machine itself: the two binaries, the OS, the state dir, git.
 pub mod preflight;
 /// Text a node wrote, with the control characters a terminal would act on removed.

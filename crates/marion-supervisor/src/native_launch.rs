@@ -440,6 +440,7 @@ impl NativeNodeRecorder for NativeNodeJournal {
         // node replayed as `Spawning` for its whole life, and `marion tree` said so to the
         // operator sitting in it.
         self.record(crate::journal::running(&self.agent_id));
+        self.handle.record_native_root(&self.agent_id, pid);
     }
 
     fn exited(&self, status: Option<std::process::ExitStatus>) {

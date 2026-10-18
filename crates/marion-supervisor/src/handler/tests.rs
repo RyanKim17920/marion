@@ -7935,6 +7935,158 @@ mod owns_nodes {
         assert!(forged.is_err(), "a forged token names nobody");
     }
 
+    /// The `ForeignPeer` records in `fx`'s journal, in order.
+    fn foreign_peers(fx: &Owning) -> Vec<marion_core::journal::ForeignPeer> {
+        std::fs::read(fx.project.journal())
+            .unwrap_or_default()
+            .split(|b| *b == b'\n')
+            .filter_map(marion_core::journal::decode)
+            .filter_map(|r| match r.kind {
+                RecordKind::ForeignPeer(f) => Some(f),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `agent`'s token presented, on a fresh connection, from process `peer` as the kernel would
+    /// name it at accept.
+    fn hello_from(
+        fx: &Owning,
+        conn: ConnId,
+        agent: &str,
+        token: &Secret,
+        peer: Option<u32>,
+    ) -> Result<MethodResult, RpcError> {
+        let out = match peer {
+            Some(pid) => crate::serve::sink_from(conn, pid),
+            None => crate::serve::sink(conn),
+        };
+        fx.handle.call(
+            conn,
+            &Call::SessionHello(marion_core::proto::params::SessionHelloParams {
+                operator: None,
+                node: Some(SpawnCaller {
+                    agent_id: id(agent),
+                    node_token: token.clone(),
+                }),
+            }),
+            &out,
+        )
+    }
+
+    /// A child of this test process, which is the "root" a fake node's tree hangs from.
+    fn sleeper() -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap()
+    }
+
+    /// **A node's token is its own from inside its tree, and journals nothing.** The node's root is
+    /// this test process; the peer is a child of it.
+    #[test]
+    fn a_token_from_inside_its_nodes_tree_says_hello_and_records_nothing() {
+        let fx = owning("peer-own-tree", vec![intent("root", None, "claude", 0)]);
+        let token = fx.handle.claim(&id("root"), None, fx.repo.clone());
+        fx.handle
+            .record_native_root(&id("root"), std::process::id() as i32);
+        fx.handle
+            .peer_binding_enforced
+            .store(true, Ordering::SeqCst);
+        let mut peer = sleeper();
+        let said = hello_from(&fx, ConnId(90), "root", &token, Some(peer.id()));
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(
+            matches!(said, Ok(MethodResult::SessionHello(_))),
+            "{said:?}"
+        );
+        assert!(foreign_peers(&fx).is_empty());
+    }
+
+    /// **A token read by a sibling grants nothing from the sibling's tree.** `root`'s tree hangs
+    /// from a sleeper; the peer descends from this test process, which is `sibling`'s root, so the
+    /// first root above it is `sibling`'s. Observing, the hello passes and the attempt is
+    /// journaled; enforcing, it is refused by name and journaled as refused.
+    ///
+    /// Mutation: drop `bind_to_tree` from the hello and no record is written and the enforced
+    /// hello succeeds.
+    #[test]
+    fn a_token_from_another_nodes_tree_is_journaled_and_refused_when_enforced() {
+        let fx = owning(
+            "peer-foreign-tree",
+            vec![
+                intent("root", None, "claude", 0),
+                intent("sibling", None, "claude", 0),
+            ],
+        );
+        let token = fx.handle.claim(&id("root"), None, fx.repo.clone());
+        fx.handle.claim(&id("sibling"), None, fx.repo.clone());
+        let mut root_process = sleeper();
+        fx.handle
+            .record_native_root(&id("root"), root_process.id() as i32);
+        fx.handle
+            .record_native_root(&id("sibling"), std::process::id() as i32);
+        let mut thief = sleeper();
+
+        let observed = hello_from(&fx, ConnId(91), "root", &token, Some(thief.id()));
+        assert!(
+            matches!(observed, Ok(MethodResult::SessionHello(_))),
+            "{observed:?}"
+        );
+        fx.handle
+            .peer_binding_enforced
+            .store(true, Ordering::SeqCst);
+        let refused = hello_from(&fx, ConnId(92), "root", &token, Some(thief.id()))
+            .expect_err("a token from another node's tree is refused");
+        for p in [&mut root_process, &mut thief] {
+            let _ = p.kill();
+            let _ = p.wait();
+        }
+        assert!(
+            refused.message.contains("outside that node's process tree")
+                && refused.message.contains("`sibling`"),
+            "{}",
+            refused.message
+        );
+        let records = foreign_peers(&fx);
+        assert_eq!(
+            records.iter().map(|r| r.refused).collect::<Vec<_>>(),
+            [false, true],
+            "{records:?}"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|r| r.agent_id == id("root") && r.peer_pid == Some(thief.id()))
+        );
+        assert!(
+            call_on(&fx, ConnId(92), quit_detach()).is_err(),
+            "the refused connection speaks for nobody"
+        );
+    }
+
+    /// **A connection the kernel named no process for is outside every tree**: journaled while
+    /// observing, refused while enforcing — never taken as the node's.
+    #[test]
+    fn a_token_from_an_unnamed_peer_is_never_taken_as_the_nodes() {
+        let fx = owning("peer-unnamed", vec![intent("root", None, "claude", 0)]);
+        let token = fx.handle.claim(&id("root"), None, fx.repo.clone());
+        fx.handle
+            .record_native_root(&id("root"), std::process::id() as i32);
+        assert!(hello_from(&fx, ConnId(93), "root", &token, None).is_ok());
+        fx.handle
+            .peer_binding_enforced
+            .store(true, Ordering::SeqCst);
+        let refused = hello_from(&fx, ConnId(94), "root", &token, None).unwrap_err();
+        assert!(
+            refused.message.contains("did not name"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(foreign_peers(&fx).len(), 2);
+    }
+
     /// **A root that states a check is refused by name, before anything exists.** A root has no
     /// contract (§9), so `verification` or `writable_scope` on it would be checks nobody ran;
     /// each is refused alone, and a child keeps both.

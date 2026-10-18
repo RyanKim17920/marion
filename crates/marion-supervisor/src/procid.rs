@@ -750,6 +750,78 @@ pub(crate) fn lineage(_pid: i32) -> Option<Lineage> {
     None
 }
 
+/// **One step of a walk up the process table**: a process's parent, when it started, and whether
+/// it is a zombie. `start` is comparable between processes of one boot, and only that:
+/// [`crate::peer_tree`] orders a parent before its child with it. It is not a [`StartId`], which
+/// is compared for equality alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Hop {
+    pub(crate) ppid: i32,
+    /// Linux: clock ticks since boot (`/proc/<pid>/stat` field 22). macOS: microseconds since the
+    /// epoch (`p_starttime`).
+    pub(crate) start: u64,
+    pub(crate) zombie: bool,
+}
+
+/// **Linux: `/proc/<pid>/stat` fields 3 (state), 4 (ppid) and 22 (starttime)**, counted after the
+/// last `)`. `None` for a pid nobody wears, an unreadable file or a shape this build does not know.
+#[cfg(target_os = "linux")]
+pub(crate) fn hop(pid: i32) -> Option<Hop> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, after_comm) = stat.rsplit_once(')')?;
+    let fields: Vec<&str> = after_comm.split_ascii_whitespace().collect();
+    Some(Hop {
+        zombie: matches!(*fields.first()?, "Z" | "X" | "x"),
+        ppid: fields.get(1)?.parse().ok()?,
+        start: fields.get(22 - 3)?.parse().ok()?,
+    })
+}
+
+/// **macOS: `p_starttime` (the first 16 bytes, a `timeval`), `p_stat` and `e_ppid`** of the
+/// `kinfo_proc` [`read_impl`], [`run_state`] and [`lineage`] read.
+#[cfg(target_os = "macos")]
+pub(crate) fn hop(pid: i32) -> Option<Hop> {
+    const P_STAT: usize = 36;
+    const SZOMB: u8 = 5;
+    let Ok(KinfoProc::Described(bytes)) = kinfo_proc(pid) else {
+        return None;
+    };
+    let sec = i64::from_ne_bytes(bytes.get(0..8)?.try_into().ok()?);
+    let usec = i32::from_ne_bytes(bytes.get(8..12)?.try_into().ok()?);
+    Some(Hop {
+        ppid: lineage(pid)?.ppid,
+        start: u64::try_from(sec).ok()? * 1_000_000 + u64::try_from(usec).ok()?,
+        zombie: *bytes.get(P_STAT)? == SZOMB,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn hop(_pid: i32) -> Option<Hop> {
+    None
+}
+
+/// **Now, in [`Hop::start`]'s units**: a process whose start is later than this began after it.
+#[cfg(target_os = "linux")]
+pub(crate) fn start_clock_now() -> Option<u64> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let ticks = rustix::param::clock_ticks_per_second();
+    let ns = u64::try_from(now.tv_sec).ok()? * 1_000_000_000 + u64::try_from(now.tv_nsec).ok()?;
+    Some(ns / (1_000_000_000 / ticks.max(1)))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn start_clock_now() -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    u64::try_from(now.as_micros()).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn start_clock_now() -> Option<u64> {
+    None
+}
+
 /// **Whether `pid` is one of `pids`, sits in one of `groups`, or descends from either** — the walk
 /// up `ppid` to pid 1, reading each step with `read`. Bounded, so a table that changes under the
 /// walk cannot loop it; an unreadable step ends the walk with what it found so far.
