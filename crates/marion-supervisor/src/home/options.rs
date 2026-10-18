@@ -37,7 +37,7 @@ pub fn split(line: &str) -> Result<(Vec<String>, String), String> {
     Ok((words, rest.trim_end().to_string()))
 }
 
-/// Every shell word of `line`, as [`token`] reads each: the `:` line's command and its arguments.
+/// Every shell word of `line`, as `token` reads each: the `:` line's command and its arguments.
 pub fn words(line: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let mut rest = line.trim_start();

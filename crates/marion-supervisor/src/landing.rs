@@ -29,13 +29,13 @@ pub fn merge_argv(branch: &str) -> Vec<String> {
         .to_vec()
 }
 
-/// [`log_argv`], run in `repo` with the terminal as [`git_in`] runs it.
+/// [`log_argv`], run in `repo` with the terminal as `git_in` runs it.
 pub fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
     git_in(repo, &log_argv(branch))
 }
 
-/// [`merge_argv`] in `repo`, hardened as [`git_in`] runs it. Refused, with why, where the
-/// repository's own config names a program a merge would run ([`merge_refusal`]).
+/// [`merge_argv`] in `repo`, hardened as `git_in` runs it. Refused, with why, where the
+/// repository's own config names a program a merge would run (`merge_refusal`).
 pub fn branch_merge(repo: &Path, branch: &str) -> Result<std::process::Command, String> {
     match merge_refusal(repo) {
         Some(why) => Err(why),
