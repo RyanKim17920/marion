@@ -441,12 +441,12 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 };
 
 /// Relocates the rules/skills roots (`~/.agents`, `~/Documents/Cline`, `~/Cline`) and whatever
-/// else the CLI keys off the home. **Dropped under [`Auth::Inherited`]**.
+/// else the CLI keys off the home. **Dropped under [`Auth::Inherited`](crate::Auth::Inherited)**.
 pub const HOME_ENV: &str = "HOME";
-/// Roots configuration (default `~/.cline`). **Dropped under [`Auth::Inherited`]**.
+/// Roots configuration (default `~/.cline`). **Dropped under [`Auth::Inherited`](crate::Auth::Inherited)**.
 pub const DIR_ENV: &str = "CLINE_DIR";
 /// Roots state (default `$CLINE_DIR/data`): `settings/providers.json`, `db/`, `sessions/`, `logs/`.
-/// **Dropped under [`Auth::Inherited`]**.
+/// **Dropped under [`Auth::Inherited`](crate::Auth::Inherited)**.
 pub const DATA_DIR_ENV: &str = "CLINE_DATA_DIR";
 /// Names the MCP document. Resolved independently of the data dir, measured honoured with the file
 /// outside it (`cline-mcp-settings-path-env.mcp.jsonl`). Kept under **both** modes.

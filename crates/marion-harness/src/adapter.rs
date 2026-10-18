@@ -210,7 +210,7 @@ pub struct LaunchSpec {
     /// The **availability** axis (§3.1): which built-in tools exist for this node, in **marion's**
     /// vocabulary (`marion_core::agent_type::TOOL_WRITE`, …). The agent type's `tools:` list,
     /// verbatim; each adapter maps it to its harness's own spelling through
-    /// [`HarnessAdapter::tool_name`], and refuses by name what it cannot provide.
+    /// [`HarnessAdapter::tool_names`], and refuses by name what it cannot provide.
     ///
     /// Distinct from [`Self::allowed_tools`] because §3.1 says the two axes are distinct and §11
     /// item 24 measured what conflating them costs — but **not independent of it**: an adapter
@@ -231,7 +231,7 @@ pub struct LaunchSpec {
     pub mcp: McpDeclaration,
     /// The provider base URL in the canonical **`…/v1`** form — the one a Codex
     /// `model_providers` entry names verbatim. Claude Code wants it without the `/v1` and the
-    /// adapter derives that itself ([`claude_code::anthropic_base_url`]), so no caller has to know
+    /// row derives that itself ([`spec::Field::BaseUrlRoot`]), so no caller has to know
     /// which harness wants which spelling.
     pub base_url: Option<String>,
     /// The provider credential, where the node is meant to present one.
@@ -444,7 +444,7 @@ pub trait HarnessAdapter {
     /// §3.1's two axes in this harness's spelling, or the first refusal.
     ///
     /// The default is the rule the design states for the harness that has both axes: availability
-    /// is the declared list mapped through [`Self::tool_name`], and permission is *"the same list,
+    /// is the declared list mapped through [`Self::tool_names`], and permission is *"the same list,
     /// plus marion's own"* — [`LaunchSpec::allowed_tools`] with the mapped list appended. A harness
     /// whose axes are shaped otherwise (copilot's two spellings, goose's mode) says so here, and
     /// nowhere else: `compile` and `compiled_permissions` both read this one answer, so the flag and
@@ -504,7 +504,7 @@ pub trait HarnessAdapter {
     /// **The measured logic hook**: everything this harness's [`spec::HarnessSpec`] row reads,
     /// derived from the launch — and every refusal the launch is owed, by name.
     ///
-    /// The default is [`neutral_fields`] over [`Self::axes`]: the spec's values verbatim,
+    /// The default is `neutral_fields` over [`Self::axes`]: the spec's values verbatim,
     /// with live mode's removal of the provider overlay applied. An adapter overrides it to add
     /// what its harness has measured and nothing else — a required model, a derived URL, a
     /// document path — so that the row stays a transcription and this stays the place a reader
@@ -519,7 +519,7 @@ pub trait HarnessAdapter {
         self.launch_fields(spec, ctx)
     }
 
-    /// **What the row's data makes of this launch**, before any hook: [`neutral_fields`] over
+    /// **What the row's data makes of this launch**, before any hook: `neutral_fields` over
     /// [`Self::axes`], the model in the row's [`spec::ModelForm`], and the node's session title
     /// ([`grammar::session_title`]) for a row that names [`spec::Field::Title`]. Every hook starts
     /// from this, so a rule stated as row data is applied on every harness that states it.
@@ -602,7 +602,7 @@ pub trait HarnessAdapter {
 
     /// How this launch's node token reaches its bridge: the row's carrier for the launch's auth
     /// mode ([`spec::HarnessSpec::token`]). Every declaration an adapter writes is of
-    /// [`declared_bridge`], which this carrier has already stripped where it must, and `compile`
+    /// `declared_bridge`, which this carrier has already stripped where it must, and `compile`
     /// sets what it withheld on the process environment — so no adapter handles the token itself.
     /// An adapter bound to a refinement row with a carrier of its own answers for it here.
     fn token_carrier(&self, spec: &LaunchSpec) -> spec::TokenCarrier {
@@ -802,7 +802,7 @@ pub trait HarnessAdapter {
 
     /// The rule this node's usage is read by: the row's [`grammar::StreamGrammar::usage`], or
     /// `None` where it states none. A caller folding usage incrementally reads units with it
-    /// ([`grammar::usage_units`]) rather than re-reading a whole stream per question.
+    /// ([`grammar::UsageMeter`]) rather than re-reading a whole stream per question.
     fn usage_rule(&self) -> Option<&'static grammar::UsageRule> {
         self.spec().stream?.usage.as_ref()
     }
@@ -882,7 +882,7 @@ pub trait HarnessAdapter {
 
     /// **The refused credential one frame reports**, in the harness's words — `Some` only where
     /// the row's error rules read the provider's own 401 or 403 off it
-    /// ([`crate::auth::refused_credential`]). No retry
+    /// (`crate::auth::refused_credential`). No retry
     /// heals one, so a run showing it while the harness retries (claude's ten `api_retry`s) has
     /// failed already. `None` for every other frame, and on a row with no grammar.
     fn auth_refusal(&self, frame: &serde_json::Value) -> Option<String> {
@@ -980,7 +980,7 @@ pub trait HarnessAdapter {
     /// Every tool [`LaunchSpec::tools`] declares, in this harness's own spelling, or the first
     /// refusal.
     ///
-    /// Provided rather than written four times: the *mapping* is per-harness ([`Self::tool_name`])
+    /// Provided rather than written four times: the *mapping* is per-harness ([`Self::tool_names`])
     /// and refusing on the first unmappable name is not. Every `compile` must call it — including
     /// the two harnesses that do nothing with the result — because the refusal is the part that is
     /// owed to a declaration on all four.
@@ -1072,7 +1072,7 @@ pub trait HarnessAdapter {
     /// journalled `ExitStatus::Ok` having delegated nothing (`tasks/todo.md`, owed item 0): the
     /// same silent success the gate exists to prevent, one level in. It is also why the root
     /// `report` defect fixed in `7ff470e` stayed invisible — every refusal marion started issuing
-    /// still read as evidence the run had worked. So each call carries its [`CallOutcome`], and
+    /// still read as evidence the run had worked. So each call carries its [`CallOutcome`](crate::stream::CallOutcome), and
     /// what that outcome can and cannot see is documented there.
     ///
     /// The default reads the row's grammar; a row with no grammar shows no calls, which is what
@@ -1485,7 +1485,7 @@ pub const ROWS: [Row; Harness::ALL.len()] = [
 ];
 
 /// The row for a harness: a built-in's own ([`ROWS`]), a loaded row's ([`install`]), or, for a
-/// harness this process has not loaded, [`UNLOADED`] — which [`adapter_for`] refuses by name.
+/// harness this process has not loaded, `UNLOADED` — which [`adapter_for`] refuses by name.
 pub fn row(h: Harness) -> &'static Row {
     match h.builtin_index() {
         Some(i) => &ROWS[i],

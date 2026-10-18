@@ -9,7 +9,7 @@
 //! **merge on top of** the operator's global config rather than replacing it, so `XDG_CONFIG_HOME`
 //! is the only true config replacement — and the two `OPENCODE_DISABLE_CLAUDE_CODE` /
 //! `OPENCODE_DISABLE_EXTERNAL_SKILLS` vars close a hazard `inherit_user_config: false` never
-//! contemplated (see [`isolation_env`]).
+//! contemplated (see [`SPEC`]).
 
 use marion_core::provider::Wire;
 use std::path::{Path, PathBuf};
@@ -82,7 +82,7 @@ pub const BOOT: Boot = Boot::Measured {
 /// 60-minute in-process loop, an LSP toolchain download, an auto-updater that pipes an install
 /// script into `bash`, and session sharing.
 ///
-/// **`OPENCODE_DB` names a file under the node's own directory, never `:memory:`** ([`SESSION_DB`]):
+/// **`OPENCODE_DB` names a file under the node's own directory, never `:memory:`** (`SESSION_DB`):
 /// it keeps the session store off the operator's `~/.local/share/opencode` under both modes, and it
 /// outlives the process, which `run --session <id>` needs — S31 measured `:memory:` failing every
 /// resume with `Session not found` (`tests/fixtures/s31-turn-delivery/p0b/opencode/`).
@@ -547,7 +547,7 @@ pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
 /// The same property that makes it useless as a sandbox makes it the live route.
 pub const CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 
-/// `provider.<id>.options.timeout`, ms. A **first line of defence only** — see [`isolation_env`]'s
+/// `provider.<id>.options.timeout`, ms. A **first line of defence only** — see [`SPEC`]'s
 /// note on the hang.
 pub const PROVIDER_TIMEOUT_MS: u64 = 120_000;
 /// `provider.<id>.options.headerTimeout`, ms: how long to wait for the first response header,
@@ -648,7 +648,7 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
     let mut options = json!({
         // camelCase, per the schema; `baseUrl` would be silently unused.
         "baseURL": spec.base_url,
-        // A hang here is unbounded (see `isolation_env`), so these are set even though marion's own
+        // A hang here is unbounded (see `SPEC`), so these are set even though marion's own
         // bounded run is what actually ends such a child.
         "timeout": PROVIDER_TIMEOUT_MS,
         "headerTimeout": PROVIDER_HEADER_TIMEOUT_MS,
@@ -700,7 +700,7 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
 ///
 /// Measured against [`config_json`] directly above, which is the entire document marion writes:
 /// it carries `model`, `small_model`, `provider` and `mcp` and **nothing else**. No `tools` block,
-/// no `permission` block, no `--agent` in [`compile_run`]'s argv. That is also why an opencode
+/// no `permission` block, no `--agent` in the argv [`SPEC`] renders. That is also why an opencode
 /// child declares `write`, `edit` and `bash` without marion asking — they are opencode's defaults,
 /// not a grant marion made.
 ///
@@ -780,7 +780,7 @@ pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
 /// `experimental.mcp_timeout`, and nothing else.
 ///
 /// Under ACP marion's server is declared in `session/new`, not in any `mcp.<name>` entry, so
-/// [`mcp_block`]'s per-server `timeout` cannot reach it; opencode falls back to
+/// `mcp_block`'s per-server `timeout` cannot reach it; opencode falls back to
 /// `experimental.mcp_timeout` for such a server. s36 measured 1.18.32 abandoning a 75 s
 /// `tools/call` at 60 s without it and completing it with it (`mcp-acp-call-*`). The ~30 s
 /// `initialize` limit on a `session/new` server was **not** lifted by it. This is the one key
@@ -840,7 +840,7 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
 
     /// The `provider/model` pair (refused where it is not one; none on a live node that names no
-    /// model of its own — [`Self::model_ref`]), the session title, and the live route's inline
+    /// model of its own — `Self::model_ref`), the session title, and the live route's inline
     /// document.
     ///
     /// **Under `Inherited` the declaration is compiled into the env, not written to a file.** S13:
@@ -868,7 +868,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         Ok(f)
     }
 
-    /// `marion/<model>` back to `<model>`: [`Self::model_ref`] put the provider's id under marion's
+    /// `marion/<model>` back to `<model>`: `Self::model_ref` put the provider's id under marion's
     /// own block.
     fn endpoint_model(&self, compiled: &str) -> String {
         compiled

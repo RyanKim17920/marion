@@ -704,7 +704,7 @@ fn leak_opt(s: Option<String>) -> Option<&'static str> {
 
 // ---------------------------------------------------------------------------------- the file
 
-/// A row file as TOML states it. Every key known ([`deny_unknown_fields`]), kebab-case.
+/// A row file as TOML states it. Every key known (`deny_unknown_fields`), kebab-case.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct RowDto {

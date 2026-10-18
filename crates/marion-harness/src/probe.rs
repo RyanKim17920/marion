@@ -161,8 +161,8 @@ const BUSY_TEXT_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_mil
 const BUSY_TEXT_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// **`spawn`, tried again while the file it executes is open for writing somewhere** (`ETXTBSY`,
-/// "Text file busy"), backing off from [`BUSY_TEXT_FIRST_PAUSE`] by doubling until
-/// [`BUSY_TEXT_BUDGET`] has been waited; any other outcome, and the last busy one, as it came.
+/// "Text file busy"), backing off from `BUSY_TEXT_FIRST_PAUSE` by doubling until
+/// `BUSY_TEXT_BUDGET` has been waited; any other outcome, and the last busy one, as it came.
 /// The usual wait is one short pause; the budget is for a loaded machine, where the fork that
 /// holds the descriptor can take long to reach its exec.
 ///

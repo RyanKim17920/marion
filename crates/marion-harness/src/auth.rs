@@ -188,7 +188,7 @@ const OUTAGE_STATUSES: &[&str] = &["500", "502", "503", "504", "529"];
 /// the account's window on a subscription, and on an API key the provider's rate limit unless the
 /// line names a usage window outright.
 ///
-/// Only error-shaped stdout frames are read ([`error_shaped`]) — never an assistant's prose, a tool
+/// Only error-shaped stdout frames are read (`error_shaped`) — never an assistant's prose, a tool
 /// result or a narrative, where a child writing *about* a 429 would otherwise read as having hit
 /// one. `stderr` is read whole, as [`auth_failure_line`] reads it.
 pub fn failure_cause(stderr: &str, stdout: &str, billing: Billing) -> Option<FailureCause> {

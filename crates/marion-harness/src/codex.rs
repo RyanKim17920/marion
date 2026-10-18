@@ -1162,7 +1162,7 @@ pub const SHELL_SNAPSHOT_FEATURE_KEY: &str = "features.shell_snapshot";
 /// under `$CODEX_HOME`, and `--ignore-user-config` would throw away the operator's provider and
 /// model defaults along with everything else. `-c` is the one channel that overlays without
 /// writing. Values are TOML-parsed by codex (falling back to a literal string), which is why every
-/// string below goes through [`toml_str`] rather than being interpolated raw.
+/// string below goes through `toml_str` rather than being interpolated raw.
 ///
 /// **Every key here was checked against the installed binary rather than assumed**, because a
 /// silently-ignored `-c` key is this project's recurring failure shape — and codex *does* accept

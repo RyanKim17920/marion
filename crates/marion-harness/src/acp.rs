@@ -30,14 +30,14 @@
 //! # The fifth `McpRoute`, and what is behind it
 //!
 //! `89b822d` refused to write an ACP `HarnessAdapter`, on the argument that
-//! [`McpRoute`](crate::McpRoute) names a *pre-launch* declaration route while ACP's rides
+//! [`McpRoute`] names a *pre-launch* declaration route while ACP's rides
 //! `session/new` **after** launch — so a fifth variant would sit in the supervisor's declaration
 //! check *"with nothing behind it to check"*. That last clause was the load-bearing one and **S21
 //! measured it false**: `session/new`'s `mcpServers` is a declaration marion compiles before it
 //! sends anything, so it can be checked exactly as argv is. The measurement is the whole
 //! transcript in `tests/fixtures/s21/opencode-acp-mcp.jsonl` — a real `opencode acp` started
 //! marion's MCP server, called `initialize`, called `tools/list`, and then called
-//! `tools/call {"name":"report"}`. [`McpRoute::Session`](crate::McpRoute::Session) checks the
+//! `tools/call {"name":"report"}`. [`McpRoute::Session`] checks the
 //! declaration marion compiled; it is a fourth channel, not a fourth spelling of "trust me".
 
 use std::collections::BTreeSet;
@@ -798,7 +798,7 @@ pub const COPILOT_MCP_FLAG: &str = "--additional-mcp-config";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CannedRecipe {
     /// opencode's own config document under `$XDG_CONFIG_HOME`, plus the sandbox relocations —
-    /// exactly what [`crate::opencode::config_json`] and [`crate::opencode::isolation_env`] already
+    /// exactly what [`crate::opencode::config_json`] and [`crate::opencode::SPEC`]'s env already
     /// compile for `opencode run`, because `opencode acp` is the same binary reading the same
     /// files.
     ///
@@ -1392,7 +1392,7 @@ impl Binding {
     }
 
     /// The agent's no-self-update switch, where a row states one — the bound row's, or, on the
-    /// generic path, the row whose program the command runs ([`same_program`]): the switch is a
+    /// generic path, the row whose program the command runs (`same_program`): the switch is a
     /// property of the binary, so `copilot --acp` typed as a command updates no differently from
     /// the `copilot` row. `None` for a command no row's argv starts.
     pub fn updates(&self) -> Option<UpdatePolicy> {

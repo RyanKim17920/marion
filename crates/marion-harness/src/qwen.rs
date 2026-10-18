@@ -362,12 +362,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,
 /// `installation_id` and `memories/`; `~/.qwen` kept its mtime across every run. **Dropped under
-/// [`Auth::Inherited`]**: relocating it is what hides the operator's own login.
+/// [`Auth::Inherited`](crate::Auth::Inherited)**: relocating it is what hides the operator's own login.
 pub const HOME_ENV: &str = "QWEN_HOME";
 /// Taken **verbatim** in marion's `…/v1` form; the CLI appends `/chat/completions`. **Dropped
-/// under [`Auth::Inherited`]**.
+/// under [`Auth::Inherited`](crate::Auth::Inherited)**.
 pub const BASE_URL_ENV: &str = "OPENAI_BASE_URL";
-/// Sent as `Authorization: Bearer …`. **Dropped under [`Auth::Inherited`]**.
+/// Sent as `Authorization: Bearer …`. **Dropped under [`Auth::Inherited`](crate::Auth::Inherited)**.
 pub const API_KEY_ENV: &str = "OPENAI_API_KEY";
 /// The model every request names. Mandatory under canned: without one and without a settings
 /// `model.name` the CLI has nothing to send, and marion will not guess.

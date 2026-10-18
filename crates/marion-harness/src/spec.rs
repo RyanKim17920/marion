@@ -204,7 +204,7 @@ pub struct HarnessSpec {
     pub note: &'static str,
     /// **The launch inputs this row cannot run without**, per auth mode, in the order they are
     /// checked — each refused by name with its own measured reason before the row's hook runs
-    /// ([`crate::adapter::requirements`]). Empty where the row needs nothing a launch could omit.
+    /// (`crate::adapter::requirements`). Empty where the row needs nothing a launch could omit.
     pub requires: &'static [Requirement],
     /// **Why no launch of this row's binary runs yet**, or `None`. Set where a launch could harm
     /// the operator and the row's protection is read rather than measured; every launch is refused

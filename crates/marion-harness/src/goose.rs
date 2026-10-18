@@ -491,11 +491,11 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// Relocates `~/.config/goose` (config, `GOOSE_MODE`), the sqlite session store under
 /// `~/.local/share/goose/sessions/` and the request-dump logs under `~/.local/state/goose/logs/`
 /// — every one of which a run writes, `--no-session` or not. `GOOSE_CONFIG_DIR` was measured to
-/// relocate nothing on 1.49.0 (`goose-info-paths.txt`). **Dropped under [`Auth::Inherited`]**:
+/// relocate nothing on 1.49.0 (`goose-info-paths.txt`). **Dropped under [`Auth::Inherited`](crate::Auth::Inherited)**:
 /// relocating the home is exactly what hides the operator's own configuration.
 pub const HOME_ENV: &str = "HOME";
 /// Selects the provider by name; `openai` is the Chat Completions client. **Dropped under
-/// [`Auth::Inherited`]**: a live node uses the operator's own.
+/// [`Auth::Inherited`](crate::Auth::Inherited)**: a live node uses the operator's own.
 pub const PROVIDER_ENV: &str = "GOOSE_PROVIDER";
 /// The model the provider names in every request. Mandatory under canned: the `openai` provider
 /// has no default, and marion will not guess one.
@@ -508,7 +508,7 @@ pub const HOST_ENV: &str = "OPENAI_HOST";
 /// (`goose-provider-paths.txt`), which against marion's `…/v1` host would double the segment.
 pub const BASE_PATH_ENV: &str = "OPENAI_BASE_PATH";
 /// Sent as `Authorization: Bearer …`; never echoed by the CLI (grepped its logs). **Dropped under
-/// [`Auth::Inherited`]**.
+/// [`Auth::Inherited`](crate::Auth::Inherited)**.
 pub const API_KEY_ENV: &str = "OPENAI_API_KEY";
 /// `auto` | `approve` | `chat` | `smart_approve`. Kept under **both** modes: it is what makes a
 /// headless run run at all, not isolation.

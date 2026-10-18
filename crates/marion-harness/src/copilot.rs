@@ -567,7 +567,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// Relocates configuration and state — `config.json`, `session-state/`, `logs/`,
 /// `session-store.db`, `mcp-config.json`, `installed-plugins/`. The CLI's default is
 /// `$HOME/.copilot`, and the GitHub login lives there too, which is why this is **dropped under
-/// [`Auth::Inherited`]**: relocating it is exactly what hides the operator's own credential from a
+/// [`Auth::Inherited`](crate::Auth::Inherited)**: relocating it is exactly what hides the operator's own credential from a
 /// node meant to present it. `HOME` itself is left alone under both modes — the 1.0.83 launcher
 /// resolves its platform package through `~/Library/Caches/copilot/pkg/`, and a relocated `HOME`
 /// would send every child looking for a binary that is not there.
@@ -575,7 +575,7 @@ pub const HOME_ENV: &str = "COPILOT_HOME";
 /// Selects a custom provider (BYOK) outright; with it set, GitHub authentication is not required.
 /// Takes marion's canonical `…/v1` form **verbatim**: the CLI appends `/chat/completions` to it
 /// (measured: `POST /v1/chat/completions` against a `…/v1` base). **Dropped under
-/// [`Auth::Inherited`]**: live mode names no endpoint.
+/// [`Auth::Inherited`](crate::Auth::Inherited)**: live mode names no endpoint.
 pub const PROVIDER_BASE_URL_ENV: &str = "COPILOT_PROVIDER_BASE_URL";
 /// `openai` | `azure` | `anthropic`. marion states [`PROVIDER_TYPE`] explicitly even though it is
 /// the CLI's default, because a default is a fact about a version and this is a fact about marion.
@@ -583,14 +583,14 @@ pub const PROVIDER_TYPE_ENV: &str = "COPILOT_PROVIDER_TYPE";
 /// `completions` | `responses`. Stated for the same reason.
 pub const PROVIDER_WIRE_API_ENV: &str = "COPILOT_PROVIDER_WIRE_API";
 /// Sent as `Authorization: Bearer …` and **redacted from the CLI's own JSONL wherever the string
-/// appears** (see the module docs). **Dropped under [`Auth::Inherited`]**.
+/// appears** (see the module docs). **Dropped under [`Auth::Inherited`](crate::Auth::Inherited)**.
 pub const PROVIDER_API_KEY_ENV: &str = "COPILOT_PROVIDER_API_KEY";
 /// A bearer token for the BYOK provider, always sent as `Authorization` and preferred over
 /// [`PROVIDER_API_KEY_ENV`] (1.0.88 `help environment`).
 pub const PROVIDER_BEARER_TOKEN_ENV: &str = "COPILOT_PROVIDER_BEARER_TOKEN";
 /// `true` skips every network path but the provider: GitHub auth, telemetry, web tools, the GitHub
 /// MCP server and auto-update. Requires [`PROVIDER_BASE_URL_ENV`], so it travels with it and is
-/// **dropped under [`Auth::Inherited`]**, where GitHub auth is the whole point.
+/// **dropped under [`Auth::Inherited`](crate::Auth::Inherited)**, where GitHub auth is the whole point.
 pub const OFFLINE_ENV: &str = "COPILOT_OFFLINE";
 /// `false` disables the CLI downloading a newer build of itself on start-up — the §7.7 hazard that
 /// moved codex and claude under the suite three times in five days. The row's
