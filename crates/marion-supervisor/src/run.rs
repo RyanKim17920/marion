@@ -1098,6 +1098,18 @@ pub(crate) fn init_request_id(agent_id: &AgentId) -> String {
 /// **Read once per binary, not once per spawn** ([`VersionCache`]): a fan-out of twenty children
 /// of one harness used to fork twenty `--version` probes of the same unchanged file.
 pub(crate) fn harness_version(program: &str, harness: marion_core::harness::Harness) -> String {
+    harness_version_within(program, harness, HARNESS_VERSION_TIMEOUT)
+}
+
+/// [`harness_version`] under `bound` rather than [`HARNESS_VERSION_TIMEOUT`]. The bound is a
+/// parameter so a test of what the probe carries or caches is not also a test of how fast the
+/// machine schedules a shell: under a loaded machine a fake `--version` can miss a 5 s bound,
+/// which is the degradation the bound exists for, not a fault in what the test asserts.
+pub(crate) fn harness_version_within(
+    program: &str,
+    harness: marion_core::harness::Harness,
+    bound: StdDuration,
+) -> String {
     let identity = BinaryIdentity::of(program);
     if let Some(version) = identity
         .as_ref()
@@ -1105,17 +1117,21 @@ pub(crate) fn harness_version(program: &str, harness: marion_core::harness::Harn
     {
         return version;
     }
-    let version = probe_version(program, harness);
+    let version = probe_version(program, harness, bound);
     if let (Some(id), Some(v)) = (identity, &version) {
         VERSION_CACHE.put(id, harness, v.clone());
     }
     version.unwrap_or_else(|| "unknown".into())
 }
 
-/// One bounded `--version` probe, uncached: the version line, or `None` for anything else.
-fn probe_version(program: &str, harness: marion_core::harness::Harness) -> Option<String> {
+/// One `--version` probe under `bound`, uncached: the version line, or `None` for anything else.
+fn probe_version(
+    program: &str,
+    harness: marion_core::harness::Harness,
+    bound: StdDuration,
+) -> Option<String> {
     let mut probe = version_probe(program, harness).ok()?;
-    run_bounded(&mut probe.command, HARNESS_VERSION_TIMEOUT)
+    run_bounded(&mut probe.command, bound)
         .ok()
         .filter(|o| !o.timed_out && o.code == Some(0))
         .and_then(|o| version_line(&String::from_utf8_lossy(&o.stdout)))

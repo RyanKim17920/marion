@@ -476,6 +476,51 @@ fn a_duration_the_clock_cannot_represent_bounds_the_run_rather_than_unwinding_it
     );
 }
 
+/// [`harness_version`] under a bound no scheduling stall reaches, for the tests of what a probe
+/// carries and what the cache keeps: their answer must not depend on how loaded the machine is.
+/// The bound itself is [`a_probe_past_its_bound_is_unknown_and_asked_again`]'s.
+fn probe_within_test_bound(program: &str, h: Harness) -> String {
+    crate::run::harness_version_within(program, h, StdDuration::from_secs(300))
+}
+
+/// **A probe past its bound is `"unknown"`, returns at the bound, and is asked again** — the
+/// bound [`harness_version`] holds every spawn to. The fake answers only once `answer` exists (a
+/// separate file, so the binary's identity is unchanged): the first probe, under a short bound,
+/// finds none and hangs, so it is `"unknown"` however loaded the machine is; the second, under the
+/// test bound, finds it and must read the version — which a cached timeout would not.
+#[test]
+fn a_probe_past_its_bound_is_unknown_and_asked_again() {
+    let dir = scratch("vprobe-bound");
+    let fake = dir.join("claude");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\n[ -f \"$(dirname \"$0\")/answer\" ] && { echo 1.0.0; exit 0; }\nexec sleep 60\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let program = fake.to_str().unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        crate::run::harness_version_within(
+            program,
+            Harness::ClaudeCode,
+            StdDuration::from_millis(200)
+        ),
+        "unknown"
+    );
+    assert!(
+        started.elapsed() < StdDuration::from_secs(30),
+        "the bound returned rather than waiting out the fake"
+    );
+    std::fs::write(dir.join("answer"), "").unwrap();
+    assert_eq!(
+        probe_within_test_bound(program, Harness::ClaudeCode),
+        "1.0.0",
+        "a timed-out probe is not cached"
+    );
+}
+
 /// **Every spawn-time probe carries the row's no-self-update switch**, for each shape of
 /// switch a shipped row takes: an Env row (claude) and a Pair row (codex, on its own `-c`). No
 /// shipped row takes a Document switch since the gemini CLI row was retired; `probe`'s own test
@@ -489,7 +534,7 @@ fn the_spawn_probe_carries_every_shape_of_switch() {
         let watch: Vec<&str> = watch.iter().map(String::as_str).collect();
         let fake = version_fake::write(&dir, "harness", "9.9.9 (fake)", &watch);
         assert_eq!(
-            harness_version(fake.to_str().unwrap(), h),
+            probe_within_test_bound(fake.to_str().unwrap(), h),
             "9.9.9 (fake)",
             "{h}"
         );
@@ -522,7 +567,11 @@ fn a_row_with_no_known_switch_is_never_probed() {
         .collect();
     assert!(!refused.is_empty(), "the sweep needs a row to refuse");
     for h in refused {
-        assert_eq!(harness_version(fake.to_str().unwrap(), h), "unknown", "{h}");
+        assert_eq!(
+            probe_within_test_bound(fake.to_str().unwrap(), h),
+            "unknown",
+            "{h}"
+        );
     }
     assert!(
         version_fake::probes(&dir).is_empty(),
@@ -538,8 +587,8 @@ fn the_version_is_read_once_per_binary_and_again_when_it_changes() {
     let fake = version_fake::write(&dir, "claude", "1.0.0", &[]);
     let program = fake.to_str().unwrap();
     let h = Harness::ClaudeCode;
-    assert_eq!(harness_version(program, h), "1.0.0");
-    assert_eq!(harness_version(program, h), "1.0.0");
+    assert_eq!(probe_within_test_bound(program, h), "1.0.0");
+    assert_eq!(probe_within_test_bound(program, h), "1.0.0");
     assert_eq!(
         version_fake::probes(&dir).len(),
         1,
@@ -553,7 +602,7 @@ fn the_version_is_read_once_per_binary_and_again_when_it_changes() {
         .unwrap()
         .set_modified(later)
         .unwrap();
-    assert_eq!(harness_version(program, h), "1.0.0");
+    assert_eq!(probe_within_test_bound(program, h), "1.0.0");
     assert_eq!(
         version_fake::probes(&dir).len(),
         2,
@@ -563,11 +612,11 @@ fn the_version_is_read_once_per_binary_and_again_when_it_changes() {
     let tmp = version_fake::write(&dir, "claude.new", "2.0.0", &[]);
     std::fs::rename(&tmp, &fake).unwrap();
     assert_eq!(
-        harness_version(program, h),
+        probe_within_test_bound(program, h),
         "2.0.0",
         "a replaced binary's new version"
     );
-    assert_eq!(harness_version(program, h), "2.0.0");
+    assert_eq!(probe_within_test_bound(program, h), "2.0.0");
     assert_eq!(
         version_fake::probes(&dir).len(),
         3,
@@ -575,7 +624,7 @@ fn the_version_is_read_once_per_binary_and_again_when_it_changes() {
     );
 
     let other = Harness::Codex;
-    assert_eq!(harness_version(program, other), "2.0.0");
+    assert_eq!(probe_within_test_bound(program, other), "2.0.0");
     assert_eq!(
         version_fake::probes(&dir).len(),
         4,
