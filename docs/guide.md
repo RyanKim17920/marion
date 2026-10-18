@@ -746,6 +746,12 @@ its auto-update off (`AUGMENT_DISABLE_AUTO_UPDATE=1`), and a token budget on it 
 since it reports no token usage over ACP. An untrusted repository holding
 `.augment/settings.json`, `.augment/settings.local.json` or `.mcp.json` refuses its launch.
 
+marion grants an ACP agent's permission request only for a tool call, and only within the
+node's grant: a call the agent announced in a `session/update`, or one the request itself
+describes with a tool kind, its input, content or locations. Any other request, such as
+auggie's ask to upload the workspace for indexing, gets the agent's own reject option, or is
+cancelled when the agent offers none.
+
 `marion doctor --harness acp` probes every row and names the MCP transports each
 agent advertises; `marion-supervisor doctor --acp-command "<cmd>"` probes your own agent and says
 when it turns out to be one of these rows.

@@ -481,11 +481,16 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         .checked_add(spec.bound)
         .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400));
 
-    let mut agent = Driver::spawn(spec.inv, spec.tmpdir, spec.on_line, AcpPeer(spec.policy))
-        .map_err(|source| AcpChildError::Spawn {
-            program: spec.inv.program.clone(),
-            source,
-        })?;
+    let mut agent = Driver::spawn(
+        spec.inv,
+        spec.tmpdir,
+        spec.on_line,
+        AcpPeer::new(spec.policy),
+    )
+    .map_err(|source| AcpChildError::Spawn {
+        program: spec.inv.program.clone(),
+        source,
+    })?;
     (spec.on_started)(agent.pid);
 
     let handshake = handshake_with(&mut agent, deadline, spec.boot.budget(), spec.anonymous_as)?;
@@ -882,13 +887,95 @@ fn excerpt(s: &str) -> String {
 }
 
 /// marion's ACP client: the [`Peer`] that answers what an agent asks mid-turn, under the node's
-/// [`ClientPolicy`].
-struct AcpPeer(ClientPolicy);
+/// [`ClientPolicy`], and the tool calls the agent has announced and not yet finished — one of the
+/// two things that make a permission request attributable.
+struct AcpPeer {
+    policy: ClientPolicy,
+    announced: std::collections::HashSet<String>,
+}
+
+/// ACP's `ToolKind` values: a permission request whose `toolCall` names one describes a tool call.
+const TOOL_KINDS: [&str; 10] = [
+    "read",
+    "edit",
+    "delete",
+    "move",
+    "search",
+    "execute",
+    "think",
+    "fetch",
+    "switch_mode",
+    "other",
+];
+
+impl AcpPeer {
+    fn new(policy: ClientPolicy) -> Self {
+        Self {
+            policy,
+            announced: Default::default(),
+        }
+    }
+
+    /// Whether a permission request asks about a tool call: one this agent announced in a
+    /// `session/update` and has not finished — the shape S22's claude-agent-acp and codex-acp and
+    /// S36's and S38's opencode send — or one whose `toolCall` carries a tool call's substance (an
+    /// ACP `kind`, `rawInput`, `content` or `locations`), since ACP does not require the
+    /// announcement first and Gemini-lineage agents ask before it (source, unmeasured).
+    /// A request with neither, such as auggie's ask to index the workspace, an upload of the
+    /// repository, under an id and a title alone (0.36.0 source, unmeasured), is never granted.
+    ///
+    /// This guards against an honest agent's consent for something that is no tool call, not a
+    /// hostile one, which controls its own announcements: [`ClientPolicy::permits`] stays the
+    /// boundary.
+    fn attributable(&self, params: &Value) -> bool {
+        let Some(call) = params.get("toolCall") else {
+            return false;
+        };
+        let announced = call
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| self.announced.contains(id));
+        let substance = call
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|k| TOOL_KINDS.contains(&k))
+            || ["rawInput", "content", "locations"]
+                .iter()
+                .any(|field| call.get(field).is_some());
+        announced || substance
+    }
+}
 
 /// A spawned ACP agent: the shared id-correlated driver with marion's ACP client as its peer.
 type Driver<'a> = crate::rpc::Driver<'a, AcpPeer>;
 
 impl Peer for AcpPeer {
+    /// Record each tool call the agent announces, so a later permission request about it is
+    /// attributable, and forget it once it ends (`completed` or `failed`), so a long-lived node
+    /// holds only the calls in flight.
+    fn notified(&mut self, frame: &Value) {
+        let Some(update) = frame.pointer("/params/update") else {
+            return;
+        };
+        if !matches!(
+            update.get("sessionUpdate").and_then(Value::as_str),
+            Some("tool_call" | "tool_call_update")
+        ) {
+            return;
+        }
+        let Some(id) = update.get("toolCallId").and_then(Value::as_str) else {
+            return;
+        };
+        match update.get("status").and_then(Value::as_str) {
+            Some("completed" | "failed") => {
+                self.announced.remove(id);
+            }
+            _ => {
+                self.announced.insert(id.to_string());
+            }
+        }
+    }
+
     /// Answer one client-bound request, under the node's [`ClientPolicy`].
     ///
     /// The shipped [`acp::initialize_request`] tells every agent that marion's client does
@@ -896,7 +983,8 @@ impl Peer for AcpPeer {
     /// dropped; what the answer allows is the node's grant, never more.
     ///
     /// **The permission rule, stated once.** A `session/request_permission` is approved (with
-    /// [`allow_option`]'s choice) only where [`ClientPolicy::permits`] says the node may do it:
+    /// [`allow_option`]'s choice) only where it asks about a tool call ([`AcpPeer::attributable`])
+    /// and [`ClientPolicy::permits`] says the node may do it:
     /// reading always; editing, deleting and moving on a node that writes; executing on a node that
     /// runs commands; marion's own verbs always, because an unapproved `report` is a node that did
     /// the work and ends `Unreported`. Anything else is answered with the agent's own reject option
@@ -920,22 +1008,24 @@ impl Peer for AcpPeer {
             .unwrap_or_default();
         let params = request.get("params").unwrap_or(&Value::Null).clone();
         match method {
-            "session/request_permission" => match if self.0.permits(&params) {
-                allow_option(&params)
-            } else {
-                reject_option(&params)
-            } {
-                Some(pick) => ok(
-                    &id,
-                    json!({"outcome": {"outcome": "selected", "optionId": pick}}),
-                ),
-                // Selecting an option that was not offered would be a fabricated answer; ACP's own
-                // shape for "no option was taken" is an outcome, not an error, and it is the one
-                // that lets the agent proceed.
-                None => ok(&id, json!({"outcome": {"outcome": "cancelled"}})),
-            },
+            "session/request_permission" => {
+                match if self.attributable(&params) && self.policy.permits(&params) {
+                    allow_option(&params)
+                } else {
+                    reject_option(&params)
+                } {
+                    Some(pick) => ok(
+                        &id,
+                        json!({"outcome": {"outcome": "selected", "optionId": pick}}),
+                    ),
+                    // Selecting an option that was not offered would be a fabricated answer; ACP's own
+                    // shape for "no option was taken" is an outcome, not an error, and it is the one
+                    // that lets the agent proceed.
+                    None => ok(&id, json!({"outcome": {"outcome": "cancelled"}})),
+                }
+            }
             "fs/read_text_file" => match params.get("path").and_then(Value::as_str) {
-                Some(p) => match self.0.read(p) {
+                Some(p) => match self.policy.read(p) {
                     Ok(text) => ok(&id, json!({"content": text})),
                     Err(e) => err(&id, -32000, e),
                 },
@@ -948,7 +1038,7 @@ impl Peer for AcpPeer {
                 params.get("path").and_then(Value::as_str),
                 params.get("content").and_then(Value::as_str),
             ) {
-                (Some(p), Some(c)) => match self.0.write(p, c) {
+                (Some(p), Some(c)) => match self.policy.write(p, c) {
                     Ok(()) => ok(&id, json!({})),
                     Err(e) => err(&id, -32000, e),
                 },
@@ -1092,6 +1182,15 @@ mod tests {
         peer.answer(&json!({"jsonrpc": "2.0", "id": 7, "method": method, "params": params}))
     }
 
+    /// The agent announcing tool call `id`, as every measured agent does before asking about it.
+    fn announce(peer: &mut AcpPeer, id: &str) {
+        peer.notified(
+            &json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s",
+            "update": {"sessionUpdate": "tool_call", "toolCallId": id, "status": "pending"}}}),
+        );
+    }
+
     /// **marion's client reaches only the node's own tree.** A read or a write outside it — by an
     /// absolute path, by `..`, or through a symlink placed inside the tree — is refused, and a
     /// read-only node's write inside it is refused too. Inside the tree both are performed.
@@ -1104,7 +1203,7 @@ mod tests {
         std::fs::write(&outside, "operator secret").unwrap();
         std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
         std::os::unix::fs::symlink(&dir, tree.join("up")).unwrap();
-        let mut peer = AcpPeer(full_grant(&tree));
+        let mut peer = AcpPeer::new(full_grant(&tree));
         let text = |v: &Value| v.to_string();
 
         let inside = tree.join("a.txt");
@@ -1148,7 +1247,7 @@ mod tests {
         let relative = ask(&mut peer, "fs/read_text_file", json!({"path": "a.txt"}));
         assert!(relative.get("error").is_some(), "{relative}");
 
-        let mut reader = AcpPeer(ClientPolicy {
+        let mut reader = AcpPeer::new(ClientPolicy {
             writes: false,
             runs: false,
             ..full_grant(&tree)
@@ -1169,7 +1268,7 @@ mod tests {
         let big = dir.join("big.txt");
         let f = std::fs::File::create(&big).unwrap();
         f.set_len(READ_LIMIT + 1).unwrap();
-        let mut peer = AcpPeer(full_grant(&dir));
+        let mut peer = AcpPeer::new(full_grant(&dir));
         let r = ask(&mut peer, "fs/read_text_file", json!({"path": big}));
         assert!(
             r.get("error").is_some(),
@@ -1217,7 +1316,7 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        let mut peer = AcpPeer(full_grant(&tree));
+        let mut peer = AcpPeer::new(full_grant(&tree));
         let r = ask(&mut peer, "fs/read_text_file", json!({"path": fifo}));
         assert!(r.get("error").is_some(), "{r}");
 
@@ -1241,7 +1340,8 @@ mod tests {
             {"optionId": "no", "kind": "reject_once"}
         ]);
         let picked = |policy: &ClientPolicy, call: Value| {
-            let mut peer = AcpPeer(policy.clone());
+            let mut peer = AcpPeer::new(policy.clone());
+            announce(&mut peer, call["toolCallId"].as_str().unwrap());
             let r = ask(
                 &mut peer,
                 "session/request_permission",
@@ -1285,7 +1385,8 @@ mod tests {
                 "{policy:?} asked {call}"
             );
         }
-        let mut peer = AcpPeer(reader);
+        let mut peer = AcpPeer::new(reader);
+        announce(&mut peer, "2");
         let no_reject = ask(
             &mut peer,
             "session/request_permission",
@@ -1324,6 +1425,167 @@ mod tests {
         }
     }
 
+    /// **Consent is granted only for a tool call.** auggie 0.36.0's source (unmeasured) asks,
+    /// during `session/new`, to index the workspace, an upload of the repository, under a
+    /// `toolCallId` no tool call ever carried and a title alone; its option kinds here are an
+    /// assumption (u). That ask is declined with the reject option (session-disable), never an
+    /// always-*, even on a node granted everything; one offering no reject is cancelled; and a
+    /// request naming no call, a kind ACP does not define, or a call that already ended is declined
+    /// the same way. A Gemini-shaped ask, unannounced but carrying the call's kind, content and
+    /// locations, follows the grant, as does an announced one. Mutation: drop the attribution
+    /// check, drop either of its two tests, or keep a finished call.
+    #[test]
+    fn a_permission_request_that_is_no_tool_call_is_never_granted() {
+        let dir = scratch("acp-unattributed");
+        let mut peer = AcpPeer::new(full_grant(&dir));
+        let indexing = json!({
+            "sessionId": "s",
+            "toolCall": {"toolCallId": "workspace-indexing-permission", "title": "Index workspace"},
+            "options": [
+                {"optionId": "always-enable", "kind": "allow_always"},
+                {"optionId": "session-enable", "kind": "allow_once"},
+                {"optionId": "session-disable", "kind": "reject_once"},
+                {"optionId": "always-disable", "kind": "reject_always"},
+            ],
+        });
+        let r = ask(&mut peer, "session/request_permission", indexing.clone());
+        assert_eq!(r["result"]["outcome"]["optionId"], "session-disable", "{r}");
+
+        let no_reject = json!({
+            "sessionId": "s",
+            "toolCall": {"toolCallId": "telemetry"},
+            "options": [{"optionId": "ok", "kind": "allow_once"}],
+        });
+        let r = ask(&mut peer, "session/request_permission", no_reject);
+        assert_eq!(r["result"]["outcome"]["outcome"], "cancelled", "{r}");
+
+        let bare = json!({"sessionId": "s", "options": [
+            {"optionId": "yes", "kind": "allow_once"}, {"optionId": "no", "kind": "reject_once"}]});
+        let r = ask(&mut peer, "session/request_permission", bare);
+        assert_eq!(r["result"]["outcome"]["optionId"], "no", "{r}");
+
+        let mut unknown_kind = indexing.clone();
+        unknown_kind["toolCall"]["kind"] = json!("index");
+        let r = ask(&mut peer, "session/request_permission", unknown_kind);
+        assert_eq!(r["result"]["outcome"]["optionId"], "session-disable", "{r}");
+
+        // Gemini-lineage agents ask before announcing the call: its substance makes it one.
+        let gemini = json!({
+            "sessionId": "s",
+            "toolCall": {"toolCallId": "write_file-1", "status": "pending", "title": "Write a.txt",
+                "kind": "edit", "content": [], "locations": [{"path": dir.join("a.txt")}]},
+            "options": [
+                {"optionId": "proceed_always", "kind": "allow_always"},
+                {"optionId": "proceed_once", "kind": "allow_once"},
+                {"optionId": "cancel", "kind": "reject_once"},
+            ],
+        });
+        let r = ask(&mut peer, "session/request_permission", gemini);
+        assert_eq!(r["result"]["outcome"]["optionId"], "proceed_once", "{r}");
+        for (field, value) in [
+            ("kind", json!("execute")),
+            ("rawInput", json!({})),
+            ("content", json!([])),
+            ("locations", json!([])),
+        ] {
+            let mut one = indexing.clone();
+            one["toolCall"][field] = value;
+            let r = ask(&mut peer, "session/request_permission", one);
+            assert_eq!(
+                r["result"]["outcome"]["optionId"], "session-enable",
+                "{field}: {r}"
+            );
+        }
+
+        // Announced, the same request is a tool call like any other and follows the grant.
+        announce(&mut peer, "workspace-indexing-permission");
+        let r = ask(&mut peer, "session/request_permission", indexing.clone());
+        assert_eq!(r["result"]["outcome"]["optionId"], "session-enable", "{r}");
+
+        // Once the call ends it is forgotten, and an ask about it is no longer attributable.
+        for status in ["completed", "failed"] {
+            announce(&mut peer, "workspace-indexing-permission");
+            peer.notified(
+                &json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "s", "update": {"sessionUpdate": "tool_call_update",
+                    "toolCallId": "workspace-indexing-permission", "status": status}}}),
+            );
+            assert!(peer.announced.is_empty(), "{status}");
+            let r = ask(&mut peer, "session/request_permission", indexing.clone());
+            assert_eq!(
+                r["result"]["outcome"]["optionId"], "session-disable",
+                "{status}: {r}"
+            );
+        }
+    }
+
+    /// **Every measured permission ask is still granted** under the attribution rule: each ACP
+    /// capture holding a `session/request_permission` is replayed through marion's client, frame
+    /// by frame, on a node granted everything, and every ask is answered with an allow. S33's
+    /// captures hold none; these are the captures that do. S38's driver log cuts each frame short
+    /// (its ask ends mid-option), so an ask there that does not parse is held to attribution alone:
+    /// the call id it names was announced earlier in the same log.
+    #[test]
+    fn every_captured_permission_ask_is_attributable() {
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures");
+        let dir = scratch("acp-captured-asks");
+        let mut asked = Vec::new();
+        for capture in [
+            "s22/claude-agent-acp-session.jsonl",
+            "s22/codex-acp-session.jsonl",
+            "s36-opencode-parity/permission-acp-ask/acp-client.jsonl",
+            "s38-read-only/acp/positive-allow.stdout.txt",
+            "s38-read-only/acp/negative-reject.stdout.txt",
+        ] {
+            let text = std::fs::read_to_string(format!("{fixtures}/{capture}")).unwrap();
+            let mut peer = AcpPeer::new(full_grant(&dir));
+            for line in text.lines() {
+                // The S38 driver logs the agent's frames as `<< {…}` and its own as `>> {…}`.
+                if line.starts_with(">>") {
+                    continue;
+                }
+                let Some(json) = line.find('{').map(|i| &line[i..]) else {
+                    continue;
+                };
+                let Ok(frame) = serde_json::from_str::<Value>(json) else {
+                    if line.contains("\"session/request_permission\"") {
+                        let id = line
+                            .split("\"toolCallId\":\"")
+                            .nth(1)
+                            .and_then(|rest| rest.split('"').next())
+                            .unwrap();
+                        let params = json!({"toolCall": {"toolCallId": id}});
+                        assert!(peer.attributable(&params), "{capture}: {id}");
+                        asked.push(capture);
+                    }
+                    continue;
+                };
+                // S36's client logs each frame as `{"t", "dir", "m": {…}}`; "out" is its own.
+                if frame.get("dir").and_then(Value::as_str) == Some("out") {
+                    continue;
+                }
+                let frame = frame.get("m").cloned().unwrap_or(frame);
+                if frame.get("method").and_then(Value::as_str) == Some("session/request_permission")
+                {
+                    let r = peer.answer(&frame);
+                    let picked = r["result"]["outcome"]["optionId"].as_str().unwrap_or("");
+                    let kind = frame["params"]["options"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|o| o["optionId"] == picked)
+                        .and_then(|o| o["kind"].as_str())
+                        .unwrap_or("");
+                    assert!(kind.starts_with("allow"), "{capture}: {r}");
+                    asked.push(capture);
+                } else if frame.get("id").is_none() {
+                    peer.notified(&frame);
+                }
+            }
+        }
+        assert_eq!(asked.len(), 5, "each capture's ask was replayed: {asked:?}");
+    }
+
     /// **A whole turn, end to end**, including the two things a probe never does: a client-bound
     /// request answered mid-turn, and a transcript that the shipped ACP reader parses into the call
     /// the model made.
@@ -1342,10 +1604,10 @@ read new
 printf '%s\n' '{OPENED}'
 read prompt
 printf '%s\n' "$prompt" > '{prompt}'
-printf '%s\n' '{{"jsonrpc":"2.0","id":91,"method":"session/request_permission","params":{{"sessionId":"ses_fake","options":[{{"optionId":"no","kind":"reject_once"}},{{"optionId":"yes-always","kind":"allow_always"}}]}}}}'
+printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_fake","update":{{"sessionUpdate":"tool_call","toolCallId":"c1","title":"marion_report","status":"pending","rawInput":{{}}}}}}}}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":91,"method":"session/request_permission","params":{{"sessionId":"ses_fake","toolCall":{{"toolCallId":"c1","title":"marion_report"}},"options":[{{"optionId":"no","kind":"reject_once"}},{{"optionId":"yes-always","kind":"allow_always"}}]}}}}'
 read answer
 printf '%s\n' "$answer" > '{perm}'
-printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_fake","update":{{"sessionUpdate":"tool_call","toolCallId":"c1","title":"marion_report","status":"pending","rawInput":{{}}}}}}}}'
 printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_fake","update":{{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed","rawInput":{{"narrative":"hello from acp"}}}}}}}}'
 printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
 # A long-lived stdio server: it does not exit when the turn ends, and marion must kill it.
