@@ -1838,6 +1838,17 @@ fn version_command(
 }
 
 fn read_version(program: &Path, harness: Harness, notes: &mut Vec<String>) -> Option<String> {
+    read_version_within(program, harness, notes, VERSION_BUDGET)
+}
+
+/// [`read_version`] under `budget` rather than [`VERSION_BUDGET`], so a test of what the probe
+/// carries is not also a test of how fast a loaded machine schedules a shell.
+fn read_version_within(
+    program: &Path,
+    harness: Harness,
+    notes: &mut Vec<String>,
+    budget: Duration,
+) -> Option<String> {
     let started = Instant::now();
     // Held to the end of this function: a document switch's settings file lives as long as it.
     let mut probe = version_command(program, harness)
@@ -1847,12 +1858,12 @@ fn read_version(program: &Path, harness: Harness, notes: &mut Vec<String>) -> Op
         .spawn(&mut probe.command)
         .map_err(|e| notes.push(format!("version: FAILED — {e}")))
         .ok()?;
-    let (out, timed_out) = read_bounded(&mut child, VERSION_BUDGET);
+    let (out, timed_out) = read_bounded(&mut child, budget);
     if timed_out {
         unsafe { kill(child.id() as i32, SIGKILL) };
         let _ = child.wait();
         notes.push(format!(
-            "version: FAILED — `--version` did not answer within {VERSION_BUDGET:?}"
+            "version: FAILED — `--version` did not answer within {budget:?}"
         ));
         return None;
     }
@@ -2779,6 +2790,53 @@ mod tests {
         );
     }
 
+    /// **Doctor's probe past its budget is a named failure, and the next probe reads again.** The
+    /// fake answers only once `answer` exists (a separate file): under a short budget it hangs, so
+    /// the probe fails however loaded the machine is; with the flag it answers.
+    #[test]
+    fn the_doctor_probe_past_its_budget_fails_by_name_and_reads_again() {
+        let dir = marion_testsupport::scratch("doctor-vprobe-budget");
+        let fake = dir.join("claude");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n[ -f \"$(dirname \"$0\")/answer\" ] && { echo 1.0.0; exit 0; }\nexec sleep 60\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut notes = Vec::new();
+        let started = Instant::now();
+        assert_eq!(
+            read_version_within(
+                &fake,
+                Harness::ClaudeCode,
+                &mut notes,
+                Duration::from_millis(200)
+            ),
+            None
+        );
+        assert!(started.elapsed() < Duration::from_secs(30), "{notes:?}");
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("did not answer within 200ms")),
+            "{notes:?}"
+        );
+        std::fs::write(dir.join("answer"), "").unwrap();
+        let mut notes = Vec::new();
+        assert_eq!(
+            read_version_within(
+                &fake,
+                Harness::ClaudeCode,
+                &mut notes,
+                Duration::from_secs(300)
+            )
+            .as_deref(),
+            Some("1.0.0"),
+            "{notes:?}"
+        );
+    }
+
     /// **Doctor's probe carries every shape of switch too** — the same fake the spawn probe's
     /// test uses, read through `read_version`: an Env row and a Pair row on the row's own flag. (No
     /// shipped row takes a Document switch since the gemini CLI row was retired; `probe`'s own
@@ -2793,7 +2851,7 @@ mod tests {
             let fake = version_fake::write(&dir, "harness", "9.9.9", &watch);
             let mut notes = Vec::new();
             assert_eq!(
-                read_version(&fake, h, &mut notes).as_deref(),
+                read_version_within(&fake, h, &mut notes, Duration::from_secs(300)).as_deref(),
                 Some("9.9.9"),
                 "{h}: {notes:?}"
             );
