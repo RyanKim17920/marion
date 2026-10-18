@@ -680,6 +680,11 @@ pub struct Agent {
     /// **The built-in row whose borrowed-login switch every launch of this agent's binary
     /// carries**, or `None` for an agent that adopts no other harness's login.
     pub login_guard: Option<LoginGuard>,
+    /// **Why no launch of this agent runs yet**, or `None` — [`spec::HarnessSpec::held`] for an
+    /// agent with no built-in row to hold it: set where its launch could harm the operator and
+    /// nothing measured backs it, and lifted by the measurement's commit. Reached by id and by a
+    /// command running the agent's binary ([`Binding::held`]).
+    pub held: Option<&'static str>,
     /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
     /// which is how a binary behind any command line is recognised as this row
     /// ([`identity_note`]). Held to the row's S33 capture by the sweep test.
@@ -835,6 +840,7 @@ pub const OPENCODE: Agent = Agent {
     // The same binary as opencode's row, one subcommand over.
     updates: AgentUpdates::Twin(Harness::OpenCode),
     login_guard: None,
+    held: None,
     agent_info: "OpenCode",
     install: "brew install opencode",
     reach: Reach::Opened {
@@ -870,6 +876,7 @@ pub const CLAUDE_ACP: Agent = Agent {
     // (~6359), so the claude-code row's variable reaches it.
     updates: AgentUpdates::Twin(Harness::ClaudeCode),
     login_guard: None,
+    held: None,
     agent_info: "@agentclientprotocol/claude-agent-acp",
     install: "npm i -g @agentclientprotocol/claude-agent-acp",
     reach: Reach::Opened {
@@ -913,6 +920,7 @@ pub const CODEX_ACP: Agent = Agent {
                inherited",
     }),
     login_guard: None,
+    held: None,
     agent_info: "@agentclientprotocol/codex-acp",
     install: "npm i -g @agentclientprotocol/codex-acp",
     reach: Reach::Opened {
@@ -957,6 +965,7 @@ pub const COPILOT: Agent = Agent {
     // The same binary as copilot's row: S33 ran it with this switch set by hand.
     updates: AgentUpdates::Twin(Harness::Copilot),
     login_guard: None,
+    held: None,
     agent_info: "Copilot",
     install: "npm i -g @github/copilot",
     reach: Reach::Opened {
@@ -988,6 +997,7 @@ pub const KILO: Agent = Agent {
                variable is not assumed to be its",
     }),
     login_guard: None,
+    held: None,
     agent_info: "Kilo",
     install: "npm i -g @kilocode/cli",
     reach: Reach::Opened {
@@ -1013,6 +1023,7 @@ pub const QWEN: Agent = Agent {
     // The same binary as qwen's row.
     updates: AgentUpdates::Twin(Harness::Qwen),
     login_guard: None,
+    held: None,
     agent_info: "qwen-code",
     install: "npm i -g @qwen-code/qwen-code",
     reach: Reach::Opened {
@@ -1039,6 +1050,7 @@ pub const GOOSE: Agent = Agent {
     // The same binary as goose's row, which never updates itself.
     updates: AgentUpdates::Twin(Harness::Goose),
     login_guard: None,
+    held: None,
     agent_info: "goose",
     install: "brew install block-goose-cli",
     reach: Reach::Opened {
@@ -1068,6 +1080,7 @@ pub const FAST_AGENT: Agent = Agent {
         note: "no updater was searched for in fast-agent-acp 0.10.37",
     }),
     login_guard: None,
+    held: None,
     agent_info: "fast-agent-acp",
     install: "uv tool install fast-agent-acp",
     reach: Reach::Opened {
@@ -1095,6 +1108,7 @@ pub const VIBE: Agent = Agent {
         note: "no updater was searched for in mistral-vibe 2.25.8",
     }),
     login_guard: None,
+    held: None,
     agent_info: "@mistralai/mistral-vibe",
     install: "uv tool install mistral-vibe",
     reach: Reach::Opened {
@@ -1120,6 +1134,7 @@ pub const VTCODE: Agent = Agent {
         note: "no updater was searched for in vtcode 0.169.0",
     }),
     login_guard: None,
+    held: None,
     agent_info: "vtcode",
     install: "brew install vtcode",
     reach: Reach::Opened {
@@ -1147,6 +1162,7 @@ pub const AUGGIE: Agent = Agent {
         note: "no updater was searched for in auggie 0.36.0",
     }),
     login_guard: None,
+    held: None,
     agent_info: "auggie",
     install: "npm i -g @augmentcode/auggie",
     reach: Reach::Refused,
@@ -1168,6 +1184,7 @@ pub const QODER: Agent = Agent {
         note: "no updater was searched for in qoder-cli 1.1.64",
     }),
     login_guard: None,
+    held: None,
     agent_info: "qoder-cli",
     install: "npm i -g @qoder-ai/qodercli",
     reach: Reach::Refused,
@@ -1188,6 +1205,7 @@ pub const CLINE: Agent = Agent {
     // The same binary as cline's row, at the release that row measured.
     updates: AgentUpdates::Twin(Harness::Cline),
     login_guard: None,
+    held: None,
     agent_info: "cline",
     install: "npm i -g cline",
     reach: Reach::Refused,
@@ -1213,6 +1231,7 @@ pub const PI_ACP: Agent = Agent {
     // shows a notice and never installs.
     updates: AgentUpdates::Twin(Harness::Pi),
     login_guard: None,
+    held: None,
     agent_info: "pi-acp",
     install: "npm i -g pi-acp",
     reach: Reach::Refused,
@@ -1244,6 +1263,7 @@ pub const HERMES: Agent = Agent {
         row: Harness::Hermes,
         programs: &["hermes", "hermes-acp", "hermes-agent"],
     }),
+    held: None,
     agent_info: "hermes-agent",
     install: "uv tool install 'hermes-agent[acp]'",
     reach: Reach::Unprobed {
@@ -1396,20 +1416,26 @@ impl Binding {
     /// property of the binary, so `copilot --acp` typed as a command updates no differently from
     /// the `copilot` row. `None` for a command no row's argv starts.
     pub fn updates(&self) -> Option<UpdatePolicy> {
-        self.refinement
-            .or_else(|| same_program(&self.argv))
-            .map(|a| a.updates.policy())
+        self.binary().map(|a| a.updates.policy())
+    }
+
+    /// The agent row of the binary this launch runs: the bound row, or the one whose program and
+    /// arguments the command starts with ([`same_program`]). Only binary facts are read off it.
+    fn binary(&self) -> Option<Agent> {
+        self.refinement.or_else(|| same_program(&self.argv))
+    }
+
+    /// The agent's own hold ([`Agent::held`]): the bound row's, or the row whose binary the
+    /// command runs, so `agent acp` typed as a command, or by a full path, is held as its row is.
+    pub fn held(&self) -> Option<&'static str> {
+        self.binary().and_then(|a| a.held)
     }
 
     /// The built-in row of the binary this agent runs ([`AgentUpdates::Twin`]) — the bound row's,
     /// or the one whose program the command runs (`same_program`). `None` for an agent with no
     /// built-in twin.
     pub fn twin(&self) -> Option<&'static HarnessSpec> {
-        match self
-            .refinement
-            .or_else(|| same_program(&self.argv))?
-            .updates
-        {
+        match self.binary()?.updates {
             AgentUpdates::Twin(h) => Some(crate::adapter::harness_spec(h)),
             AgentUpdates::Own(_) => None,
         }
@@ -2273,10 +2299,12 @@ impl HarnessAdapter for AcpAdapter {
     fn held(&self, spec: &LaunchSpec) -> Option<&'static str> {
         self.spec().held.or_else(|| {
             let binding = self.binding(spec).ok()?;
-            [binding.login_guard(), binding.twin()]
-                .into_iter()
-                .flatten()
-                .find_map(|row| row.held)
+            binding.held().or_else(|| {
+                [binding.login_guard(), binding.twin()]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|row| row.held)
+            })
         })
     }
 
@@ -2750,6 +2778,34 @@ mod tests {
         }
         assert_eq!(claimed, ["hermes", "hermes-acp", "hermes-agent"]);
         assert_eq!(guarded("opencode acp"), None);
+    }
+
+    /// **An agent's own hold is the hold of the binary the launch runs**: the bound row's by id,
+    /// and for a command the row whose program and arguments it starts with, bare or by a full
+    /// path with more arguments. Mutation: read it off the refinement alone, or not at all.
+    #[test]
+    fn an_agents_hold_is_read_off_the_binary_it_runs() {
+        let held = Agent {
+            held: Some("synthetic: held"),
+            ..KILO
+        };
+        assert_eq!(Binding::refined(held).held(), Some("synthetic: held"));
+        assert_eq!(Binding::refined(KILO).held(), None);
+        assert_eq!(Binding::resolve("some-agent --acp").unwrap().held(), None);
+        for a in AGENTS {
+            let (program, args) = a.argv.split_first().unwrap();
+            for selector in [
+                a.id.to_string(),
+                a.argv.join(" "),
+                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
+            ] {
+                assert_eq!(
+                    Binding::resolve(&selector).unwrap().held(),
+                    a.held,
+                    "{selector}"
+                );
+            }
+        }
     }
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s20");
