@@ -122,7 +122,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ],
         any_provider: true,
     },
-    token: TokenCarriers::DECLARATION,
+    token: TokenCarriers::DECLARED_FILE,
     constraint: Constraint::Fixed {
         prefix: "",
         value: NO_TOOL_AVAILABILITY_SURFACE,
@@ -831,7 +831,7 @@ pub enum Declaration {
     /// `~/.copilot/mcp-config.json` ([`crate::copilot::mcp_config_json`]) — and the session block
     /// is then left **empty**, so that a version which one day honours the protocol channel does
     /// not start a second bridge. Argv is readable through `ps`, so the document never carries the
-    /// node token: `token` states how the agent passes it on instead, and must withhold it.
+    /// node token: `token` states how the agent passes the token's file on instead.
     Argv {
         flag: &'static str,
         token: crate::spec::TokenCarrier,
@@ -2786,9 +2786,9 @@ impl HarnessAdapter for AcpAdapter {
         }
     }
 
-    /// The protocol row's carrier — the token rides `session/new` beside the node's identity —
-    /// except on a binding whose refinement declares the bridge on argv, whose own carrier then
-    /// withholds it. An unresolvable binding answers for the protocol; `compile` refuses it anyway.
+    /// The protocol row's carrier — `session/new` names the token's file beside the node's
+    /// identity — except on a binding whose refinement declares the bridge on argv, which states
+    /// its own. An unresolvable binding answers for the protocol; `compile` refuses it anyway.
     fn token_carrier(&self, spec: &LaunchSpec) -> spec::TokenCarrier {
         match self.binding(spec).map(Binding::declaration) {
             Ok(Declaration::Argv { token, .. }) => token,

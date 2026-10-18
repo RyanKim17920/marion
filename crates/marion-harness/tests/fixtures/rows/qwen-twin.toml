@@ -88,7 +88,7 @@ login = [
 ]
 
 [token]
-canned = "declaration"
+canned = { declared-file = "the declaration names the token's 0600 file in the node's own directory, never the token: a process running as the operator reads any other's environment (KERN_PROCARGS2, /proc/<pid>/environ)" }
 live = { inherited-env = """qwen 0.23.0 (2026-09-27, stub MCP server declared by `--mcp-config` with no \
                    `env`): the server's environment is qwen's own, `MARION_NODE_TOKEN` included""" }
 

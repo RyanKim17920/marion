@@ -15,11 +15,13 @@ pub const AGENT_TYPE_ENV: &str = "MARION_AGENT_TYPE";
 pub const AUTH_ENV: &str = "MARION_AUTH";
 pub const BASE_URL_ENV: &str = "MARION_BASE_URL";
 pub const DEPTH_ENV: &str = "MARION_DEPTH";
+/// **A name marion never sets**: the node token once rode it, in a bridge's environment, which
+/// any process running as the operator can read. Kept only so an environment that still carries
+/// it (one a node exported) is scrubbed before it reaches a launch.
 pub const NODE_TOKEN_ENV: &str = "MARION_NODE_TOKEN";
-/// Where a harness's environment points its bridge at the node token, in place of the token
-/// itself, on a row whose carrier withholds it from the declaration: the path of a 0600 file in
-/// the node's own directory ([`NODE_TOKEN_FILE`]). A model's shell commands inherit the harness's
-/// environment, so the token is never in it.
+/// Where a declaration, or a harness's environment, points the bridge at the node token in place
+/// of the token itself: the path of a 0600 file in the node's own directory ([`NODE_TOKEN_FILE`]).
+/// The token is never in any process's environment ([`crate::spec::TokenCarrier`]).
 pub const NODE_TOKEN_FILE_ENV: &str = "MARION_NODE_TOKEN_FILE";
 /// The node token's file name, under the node's own config or document directory.
 pub const NODE_TOKEN_FILE: &str = "node-token";
@@ -58,8 +60,8 @@ pub struct BridgeEnv {
     pub agent_type: String,
     /// The node's depth, root = 0 (§3.1's `max_depth`).
     pub depth: u32,
-    /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
-    /// absent, never empty ([`NODE_TOKEN_ENV`]).
+    /// §5.4's capability token for this node — `None` where the supervisor minted none. Written to
+    /// its file ([`crate::spec::TokenCarrier::document`]); never one of [`Self::pairs`].
     pub node_token: Option<marion_core::secret::Secret>,
     /// Where the node token's 0600 file is, for a declaration that names the file rather than
     /// carrying the token ([`NODE_TOKEN_FILE_ENV`]) — a declaration that itself rides the
@@ -94,9 +96,6 @@ impl BridgeEnv {
         // Present or absent, never empty ([`BASE_URL_ENV`]); the same for the other two.
         if let Some(u) = &self.base_url {
             pairs.push((BASE_URL_ENV.to_string(), u.clone()));
-        }
-        if let Some(t) = &self.node_token {
-            pairs.push((NODE_TOKEN_ENV.to_string(), t.expose().to_string()));
         }
         if let Some(f) = &self.node_token_file {
             pairs.push((
@@ -142,26 +141,29 @@ mod tests {
         }
     }
 
-    /// **The token is carried, but never printed.** The declaration's `env` block is where the
-    /// bridge reads its capability from, so the value must reach [`BridgeEnv::pairs`] verbatim;
-    /// a `{:?}` of the same struct must not show it.
+    /// **The token is neither declared nor printed.** Any process running as the operator reads
+    /// another's environment, so [`BridgeEnv::pairs`] carries only the path of the token's file,
+    /// never the token; a `{:?}` of the same struct must not show it either.
     #[test]
-    fn the_node_token_reaches_the_env_block_but_never_a_debug_print() {
-        let b = bridge(Some("tok-SENTINEL-7c1f"));
+    fn the_node_token_never_reaches_the_env_block_or_a_debug_print() {
+        let mut b = bridge(Some("tok-SENTINEL-7c1f"));
+        b.node_token_file = Some("/state/agents/019f-child/config/node-token".into());
         let printed = format!("{b:?} {b:#?}");
         assert!(!printed.contains("SENTINEL"), "{printed}");
+        let pairs = b.pairs();
         assert!(
-            b.pairs()
-                .contains(&(NODE_TOKEN_ENV.to_string(), "tok-SENTINEL-7c1f".to_string())),
-            "{:?}",
-            b.pairs().iter().map(|(k, _)| k).collect::<Vec<_>>()
-        );
-        assert_eq!(b.env_json()[NODE_TOKEN_ENV], "tok-SENTINEL-7c1f");
-        assert!(
-            bridge(None)
-                .pairs()
+            pairs
                 .iter()
-                .all(|(k, _)| k != NODE_TOKEN_ENV)
+                .all(|(k, v)| k != NODE_TOKEN_ENV && !v.contains("SENTINEL")),
+            "{pairs:?}"
         );
+        assert!(
+            pairs.contains(&(
+                NODE_TOKEN_FILE_ENV.to_string(),
+                "/state/agents/019f-child/config/node-token".to_string()
+            )),
+            "{pairs:?}"
+        );
+        assert!(b.env_json().get(NODE_TOKEN_ENV).is_none());
     }
 }

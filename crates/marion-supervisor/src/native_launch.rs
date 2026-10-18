@@ -912,13 +912,19 @@ mod tests {
                 "a native root has no readiness file: marion never waits on the operator's own \
                  session to announce itself"
             );
-            // §5.4, carried exactly as a managed root's declaration carries it: the bridge in
-            // front of the operator's harness is a node's bridge, and a node's bridge must be able
-            // to prove which node it serves or it can never spawn.
+            // §5.4, carried exactly as a managed root's is: the bridge in front of the operator's
+            // harness is a node's bridge, and a node's bridge must be able to prove which node it
+            // serves or it can never spawn. The token reaches it through its 0600 file, never
+            // through the declaration.
             assert_eq!(
-                declared("MARION_NODE_TOKEN"),
-                OsString::from(FIXTURE_NODE_TOKEN,),
-                "the declaration must carry the token its owner minted"
+                context.bridge.node_token.as_ref().map(|t| t.expose()),
+                Some(FIXTURE_NODE_TOKEN),
+                "the bridge must hold the token its owner minted"
+            );
+            assert!(
+                pairs.iter().all(|(name, value)| name != "MARION_NODE_TOKEN"
+                    && !value.contains(FIXTURE_NODE_TOKEN)),
+                "the declaration never carries the token: {pairs:?}"
             );
             Ok(NativeInjection {
                 bridge_env: Vec::new(),

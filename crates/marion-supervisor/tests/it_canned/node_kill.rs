@@ -184,9 +184,7 @@ impl Bed {
     }
 
     fn spawn_child(&self, parent: &AgentId, marker: &str) -> AgentId {
-        let token = common::declaration_of(&self.state, parent)
-            .remove("MARION_NODE_TOKEN")
-            .expect("declaration_of asserts the token is there");
+        let token = common::node_token_of(&common::declaration_of(&self.state, parent));
         self.spawn(AgentSpawnParams {
             wider_children: None,
             budget_tokens: None,

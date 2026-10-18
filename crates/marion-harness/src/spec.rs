@@ -2486,8 +2486,8 @@ pub struct TokenCarriers {
 }
 
 impl TokenCarriers {
-    /// Both modes carry the token inside the declaration.
-    pub const DECLARATION: TokenCarriers = TokenCarriers::both(TokenCarrier::Declaration);
+    /// Both modes name the token's file in the declaration ([`TokenCarrier::DECLARED`]).
+    pub const DECLARED_FILE: TokenCarriers = TokenCarriers::both(TokenCarrier::DECLARED);
 
     /// One carrier for both modes, where the route does not change with the auth mode.
     pub const fn both(carrier: TokenCarrier) -> TokenCarriers {
@@ -2507,49 +2507,44 @@ impl TokenCarriers {
     }
 }
 
-/// How a node's capability token (`MARION_NODE_TOKEN`) travels from marion to the bridge the
-/// harness starts — measured per row, never assumed.
+/// How the path of a node's capability token travels from marion to the bridge the harness
+/// starts — measured per row, never assumed.
 ///
-/// The declaration names the node; the token proves it. Where the declaration is a private
-/// document, an environment variable or marion's own ACP pipe, the token can sit inside it. Where
-/// the declaration rides **argv** it cannot: argv is readable through `ps` by every user on the
-/// machine. Then the token is withheld from the declaration and written to a 0600 file in the
-/// node's own directory; the harness's environment carries only the file's path
-/// ([`NODE_TOKEN_FILE_ENV`]), and the row states how the harness passes that on to the MCP server
-/// it starts. The token itself is never in the harness's environment, which every shell command
-/// its model runs inherits.
+/// The declaration names the node; the token proves it. **The token itself is never in a
+/// declaration, an argv or any process's environment**: argv is readable through `ps` by every
+/// user on the machine, and the environment of any process running as the operator is readable by
+/// every other (`KERN_PROCARGS2` on macOS, `/proc/<pid>/environ` on Linux), sandboxed node
+/// included. It is written to a 0600 file in the node's own directory, which the macOS sandbox
+/// keeps from every other node, and only that file's path ([`NODE_TOKEN_FILE_ENV`]) travels: in
+/// the declaration itself, or on the harness's environment where the row states how the harness
+/// passes that on to the MCP server it starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenCarrier {
-    /// Inside the declaration, beside the node's identity.
-    Declaration,
-    /// Withheld from the declaration; its file's path is set on the harness's environment, which
-    /// its MCP launcher hands a stdio server whole. `note` names the measurement.
+    /// Its file's path is set on the harness's environment, which its MCP launcher hands a stdio
+    /// server whole. `note` names the measurement.
     InheritedEnv { note: &'static str },
-    /// Withheld from the declaration; its file's path is set on the harness's environment, and the
-    /// launcher hands a server only an allowlist of the parent's variables, so the declaration
-    /// names the path's variable in the harness's own pass-through list ([`Self::forwarded`]).
-    /// `note` names the measurement.
+    /// Its file's path is set on the harness's environment, and the launcher hands a server only
+    /// an allowlist of the parent's variables, so the declaration names the path's variable in the
+    /// harness's own pass-through list ([`Self::forwarded`]). `note` names the measurement.
     ForwardedEnv { note: &'static str },
-    /// Withheld from a declaration that itself rides the harness's environment (so a model's shell
-    /// would inherit it): the declaration names the token's 0600 file instead, and the harness's
-    /// own environment carries nothing more. `note` names why.
+    /// The declaration names the token's 0600 file, and the harness's own environment carries
+    /// nothing more. `note` names why.
     DeclaredFile { note: &'static str },
 }
 
 impl TokenCarrier {
-    /// Whether the declaration leaves the token out.
-    pub fn withholds(self) -> bool {
-        !matches!(self, TokenCarrier::Declaration)
-    }
+    /// [`Self::DeclaredFile`] where the declaration's own environment block reaches the bridge
+    /// whole: every row whose harness hands its MCP server the declared `env`.
+    pub const DECLARED: TokenCarrier = TokenCarrier::DeclaredFile {
+        note: "the declaration names the token's 0600 file in the node's own directory, never the token: a process running as the operator reads any other's environment (KERN_PROCARGS2, /proc/<pid>/environ)",
+    };
 
-    /// The bridge as this carrier's declaration states it: `b` itself, or `b` without its token —
-    /// naming the token's file (`token_file`) instead where this carrier is
-    /// [`Self::DeclaredFile`] and a token was minted.
+    /// The bridge as this carrier's declaration states it: `b` without its token, naming the
+    /// token's file (`token_file`) instead where this carrier is [`Self::DeclaredFile`] and a
+    /// token was minted.
     pub fn declared(self, b: &BridgeEnv, token_file: &Path) -> BridgeEnv {
         let mut declared = b.clone();
-        if self.withholds() {
-            declared.node_token = None;
-        }
+        declared.node_token = None;
         if matches!(self, TokenCarrier::DeclaredFile { .. }) && b.node_token.is_some() {
             declared.node_token_file = Some(token_file.to_path_buf());
         }
@@ -2566,8 +2561,8 @@ impl TokenCarrier {
     }
 
     /// What the harness's own environment carries for its bridge: the path of the token's file
-    /// (`token_file`), where this carrier withholds the token from the declaration and one was
-    /// minted. Present or absent, never empty; never the token.
+    /// (`token_file`), where this carrier names it there and one was minted. Present or absent,
+    /// never empty; never the token.
     pub fn process_env(self, b: &BridgeEnv, token_file: &Path) -> Vec<(String, String)> {
         match (self.names_file_in_env(), &b.node_token) {
             (true, Some(_)) => vec![(
@@ -2578,14 +2573,12 @@ impl TokenCarrier {
         }
     }
 
-    /// The token's file, `(token_file, token)`, where this carrier withholds the token from the
-    /// declaration and one was minted: the caller writes it 0600 with the launch's other
-    /// documents, before the harness starts.
+    /// The token's file, `(token_file, token)`, where one was minted: the caller writes it 0600
+    /// with the launch's other documents, before the harness starts.
     pub fn document(self, b: &BridgeEnv, token_file: &Path) -> Option<(PathBuf, String)> {
-        match (self.withholds(), &b.node_token) {
-            (true, Some(t)) => Some((token_file.to_path_buf(), t.expose().to_string())),
-            _ => None,
-        }
+        b.node_token
+            .as_ref()
+            .map(|t| (token_file.to_path_buf(), t.expose().to_string()))
     }
 
     /// The variables a declaration must name for its harness to pass them on — the token file's,
@@ -2594,9 +2587,7 @@ impl TokenCarrier {
     pub fn forwarded(self) -> &'static [&'static str] {
         match self {
             TokenCarrier::ForwardedEnv { .. } => &[NODE_TOKEN_FILE_ENV],
-            TokenCarrier::Declaration
-            | TokenCarrier::InheritedEnv { .. }
-            | TokenCarrier::DeclaredFile { .. } => &[],
+            TokenCarrier::InheritedEnv { .. } | TokenCarrier::DeclaredFile { .. } => &[],
         }
     }
 }

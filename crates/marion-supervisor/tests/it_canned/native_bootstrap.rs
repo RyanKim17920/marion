@@ -144,7 +144,7 @@ mod enabled_launch {
     const INJECTED_PREFIX: &str = "--marion-injected";
     /// Where the probe adapter echoes the node token marion declared, since a `MARION_*` name may
     /// not reach the vendor process at all (`assemble_native`).
-    const PROBE_TOKEN_ENV: &str = "PROBE_NODE_TOKEN";
+    const PROBE_TOKEN_FILE_ENV: &str = "PROBE_NODE_TOKEN_FILE";
     /// What the vendor shim writes to **its** terminal — the supervisor's pane — and what must
     /// therefore appear on the **operator's** terminal only if the relay carried it there.
     const VENDOR_GREETING: &str = "VENDOR_SAYS_HELLO";
@@ -170,26 +170,37 @@ mod enabled_launch {
                 .find(|(name, _)| name == "MARION_REPO")
                 .map(|(_, value)| OsString::from(value))
                 .expect("the bridge declaration names a repository");
-            // §5.4's capability, echoed under a name of the probe's own: `MARION_*` may not reach
+            // §5.4's capability, written to its 0600 file as every row's carrier writes it, and
+            // that file's path echoed under a name of the probe's own: `MARION_*` may not reach
             // the vendor, and the shim's environment record is the only place outside the
             // supervisor where a test can read what marion really declared.
             let mut env_overlay = vec![
                 (OsString::from("PROBE_INJECTED"), OsString::from("1")),
                 (OsString::from("PROBE_REPO"), repo),
             ];
-            if let Some((_, token)) = context
-                .bridge
-                .pairs()
-                .into_iter()
-                .find(|(name, _)| name == marion_harness::mcp_bridge::NODE_TOKEN_ENV)
-            {
-                env_overlay.push((OsString::from(PROBE_TOKEN_ENV), OsString::from(token)));
+            let token_file = context
+                .document_dir
+                .join(marion_harness::mcp_bridge::NODE_TOKEN_FILE);
+            let documents: Vec<marion_harness::NativeDocument> =
+                marion_harness::spec::TokenCarrier::DECLARED
+                    .document(context.bridge, &token_file)
+                    .map(|(path, token)| marion_harness::NativeDocument {
+                        path,
+                        contents: token.into_bytes(),
+                    })
+                    .into_iter()
+                    .collect();
+            if !documents.is_empty() {
+                env_overlay.push((
+                    OsString::from(PROBE_TOKEN_FILE_ENV),
+                    token_file.into_os_string(),
+                ));
             }
             Ok(NativeInjection {
                 bridge_env: Vec::new(),
                 argv_prefix: vec![OsString::from(INJECTED_PREFIX)],
                 env_overlay,
-                documents: vec![],
+                documents,
             })
         }
     }
@@ -672,20 +683,21 @@ mod enabled_launch {
         let run = bed.run_probe(&bed.project);
         let vendor = bed.assert_relayed(&run);
 
-        let token = vendor
+        let token_file = vendor
             .env
             .lines()
-            .find_map(|line| line.strip_prefix(&format!("{PROBE_TOKEN_ENV}=")))
+            .find_map(|line| line.strip_prefix(&format!("{PROBE_TOKEN_FILE_ENV}=")))
             .unwrap_or_else(|| {
                 panic!(
-                    "the native root's declaration carries no {}, so its bridge can never prove \
-                     which node it serves and every `spawn` from the operator's own session is \
-                     refused by §5.4 before it reaches the socket:\n{}",
-                    marion_harness::mcp_bridge::NODE_TOKEN_ENV,
+                    "the native root was minted no token, so its bridge can never prove which \
+                     node it serves and every `spawn` from the operator's own session is refused \
+                     by §5.4 before it reaches the socket:\n{}",
                     vendor.env
                 )
             })
             .to_string();
+        let token = std::fs::read_to_string(&token_file)
+            .unwrap_or_else(|e| panic!("the native root's token file {token_file}: {e}"));
         assert!(
             !token.trim().is_empty(),
             "an empty capability is one every process on this machine already has"

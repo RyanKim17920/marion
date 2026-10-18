@@ -62,19 +62,10 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
         ),
         _ => {}
     }
-    for (key, mode, route, carrier) in [
-        ("mcp.canned", "canned", row.mcp.canned, row.token.canned),
-        ("mcp.live", "live", row.mcp.live, row.token.live),
-    ] {
+    // No carrier puts the token itself in a declaration, so one riding argv names only its file.
+    for (key, route) in [("mcp.canned", row.mcp.canned), ("mcp.live", row.mcp.live)] {
         if route == McpRoute::None {
             fault(key, "a declaration always has a route".into());
-        }
-        // `ps` shows argv to every user on the machine.
-        if matches!(route, McpRoute::Argv(_)) && !carrier.withholds() {
-            fault(
-                key,
-                format!("the {mode} declaration rides argv and carries the node token"),
-            );
         }
     }
     if let Some(d) = row.live_declaration
@@ -459,17 +450,6 @@ mod tests {
             ),
             (
                 HarnessSpec {
-                    token: spec::TokenCarriers {
-                        live: spec::TokenCarrier::Declaration,
-                        ..qwen.token
-                    },
-                    ..qwen
-                },
-                "mcp.live",
-                "mcp.live: the live declaration rides argv and carries the node token",
-            ),
-            (
-                HarnessSpec {
                     updates: UpdatePolicy::None { note: " " },
                     ..qwen
                 },
@@ -560,7 +540,7 @@ mod tests {
                         live: spec::McpRoute::Document,
                         ..qwen.mcp
                     },
-                    token: spec::TokenCarriers::DECLARATION,
+                    token: spec::TokenCarriers::DECLARED_FILE,
                     ..qwen
                 },
                 "declaration",

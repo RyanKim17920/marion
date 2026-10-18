@@ -246,8 +246,8 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 self.row.harness
             ))
         })?;
-        // The row's live carrier decides whether the declaration names the token or withholds
-        // it for the harness's environment, exactly as on the managed live launch.
+        // The row's live carrier decides whether the declaration or the harness's environment
+        // names the token's file, exactly as on the managed live launch.
         let carrier = self.row.token.live;
         let token_file = context
             .document_dir

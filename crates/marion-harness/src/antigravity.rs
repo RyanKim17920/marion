@@ -169,7 +169,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ],
         any_provider: false,
     },
-    token: TokenCarriers::DECLARATION,
+    token: TokenCarriers::DECLARED_FILE,
     constraint: Constraint::Mode {
         prefix: "mode:",
         default: DEFAULT_MODE,

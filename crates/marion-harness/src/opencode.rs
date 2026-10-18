@@ -262,7 +262,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         any_provider: true,
     },
     token: TokenCarriers {
-        canned: TokenCarrier::Declaration,
+        canned: TokenCarrier::DECLARED,
         live: TokenCarrier::DeclaredFile {
             note: "the live declaration rides OPENCODE_CONFIG_CONTENT, an environment variable the \
                    model's shell commands inherit",

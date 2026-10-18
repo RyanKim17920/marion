@@ -50,9 +50,7 @@ pub fn try_spawn_over_socket(
     else {
         panic!("agent/spawn answers with an agent/spawn result");
     };
-    let token = super::declaration_of(state, &r.agent_id)
-        .remove("MARION_NODE_TOKEN")
-        .expect("declaration_of asserts the token is there");
+    let token = super::node_token_of(&super::declaration_of(state, &r.agent_id));
     Ok(Owned {
         agent_id: r.agent_id,
         task_id: r.task_id,

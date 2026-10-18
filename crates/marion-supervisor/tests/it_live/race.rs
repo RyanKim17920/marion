@@ -212,7 +212,7 @@ fn run_race(
     let paths = paths_for(&state, &repo);
     let mut c = Client::dial(&paths);
     let root = c.spawn_root(&repo, &format!("{ROOT_MARKER}: wait for the race."), 120);
-    let token = common::declaration_of(&state, &root)["MARION_NODE_TOKEN"].clone();
+    let token = common::node_token_of(&common::declaration_of(&state, &root));
 
     // A second connection follows the tree, so the decision is observed as it is announced.
     let mut watcher = Client::dial(&paths);
@@ -386,9 +386,9 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
     for (why, edit) in refusals {
         let mut p = race_params(SpawnCaller {
             agent_id: root.clone(),
-            node_token: Secret::new(
-                common::declaration_of(&state, &root)["MARION_NODE_TOKEN"].clone(),
-            ),
+            node_token: Secret::new(common::node_token_of(&common::declaration_of(
+                &state, &root,
+            ))),
         });
         edit(&mut p);
         let id = c.send(Call::AgentSpawn(p));

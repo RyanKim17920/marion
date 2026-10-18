@@ -1662,8 +1662,8 @@ fn every_root_declares_itself_at_depth_zero_and_names_its_own_type() {
 /// the node.**
 ///
 /// The token is minted by whoever owns the node's lifecycle, which since §11 item 28 step 6 is
-/// the supervisor, and [`prepare_watched`] writes it into exactly one place: the declaration
-/// this root's bridge reads. Asserted off the bytes the bridge actually gets, for the reason
+/// the supervisor, and [`prepare_watched`] writes it into exactly one place: the 0600 file
+/// this root's bridge reads, which the declaration names. Asserted off the bytes the bridge actually gets, for the reason
 /// `every_root_declares_itself_at_depth_zero_and_names_its_own_type` gives — a `SpawnCtx` field
 /// that never reaches a file is a credential nothing can present.
 ///
@@ -1701,6 +1701,11 @@ fn a_watched_roots_declaration_carries_the_token_its_owner_minted() {
     // Distinctive enough that it cannot collide with an id, a path or a model name.
     const TOKEN: &str = "root-node-token-8f1c-4a20-b7de";
     let dir = temp("node-token");
+    let token_file = |node: &RootNode| {
+        node.agent_dir
+            .config_dir()
+            .join(marion_harness::mcp_bridge::NODE_TOKEN_FILE)
+    };
     for name in [
         "claude-orchestrator",
         "codex",
@@ -1710,14 +1715,24 @@ fn a_watched_roots_declaration_carries_the_token_its_owner_minted() {
     ] {
         let owned = prepare_watched(&root_spec(&dir, name), &Owner(TOKEN.into()))
             .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let file = token_file(&owned);
+        assert_eq!(
+            std::fs::read_to_string(&file).ok().as_deref(),
+            Some(TOKEN),
+            "{name}: the token its owner minted must reach the bridge's file, or this root \
+             cannot delegate at all (§5.4)"
+        );
         assert!(
-            declared_anywhere(&owned, TOKEN),
-            "{name}: the token its owner minted must reach the bridge, or this root cannot \
-             delegate at all (§5.4)"
+            declared_anywhere(&owned, &file.to_string_lossy()),
+            "{name}: the bridge is pointed at the token's file"
+        );
+        assert!(
+            !declared_anywhere(&owned, TOKEN),
+            "{name}: the token itself is in no declaration, argv or environment"
         );
         let unowned = prepare(&root_spec(&dir, name)).unwrap();
         assert!(
-            !declared_anywhere(&unowned, TOKEN),
+            !token_file(&unowned).exists() && !declared_anywhere(&unowned, TOKEN),
             "{name}: `Unwatched` mints nothing, so nothing may appear — a token that showed \
              up here would have come from somewhere other than the owner"
         );

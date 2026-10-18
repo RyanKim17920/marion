@@ -191,7 +191,8 @@ impl Supervisor {
 ///
 /// This is a fixture reading marion's homework, and it is deliberate: a hand-written environment
 /// block would pass whatever marion stopped writing. A bridge started from *this* fails every test
-/// that uses it if `bridge_env_pairs` ever drops `MARION_NODE_TOKEN`.
+/// that uses it if the declaration ever stops naming the token's file (`MARION_NODE_TOKEN_FILE`);
+/// and the read fails here if it ever carries the token itself (`MARION_NODE_TOKEN`).
 ///
 /// The declaration is whichever document that node's adapter generated — codex's `config.toml`, a
 /// claude `.mcp.json`, opencode's JSON — so the scan below accepts both spellings a
@@ -216,7 +217,7 @@ pub fn declaration_of(state: &Path, agent_id: &AgentId) -> BTreeMap<String, Stri
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
-        if !text.contains("MARION_NODE_TOKEN") {
+        if !text.contains(marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV) {
             continue;
         }
         read_any = true;
@@ -246,11 +247,35 @@ pub fn declaration_of(state: &Path, agent_id: &AgentId) -> BTreeMap<String, Stri
         state.display()
     );
     assert!(
-        out.contains_key("MARION_NODE_TOKEN"),
-        "the declaration marion wrote for {} names a token and this could not read it back",
+        out.contains_key(marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV),
+        "the declaration marion wrote for {} names a token file and this could not read it back",
+        agent_id.0
+    );
+    assert!(
+        !out.contains_key(marion_harness::mcp_bridge::NODE_TOKEN_ENV),
+        "the declaration marion wrote for {} carries the node token itself",
+        agent_id.0
+    );
+    let token = node_token_of(&out);
+    assert!(
+        out.values().all(|v| !v.contains(&token)),
+        "the declaration marion wrote for {} carries the node token's value",
         agent_id.0
     );
     out
+}
+
+/// The node token a declaration's bridge presents: the contents of the 0600 file the declaration
+/// names, which is the only place marion writes it.
+pub fn node_token_of(declaration: &BTreeMap<String, String>) -> String {
+    let file = &declaration[marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV];
+    let token = std::fs::read_to_string(file)
+        .unwrap_or_else(|e| panic!("the node token's file {file} is unreadable: {e}"));
+    assert!(
+        !token.trim().is_empty(),
+        "the node token's file {file} is empty"
+    );
+    token.trim().to_string()
 }
 
 /// Every file under `dir`, depth first. A walk rather than a computed path: the project hash that

@@ -288,8 +288,8 @@ pub struct SpawnCtx {
     /// at `depth + 1`, and is refused when that would pass its type's `max_depth`.
     pub depth: u32,
     /// **§5.4's per-node capability token**, minted by whoever owns this node's lifecycle and
-    /// written into the declaration this node's bridge reads
-    /// ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
+    /// written to the 0600 file whose path this node's bridge reads
+    /// ([`crate::mcp_bridge::NODE_TOKEN_FILE_ENV`]); never into a declaration or an environment.
     ///
     /// It rides `SpawnCtx` rather than `LaunchSpec` for the reason [`Self::agent_type`] does: this
     /// is *what marion knows about the node*, not what was asked for. Nobody asks for a token.
@@ -666,8 +666,8 @@ pub trait HarnessAdapter {
     }
 
     /// **Every file a launch writes before its harness starts**: [`Self::config_files`], and the
-    /// node token's own file where the launch's carrier withholds the token from the declaration
-    /// ([`spec::TokenCarrier::document`]). What a spawn site writes; `config_files` is what the
+    /// node token's own file wherever one was minted ([`spec::TokenCarrier::document`]). What a
+    /// spawn site writes; `config_files` is what the
     /// harness reads.
     ///
     /// **Every launch site takes this step before its harness starts**, so it is where a held row
@@ -1290,8 +1290,8 @@ pub(crate) fn declared_bridge<A: HarnessAdapter + ?Sized>(
         .declared(&bridge_env(spec, ctx), &token_file(spec))
 }
 
-/// What the harness process's environment carries for its bridge: the node token, where the
-/// launch's carrier withholds it from the declaration — and nothing where no declaration was asked
+/// What the harness process's environment carries for its bridge: the path of the node token's
+/// file, where the launch's carrier names it there — and nothing where no declaration was asked
 /// for, since then no bridge starts to read it.
 fn bridge_process_env<A: HarnessAdapter + ?Sized>(
     adapter: &A,
@@ -1306,8 +1306,8 @@ fn bridge_process_env<A: HarnessAdapter + ?Sized>(
     }
 }
 
-/// Where a managed launch's node token is written when its carrier withholds it from the
-/// declaration: the node's own config dir, 0600 like every document there.
+/// Where a managed launch's node token is written: the node's own config dir, 0600 like every
+/// document there.
 pub fn token_file(spec: &LaunchSpec) -> PathBuf {
     spec.config_dir.join(crate::mcp_bridge::NODE_TOKEN_FILE)
 }
@@ -5039,12 +5039,12 @@ mod tests {
     fn declaration_bytes(h: Harness, spec: &LaunchSpec, ctx: &SpawnCtx) -> String {
         let a = launch_adapter(h).unwrap();
         let mut bytes = route_bytes(h, a.as_ref(), spec, ctx);
-        // A carrier that withholds the token hands the bridge a 0600 file instead; its contents
-        // are what the bridge receives, spelled as the other routes spell a pair.
+        // Every carrier hands the bridge the token in a 0600 file; its contents are what the
+        // bridge receives, spelled as the other routes spell a pair.
         let token_file = token_file(spec);
         for (path, contents) in a.launch_documents(spec, ctx).unwrap_or_default() {
             if path == token_file {
-                bytes.push_str(&format!("\n{}=\"{contents}\"", mcp_bridge::NODE_TOKEN_ENV));
+                bytes.push_str(&format!("\n{}=\"{contents}\"", mcp_bridge::NODE_TOKEN_FILE));
             }
         }
         bytes
@@ -5122,34 +5122,21 @@ mod tests {
                 node_token: Some("MARION-TOKEN-VALUE-4e1b".into()),
                 ..ctx()
             };
-            let doc = declaration_bytes(h, &spec_for(h), &ctx);
+            let spec = spec_for(h);
+            let doc = declaration_bytes(h, &spec, &ctx);
             assert!(
-                doc.contains(mcp_bridge::NODE_TOKEN_ENV),
-                "{h}: {} is not in its bridge env:\n{doc}",
-                mcp_bridge::NODE_TOKEN_ENV
+                doc.contains(&format!(
+                    "{}=\"MARION-TOKEN-VALUE-4e1b\"",
+                    mcp_bridge::NODE_TOKEN_FILE
+                )),
+                "{h}: the token VALUE must reach the bridge through its file:\n{doc}"
             );
+            let a = launch_adapter(h).unwrap();
+            let route = route_bytes(h, a.as_ref(), &spec, &ctx);
             assert!(
-                doc.contains("\"MARION-TOKEN-VALUE-4e1b\""),
-                "{h}: the token VALUE must be carried, not just its key:\n{doc}"
+                !route.contains("MARION-TOKEN-VALUE-4e1b"),
+                "{h}: the declaration itself carries the token VALUE:\n{route}"
             );
-        }
-    }
-
-    /// **Every row that declares on argv withholds the token from that declaration** — the row data
-    /// half of keeping the token out of `ps`, for every harness row in each auth mode and every ACP
-    /// refinement row. A carrier inside the declaration is fine on a document, a variable or
-    /// marion's own ACP pipe; on argv it is the leak.
-    #[test]
-    fn every_acp_agents_argv_declaration_withholds_the_node_token() {
-        // The rows are held to it by `sweep::validate`; an ACP agent's declaration is its own.
-        for agent in acp::AGENTS {
-            if let acp::Declaration::Argv { token, .. } = agent.declaration {
-                assert!(
-                    token.withholds(),
-                    "acp:{}: the declaration rides argv and carries the token",
-                    agent.id
-                );
-            }
         }
     }
 
@@ -5189,9 +5176,9 @@ mod tests {
 
     /// **No launch puts the node token on argv, and every launch still hands it to the bridge** —
     /// the compiled half, over every harness row in every auth mode and shape it compiles, and every
-    /// ACP refinement row. A carrier that withholds the token leaves it out of the declaration and
-    /// sets it on the environment exactly once; the declaration carrier writes it into the
-    /// declaration and adds nothing to the environment. A launch the row refuses is skipped, but
+    /// ACP refinement row. Every carrier leaves the token out of the declaration and the
+    /// environment, writes it to its 0600 file, and names that file's path exactly once: on the
+    /// environment or in the declaration. A launch the row refuses is skipped, but
     /// every harness must compile at least one, and the argv rows their live launch.
     #[test]
     fn no_launch_puts_the_node_token_on_argv_and_every_launch_delivers_it() {
@@ -5217,36 +5204,37 @@ mod tests {
                 .map(|(_, v)| v)
                 .collect();
             let declaration = declaration_without_env(a, spec, &minted, inv);
-            let carrier = a.token_carrier(spec);
-            if carrier.withholds() {
-                let file = token_file(spec);
-                let path = file.to_string_lossy().into_owned();
-                if carrier.names_file_in_env() {
-                    assert_eq!(named, [&path], "{who}: the environment names the file once");
-                } else {
-                    assert!(named.is_empty(), "{who}: {:?}", inv.env);
-                    assert!(
-                        declaration.contains(&path),
-                        "{who}: the declaration names the token's file: {declaration}"
-                    );
-                }
-                assert!(
-                    a.launch_documents(spec, &minted)
-                        .unwrap()
-                        .contains(&(file, TOKEN.to_string())),
-                    "{who}: the token's file is written before the launch"
-                );
-                assert!(
-                    !declaration.contains(TOKEN),
-                    "{who}: the declaration withholds it: {declaration}"
-                );
+            let file = token_file(spec);
+            let path = file.to_string_lossy().into_owned();
+            if a.token_carrier(spec).names_file_in_env() {
+                assert_eq!(named, [&path], "{who}: the environment names the file once");
             } else {
                 assert!(named.is_empty(), "{who}: {:?}", inv.env);
                 assert!(
-                    declaration.contains(TOKEN),
-                    "{who}: the declaration carries it: {declaration}"
+                    declaration.contains(&path),
+                    "{who}: the declaration names the token's file: {declaration}"
                 );
             }
+            // A held binding (an ACP agent whose twin row is held) launches nothing; the token's
+            // file it will write once the hold lifts is its carrier's document, which is what
+            // `launch_documents` adds.
+            let documents = match a.launch_documents(spec, &minted) {
+                Ok(documents) => documents,
+                Err(HarnessError::Held { .. }) => a
+                    .token_carrier(spec)
+                    .document(&bridge_env(spec, &minted), &file)
+                    .into_iter()
+                    .collect(),
+                Err(e) => panic!("{who}: {e}"),
+            };
+            assert!(
+                documents.contains(&(file, TOKEN.to_string())),
+                "{who}: the token's file is written before the launch"
+            );
+            assert!(
+                !declaration.contains(TOKEN),
+                "{who}: the declaration withholds it: {declaration}"
+            );
         };
         let live_of = |h: Harness| LaunchSpec {
             auth: Auth::Inherited,
@@ -5309,8 +5297,8 @@ mod tests {
     }
 
     /// The native lane's half: `marion <harness>` puts no token on the operator's harness's argv,
-    /// and hands it to the bridge through the row's live carrier — the process environment where
-    /// the carrier withholds it, the declaration otherwise.
+    /// and hands it to the bridge through the row's live carrier: its file, named on the process
+    /// environment or in the declaration.
     #[test]
     fn no_native_injection_puts_the_node_token_on_argv() {
         use std::ffi::OsString;
@@ -5375,36 +5363,30 @@ mod tests {
                     .env_overlay
                     .iter()
                     .any(|(_, v)| lossy(v).contains(TOKEN));
-            let carrier = harness_spec(h).token.live;
-            if carrier.withholds() {
-                let path = token_file.to_string_lossy().into_owned();
-                if carrier.names_file_in_env() {
-                    assert_eq!(passed, [path], "{h}");
-                } else {
-                    assert!(passed.is_empty(), "{h}");
-                    assert!(
-                        injection
-                            .env_overlay
-                            .iter()
-                            .chain(&injection.bridge_env)
-                            .any(|(_, v)| lossy(v).contains(&path))
-                            || injection.documents.iter().any(|d| d.path != token_file
-                                && String::from_utf8_lossy(&d.contents).contains(&path)),
-                        "{h}: the declaration names the token's file"
-                    );
-                }
-                assert!(
-                    injection
-                        .documents
-                        .iter()
-                        .any(|d| d.path == token_file && d.contents == TOKEN.as_bytes()),
-                    "{h}: the token's file is a document of the launch"
-                );
-                assert!(!declared, "{h}: the declaration withholds it");
+            let path = token_file.to_string_lossy().into_owned();
+            if harness_spec(h).token.live.names_file_in_env() {
+                assert_eq!(passed, [path], "{h}");
             } else {
                 assert!(passed.is_empty(), "{h}");
-                assert!(declared, "{h}: the declaration carries it");
+                assert!(
+                    injection
+                        .env_overlay
+                        .iter()
+                        .chain(&injection.bridge_env)
+                        .any(|(_, v)| lossy(v).contains(&path))
+                        || injection.documents.iter().any(|d| d.path != token_file
+                            && String::from_utf8_lossy(&d.contents).contains(&path)),
+                    "{h}: the declaration names the token's file"
+                );
             }
+            assert!(
+                injection
+                    .documents
+                    .iter()
+                    .any(|d| d.path == token_file && d.contents == TOKEN.as_bytes()),
+                "{h}: the token's file is a document of the launch"
+            );
+            assert!(!declared, "{h}: the declaration withholds it");
         }
     }
 
@@ -5700,14 +5682,18 @@ mod tests {
         assert!(token_env(&canned).is_empty(), "{:?}", canned.env);
         let files = CodexAdapter.config_files(&codex_spec(), &minted).unwrap();
         assert!(
-            files[0].1.contains("tok-SENTINEL-codex-4b1d"),
-            "the canned document carries it"
+            !files[0].1.contains("tok-SENTINEL-codex-4b1d")
+                && files[0]
+                    .1
+                    .contains(&*token_file(&codex_spec()).to_string_lossy()),
+            "the canned document names the token's file, never the token: {}",
+            files[0].1
         );
     }
 
     /// **A live qwen node's `--mcp-config` document is argv, so it carries no token**: qwen hands
     /// its MCP server its own environment, which names the token's 0600 file and never holds the
-    /// token. A canned node's token stays in its 0600 `settings.json`.
+    /// token. A canned node's 0600 `settings.json` names the same file.
     #[test]
     fn a_live_qwen_nodes_token_rides_its_environment_and_not_its_inline_document() {
         let minted = SpawnCtx {
@@ -5754,10 +5740,13 @@ mod tests {
         let files = crate::qwen::ADAPTER
             .config_files(&qwen_spec(), &minted)
             .unwrap();
+        let path = token_file(&qwen_spec()).to_string_lossy().into_owned();
         assert!(
             files
                 .iter()
-                .any(|(_, doc)| doc.contains("tok-SENTINEL-qwen-0c55"))
+                .all(|(_, doc)| !doc.contains("tok-SENTINEL-qwen-0c55"))
+                && files.iter().any(|(_, doc)| doc.contains(&path)),
+            "{files:?}"
         );
     }
 
@@ -7494,8 +7483,8 @@ mod tests {
             "{:?}",
             inv.env
         );
-        // The protocol's own channel is marion's pipe, so a session-declared agent keeps the token
-        // in its `session/new` block and adds nothing to its environment.
+        // A session-declared agent names the token's file in its `session/new` block and adds
+        // nothing to its environment.
         let session = acp_adapter().compile(&acp_spec(), &minted).unwrap();
         assert!(
             !session
@@ -7507,7 +7496,12 @@ mod tests {
             .session_declaration(&acp_spec(), &minted)
             .unwrap()
             .unwrap();
-        assert!(decl.to_string().contains("tok-SENTINEL-acp-9f30"));
+        let decl = decl.to_string();
+        assert!(!decl.contains("tok-SENTINEL-acp-9f30"), "{decl}");
+        assert!(
+            decl.contains(&*token_file(&acp_spec()).to_string_lossy()),
+            "{decl}"
+        );
     }
 
     #[test]

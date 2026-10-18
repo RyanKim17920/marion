@@ -244,7 +244,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ],
         any_provider: false,
     },
-    token: TokenCarriers::DECLARATION,
+    token: TokenCarriers::DECLARED_FILE,
     // The `--allow-tool` patterns are what `-p` mode checks a call against — not the
     // `--available-tools` list, which only decides what the model sees. The prefix is load-bearing:
     // copilot's grant kind for the file tools is spelled `write`, the same six letters as marion's
@@ -1084,7 +1084,10 @@ mod tests {
         assert_eq!(e["MARION_REPO"], json!("/repo"));
         assert_eq!(e["MARION_STATE_DIR"], json!("/state"));
         assert_eq!(e["MARION_BASE_URL"], json!("http://127.0.0.1:8099/v1"));
-        assert_eq!(e["MARION_NODE_TOKEN"], json!("tok"));
+        assert!(
+            e.get("MARION_NODE_TOKEN").is_none(),
+            "the token never rides argv's document"
+        );
         assert!(
             e.get("MARION_READY_FILE").is_none(),
             "no marker on this surface: the CLI holds turn one for its MCP servers itself"

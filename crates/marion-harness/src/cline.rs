@@ -170,7 +170,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         login: &[],
         any_provider: true,
     },
-    token: TokenCarriers::DECLARATION,
+    token: TokenCarriers::DECLARED_FILE,
     // marion compiles no constraint at all, and says so (opencode's record, for the same reason).
     constraint: Constraint::Fixed {
         prefix: "harness-default:",

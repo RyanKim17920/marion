@@ -169,7 +169,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         login: &[],
         any_provider: true,
     },
-    token: TokenCarriers::DECLARATION,
+    token: TokenCarriers::DECLARED_FILE,
     // The `--tools` list itself, prefixed with its axis.
     constraint: Constraint::Allowed { prefix: "tools:" },
     resume: Some(Resume::Flag("--session")),

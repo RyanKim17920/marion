@@ -188,7 +188,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         any_provider: false,
     },
     token: TokenCarriers {
-        canned: TokenCarrier::Declaration,
+        canned: TokenCarrier::DECLARED,
         live: TokenCarrier::ForwardedEnv {
             note: "codex 0.145.0 through 0.155.1 (2026-09-27, stub MCP server): a stdio server \
                    gets only HOME, LANG, LOGNAME, PATH, SHELL, TERM, TMPDIR, USER of the parent's \

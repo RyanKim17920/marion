@@ -686,9 +686,17 @@ impl Fixture {
         Bridge::start(&self.declaration, &[("MARION_AGENT_TYPE", agent_type)])
     }
 
-    /// A bridge whose declaration carries a token the supervisor never minted.
+    /// A bridge whose declaration names a token file holding a token the supervisor never minted.
     fn bridge_with_a_forged_token(&self) -> Bridge {
-        Bridge::start(&self.declaration, &[("MARION_NODE_TOKEN", "not-the-token")])
+        let forged = self.shim_dir.with_file_name("forged-node-token");
+        std::fs::write(&forged, "not-the-token").expect("the forged token file is written");
+        Bridge::start(
+            &self.declaration,
+            &[(
+                marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV,
+                &forged.to_string_lossy(),
+            )],
+        )
     }
 
     /// A bridge pointed at a project whose supervisor does not exist.
@@ -1314,51 +1322,42 @@ fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
 }
 
 /// Every node token marion minted under `state`, each read back from the one kind of file meant to
-/// carry it — a node's own MCP declaration, inside its agent's `config` directory — with the paths
-/// of those files, so a caller can check every *other* file for the value.
+/// carry it — a node's own token file, inside its agent's `config` directory — with the paths of
+/// those files, so a caller can check every *other* file for the value.
 fn minted_tokens(state: &Path) -> (Vec<String>, Vec<PathBuf>) {
-    let (mut tokens, mut declarations) = (Vec::new(), Vec::new());
+    let (mut tokens, mut files) = (Vec::new(), Vec::new());
     walk(state, &mut |p| {
         let in_config_dir = p
             .ancestors()
             .any(|a| a.file_name().is_some_and(|n| n == "config"));
+        if !in_config_dir
+            || p.file_name()
+                .is_none_or(|n| n != marion_harness::mcp_bridge::NODE_TOKEN_FILE)
+        {
+            return;
+        }
         let Ok(text) = std::fs::read_to_string(p) else {
             return;
         };
-        if !in_config_dir || !text.contains("MARION_NODE_TOKEN") {
-            return;
-        }
-        declarations.push(p.to_path_buf());
-        for (at, _) in text.match_indices("MARION_NODE_TOKEN") {
-            let rest = &text[at + "MARION_NODE_TOKEN".len()..];
-            let rest = rest.trim_start_matches(|c: char| c == '"' || c.is_whitespace());
-            let Some(rest) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('=')) else {
-                continue;
-            };
-            let Some(rest) = rest.trim_start().strip_prefix('"') else {
-                continue;
-            };
-            if let Some(end) = rest.find('"') {
-                tokens.push(rest[..end].to_string());
-            }
-        }
+        files.push(p.to_path_buf());
+        tokens.push(text.trim().to_string());
     });
     tokens.sort();
     tokens.dedup();
-    (tokens, declarations)
+    (tokens, files)
 }
 
-/// **No node token outside the declaration that carries it**: not in what the caller was told,
-/// and not in any other file marion wrote — journal, contract, event record, change record.
+/// **No node token outside the file that carries it**: not in what the caller was told, and not
+/// in any other file marion wrote — declaration, journal, contract, event record, change record.
 ///
 /// Asserted over *every* file rather than a list of the ones that exist today, so a record some
 /// later change adds is covered the day it is written. `told` is what reached the caller.
 fn assert_no_token_escaped(fx: &Fixture, told: &str) {
-    let (tokens, declarations) = minted_tokens(&fx.state);
-    let root_token = &fx.declaration["MARION_NODE_TOKEN"];
+    let (tokens, token_files) = minted_tokens(&fx.state);
+    let root_token = common::node_token_of(&fx.declaration);
     assert!(
-        tokens.contains(root_token),
-        "the root's own token is read back from its declaration, or this check reads nothing"
+        tokens.contains(&root_token),
+        "the root's own token is read back from its file, or this check reads nothing"
     );
     assert!(
         tokens.iter().all(|t| t.len() == 64),
@@ -1372,7 +1371,7 @@ fn assert_no_token_escaped(fx: &Fixture, told: &str) {
         );
     }
     walk(&fx.state, &mut |p| {
-        if declarations.iter().any(|d| d == p) {
+        if token_files.iter().any(|d| d == p) {
             return;
         }
         let bytes = std::fs::read(p).unwrap_or_default();
@@ -1380,7 +1379,7 @@ fn assert_no_token_escaped(fx: &Fixture, told: &str) {
         for t in &tokens {
             assert!(
                 !text.contains(t.as_str()),
-                "a node token escaped its declaration into {}",
+                "a node token escaped its file into {}",
                 p.display()
             );
         }

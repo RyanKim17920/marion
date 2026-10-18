@@ -227,7 +227,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         any_provider: false,
     },
     token: TokenCarriers {
-        canned: TokenCarrier::Declaration,
+        canned: TokenCarrier::DECLARED,
         live: TokenCarrier::InheritedEnv {
             note: "qwen 0.23.0 (2026-09-27, stub MCP server declared by `--mcp-config` with no \
                    `env`): the server's environment is qwen's own, `MARION_NODE_TOKEN` included",

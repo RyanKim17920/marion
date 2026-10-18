@@ -2177,7 +2177,8 @@ fn an_owner_learns_a_nodes_identity_before_its_first_side_effect_and_its_pid_at_
          journalled {journalled:?}"
     );
 
-    // And the token reached the one file the node's own bridge reads.
+    // And the token reached the one file the node's own bridge reads, which the declaration
+    // names in its place.
     let mut written = Vec::new();
     files_under(&state, &mut written);
     let mcp = written
@@ -2186,11 +2187,21 @@ fn an_owner_learns_a_nodes_identity_before_its_first_side_effect_and_its_pid_at_
         .unwrap_or_else(|| panic!("the adapter wrote no declaration: {written:?}"));
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(mcp).unwrap()).unwrap();
+    let token_file = mcp.with_file_name(marion_harness::mcp_bridge::NODE_TOKEN_FILE);
     assert_eq!(
-        doc["mcpServers"]["marion"]["env"][marion_harness::claude_code::NODE_TOKEN_ENV],
-        serde_json::json!(TOKEN),
-        "the token the owner minted must be in the declaration, beside MARION_AGENT_ID — a \
-         token nobody wrote down is a capability nothing can present:\n{doc:#}"
+        std::fs::read_to_string(&token_file).ok().as_deref(),
+        Some(TOKEN),
+        "the token the owner minted must be in its file — a token nobody wrote down is a \
+         capability nothing can present: {written:?}"
+    );
+    assert_eq!(
+        doc["mcpServers"]["marion"]["env"][marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV],
+        serde_json::json!(token_file.to_string_lossy()),
+        "the declaration names the token's file, beside MARION_AGENT_ID:\n{doc:#}"
+    );
+    assert!(
+        !doc.to_string().contains(TOKEN),
+        "the declaration never carries the token itself:\n{doc:#}"
     );
     assert_eq!(
         doc["mcpServers"]["marion"]["env"][marion_harness::claude_code::AGENT_ID_ENV],

@@ -1201,7 +1201,6 @@ pub struct TokenCarriersDto {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case")]
 pub enum TokenCarrierDto {
-    Declaration,
     InheritedEnv(String),
     ForwardedEnv(String),
     DeclaredFile(String),
@@ -1210,7 +1209,6 @@ pub enum TokenCarrierDto {
 impl TokenCarrierDto {
     fn carrier(self) -> TokenCarrier {
         match self {
-            TokenCarrierDto::Declaration => TokenCarrier::Declaration,
             TokenCarrierDto::InheritedEnv(note) => TokenCarrier::InheritedEnv { note: leak(note) },
             TokenCarrierDto::ForwardedEnv(note) => TokenCarrier::ForwardedEnv { note: leak(note) },
             TokenCarrierDto::DeclaredFile(note) => TokenCarrier::DeclaredFile { note: leak(note) },
@@ -2191,10 +2189,11 @@ mod tests {
         assert!(err.to_string().contains("is not the file's stem"), "{err}");
     }
 
-    /// **An argv declaration that carries the node token is refused** under the key it breaks:
-    /// the live declaration rides `--mcp-config`, so its carrier must withhold the token.
+    /// **A row file cannot put the node token itself in a declaration**: there is no such carrier
+    /// to name, so a `declaration` carrier (the one that did) is refused at parse, and every
+    /// carrier left travels the token's file only.
     #[test]
-    fn an_argv_declaration_that_carries_the_node_token_is_refused() {
+    fn a_row_file_naming_a_declaration_carrier_is_refused() {
         // The whole `live` entry, its note a multi-line string, up to the end of `[token]`.
         let at = QWEN_TWIN.find("live = { inherited-env =").unwrap();
         let end = at + QWEN_TWIN[at..].find("\n\n").unwrap();
@@ -2207,10 +2206,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(
-            err.contains("mcp.live: the live declaration rides argv and carries the node token"),
-            "{err}"
-        );
+        assert!(err.contains("declaration"), "{err}");
     }
 
     /// **A file another user could rewrite is not run from**: group- or world-writable is refused

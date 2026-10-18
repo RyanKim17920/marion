@@ -300,7 +300,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ],
         any_provider: false,
     },
-    token: TokenCarriers::DECLARATION,
+    token: TokenCarriers::DECLARED_FILE,
     // The one harness with a real per-tool allowlist: the record is the literal contents of
     // `--allowedTools`, which is the flag the CLI checks a call against.
     constraint: Constraint::Allowed { prefix: "" },
