@@ -715,6 +715,11 @@ once pointed at a model provider through its own configuration. **Refused** rows
 | `hermes` | `hermes acp` | — | not probed | read from the 0.22.2 source; held, so no launch of it runs |
 | `cursor` | `agent acp` | — | not probed | read from the 2026.10.16 source; held, so no launch of it runs |
 
+An ACP agent that runs a built-in harness's binary (`acp:goose`, `goose acp`, or a full path to
+goose) reads that harness's repository config, listed above. ACP passes no switch to keep it out,
+so in an untrusted repository holding any of it every launch of the agent is refused, whatever
+provider it runs on, until you trust the repository.
+
 Any command that runs Hermes (`hermes`, `hermes-acp` or `hermes-agent`, by any path) is held as
 the `hermes` row is, and once the hold lifts carries its switch against adopting your Codex CLI or
 Claude Code login. marion cannot see Hermes behind a wrapper such as `npx`, `uvx` or `python -m`,

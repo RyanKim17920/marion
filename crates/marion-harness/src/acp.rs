@@ -718,9 +718,12 @@ pub struct Agent {
     /// doctor note, so an operator reads the risk before running it. Empty for most rows.
     pub residuals: &'static [&'static str],
     /// **The configuration this agent reads from the repository it runs in and runs code from**,
-    /// as paths relative to the checkout — [`spec::HarnessSpec::repo_config`] for its binary. ACP
-    /// has no trust gate, so a launch in an untrusted repository holding any of them is refused on
-    /// every auth, as [`spec::Arg::RefuseUntrustedAnyAuth`] refuses a built-in row's.
+    /// as paths relative to the checkout, beyond its built-in twin's and guard's
+    /// [`spec::HarnessSpec::repo_config`], which every launch of it inherits
+    /// ([`Binding::repo_config`]). For an agent with no built-in row (Cursor); empty where the
+    /// twin's covers it. ACP has no trust gate, so a launch in an untrusted repository holding any
+    /// of them is refused on every auth, as [`spec::Arg::RefuseUntrustedAnyAuth`] refuses a
+    /// built-in row's.
     pub repo_config: &'static [&'static str],
     /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
     /// which is how a binary behind any command line is recognised as this row
@@ -1368,9 +1371,9 @@ pub const HERMES: Agent = Agent {
     held: None,
     login_refusal: None,
     residuals: &[],
-    // The `hermes` row's: project plugins load on the operator's HERMES_ENABLE_PROJECT_PLUGINS
-    // (v0.22.2 `plugins_discovery.py`, read from source), whatever subcommand runs.
-    repo_config: &[".hermes/plugins"],
+    // The `hermes` row's `.hermes/plugins`, inherited through the twin: project plugins load on
+    // the operator's HERMES_ENABLE_PROJECT_PLUGINS (v0.22.2 source), whatever subcommand runs.
+    repo_config: &[],
     agent_info: "hermes-agent",
     install: "uv tool install 'hermes-agent[acp]'",
     reach: Reach::Unprobed {
@@ -1618,10 +1621,23 @@ impl Binding {
         self.binary().and_then(|a| a.held)
     }
 
-    /// The repository config the binary this launch runs reads and runs code from
-    /// ([`Agent::repo_config`]), found as [`Self::held`] is. Empty for a command no row's starts.
-    pub fn repo_config(&self) -> &'static [&'static str] {
-        self.binary().map_or(&[], |a| a.repo_config)
+    /// The repository config the binary this launch runs reads and runs code from: its own
+    /// ([`Agent::repo_config`]), unioned with its guard row's and its twin row's, each found as
+    /// the ACP adapter's hold is — so `acp:goose`, `goose acp` and a full path to goose all carry
+    /// the `goose` row's. Empty for a command no row's starts.
+    pub fn repo_config(&self) -> Vec<&'static str> {
+        let own = self.binary().map_or(&[][..], |a| a.repo_config);
+        let rows = [self.login_guard(), self.twin()];
+        let mut paths: Vec<&'static str> = Vec::new();
+        for path in own
+            .iter()
+            .chain(rows.iter().flatten().flat_map(|row| row.repo_config))
+        {
+            if !paths.contains(path) {
+                paths.push(path);
+            }
+        }
+        paths
     }
 
     /// The row id an `initialize` naming no agent is read as ([`AgentHandshake::parse_as`]): the
@@ -2560,10 +2576,10 @@ impl HarnessAdapter for AcpAdapter {
         // ACP has no trust gate, so an untrusted repository's own config for this binary, which
         // runs code, refuses the launch on every auth ([`Agent::repo_config`]).
         let repo_config = binding.repo_config();
-        if !f.repo_trusted && spec::repo_config_present(repo_config, &f) {
+        if !f.repo_trusted && spec::repo_config_present(&repo_config, &f) {
             return Err(crate::adapter::untrusted_repo_config(
                 Harness::Acp,
-                repo_config,
+                &repo_config,
                 true,
             ));
         }
@@ -4564,6 +4580,39 @@ mod tests {
                 a.id
             );
         }
+    }
+
+    /// **An ACP agent carries its twin row's repository config by every route to its binary**,
+    /// unioned with its own: `acp:goose`, `goose acp` and a full path all hold the `goose` row's,
+    /// and Hermes' comes through its twin alone. A command no row's binary starts carries none.
+    #[test]
+    fn an_agent_carries_its_twin_rows_repo_config_by_every_route() {
+        for selector in ["goose", "goose acp", "/opt/bin/goose acp --verbose"] {
+            assert_eq!(
+                Binding::resolve(selector).unwrap().repo_config(),
+                crate::goose::SPEC.repo_config,
+                "{selector}"
+            );
+        }
+        assert_eq!(
+            Binding::resolve("cline").unwrap().repo_config(),
+            crate::cline::SPEC.repo_config
+        );
+        assert!(HERMES.repo_config.is_empty());
+        assert_eq!(
+            Binding::resolve("hermes").unwrap().repo_config(),
+            [".hermes/plugins"]
+        );
+        assert_eq!(
+            Binding::resolve("cursor").unwrap().repo_config(),
+            CURSOR.repo_config
+        );
+        assert!(
+            Binding::resolve("some-agent --acp")
+                .unwrap()
+                .repo_config()
+                .is_empty()
+        );
     }
 
     /// **An agent that reports no usage is read under no rule**, bound by id: its figure is not a

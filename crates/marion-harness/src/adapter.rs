@@ -4635,21 +4635,30 @@ mod tests {
 
     /// **An ACP agent's repository config refuses an untrusted repository holding it, by every
     /// route to the agent**: by id, as its command, and by a full path with more arguments, each
-    /// path the agent states planted alone below the checkout's root. A trusted repository, or a
-    /// tree without it, launches. ACP has no trust gate, so the refusal is the any-auth one.
-    /// Mutation: drop the check in the ACP adapter, or read the config off the refinement alone.
+    /// path planted alone below the checkout's root — its own and every one its twin row states
+    /// (`acp:goose` carries the `goose` row's). A trusted repository, or a tree without it,
+    /// launches. ACP has no trust gate, so the refusal is the any-auth one. Mutation: drop the
+    /// check in the ACP adapter, read the config off the refinement alone, or leave out the twin.
     #[test]
     fn an_acp_agents_repo_config_refuses_an_untrusted_repository_by_every_route() {
         let mut stating = Vec::new();
-        for agent in acp::AGENTS.iter().filter(|a| !a.repo_config.is_empty()) {
+        for agent in acp::AGENTS {
+            let paths = acp::Binding::refined(agent).repo_config();
+            if paths.is_empty() {
+                continue;
+            }
             stating.push(agent.id);
+            if let acp::AgentUpdates::Twin(h) = agent.updates {
+                let twin = harness_spec(h).repo_config;
+                assert!(twin.iter().all(|p| paths.contains(p)), "{}", agent.id);
+            }
             let (program, args) = agent.argv.split_first().unwrap();
             let selectors = [
                 agent.id.to_string(),
                 agent.argv.join(" "),
                 format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
             ];
-            for (i, planted) in agent.repo_config.iter().enumerate() {
+            for (i, planted) in paths.iter().enumerate() {
                 let dir = marion_testsupport::scratch(&format!("acp-{}-repo-config-{i}", agent.id));
                 std::fs::create_dir_all(dir.join(".git")).unwrap();
                 let sub = dir.join("src");
@@ -4688,8 +4697,18 @@ mod tests {
         }
         assert_eq!(
             stating,
-            ["hermes", "cursor"],
-            "the ACP agents stating repository config, by name"
+            [
+                "opencode",
+                "claude-acp",
+                "copilot",
+                "qwen",
+                "goose",
+                "cline",
+                "pi-acp",
+                "hermes",
+                "cursor"
+            ],
+            "the ACP agents carrying repository config, by name"
         );
     }
 
