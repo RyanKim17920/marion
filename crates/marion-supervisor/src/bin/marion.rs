@@ -591,7 +591,7 @@ fn shell_main(argv: &[String]) -> Result<ExitCode, Exit> {
 }
 
 fn landed_main(argv: &[String], what: Landed) -> Result<ExitCode, Exit> {
-    use marion_supervisor::landing::{branch_log, branch_merge};
+    use marion_supervisor::landing::{branch_log, branch_merge, reviewed_tip};
     let args = parse_attach(argv)?;
     let Some((repo, state)) = resolve_project(&args.place) else {
         return Ok(ExitCode::FAILURE);
@@ -607,7 +607,12 @@ fn landed_main(argv: &[String], what: Landed) -> Result<ExitCode, Exit> {
                 })
         };
         match what {
-            Landed::Diff => run_status(branch_log(&repo, &branch()?), "git log"),
+            Landed::Diff => {
+                let branch = branch()?;
+                let commit =
+                    reviewed_tip(&repo, &branch, None).map_err(|e| format!("not shown: {e}"))?;
+                run_status(branch_log(&repo, &commit), "git log")
+            }
             Landed::Merge => {
                 let branch = branch()?;
                 run_status(branch_merge(&repo, &branch)?, "git merge")?;

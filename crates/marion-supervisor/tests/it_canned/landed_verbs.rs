@@ -94,10 +94,11 @@ fn diff_shows_the_branch_and_merge_lands_it() {
     );
 }
 
-/// **`marion merge` merges only a branch marion made**, whatever the node's contract names. The
-/// contract is the node's record, so a node can rewrite the branch in it; here it names `feature`
-/// (a real branch carrying the node's commit, which a merge would land) and `main`. Both are
-/// refused by name, and the checkout is unchanged.
+/// **`marion diff` shows and `marion merge` merges only a branch marion made**, whatever the
+/// node's contract names. The contract is the node's record, so a node can rewrite the branch in
+/// it; here it names `feature` (a real branch carrying the node's commit, which a merge would land)
+/// and `main`. Each is refused by name by both, nothing of it is shown, and the checkout is
+/// unchanged.
 #[test]
 fn merge_refuses_a_branch_the_contract_names_that_marion_did_not_make() {
     let (_dir, repo, state, fx) = bed("landed-verbs-forged");
@@ -111,13 +112,19 @@ fn merge_refuses_a_branch_the_contract_names_that_marion_did_not_make() {
             original.replace(&format!("\"{}\"", fx.branch), &format!("\"{forged}\"")),
         )
         .unwrap();
-        let merge = marion(&["merge", &fx.child.0], &repo, &state);
-        assert!(!merge.status.success(), "{forged}: {merge:?}");
-        assert!(
-            String::from_utf8_lossy(&merge.stderr)
-                .contains(&format!("{forged} is not a branch marion made for a task")),
-            "{forged}: {merge:?}"
-        );
+        for verb in ["diff", "merge"] {
+            let out = marion(&[verb, &fx.child.0], &repo, &state);
+            assert!(!out.status.success(), "{verb} {forged}: {out:?}");
+            assert!(
+                String::from_utf8_lossy(&out.stderr)
+                    .contains(&format!("{forged} is not a branch marion made for a task")),
+                "{verb} {forged}: {out:?}"
+            );
+            assert!(
+                !String::from_utf8_lossy(&out.stdout).contains("landed by the agent"),
+                "{verb} {forged}: nothing of the branch is shown"
+            );
+        }
         assert!(!repo.join("b.txt").exists(), "{forged}: nothing was merged");
         assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head, "{forged}");
     }

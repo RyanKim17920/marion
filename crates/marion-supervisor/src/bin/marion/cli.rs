@@ -621,7 +621,7 @@ fn diff_help() -> String {
          \n\
          Show what an agent's branch added over your HEAD, commit by commit with its patch. The\n\
          patch is shown raw: no diff driver or textconv program the branch names runs, and no\n\
-         pager; pipe it to one.\n\
+         pager; pipe it to one. Only a branch marion made for a task is shown.\n\
          \n\
          {PLACE_HELP}\n\
          \n\
@@ -635,7 +635,8 @@ fn merge_help() -> String {
          \n\
          Merge an agent's branch into your checkout with `git merge --no-ff`. No hook, editor or\n\
          signing program runs, and it refuses when the repository's own config names a filter or\n\
-         merge driver, a program a merge would run.\n\
+         merge driver, a program a merge would run. Only a branch marion made for a task is\n\
+         merged.\n\
          \n\
          {PLACE_HELP}\n\
          \n\

@@ -4,10 +4,11 @@
 
 use std::path::Path;
 
-/// `git log -p` of what `branch` added over HEAD: `marion diff`'s command. Shown raw — no
+/// `git log -p` of what `commit` added over HEAD: `marion diff`'s command. Shown raw — no
 /// textconv program and no external diff — because a child's branch can carry a
-/// `.gitattributes` naming a diff driver.
-pub fn log_argv(branch: &str) -> Vec<String> {
+/// `.gitattributes` naming a diff driver. `commit` is the one [`reviewed_tip`] resolved, so what
+/// is shown is the commit a later `marion merge --at` lands.
+pub fn log_argv(commit: &str) -> Vec<String> {
     [
         "git",
         "log",
@@ -15,7 +16,7 @@ pub fn log_argv(branch: &str) -> Vec<String> {
         "--stat",
         "--no-textconv",
         "--no-ext-diff",
-        &format!("HEAD..{branch}"),
+        &format!("HEAD..{commit}"),
     ]
     .map(str::to_string)
     .to_vec()
@@ -30,23 +31,75 @@ pub fn merge_argv(branch: &str) -> Vec<String> {
 }
 
 /// [`log_argv`], run in `repo` with the terminal as `git_in` runs it.
-pub fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
-    git_in(repo, &log_argv(branch))
+pub fn branch_log(repo: &Path, commit: &str) -> std::process::Command {
+    git_in(repo, &log_argv(commit))
+}
+
+/// Why `branch` is refused as a branch marion did not make for a task (`run::task_branch_ref`),
+/// or `None`. The name comes from the node's contract, and a node that named `main` or another
+/// branch of the operator's would otherwise have the operator review and merge that.
+fn not_marions(branch: &str) -> Option<String> {
+    crate::run::task_branch_ref(branch).is_none().then(|| {
+        marion_core::text::visible(&format!(
+            "{branch} is not a branch marion made for a task (marion/<task>), so its name did \
+             not come from marion; diff or merge it by hand if you mean to"
+        ))
+        .into_owned()
+    })
+}
+
+/// **The commit `branch` is at, which a diff shows and a merge lands**: refused unless `branch` is
+/// one marion made for a task, and, where `reviewed` names the commit the operator was shown
+/// (`marion diff` prints it; the home screen passes the one its `:diff` showed), unless the branch
+/// is still at exactly that commit. The node keeps writing its own branch after the operator
+/// looks, so a merge of the name would land whatever it moved to; pinned, it lands what was read.
+pub fn reviewed_tip(repo: &Path, branch: &str, reviewed: Option<&str>) -> Result<String, String> {
+    if let Some(why) = not_marions(branch) {
+        return Err(why);
+    }
+    if let Some(r) = reviewed
+        && !(r.len() >= 40 && r.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err(marion_core::text::visible(&format!(
+            "--at {r} is not a whole commit id; pass the one `marion diff` printed"
+        ))
+        .into_owned());
+    }
+    let out = git_in(
+        repo,
+        &[
+            "git".into(),
+            "rev-parse".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            format!("refs/heads/{branch}^{{commit}}"),
+        ],
+    )
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .output()
+    .map_err(|e| format!("could not run git to read {branch}: {e}"))?;
+    let tip = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || tip.is_empty() {
+        return Err(format!("{branch} is not a branch in this checkout"));
+    }
+    match reviewed {
+        Some(r) if !r.eq_ignore_ascii_case(&tip) => Err(format!(
+            "{branch} moved since it was reviewed: it was at {r} and is at {tip} now; run \
+             `marion diff` again to see what it holds"
+        )),
+        _ => Ok(tip),
+    }
 }
 
 /// [`merge_argv`] in `repo`, hardened as `git_in` runs it. Refused, with why, where `branch` is not
-/// one marion made for a task (`run::task_branch_ref`) — the name comes from the node's contract,
-/// and a node that named `main` or another branch of the operator's would otherwise have the
-/// operator merge it — or where the repository's own config names a program a merge would run
-/// (`merge_refusal`). The CLI's `marion merge` and the home screen's `m` and `:merge` all run
+/// one marion made for a task, or where the repository's own config names a program a merge
+/// would run (`merge_refusal`). The CLI's `marion merge` and the home screen's `:merge` both run
 /// this, the screen through the CLI.
 pub fn branch_merge(repo: &Path, branch: &str) -> Result<std::process::Command, String> {
-    if crate::run::task_branch_ref(branch).is_none() {
-        return Err(marion_core::text::visible(&format!(
-            "not merged: {branch} is not a branch marion made for a task (marion/<task>), so its \
-             name did not come from marion; merge it by hand if you mean to"
-        ))
-        .into_owned());
+    if let Some(why) = not_marions(branch) {
+        return Err(format!("not merged: {why}"));
     }
     match merge_refusal(repo) {
         Some(why) => Err(why),
@@ -130,10 +183,10 @@ mod tests {
     /// The branch log handed to the operator runs no program a branch names.
     #[test]
     fn the_branch_log_runs_no_textconv_or_external_diff() {
-        let args = args(&branch_log(Path::new("/r"), "marion/t-1"));
+        let args = args(&branch_log(Path::new("/r"), "0123abcd"));
         assert!(args.contains(&"--no-textconv".to_string()), "{args:?}");
         assert!(args.contains(&"--no-ext-diff".to_string()), "{args:?}");
-        assert_eq!(args.last().map(String::as_str), Some("HEAD..marion/t-1"));
+        assert_eq!(args.last().map(String::as_str), Some("HEAD..0123abcd"));
         assert!(args.contains(&"--no-pager".to_string()), "{args:?}");
     }
 
@@ -176,9 +229,9 @@ mod tests {
 
     /// **marion will not merge where the repository's own config names a driver program**, and
     /// merges where it names none.
-    /// **Only a branch marion made for a task is merged.** The name is read off the node's
-    /// contract, so a node can name any branch; each of these is refused before git or the
-    /// repository's config is touched (the repository here does not exist).
+    /// **Only a branch marion made for a task is diffed or merged.** The name is read off the
+    /// node's contract, so a node can name any branch; each of these is refused by both before git
+    /// or the repository's config is touched (the repository here does not exist).
     #[test]
     fn a_branch_marion_did_not_make_is_refused_before_anything_runs() {
         for branch in [
@@ -194,17 +247,60 @@ mod tests {
             "-x",
             "x\u{1b}[2J",
         ] {
-            let e = branch_merge(Path::new("/nonexistent-repo"), branch)
-                .expect_err(&format!("{branch:?} is not marion's"));
-            assert!(
-                e.contains("not a branch marion made for a task"),
-                "{branch:?}: {e}"
-            );
-            assert!(
-                !e.contains('\u{1b}'),
-                "{branch:?}: the refusal is printable: {e:?}"
-            );
+            let repo = Path::new("/nonexistent-repo");
+            for e in [
+                reviewed_tip(repo, branch, None).expect_err(branch),
+                branch_merge(repo, branch).expect_err(branch),
+            ] {
+                assert!(
+                    e.contains("not a branch marion made for a task"),
+                    "{branch:?}: {e}"
+                );
+                assert!(
+                    !e.contains('\u{1b}'),
+                    "{branch:?}: the refusal is printable: {e:?}"
+                );
+            }
         }
+    }
+
+    /// **A diff and a merge are pinned to the commit the operator reviewed.** The tip is resolved
+    /// to a whole commit id; a `reviewed` id the branch has since moved off is refused naming
+    /// both, and one that is not a whole id is refused as such.
+    #[test]
+    fn the_reviewed_commit_pins_the_tip_and_a_moved_branch_is_refused() {
+        let dir = marion_testsupport::scratch("landing-reviewed-tip");
+        let git = |args: &[&str]| {
+            let out = marion_harness::env_filter::git_command()
+                .current_dir(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgSign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&["branch", "marion/t-1"]);
+        let first = git(&["rev-parse", "marion/t-1"]);
+        assert_eq!(reviewed_tip(&dir, "marion/t-1", None).unwrap(), first);
+        assert_eq!(
+            reviewed_tip(&dir, "marion/t-1", Some(&first)).unwrap(),
+            first
+        );
+        git(&["checkout", "-q", "marion/t-1"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+        let moved = reviewed_tip(&dir, "marion/t-1", Some(&first)).unwrap_err();
+        assert!(
+            moved.contains("moved since it was reviewed") && moved.contains(&first),
+            "{moved}"
+        );
+        let short = reviewed_tip(&dir, "marion/t-1", Some(&first[..12])).unwrap_err();
+        assert!(short.contains("not a whole commit id"), "{short}");
+        let gone = reviewed_tip(&dir, "marion/t-2", None).unwrap_err();
+        assert!(gone.contains("not a branch in this checkout"), "{gone}");
     }
 
     #[test]
