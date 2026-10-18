@@ -94,6 +94,58 @@ fn diff_shows_the_branch_and_merge_lands_it() {
     );
 }
 
+/// **`marion merge` merges only a branch marion made**, whatever the node's contract names. The
+/// contract is the node's record, so a node can rewrite the branch in it; here it names `feature`
+/// (a real branch carrying the node's commit, which a merge would land) and `main`. Both are
+/// refused by name, and the checkout is unchanged.
+#[test]
+fn merge_refuses_a_branch_the_contract_names_that_marion_did_not_make() {
+    let (_dir, repo, state, fx) = bed("landed-verbs-forged");
+    git(&repo, &["branch", "feature", &fx.branch]);
+    let contract = contract_naming(&state, &fx.branch);
+    let original = std::fs::read_to_string(&contract).unwrap();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    for forged in ["feature", "main"] {
+        std::fs::write(
+            &contract,
+            original.replace(&format!("\"{}\"", fx.branch), &format!("\"{forged}\"")),
+        )
+        .unwrap();
+        let merge = marion(&["merge", &fx.child.0], &repo, &state);
+        assert!(!merge.status.success(), "{forged}: {merge:?}");
+        assert!(
+            String::from_utf8_lossy(&merge.stderr)
+                .contains(&format!("{forged} is not a branch marion made for a task")),
+            "{forged}: {merge:?}"
+        );
+        assert!(!repo.join("b.txt").exists(), "{forged}: nothing was merged");
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head, "{forged}");
+    }
+}
+
+/// The contract file under `state` that names `branch`.
+fn contract_naming(state: &Path, branch: &str) -> PathBuf {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(state, &mut files);
+    let named: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .filter(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains(&format!("\"{branch}\""))))
+        .collect();
+    assert_eq!(named.len(), 1, "one contract names {branch}: {named:?}");
+    named[0].clone()
+}
+
 /// The root landed no branch, and says so rather than running git on nothing.
 #[test]
 fn a_node_with_no_branch_is_refused_with_why() {

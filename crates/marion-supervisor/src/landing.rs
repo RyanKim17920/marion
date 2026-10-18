@@ -34,9 +34,20 @@ pub fn branch_log(repo: &Path, branch: &str) -> std::process::Command {
     git_in(repo, &log_argv(branch))
 }
 
-/// [`merge_argv`] in `repo`, hardened as `git_in` runs it. Refused, with why, where the
-/// repository's own config names a program a merge would run (`merge_refusal`).
+/// [`merge_argv`] in `repo`, hardened as `git_in` runs it. Refused, with why, where `branch` is not
+/// one marion made for a task (`run::task_branch_ref`) — the name comes from the node's contract,
+/// and a node that named `main` or another branch of the operator's would otherwise have the
+/// operator merge it — or where the repository's own config names a program a merge would run
+/// (`merge_refusal`). The CLI's `marion merge` and the home screen's `m` and `:merge` all run
+/// this, the screen through the CLI.
 pub fn branch_merge(repo: &Path, branch: &str) -> Result<std::process::Command, String> {
+    if crate::run::task_branch_ref(branch).is_none() {
+        return Err(marion_core::text::visible(&format!(
+            "not merged: {branch} is not a branch marion made for a task (marion/<task>), so its \
+             name did not come from marion; merge it by hand if you mean to"
+        ))
+        .into_owned());
+    }
     match merge_refusal(repo) {
         Some(why) => Err(why),
         None => Ok(git_in(repo, &merge_argv(branch))),
@@ -165,6 +176,37 @@ mod tests {
 
     /// **marion will not merge where the repository's own config names a driver program**, and
     /// merges where it names none.
+    /// **Only a branch marion made for a task is merged.** The name is read off the node's
+    /// contract, so a node can name any branch; each of these is refused before git or the
+    /// repository's config is touched (the repository here does not exist).
+    #[test]
+    fn a_branch_marion_did_not_make_is_refused_before_anything_runs() {
+        for branch in [
+            "main",
+            "feature/x",
+            "marion",
+            "marion/",
+            "marion/a/b",
+            "marion/../main",
+            "marion/-x",
+            "marion/.hidden",
+            "refs/heads/marion/t-1",
+            "-x",
+            "x\u{1b}[2J",
+        ] {
+            let e = branch_merge(Path::new("/nonexistent-repo"), branch)
+                .expect_err(&format!("{branch:?} is not marion's"));
+            assert!(
+                e.contains("not a branch marion made for a task"),
+                "{branch:?}: {e}"
+            );
+            assert!(
+                !e.contains('\u{1b}'),
+                "{branch:?}: the refusal is printable: {e:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_planted_driver_in_the_repository_config_refuses_the_merge() {
         let dir = marion_testsupport::scratch("landing-merge-driver");
