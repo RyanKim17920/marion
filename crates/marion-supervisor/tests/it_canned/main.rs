@@ -44,4 +44,5 @@ mod report_on_a_root;
 mod root_change_record;
 mod run_stream;
 mod spawned_barrier;
+mod token_never_in_env;
 mod top_level_mcp;
