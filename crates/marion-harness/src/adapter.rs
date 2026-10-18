@@ -4609,12 +4609,7 @@ mod tests {
         for agent in acp::AGENTS {
             let Some(why) = agent.held else { continue };
             held.push(agent.id);
-            let (program, args) = agent.argv.split_first().unwrap();
-            for selector in [
-                agent.id.to_string(),
-                agent.argv.join(" "),
-                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
-            ] {
+            for selector in acp::routes(&agent) {
                 assert_eq!(
                     documents(&selector),
                     Err(HarnessError::Held {
@@ -4652,12 +4647,7 @@ mod tests {
                 let twin = harness_spec(h).repo_config;
                 assert!(twin.iter().all(|p| paths.contains(p)), "{}", agent.id);
             }
-            let (program, args) = agent.argv.split_first().unwrap();
-            let selectors = [
-                agent.id.to_string(),
-                agent.argv.join(" "),
-                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
-            ];
+            let selectors = acp::routes(&agent);
             for (i, planted) in paths.iter().enumerate() {
                 let dir = marion_testsupport::scratch(&format!("acp-{}-repo-config-{i}", agent.id));
                 std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -10049,12 +10039,7 @@ mod tests {
             assert!(!note.trim().is_empty(), "{who}: no measurement behind it");
             // The row by id, and the same binary named as a command: its own argv, and a full
             // path to its program with one more argument after the row's.
-            let (program, args) = agent.argv.split_first().unwrap();
-            let selectors = [
-                agent.id.to_string(),
-                agent.argv.join(" "),
-                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
-            ];
+            let selectors = acp::routes(&agent);
             let launches: Vec<(String, Invocation)> = selectors
                 .iter()
                 .flat_map(|selector| {

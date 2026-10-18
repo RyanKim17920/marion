@@ -682,6 +682,10 @@ pub struct Agent {
     pub id: &'static str,
     /// The agent's own argv, verbatim as the spike launched it.
     pub argv: &'static [&'static str],
+    /// **Other programs the install puts on `PATH` that run this agent's binary**, by file name:
+    /// a command starting with one, then the row's arguments, runs this row's binary as its
+    /// `argv[0]` does (`same_program`), so it is held and refused as the row is. Empty for most.
+    pub aliases: &'static [&'static str],
     /// The measured tool spelling, or `None` where marion has never seen this agent call a tool.
     pub tools: Option<ToolSpelling>,
     /// How this agent is pointed at a provider **marion** chose, or `None` where marion has never
@@ -878,6 +882,7 @@ pub const OPENCODE: Agent = Agent {
     // `--print-logs --log-level ERROR`: a retried 429 or 500 is named only in opencode's log
     // (the `opencode` row's argv says why), so it is asked for on stderr.
     argv: &["opencode", "acp", "--print-logs", "--log-level", "ERROR"],
+    aliases: &[],
     tools: Some(ToolSpelling::ServerUnderscoreTool),
     canned: Some(CannedRecipe::OpencodeConfigDocument),
     declaration: Declaration::Session,
@@ -917,6 +922,7 @@ pub const CLAUDE_ACP: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "claude-acp",
     argv: &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"],
+    aliases: &[],
     tools: Some(ToolSpelling::McpDoubleUnderscore),
     canned: None,
     declaration: Declaration::Session,
@@ -961,6 +967,7 @@ pub const CODEX_ACP: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "codex-acp",
     argv: &["codex-acp"],
+    aliases: &[],
     tools: Some(ToolSpelling::McpDotted),
     canned: None,
     declaration: Declaration::Session,
@@ -1010,6 +1017,7 @@ pub const COPILOT: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "copilot",
     argv: &["copilot", "--acp"],
+    aliases: &[],
     tools: Some(ToolSpelling::ServerHyphenTool),
     canned: None,
     declaration: Declaration::Argv {
@@ -1052,6 +1060,7 @@ pub const KILO: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "kilo",
     argv: &["kilo", "acp"],
+    aliases: &[],
     tools: None,
     // opencode's config document is likely its shape too, and that is exactly an unmeasured claim.
     canned: None,
@@ -1085,6 +1094,7 @@ pub const QWEN: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "qwen",
     argv: &["qwen", "--acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1116,6 +1126,7 @@ pub const GOOSE: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "goose",
     argv: &["goose", "acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1147,6 +1158,7 @@ pub const FAST_AGENT: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "fast-agent",
     argv: &["fast-agent-acp", "-x"],
+    aliases: &[],
     // S33 watched a real `tools/call` reach the bridge, titled `marion/report` — which the generic
     // reading already reads, so no spelling of its own is recorded.
     tools: None,
@@ -1181,6 +1193,7 @@ pub const VIBE: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "vibe",
     argv: &["vibe-acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1211,6 +1224,7 @@ pub const VTCODE: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "vtcode",
     argv: &["vtcode", "acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1243,6 +1257,7 @@ pub const AUGGIE: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "auggie",
     argv: &["auggie", "--acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1269,6 +1284,7 @@ pub const QODER: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "qoder",
     argv: &["qodercli", "--acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1295,6 +1311,7 @@ pub const CLINE: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "cline",
     argv: &["cline", "--acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1321,6 +1338,7 @@ pub const PI_ACP: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "pi-acp",
     argv: &["pi-acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1354,6 +1372,7 @@ pub const HERMES: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "hermes",
     argv: &["hermes", "acp"],
+    aliases: &[],
     tools: None,
     canned: None,
     declaration: Declaration::Session,
@@ -1396,6 +1415,8 @@ pub const CURSOR: Agent = Agent {
     boot: UNMEASURED_AGENT,
     id: "cursor",
     argv: &["agent", "acp"],
+    // Unmeasured: the installer links `cursor-agent` beside `agent`, to the same binary.
+    aliases: &["cursor-agent"],
     // Unmeasured: source titles an MCP call `"<server>: <tool>"`, its arguments under `args`
     // ([`ToolSpelling::ServerColonTool`]). A row's spelling is one marion watched it type, so the
     // capture that measures it sets this; the generic reading finds the verb but not the nested
@@ -1478,8 +1499,9 @@ pub fn agent(id: &str) -> Option<Agent> {
     AGENTS.into_iter().find(|a| a.id == id)
 }
 
-/// The row whose measured argv a command line starts with — its program by file name, so a full
-/// path to the same binary counts, then the row's arguments verbatim — the longest where several
+/// The row whose measured argv a command line starts with — its program by file name (or one of
+/// its [`Agent::aliases`]), so a full path to the same binary counts, then the row's arguments
+/// verbatim — the longest where several
 /// do. Only the row's **binary** facts may be read off it (its update switch): the command is not
 /// bound to the row, whose spelling and declaration quirks were measured on its own argv.
 fn same_program(argv: &[String]) -> Option<Agent> {
@@ -1488,11 +1510,27 @@ fn same_program(argv: &[String]) -> Option<Agent> {
         .into_iter()
         .filter(|a| {
             let (row_program, row_args) = a.argv.split_first().expect("a row names a program");
-            program_name(program) == *row_program
+            let program = program_name(program);
+            (program == *row_program || a.aliases.contains(&program))
                 && args.len() >= row_args.len()
                 && args.iter().zip(row_args).all(|(a, b)| a == b)
         })
         .max_by_key(|a| a.argv.len())
+}
+
+/// **Every selector that reaches `agent`'s binary**, for the route tests: its id, its argv, a full
+/// path to its program with one more argument, and each of its [`Agent::aliases`] the same two
+/// ways.
+#[cfg(test)]
+pub(crate) fn routes(agent: &Agent) -> Vec<String> {
+    let (program, args) = agent.argv.split_first().expect("a row names a program");
+    let args = args.join(" ");
+    let mut routes = vec![agent.id.to_string()];
+    for program in std::iter::once(program).chain(agent.aliases) {
+        routes.push(format!("{program} {args}").trim_end().to_string());
+        routes.push(format!("/opt/agents/bin/{program} {args} --verbose"));
+    }
+    routes
 }
 
 /// A command's program by file name, so a full path to a binary names it as its bare name does.
@@ -3038,12 +3076,7 @@ mod tests {
         assert_eq!(Binding::refined(KILO).held(), None);
         assert_eq!(Binding::resolve("some-agent --acp").unwrap().held(), None);
         for a in AGENTS {
-            let (program, args) = a.argv.split_first().unwrap();
-            for selector in [
-                a.id.to_string(),
-                a.argv.join(" "),
-                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
-            ] {
+            for selector in routes(&a) {
                 assert_eq!(
                     Binding::resolve(&selector).unwrap().held(),
                     a.held,
@@ -4606,6 +4639,7 @@ mod tests {
             "/opt/bin/kilo acp",
             "agent acp",
             "/opt/bin/agent acp --verbose",
+            "cursor-agent acp",
         ] {
             let generic = Binding::resolve(command).unwrap();
             assert_eq!(generic.anonymous_as(), None, "`{command}`");
@@ -4680,7 +4714,12 @@ mod tests {
             assert!(a.reasoning.is_none() || a.unreported_usage.is_none());
         }
         assert!(Binding::resolve("kilo acp").unwrap().usage().is_some());
-        for command in ["cursor", "agent acp", "/opt/bin/agent acp --verbose"] {
+        for command in [
+            "cursor",
+            "agent acp",
+            "/opt/bin/agent acp --verbose",
+            "cursor-agent acp",
+        ] {
             assert!(
                 Binding::resolve(command).unwrap().usage().is_none(),
                 "{command}"
