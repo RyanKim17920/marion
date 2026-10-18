@@ -713,11 +713,19 @@ once pointed at a model provider through its own configuration. **Refused** rows
 | `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |
 | `pi-acp` | `pi-acp` | — | **refused** | shim/pi version skew |
 | `hermes` | `hermes acp` | — | not probed | read from the 0.22.2 source; held, so no launch of it runs |
+| `cursor` | `agent acp` | — | not probed | read from the 2026.10.16 source; held, so no launch of it runs |
 
 Any command that runs Hermes (`hermes`, `hermes-acp` or `hermes-agent`, by any path) is held as
 the `hermes` row is, and once the hold lifts carries its switch against adopting your Codex CLI or
 Claude Code login. marion cannot see Hermes behind a wrapper such as `npx`, `uvx` or `python -m`,
 so a command spelled that way is neither held nor guarded.
+
+Cursor's CLI is held the same way: by id, as `agent acp`, or by any path to its `agent` binary.
+Once the hold lifts it runs on your own login — `agent login`, `CURSOR_API_KEY` or
+`CURSOR_AUTH_TOKEN` — and marion never sends the `authenticate` request that would open Cursor's
+browser login. Cursor reports no token usage over ACP, so a token budget on it is refused. An
+untrusted repository holding `.cursor/hooks.json`, `.cursor/mcp.json` or a `.claude/settings`
+file refuses its launch, because Cursor runs them without asking.
 
 `marion doctor --harness acp` probes every row and names the MCP transports each
 agent advertises; `marion-supervisor doctor --acp-command "<cmd>"` probes your own agent and says

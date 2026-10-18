@@ -305,6 +305,11 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
     ));
     notes.push(abort_note(adapter.spec()));
     notes.extend(usage_note(adapter.spec()));
+    notes.extend(
+        agent
+            .and_then(acp::Binding::refinement)
+            .map_or_else(Vec::new, agent_notes),
+    );
 
     // A row read from source with nothing on the wire behind it is held: no probe launches its
     // binary before its capture lands. An operator's own command for the same binary still runs.
@@ -492,6 +497,22 @@ fn abort_note(row: &marion_harness::spec::HarnessSpec) -> String {
         one(row.abort.headless),
         one(row.abort.interactive)
     )
+}
+
+/// What an ACP refinement row states for its operator beyond its note: that its usage is not
+/// reported (and so a budget on it is refused), and the risks marion leaves to them.
+fn agent_notes(agent: &acp::Agent) -> Vec<String> {
+    agent
+        .unreported_usage
+        .map(|why| format!("usage: none over ACP — {why}; a token budget on it is refused"))
+        .into_iter()
+        .chain(
+            agent
+                .residuals
+                .iter()
+                .map(|r| format!("residual risk: {r}")),
+        )
+        .collect()
 }
 
 /// The requests the row's usage figure leaves out (`UsageRule::uncounted`), for an operator
@@ -1659,7 +1680,7 @@ fn acp_turn_steps(
     trailing: &mut Vec<String>,
 ) -> Result<bool, (bool, String)> {
     acp_initialize_step(agent, binding, trailing)?;
-    let sid = acp_session_step(agent, cwd, trailing)?;
+    let sid = acp_session_step(agent, binding, cwd, trailing)?;
     Ok(acp_prompt_step(agent, &sid, trailing))
 }
 
@@ -1689,6 +1710,7 @@ fn acp_initialize_step(
 /// `session/new`: the agent opens a session within [`SESSION_BUDGET`] and names it.
 fn acp_session_step(
     agent: &mut AcpChild,
+    binding: &acp::Binding,
     cwd: &Path,
     trailing: &mut Vec<String>,
 ) -> Result<String, (bool, String)> {
@@ -1710,9 +1732,25 @@ fn acp_session_step(
             // **The S20 blocker, reported as the vendor's own sentence.** It is not an adapter
             // fault and no adapter can route around it, so it must not read as marion failing
             // to understand the answer.
-            Err(e) => Err((false, format!("session/new: REFUSED by the agent — {e}"))),
+            Err(e) => Err((
+                false,
+                format!(
+                    "session/new: REFUSED by the agent — {e}{}",
+                    login_hint(binding, &e)
+                        .map(|hint| format!("; login: {hint}"))
+                        .unwrap_or_default()
+                ),
+            )),
         },
     }
+}
+
+/// The bound row's hint for a refusal carrying its login-refusal code ([`acp::LoginRefusal`]),
+/// where it states one.
+fn login_hint(binding: &acp::Binding, e: &acp::AcpError) -> Option<&'static str> {
+    let refusal = binding.refinement()?.login_refusal?;
+    matches!(e, acp::AcpError::Refused { code, .. } if *code == refusal.code)
+        .then_some(refusal.hint)
 }
 
 /// `session/prompt`: the turn itself, cancelled if it runs out [`TURN_BUDGET`]. Answers whether it
@@ -3172,6 +3210,72 @@ mod tests {
                 assert!(step.unwrap_err().1.contains("no `agentInfo.name`"));
             }
         }
+    }
+
+    /// **Cursor's row states its operator's risks, and its login refusal names the fix.** Its
+    /// usage line says a budget is refused and each residual is a note; a row stating neither
+    /// adds nothing. A `session/new` refused with Cursor's login code carries the hint beside the
+    /// agent's own words, and only on that code and that row.
+    #[test]
+    fn cursors_notes_name_its_risks_and_its_login_refusal_names_the_fix() {
+        let notes = agent_notes(&acp::CURSOR);
+        assert!(
+            notes[0].starts_with("usage: none over ACP")
+                && notes[0].ends_with("a token budget on it is refused"),
+            "{notes:?}"
+        );
+        assert_eq!(notes.len(), 1 + acp::CURSOR.residuals.len(), "{notes:?}");
+        assert!(notes[1..].iter().all(|n| n.starts_with("residual risk: ")));
+        assert!(notes.iter().any(|n| n.contains("no cross-process lock")));
+        assert!(notes.iter().any(|n| n.contains("CURSOR_AUTH_TOKEN")));
+        assert!(agent_notes(&acp::KILO).is_empty());
+
+        let inv = Invocation {
+            sandbox: None,
+            inherit: None,
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                r#"read init; read new; printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Authentication required. Please run agent login first"}}'; exec cat >/dev/null"#
+                    .into(),
+            ],
+            env: vec![],
+            env_remove: vec![],
+            cwd: std::env::temp_dir(),
+            model: None,
+            session_mode: None,
+        };
+        for (binding, hinted) in [
+            (acp::Binding::refined(acp::CURSOR), true),
+            (acp::Binding::refined(acp::KILO), false),
+            (acp::Binding::resolve("agent acp").unwrap(), false),
+        ] {
+            let mut child =
+                AcpChild::spawn(Path::new("/bin/sh"), &inv, probe_tmp().unwrap()).expect("sh");
+            child.send(&acp::initialize_request(0));
+            let (_, refused) =
+                acp_session_step(&mut child, &binding, &std::env::temp_dir(), &mut Vec::new())
+                    .expect_err("refused");
+            child.finish();
+            assert!(
+                refused.contains("Please run agent login first"),
+                "{refused}"
+            );
+            assert_eq!(
+                refused.contains("; login: log in to Cursor yourself (`agent login`)"),
+                hinted,
+                "{}: {refused}",
+                binding.selector()
+            );
+        }
+        let other = acp::AcpError::Refused {
+            code: -32603,
+            message: "internal".into(),
+        };
+        assert_eq!(
+            login_hint(&acp::Binding::refined(acp::CURSOR), &other),
+            None
+        );
     }
 
     /// **A probe runs the launch a node runs, documents included**: Hermes' borrowed-login switch

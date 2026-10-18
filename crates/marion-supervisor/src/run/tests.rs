@@ -858,7 +858,27 @@ fn a_budget_is_refused_where_marion_cannot_count_the_spend() {
         )
         .is_ok()
     );
-    // An ACP agent is asked as bound: one that reports the protocol's usage takes a budget.
+    // An ACP agent is asked as bound: one that reports no usage is refused by name, and one that
+    // reports the protocol's takes a budget.
+    let refused = check_budget_enforceable(
+        marion_core::harness::Harness::Acp,
+        Some("cursor"),
+        Some(&budget),
+    )
+    .expect_err("Cursor reports no usage over ACP");
+    assert!(
+        refused.to_string().contains("acp agent `cursor`"),
+        "{refused}"
+    );
+    assert!(
+        check_budget_enforceable(
+            marion_core::harness::Harness::Acp,
+            Some("/opt/bin/agent acp"),
+            Some(&budget)
+        )
+        .is_err(),
+        "the same binary as a command"
+    );
     for agent in ["kilo", "kilo acp"] {
         assert!(
             check_budget_enforceable(

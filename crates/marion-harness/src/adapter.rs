@@ -4587,6 +4587,52 @@ mod tests {
         }
     }
 
+    /// **An ACP agent's own hold refuses every route to its binary at `launch_documents`**: by
+    /// id, as its command, and by a full path with more arguments. A command for another binary
+    /// is not held. Mutation: drop `Binding::held` from the ACP adapter's hold, or read it off the
+    /// refinement alone.
+    #[test]
+    fn an_acp_agents_own_hold_refuses_every_route_to_its_binary() {
+        let documents = |selector: &str| {
+            let launch = LaunchSpec {
+                extra: Extras {
+                    acp_agent: Some(selector.to_string()),
+                    ..Extras::default()
+                },
+                ..acp_spec()
+            };
+            AcpAdapter::resolve(selector)
+                .unwrap()
+                .launch_documents(&launch, &ctx())
+        };
+        let mut held = Vec::new();
+        for agent in acp::AGENTS {
+            let Some(why) = agent.held else { continue };
+            held.push(agent.id);
+            let (program, args) = agent.argv.split_first().unwrap();
+            for selector in [
+                agent.id.to_string(),
+                agent.argv.join(" "),
+                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
+            ] {
+                assert_eq!(
+                    documents(&selector),
+                    Err(HarnessError::Held {
+                        harness: Harness::Acp,
+                        why
+                    }),
+                    "acp:{selector}"
+                );
+            }
+        }
+        assert_eq!(
+            held,
+            ["cursor"],
+            "the ACP agents holding themselves, by name"
+        );
+        assert!(documents("opencode acp").is_ok());
+    }
+
     /// **An ACP agent's repository config refuses an untrusted repository holding it, by every
     /// route to the agent**: by id, as its command, and by a full path with more arguments, each
     /// path the agent states planted alone below the checkout's root. A trusted repository, or a
@@ -4625,7 +4671,8 @@ mod tests {
                 for selector in &selectors {
                     assert!(launch(selector, false).is_ok(), "{selector}: none yet");
                 }
-                let file = dir.join(planted).join("planted");
+                // Planted as a file at the very path: the check counts a file or a directory.
+                let file = dir.join(planted);
                 std::fs::create_dir_all(file.parent().unwrap()).unwrap();
                 std::fs::write(&file, "{}").unwrap();
                 for selector in &selectors {
@@ -4641,7 +4688,7 @@ mod tests {
         }
         assert_eq!(
             stating,
-            ["hermes"],
+            ["hermes", "cursor"],
             "the ACP agents stating repository config, by name"
         );
     }

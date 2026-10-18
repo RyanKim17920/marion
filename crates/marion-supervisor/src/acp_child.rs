@@ -1599,6 +1599,42 @@ sleep 15"#,
         }
     }
 
+    /// **marion never logs an agent in.** The agent offers an auth method and refuses
+    /// `session/new` for want of a login, as Cursor's source does (-32000, `authRequired`): the
+    /// refusal reaches the operator in the agent's own words, and no `authenticate` frame — which
+    /// on Cursor opens a browser login — is ever written to the agent.
+    #[test]
+    fn a_login_refusal_is_relayed_and_no_authenticate_is_ever_sent() {
+        let dir = scratch("acp-no-authenticate");
+        let seen = dir.join("frames.jsonl");
+        let script = format!(
+            r#"read init
+printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"protocolVersion":1,"authMethods":[{{"id":"cursor_login","name":"Cursor"}}],"agentCapabilities":{{}}}}}}'
+read new
+printf '%s\n' "$new" >> '{seen}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"Authentication required. Please run agent login first"}}}}'
+while read line; do printf '%s\n' "$line" >> '{seen}'; done"#,
+            seen = seen.display(),
+        );
+        let inv = agent(&dir, &script);
+        let e = run_acp_child(AcpChildSpec {
+            anonymous_as: Some("cursor"),
+            ..spec(&inv, Duration::from_secs(20), &|_| {})
+        })
+        .expect_err("no login, no session");
+        assert!(
+            matches!(&e, AcpChildError::SessionRefused(acp::AcpError::Refused { code: -32000, message })
+                if message.contains("agent login")),
+            "{e}"
+        );
+        let frames = std::fs::read_to_string(&seen).unwrap();
+        assert!(frames.contains("session/new"), "the premise: {frames}");
+        for frame in frames.lines() {
+            let v: serde_json::Value = serde_json::from_str(frame).unwrap();
+            assert_ne!(v["method"], "authenticate", "{frame}");
+        }
+    }
+
     /// **The wall clock, and a timeout that is not a lie.** The agent takes the prompt and never
     /// answers it. What must survive is everything it *did* say, plus its own `cancelled` — and the
     /// exit must say marion ended this, never exit 0.

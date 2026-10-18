@@ -105,7 +105,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     live_declaration: None,
     // Marion's own pipe: the `session/new` request carries the token beside the node's identity.
     // An ACP agent is any vendor's: every provider key, and the logins the refinement rows'
-    // agents read (copilot's GitHub token, claude-agent-acp's token, a Vertex credential).
+    // agents read (copilot's GitHub token, claude-agent-acp's token, a Vertex credential, Cursor's
+    // auth token).
     files: &[],
     overlay_documents: &[],
     repo_config: &[],
@@ -117,6 +118,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             EnvGrant::always("CLAUDE_CODE_OAUTH_TOKEN"),
             EnvGrant::always("ANTHROPIC_AUTH_TOKEN"),
             EnvGrant::always("GOOGLE_APPLICATION_CREDENTIALS"),
+            EnvGrant::always("CURSOR_AUTH_TOKEN"),
         ],
         any_provider: true,
     },
@@ -708,6 +710,13 @@ pub struct Agent {
     /// nothing measured backs it, and lifted by the measurement's commit. Reached by id and by a
     /// command running the agent's binary ([`Binding::held`]).
     pub held: Option<&'static str>,
+    /// **What a refusal of `session/new` for want of a login tells the operator to do**, keyed by
+    /// the agent's own error code, or `None` where no such refusal is known. Doctor adds the hint
+    /// beside the agent's own words; marion never answers one by logging in (`authenticate`).
+    pub login_refusal: Option<LoginRefusal>,
+    /// **What is known to go wrong around this agent that marion does not prevent** — each a
+    /// doctor note, so an operator reads the risk before running it. Empty for most rows.
+    pub residuals: &'static [&'static str],
     /// **The configuration this agent reads from the repository it runs in and runs code from**,
     /// as paths relative to the checkout — [`spec::HarnessSpec::repo_config`] for its binary. ACP
     /// has no trust gate, so a launch in an untrusted repository holding any of them is refused on
@@ -779,6 +788,14 @@ pub enum Reach {
     /// agent's source and `why` says so. Nothing on the wire backs it, and no built-in type is
     /// named for it.
     Unprobed { why: &'static str },
+}
+
+/// An agent's refusal of `session/new` for want of a login: its JSON-RPC error code, and what the
+/// operator does about it themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginRefusal {
+    pub code: i64,
+    pub hint: &'static str,
 }
 
 /// **A built-in row's borrowed-login switch, on every ACP command that runs its binary.** Only that
@@ -870,6 +887,8 @@ pub const OPENCODE: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::OpenCode),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "OpenCode",
     install: "brew install opencode",
@@ -908,6 +927,8 @@ pub const CLAUDE_ACP: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::ClaudeCode),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "@agentclientprotocol/claude-agent-acp",
     install: "npm i -g @agentclientprotocol/claude-agent-acp",
@@ -954,6 +975,8 @@ pub const CODEX_ACP: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "@agentclientprotocol/codex-acp",
     install: "npm i -g @agentclientprotocol/codex-acp",
@@ -1001,6 +1024,8 @@ pub const COPILOT: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Copilot),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "Copilot",
     install: "npm i -g @github/copilot",
@@ -1035,6 +1060,8 @@ pub const KILO: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "Kilo",
     install: "npm i -g @kilocode/cli",
@@ -1063,6 +1090,8 @@ pub const QWEN: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Qwen),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "qwen-code",
     install: "npm i -g @qwen-code/qwen-code",
@@ -1092,6 +1121,8 @@ pub const GOOSE: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Goose),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "goose",
     install: "brew install block-goose-cli",
@@ -1124,6 +1155,8 @@ pub const FAST_AGENT: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "fast-agent-acp",
     install: "uv tool install fast-agent-acp",
@@ -1154,6 +1187,8 @@ pub const VIBE: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "@mistralai/mistral-vibe",
     install: "uv tool install mistral-vibe",
@@ -1182,6 +1217,8 @@ pub const VTCODE: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "vtcode",
     install: "brew install vtcode",
@@ -1212,6 +1249,8 @@ pub const AUGGIE: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "auggie",
     install: "npm i -g @augmentcode/auggie",
@@ -1236,6 +1275,8 @@ pub const QODER: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "qoder-cli",
     install: "npm i -g @qoder-ai/qodercli",
@@ -1259,6 +1300,8 @@ pub const CLINE: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Cline),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "cline",
     install: "npm i -g cline",
@@ -1287,6 +1330,8 @@ pub const PI_ACP: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Pi),
     login_guard: None,
     held: None,
+    login_refusal: None,
+    residuals: &[],
     repo_config: &[],
     agent_info: "pi-acp",
     install: "npm i -g pi-acp",
@@ -1321,6 +1366,8 @@ pub const HERMES: Agent = Agent {
         programs: &["hermes", "hermes-acp", "hermes-agent"],
     }),
     held: None,
+    login_refusal: None,
+    residuals: &[],
     // The `hermes` row's: project plugins load on the operator's HERMES_ENABLE_PROJECT_PLUGINS
     // (v0.22.2 `plugins_discovery.py`, read from source), whatever subcommand runs.
     repo_config: &[".hermes/plugins"],
@@ -1334,6 +1381,77 @@ pub const HERMES: Agent = Agent {
            auth.adopt_external_logins false; the install spelling is unverified",
 };
 
+/// Cursor's CLI, `agent acp`: **read from the 2026.10.16-e3cb207 bundle, never captured** — no
+/// Cursor CLI is installed here, so every fact below is unmeasured until an S33 capture backs it.
+/// Its `initialize` names no agent, so it is recognised by id only ([`Binding::anonymous_as`]).
+/// `authenticate` opens a browser login, so marion never sends it: a session opens on the
+/// operator's own `agent login`, `CURSOR_API_KEY` or `CURSOR_AUTH_TOKEN`, or is refused in
+/// Cursor's words.
+pub const CURSOR: Agent = Agent {
+    boot: UNMEASURED_AGENT,
+    id: "cursor",
+    argv: &["agent", "acp"],
+    // Unmeasured: source titles an MCP call `"<server>: <tool>"`, which no spelling reads yet.
+    tools: None,
+    // No canned route: the operator's login, or their CURSOR_API_KEY / CURSOR_AUTH_TOKEN.
+    canned: None,
+    // Unmeasured: source honours session/new `mcpServers` over stdio, http and sse.
+    declaration: Declaration::Session,
+    mid_turn: None,
+    reasoning: None,
+    // Unmeasured: source answers `session/prompt` with `{stopReason}` alone.
+    unreported_usage: Some(
+        "Cursor reports no token usage over ACP (2026.10.16-e3cb207 source, unmeasured); its \
+         headless `-p` result does, as `usage {inputTokens, outputTokens, cacheReadTokens, \
+         cacheWriteTokens}`",
+    ),
+    // Unmeasured: the background updater starts only on the interactive and `-p` paths, so no
+    // flag rides argv; its one persistent switch is the operator's own cli-config.json, which
+    // marion never writes. `None` also keeps every version probe off the binary, and the
+    // anonymous handshake states none, so its version stays unread until a capture shows
+    // `agent --version` (source: no network call, no update check) is safe to run.
+    updates: AgentUpdates::Own(UpdatePolicy::None {
+        note: "acp never starts the updater (2026.10.16-e3cb207 source, unmeasured); no env var \
+               disables it, and the persistent switch is `channel: static` in the operator's \
+               cli-config.json, which marion never writes",
+    }),
+    // Adopts no other harness's login: it reads .claude settings for their hooks, not for auth.
+    login_guard: None,
+    held: Some(
+        "Cursor's `agent acp` is read from its 2026.10.16-e3cb207 source and never captured: \
+         marion launches no Cursor until a measurement of it is recorded",
+    ),
+    // Unmeasured: source answers a missing login with `authRequired`, code -32000.
+    login_refusal: Some(LoginRefusal {
+        code: -32000,
+        hint: "log in to Cursor yourself (`agent login`), or set CURSOR_API_KEY; marion never \
+               runs Cursor's login, which opens a browser",
+    }),
+    residuals: &[
+        "refresh: Cursor's login has no cross-process lock, and the CLI never refreshes a browser \
+         login (source, unmeasured); prefer few concurrent Cursor nodes, or CURSOR_API_KEY",
+        "credentials: a launch carrying CURSOR_AUTH_TOKEN writes it into Cursor's credential \
+         store (source, unmeasured)",
+    ],
+    // Unmeasured: ACP runs these with no trust gate — project hooks, Claude Code-format hooks,
+    // and project MCP servers whose approval nobody is there to give.
+    repo_config: &[
+        ".cursor/hooks.json",
+        ".cursor/mcp.json",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+    ],
+    // Anonymous (unmeasured): source's `initialize` result carries no `agentInfo`.
+    agent_info: "",
+    install: "curl https://cursor.com/install -fsS | bash",
+    reach: Reach::Unprobed {
+        why: "no Cursor CLI is installed to capture; read from the 2026.10.16-e3cb207 bundle",
+    },
+    note: "read from the Cursor CLI 2026.10.16-e3cb207 bundle, not captured: loadSession, mcp \
+           over http and sse, no agentInfo and no usage over ACP; marion never sends \
+           authenticate, which opens a browser login",
+};
+
 /// Every ACP agent marion has a refinement row for. Naming one is not having measured it — see
 /// [`Agent::tools`] — and not being named is not being refused: see [`Binding`].
 ///
@@ -1341,9 +1459,9 @@ pub const HERMES: Agent = Agent {
 /// *starting a device pairing* and printing its code (S33), and the doctor's `--try` mode opens
 /// a session on every row — so a row would make a routine probe start a login flow. It stays
 /// reachable as the operator's own `acp:droid exec --output-format acp-daemon`.
-pub const AGENTS: [Agent; 15] = [
+pub const AGENTS: [Agent; 16] = [
     OPENCODE, CLAUDE_ACP, CODEX_ACP, COPILOT, KILO, QWEN, GOOSE, FAST_AGENT, VIBE, VTCODE, AUGGIE,
-    QODER, CLINE, PI_ACP, HERMES,
+    QODER, CLINE, PI_ACP, HERMES, CURSOR,
 ];
 
 /// The refinement row for an id, or `None` where marion has none — which is **not** a refusal;
@@ -1463,13 +1581,11 @@ impl Binding {
     /// [`Agent::reasoning`] split. A split no rule in [`USAGES`] states — which the sweep test
     /// forbids — is read under the protocol's own rule rather than guessed at.
     ///
-    /// `None` for a row whose agent reports no usage ([`Agent::unreported_usage`]): there is no
-    /// figure to read, and a budget on it is refused.
+    /// `None` where the binary this launch runs reports no usage ([`Agent::unreported_usage`]),
+    /// found as [`Self::held`] is, so `agent acp` typed as a command is read as its row: there is
+    /// no figure to read, and a budget on it is refused.
     pub fn usage(&self) -> Option<&'static UsageRule> {
-        if self
-            .refinement
-            .is_some_and(|a| a.unreported_usage.is_some())
-        {
+        if self.binary().is_some_and(|a| a.unreported_usage.is_some()) {
             return None;
         }
         let reasoning = self.refinement.and_then(|a| a.reasoning);
@@ -2914,6 +3030,16 @@ mod tests {
                 );
             }
         }
+        let holding: Vec<_> = AGENTS
+            .iter()
+            .filter(|a| a.held.is_some())
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(
+            holding,
+            ["cursor"],
+            "the command and path routes are not vacuous"
+        );
     }
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s20");
@@ -4025,7 +4151,6 @@ mod tests {
         let mut unprobed = Vec::new();
         for a in AGENTS {
             let id = a.id;
-            assert!(!a.agent_info.is_empty(), "`{id}` states no agentInfo");
             assert!(!a.install.is_empty(), "`{id}` states no install command");
             assert!(!a.note.is_empty(), "`{id}` states no note");
             if let Reach::Unprobed { why } = a.reach {
@@ -4037,9 +4162,14 @@ mod tests {
                 unprobed.push(id);
                 continue;
             }
-            let hs = AgentHandshake::parse(&s33_frame(id, 0))
-                .unwrap_or_else(|e| panic!("`{id}`'s capture is no handshake: {e}"));
-            assert_eq!(hs.name, a.agent_info, "`{id}` answers as another agent");
+            // An empty agent_info is a row measured answering anonymously, read as its id.
+            let hs =
+                AgentHandshake::parse_as(&s33_frame(id, 0), Binding::refined(a).anonymous_as())
+                    .unwrap_or_else(|e| panic!("`{id}`'s capture is no handshake: {e}"));
+            assert_eq!(hs.anonymous, a.agent_info.is_empty(), "`{id}`'s identity");
+            if !hs.anonymous {
+                assert_eq!(hs.name, a.agent_info, "`{id}` answers as another agent");
+            }
             let answer = s33_frame(id, 1);
             match a.reach {
                 Reach::Opened { model, mode, .. } => {
@@ -4065,7 +4195,11 @@ mod tests {
                 Reach::Unprobed { .. } => unreachable!("stepped over above"),
             }
         }
-        assert_eq!(unprobed, ["hermes"], "the rows no capture backs, by name");
+        assert_eq!(
+            unprobed,
+            ["hermes", "cursor"],
+            "the rows no capture backs, by name"
+        );
     }
 
     /// **An agent's identity is what it says on the wire, and the doctor holds a row to it.**
@@ -4188,6 +4322,8 @@ mod tests {
             ("pi-acp", &["pi-acp"], None, None),
             // Read from the v0.22.2 source, never probed (see `Reach::Unprobed`).
             ("hermes", &["hermes", "acp"], None, None),
+            // Read from the 2026.10.16-e3cb207 bundle, never probed.
+            ("cursor", &["agent", "acp"], None, None),
         ];
         let actual: Vec<Row> = AGENTS
             .iter()
@@ -4406,7 +4542,13 @@ mod tests {
         let drift = identity_note(&by_id, &named).expect("the row was measured silent");
         assert!(drift.contains("with no agent named"), "{drift}");
 
-        for command in ["kilo acp", "/opt/bin/kilo acp"] {
+        assert_eq!(Binding::refined(CURSOR).anonymous_as(), Some("cursor"));
+        for command in [
+            "kilo acp",
+            "/opt/bin/kilo acp",
+            "agent acp",
+            "/opt/bin/agent acp --verbose",
+        ] {
             let generic = Binding::resolve(command).unwrap();
             assert_eq!(generic.anonymous_as(), None, "`{command}`");
         }
@@ -4447,6 +4589,12 @@ mod tests {
             assert!(a.reasoning.is_none() || a.unreported_usage.is_none());
         }
         assert!(Binding::resolve("kilo acp").unwrap().usage().is_some());
+        for command in ["cursor", "agent acp", "/opt/bin/agent acp --verbose"] {
+            assert!(
+                Binding::resolve(command).unwrap().usage().is_none(),
+                "{command}"
+            );
+        }
     }
 
     /// The request marion sends is the request S20 measured both agents answering.
