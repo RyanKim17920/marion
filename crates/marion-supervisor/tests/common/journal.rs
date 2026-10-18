@@ -105,6 +105,18 @@ pub fn records(path: &Path) -> Vec<RecordKind> {
         .collect()
 }
 
+/// Every `ForeignPeer` in the journal at `path`: a node's token presented from outside that node's
+/// process tree (§5.4), in order.
+pub fn foreign_peers(path: &Path) -> Vec<marion_core::journal::ForeignPeer> {
+    records(path)
+        .into_iter()
+        .filter_map(|k| match k {
+            RecordKind::ForeignPeer(r) => Some(r),
+            _ => None,
+        })
+        .collect()
+}
+
 /// `(message_id, via)` of every `MessageDelivered` for `agent`.
 pub fn delivered_to(path: &Path, agent: &AgentId) -> Vec<(String, String)> {
     records(path)

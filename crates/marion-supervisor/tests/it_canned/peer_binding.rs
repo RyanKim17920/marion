@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
-use marion_core::journal::{ForeignPeer, RecordKind};
+use marion_core::journal::ForeignPeer;
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::AgentSpawnParams;
 use marion_core::proto::{Call, Method, MethodResult};
@@ -234,13 +234,7 @@ impl Bed {
     }
 
     fn foreign_peers(&self) -> Vec<ForeignPeer> {
-        common::journal::records(&self.project.journal())
-            .into_iter()
-            .filter_map(|k| match k {
-                RecordKind::ForeignPeer(r) => Some(r),
-                _ => None,
-            })
-            .collect()
+        common::journal::foreign_peers(&self.project.journal())
     }
 }
 

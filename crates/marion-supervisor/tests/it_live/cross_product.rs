@@ -34,7 +34,7 @@
 //! A loop reports the first failure and hides the other fifteen. Each cell is named for its own
 //! pair, so a failing run names the cell in its output.
 //!
-//! Every cell asserts the same eleven things:
+//! Every cell asserts the same twelve things:
 //!
 //! 1. the run did not time out and `marion run` exited 0;
 //! 2. exactly one `contracts/<task_id>.json` is persisted, and it deserializes to a `TaskContract`;
@@ -59,6 +59,9 @@
 //!     the model a stub, or someone else's contract;
 //! 11. **both nodes reached a terminal `NodeState` in the journal** — one root, one child, each
 //!     `Exited(Ok)`, and nothing left `unresolved()`.
+//! 12. **every bridge that dialed the supervisor did so from inside its own node's process tree**:
+//!     the journal holds no `ForeignPeer` (§5.4). The root's `spawn` is such a dial, so each
+//!     harness as a root is measured here before the tree binding refuses rather than records.
 //!
 //! # All sixteen cells write
 //!
@@ -561,6 +564,8 @@ struct Evidence {
     /// the unconditional cleanup below it: a panic there would leave the very processes and
     /// directories this file asserts about. The error is carried out and raised as an assertion.
     journal: Result<Replay, String>,
+    /// Every `ForeignPeer` that journal holds, read with it.
+    foreign_peers: Vec<marion_core::journal::ForeignPeer>,
     leaked: Vec<String>,
 }
 
@@ -825,6 +830,7 @@ fn drive_run(root: &Node, child: &Node, script: Script, opt_in: bool) -> Evidenc
     // §2's key is the git common dir, not the cwd, which is what `root::prepare` now hashes.
     let key = marion_supervisor::socket::project_root(&repo);
     let journal = read_path(&ProjectDir::new(&state, &key).journal()).map_err(|e| e.to_string());
+    let foreign_peers = common::journal::foreign_peers(&ProjectDir::new(&state, &key).journal());
     // Walked here, **judged after the cleanup below.** The walk is fallible and the judgement is
     // separate for a reason this call site is the reason for: the version that stood here panicked
     // on an unreadable contract *before* the provider was dropped and the survivors swept, so one
@@ -871,6 +877,7 @@ fn drive_run(root: &Node, child: &Node, script: Script, opt_in: bool) -> Evidenc
         agent_dirs_present,
         requests,
         journal,
+        foreign_peers,
         leaked: leaked.into_iter().map(|(_, line)| line).collect(),
     }
 }
@@ -1316,6 +1323,18 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
             .iter()
             .map(|n| &n.agent_id.0)
             .collect::<Vec<_>>()
+    );
+
+    // ---- 12: every bridge dialed from inside its own node's tree. ------------------------------
+    //
+    // A node's token is good only from below the process marion launched for it. While the check
+    // records rather than refuses, a harness whose bridge runs elsewhere still passes 1-11; this is
+    // where it shows, by harness, before the switch is flipped.
+    assert!(
+        ev.foreign_peers.is_empty(),
+        "{cell}: a bridge presented its node's token from outside that node's process tree, which \
+         the supervisor will refuse once the binding enforces (§5.4): {:?}",
+        ev.foreign_peers
     );
 
     // ---- 8: nothing outlived the run. -----------------------------------------------------------
