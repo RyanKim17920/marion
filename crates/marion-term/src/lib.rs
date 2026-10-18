@@ -127,7 +127,7 @@ impl Stats {
     /// in both `set_private_mode` and `unset_private_mode`), so `TermMode` never carries the bit
     /// and there is nothing to query on the grid. The alternative for a client is to scan the byte
     /// stream for `?2026h`/`?2026l` itself — a second parser, disagreeing with this one at exactly
-    /// the chunk boundaries [`Suppressor::unset_private_mode`] documents.
+    /// the chunk boundaries [`Suppressor`]'s `unset_private_mode` documents.
     ///
     /// A client withholds its paint while this is true: a half-applied frame is the thing
     /// synchronized output exists to hide.
