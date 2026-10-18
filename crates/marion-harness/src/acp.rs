@@ -1268,7 +1268,14 @@ pub const AUGGIE: Agent = Agent {
         note: "no updater was searched for in auggie 0.36.0",
     }),
     login_guard: None,
-    held: None,
+    // Source-only (u), auggie 0.36.0's bundle: an untrusted repository's `.augment/settings*.json`
+    // hooks run with no trust gate, and `session/new` asks to index the workspace, an upload of
+    // the repository, which marion's client would grant. Held until a capture shows neither.
+    held: Some(
+        "auggie runs an untrusted repository's own hooks and asks to upload the workspace for \
+         indexing (auggie 0.36.0 source, unmeasured): marion launches no auggie until a capture \
+         shows its repository config refused and indexing declined",
+    ),
     login_refusal: None,
     residuals: &[],
     repo_config: &[],
@@ -3107,7 +3114,7 @@ mod tests {
             .collect();
         assert_eq!(
             holding,
-            ["cursor"],
+            ["auggie", "cursor"],
             "the command and path routes are not vacuous"
         );
     }

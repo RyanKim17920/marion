@@ -312,13 +312,18 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
     );
 
     // A row read from source with nothing on the wire behind it is held: no probe launches its
-    // binary before its capture lands. An operator's own command for the same binary still runs.
-    let resolved = match agent.and_then(acp::Binding::refinement).map(|a| a.reach) {
-        Some(acp::Reach::Unprobed { why }) => {
+    // binary before its capture lands. An operator's own command for the same binary still runs,
+    // unless the binary itself is held ([`acp::Binding::held`]), which every launch refuses.
+    let hold = agent.and_then(|b| match b.refinement().map(|a| a.reach) {
+        Some(acp::Reach::Unprobed { why }) => Some(why),
+        _ => b.held(),
+    });
+    let resolved = match hold {
+        Some(why) => {
             notes.push(format!("binary: not probed, held: {why}"));
             None
         }
-        _ => locate_binary(adapter.as_ref(), opts, agent, &mut notes),
+        None => locate_binary(adapter.as_ref(), opts, agent, &mut notes),
     };
     let identity = identify(
         adapter.as_ref(),
@@ -691,21 +696,20 @@ fn identify(
     resolved: Option<&Path>,
     notes: &mut Vec<String>,
 ) -> Identity {
-    let handshake = match agent {
-        Some(_) => resolved
-            .zip(
-                probe_spec(opts.model.clone(), McpDeclaration::None, agent)
-                    .map(|spec| child_shaped(adapter, spec))
-                    .and_then(|spec| match probe_launch(adapter, spec) {
-                        Ok(launch) => Some(launch),
-                        Err(e) => {
-                            notes.push(format!("initialize: FAILED — {e}"));
-                            None
-                        }
-                    }),
-            )
-            .and_then(|(p, (inv, tmp))| acp_handshake(p, &inv, tmp, agent, notes)),
-        None => None,
+    // No binary resolved (absent, or held) is no launch to compile: compiling one anyway would
+    // report the hold a second time as a failed `initialize`.
+    let handshake = match (agent, resolved) {
+        (Some(_), Some(p)) => probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+            .map(|spec| child_shaped(adapter, spec))
+            .and_then(|spec| match probe_launch(adapter, spec) {
+                Ok(launch) => Some(launch),
+                Err(e) => {
+                    notes.push(format!("initialize: FAILED — {e}"));
+                    None
+                }
+            })
+            .and_then(|(inv, tmp)| acp_handshake(p, &inv, tmp, agent, notes)),
+        _ => None,
     };
     let version = match agent {
         Some(_) => handshake.as_ref().map(AgentHandshake::key),
@@ -3423,6 +3427,37 @@ mod tests {
     ///
     /// No installed agent runs: each finds [`acp_stub_path`]'s stand-in, which answers `initialize`
     /// in its own words, so every row is asserted to answer and the capability half always runs.
+    /// **A held agent's binary is never started by a probe**, by id or as the operator's own
+    /// command: the note says it is held and why, and no `initialize` was attempted.
+    /// Mutation: probe a held, probed row as before.
+    #[test]
+    fn a_held_agent_is_not_probed_by_id_or_as_a_command() {
+        for binding in [
+            acp::Binding::refined(acp::AUGGIE),
+            acp::Binding::resolve("/opt/homebrew/bin/auggie --acp").unwrap(),
+        ] {
+            let opts = Options {
+                mode: ProbeMode::Capabilities,
+                harness: Some(Harness::Acp),
+                model: None,
+                acp_command: Some(binding.clone()),
+                path: None,
+            };
+            let rows = probe_one(Harness::Acp, &opts, Some(&binding));
+            let notes = &rows[0].report.notes;
+            let why = acp::AUGGIE.held.unwrap();
+            assert!(
+                notes.contains(&format!("binary: not probed, held: {why}")),
+                "{}: {notes:?}",
+                binding.selector()
+            );
+            assert!(
+                !notes.iter().any(|n| n.starts_with("initialize")),
+                "{notes:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_acp_agents_get_a_row_each_and_their_capabilities_differ() {
         let rows = caps_rows(Some(Harness::Acp));
@@ -3449,7 +3484,7 @@ mod tests {
             .collect();
         let probed = acp::AGENTS
             .iter()
-            .filter(|a| !matches!(a.reach, acp::Reach::Unprobed { .. }))
+            .filter(|a| !matches!(a.reach, acp::Reach::Unprobed { .. }) && a.held.is_none())
             .count();
         assert_eq!(
             answered.len(),

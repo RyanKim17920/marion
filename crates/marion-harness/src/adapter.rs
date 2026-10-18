@@ -4622,7 +4622,7 @@ mod tests {
         }
         assert_eq!(
             held,
-            ["cursor"],
+            ["auggie", "cursor"],
             "the ACP agents holding themselves, by name"
         );
         assert!(documents("opencode acp").is_ok());

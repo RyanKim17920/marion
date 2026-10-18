@@ -708,7 +708,7 @@ once pointed at a model provider through its own configuration. **Refused** rows
 | `fast-agent` | `fast-agent-acp -x` | `acp-fast-agent` | opened, *provider* | real bridge call against a local endpoint |
 | `vibe` | `vibe-acp` | `acp-vibe` | opened, *provider* | no turn run |
 | `vtcode` | `vtcode acp` | `acp-vtcode` | opened | needs `VT_ACP_ENABLED=1` or `[acp]` in its config; no turn run |
-| `auggie` | `auggie --acp` | — | **refused** | `auggie login` (account) |
+| `auggie` | `auggie --acp` | — | **refused** | `auggie login` (account); held, so no launch of it runs |
 | `qoder` | `qodercli --acp` | — | **refused** | `qodercli login` (account) |
 | `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |
 | `pi-acp` | `pi-acp` | — | **refused** | shim/pi version skew |
