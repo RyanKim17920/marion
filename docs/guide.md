@@ -725,7 +725,13 @@ the `hermes` row is, and once the hold lifts carries its switch against adopting
 Claude Code login. marion cannot see Hermes behind a wrapper such as `npx`, `uvx` or `python -m`,
 so a command spelled that way is neither held nor guarded.
 
-Cursor's CLI is held the same way: by id, as `agent acp`, or by any path to its `agent` binary.
+Cursor's CLI is held the same way: by id, as `agent acp` or `cursor-agent acp`, or by any path to
+either. `agent` is a common name, and before launch the program name and its `acp` argument are
+all marion can see, so any `agent acp` is taken for Cursor's: held, refused in an untrusted
+repository with Cursor's config, and refused a token budget. `agent` without `acp` is not. To
+run another tool called `agent` over ACP, start it under another name (a wrapper script or a
+link). Once Cursor's hold lifts, `marion-supervisor doctor --acp-command "agent acp"` will also say
+when the binary behind the name answers `initialize` as some other agent, which Cursor's does not.
 Once the hold lifts it runs on your own login — `agent login`, `CURSOR_API_KEY` or
 `CURSOR_AUTH_TOKEN` — and marion never sends the `authenticate` request that would open Cursor's
 browser login. Cursor reports no token usage over ACP, so a token budget on it is refused. An

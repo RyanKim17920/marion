@@ -1783,6 +1783,22 @@ pub fn identity_note(binding: &Binding, handshake: &AgentHandshake) -> Option<St
                      select it by that id for what was measured on it",
                     handshake.name, row.id
                 )
+            })
+            // A command run by an anonymous row's program name (`agent acp`) whose binary names
+            // itself: the name is all marion matched on, so this is likely another program.
+            .or_else(|| {
+                binding
+                    .binary()
+                    .filter(|row| row.agent_info.is_empty())
+                    .map(|row| {
+                        format!(
+                            "identity: this command runs row `{}`'s program, whose agent names \
+                             no agent in `initialize`, and this binary answers as `{}` — likely \
+                             another program by that name, still held and refused as `{}` is; \
+                             run it under another name to launch it as itself",
+                            row.id, handshake.name, row.id
+                        )
+                    })
             }),
     }
 }
@@ -4656,6 +4672,50 @@ mod tests {
                 a.id
             );
         }
+    }
+
+    /// **`agent` is a generic name, so Cursor is matched only on the evidence there is**: the
+    /// program (`agent`, or its `cursor-agent` alias) **and** the `acp` argument after it. Without
+    /// `acp` the command is no row's and carries nothing of Cursor's. With it, it is Cursor's
+    /// binary as far as marion can tell before launch — held, its repository config, no budget —
+    /// and where its `initialize` names an agent (once the hold lifts and it is run), which
+    /// Cursor's does not, doctor says it is likely another program by that name.
+    #[test]
+    fn a_generic_agent_command_is_cursor_only_with_its_acp_argument() {
+        for command in [
+            "agent",
+            "agent --help",
+            "agent serve acp",
+            "/opt/bin/cursor-agent",
+        ] {
+            let b = Binding::resolve(command).unwrap();
+            assert_eq!(b.held(), None, "{command}");
+            assert!(b.repo_config().is_empty(), "{command}");
+            assert!(b.usage().is_some(), "{command}");
+        }
+        for command in [
+            "agent acp",
+            "cursor-agent acp",
+            "/opt/bin/cursor-agent acp -v",
+        ] {
+            let b = Binding::resolve(command).unwrap();
+            assert_eq!(b.held(), CURSOR.held, "{command}");
+            assert_eq!(b.repo_config(), CURSOR.repo_config, "{command}");
+        }
+        let named = AgentHandshake::parse(
+            r#"{"result":{"protocolVersion":1,"agentInfo":{"name":"someone-elses-agent"}}}"#,
+        )
+        .unwrap();
+        let note = identity_note(&Binding::resolve("agent acp").unwrap(), &named)
+            .expect("a named agent behind Cursor's program name");
+        assert!(
+            note.contains("row `cursor`") && note.contains("someone-elses-agent"),
+            "{note}"
+        );
+        assert_eq!(
+            identity_note(&Binding::resolve("some-agent --acp").unwrap(), &named),
+            None
+        );
     }
 
     /// **An ACP agent carries its twin row's repository config by every route to its binary**,
