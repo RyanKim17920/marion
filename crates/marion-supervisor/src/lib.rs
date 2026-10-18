@@ -137,7 +137,8 @@ mod pane_client;
 pub mod paste;
 /// Which node's process tree a connection comes from: the node token's ancestry check.
 pub(crate) mod peer_tree;
-/// `doctor`'s checks of the machine itself: the two binaries, the OS, the state dir, git.
+/// `doctor`'s checks of the machine itself: the two binaries, the OS, the state dir, git, the node
+/// sandbox and Yama.
 pub mod preflight;
 /// Text a node wrote, with the control characters a terminal would act on removed.
 pub mod printable;

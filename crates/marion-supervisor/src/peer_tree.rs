@@ -28,6 +28,9 @@
 //! after the connection was accepted is refused — a pid recycled after its connector left is
 //! younger than the accept. What remains is a recycle inside the connect-to-accept backlog, where
 //! the attacker cannot pick who receives the pid.
+//!
+//! [`first_root`]: crate::peer_tree::first_root
+//! [`AcceptedPeer`]: crate::peer_tree::AcceptedPeer
 
 use crate::procid::Hop;
 
