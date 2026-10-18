@@ -685,6 +685,11 @@ pub struct Agent {
     /// nothing measured backs it, and lifted by the measurement's commit. Reached by id and by a
     /// command running the agent's binary ([`Binding::held`]).
     pub held: Option<&'static str>,
+    /// **The configuration this agent reads from the repository it runs in and runs code from**,
+    /// as paths relative to the checkout — [`spec::HarnessSpec::repo_config`] for its binary. ACP
+    /// has no trust gate, so a launch in an untrusted repository holding any of them is refused on
+    /// every auth, as [`spec::Arg::RefuseUntrustedAnyAuth`] refuses a built-in row's.
+    pub repo_config: &'static [&'static str],
     /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
     /// which is how a binary behind any command line is recognised as this row
     /// ([`identity_note`]). Held to the row's S33 capture by the sweep test.
@@ -841,6 +846,7 @@ pub const OPENCODE: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::OpenCode),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "OpenCode",
     install: "brew install opencode",
     reach: Reach::Opened {
@@ -877,6 +883,7 @@ pub const CLAUDE_ACP: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::ClaudeCode),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "@agentclientprotocol/claude-agent-acp",
     install: "npm i -g @agentclientprotocol/claude-agent-acp",
     reach: Reach::Opened {
@@ -921,6 +928,7 @@ pub const CODEX_ACP: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "@agentclientprotocol/codex-acp",
     install: "npm i -g @agentclientprotocol/codex-acp",
     reach: Reach::Opened {
@@ -966,6 +974,7 @@ pub const COPILOT: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Copilot),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "Copilot",
     install: "npm i -g @github/copilot",
     reach: Reach::Opened {
@@ -998,6 +1007,7 @@ pub const KILO: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "Kilo",
     install: "npm i -g @kilocode/cli",
     reach: Reach::Opened {
@@ -1024,6 +1034,7 @@ pub const QWEN: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Qwen),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "qwen-code",
     install: "npm i -g @qwen-code/qwen-code",
     reach: Reach::Opened {
@@ -1051,6 +1062,7 @@ pub const GOOSE: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Goose),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "goose",
     install: "brew install block-goose-cli",
     reach: Reach::Opened {
@@ -1081,6 +1093,7 @@ pub const FAST_AGENT: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "fast-agent-acp",
     install: "uv tool install fast-agent-acp",
     reach: Reach::Opened {
@@ -1109,6 +1122,7 @@ pub const VIBE: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "@mistralai/mistral-vibe",
     install: "uv tool install mistral-vibe",
     reach: Reach::Opened {
@@ -1135,6 +1149,7 @@ pub const VTCODE: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "vtcode",
     install: "brew install vtcode",
     reach: Reach::Opened {
@@ -1163,6 +1178,7 @@ pub const AUGGIE: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "auggie",
     install: "npm i -g @augmentcode/auggie",
     reach: Reach::Refused,
@@ -1185,6 +1201,7 @@ pub const QODER: Agent = Agent {
     }),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "qoder-cli",
     install: "npm i -g @qoder-ai/qodercli",
     reach: Reach::Refused,
@@ -1206,6 +1223,7 @@ pub const CLINE: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Cline),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "cline",
     install: "npm i -g cline",
     reach: Reach::Refused,
@@ -1232,6 +1250,7 @@ pub const PI_ACP: Agent = Agent {
     updates: AgentUpdates::Twin(Harness::Pi),
     login_guard: None,
     held: None,
+    repo_config: &[],
     agent_info: "pi-acp",
     install: "npm i -g pi-acp",
     reach: Reach::Refused,
@@ -1264,6 +1283,9 @@ pub const HERMES: Agent = Agent {
         programs: &["hermes", "hermes-acp", "hermes-agent"],
     }),
     held: None,
+    // The `hermes` row's: project plugins load on the operator's HERMES_ENABLE_PROJECT_PLUGINS
+    // (v0.22.2 `plugins_discovery.py`, read from source), whatever subcommand runs.
+    repo_config: &[".hermes/plugins"],
     agent_info: "hermes-agent",
     install: "uv tool install 'hermes-agent[acp]'",
     reach: Reach::Unprobed {
@@ -1429,6 +1451,12 @@ impl Binding {
     /// command runs, so `agent acp` typed as a command, or by a full path, is held as its row is.
     pub fn held(&self) -> Option<&'static str> {
         self.binary().and_then(|a| a.held)
+    }
+
+    /// The repository config the binary this launch runs reads and runs code from
+    /// ([`Agent::repo_config`]), found as [`Self::held`] is. Empty for a command no row's starts.
+    pub fn repo_config(&self) -> &'static [&'static str] {
+        self.binary().map_or(&[], |a| a.repo_config)
     }
 
     /// The built-in row of the binary this agent runs ([`AgentUpdates::Twin`]) — the bound row's,
@@ -2343,6 +2371,16 @@ impl HarnessAdapter for AcpAdapter {
         let binding = self.binding(spec)?;
         // For the refusal only: ACP has no availability axis — see `Self::tool_name`.
         let mut f = self.launch_fields(spec, ctx)?;
+        // ACP has no trust gate, so an untrusted repository's own config for this binary, which
+        // runs code, refuses the launch on every auth ([`Agent::repo_config`]).
+        let repo_config = binding.repo_config();
+        if !f.repo_trusted && spec::repo_config_present(repo_config, &f) {
+            return Err(crate::adapter::untrusted_repo_config(
+                Harness::Acp,
+                repo_config,
+                true,
+            ));
+        }
         let (program, args) = binding
             .argv()
             .split_first()

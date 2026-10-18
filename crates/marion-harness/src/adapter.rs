@@ -1165,6 +1165,36 @@ pub(crate) fn preconditions(
     }
 }
 
+/// **A launch refused in an untrusted repository holding `paths`**, its harness's own config that
+/// can run commands and that nothing keeps out — of any node where `any_auth`, else of one on the
+/// operator's login. A built-in row's ([`spec::Refusal::UntrustedRepoConfig`]) and an ACP agent's
+/// alike.
+pub(crate) fn untrusted_repo_config(
+    harness: Harness,
+    paths: &[&str],
+    any_auth: bool,
+) -> HarnessError {
+    HarnessError::Unspellable {
+        harness,
+        what: format!(
+            "this repository holds its own config for the harness ({}), which it has no switch \
+             to keep out of {} and which can run commands; trust the repository first (marion \
+             trust allow --repo){}",
+            paths.join(", "),
+            if any_auth {
+                "any node"
+            } else {
+                "a node on your login"
+            },
+            if any_auth {
+                ""
+            } else {
+                " or run it on a canned or endpoint provider"
+            }
+        ),
+    }
+}
+
 /// **The row's [`spec::Requirement`]s against this launch**: the first one unmet, refused by name in
 /// the row's words — before the row's hook runs, so a launch missing an input is never compiled.
 pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result<(), HarnessError> {
@@ -1324,25 +1354,9 @@ fn render_row(
                  something other than text (pi: a file to attach)"
             ),
         },
-        spec::Refusal::UntrustedRepoConfig { any_auth } => HarnessError::Unspellable {
-            harness: row.harness,
-            what: format!(
-                "this repository holds its own config for the harness ({}), which it has no \
-                 switch to keep out of {} and which can run commands; trust the repository \
-                 first (marion trust allow --repo){}",
-                row.repo_config.join(", "),
-                if any_auth {
-                    "any node"
-                } else {
-                    "a node on your login"
-                },
-                if any_auth {
-                    ""
-                } else {
-                    " or run it on a canned or endpoint provider"
-                }
-            ),
-        },
+        spec::Refusal::UntrustedRepoConfig { any_auth } => {
+            untrusted_repo_config(row.harness, row.repo_config, any_auth)
+        }
         spec::Refusal::UnreadableRepoMcp => HarnessError::Unspellable {
             harness: row.harness,
             what: "this repository's .mcp.json does not read as an object of servers, so marion \
@@ -4564,6 +4578,65 @@ mod tests {
                 assert!(launch(Auth::Canned, true).is_ok(), "{h}: canned, trusted");
             }
         }
+    }
+
+    /// **An ACP agent's repository config refuses an untrusted repository holding it, by every
+    /// route to the agent**: by id, as its command, and by a full path with more arguments, each
+    /// path the agent states planted alone below the checkout's root. A trusted repository, or a
+    /// tree without it, launches. ACP has no trust gate, so the refusal is the any-auth one.
+    /// Mutation: drop the check in the ACP adapter, or read the config off the refinement alone.
+    #[test]
+    fn an_acp_agents_repo_config_refuses_an_untrusted_repository_by_every_route() {
+        let mut stating = Vec::new();
+        for agent in acp::AGENTS.iter().filter(|a| !a.repo_config.is_empty()) {
+            stating.push(agent.id);
+            let (program, args) = agent.argv.split_first().unwrap();
+            let selectors = [
+                agent.id.to_string(),
+                agent.argv.join(" "),
+                format!("/opt/agents/bin/{program} {} --verbose", args.join(" ")),
+            ];
+            for (i, planted) in agent.repo_config.iter().enumerate() {
+                let dir = marion_testsupport::scratch(&format!("acp-{}-repo-config-{i}", agent.id));
+                std::fs::create_dir_all(dir.join(".git")).unwrap();
+                let sub = dir.join("src");
+                std::fs::create_dir_all(&sub).unwrap();
+                let launch = |selector: &str, trusted: bool| {
+                    let mut spec = LaunchSpec {
+                        cwd: sub.clone(),
+                        extra: Extras {
+                            acp_agent: Some(selector.to_string()),
+                            ..Extras::default()
+                        },
+                        ..acp_spec()
+                    };
+                    spec.extra.repo_trusted = trusted;
+                    AcpAdapter::resolve(selector)
+                        .unwrap()
+                        .compile(&spec, &ctx())
+                };
+                for selector in &selectors {
+                    assert!(launch(selector, false).is_ok(), "{selector}: none yet");
+                }
+                let file = dir.join(planted).join("planted");
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(&file, "{}").unwrap();
+                for selector in &selectors {
+                    let refused = launch(selector, false).expect_err("refused");
+                    assert!(
+                        matches!(&refused, HarnessError::Unspellable { harness: Harness::Acp, what }
+                            if what.contains("marion trust allow --repo") && what.contains(planted)),
+                        "{selector} {planted}: {refused}"
+                    );
+                    assert!(launch(selector, true).is_ok(), "{selector}: trusted");
+                }
+            }
+        }
+        assert_eq!(
+            stating,
+            ["hermes"],
+            "the ACP agents stating repository config, by name"
+        );
     }
 
     /// **Outside a checkout only the cwd counts**: an operator's own `~/.agents/plugins` above a

@@ -1889,6 +1889,11 @@ pub fn repo_config_rule(f: &Fields) -> Option<bool> {
     (!f.auth.overlays()).then_some(f.repo_trusted)
 }
 
+/// [`repo_config_in_checkout`] for a launch: from its cwd, up to the root it recorded.
+pub(crate) fn repo_config_present(paths: &[&str], f: &Fields) -> bool {
+    repo_config_in_checkout(paths, &f.cwd, f.checkout_root.as_deref())
+}
+
 /// **Whether any of `paths` is in `cwd` or a directory above it up to its checkout's root**, as a
 /// file, a directory or a link: copilot and agy read repository config from every level up to
 /// that root, and a harness that reads only its cwd is covered by the first. The root is
@@ -1994,7 +1999,7 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     let any_auth = argv.contains(&Arg::RefuseUntrustedAnyAuth);
     let refuses = (any_auth && !f.repo_trusted)
         || (argv.contains(&Arg::RefuseUntrusted) && repo_config_rule(f) == Some(false));
-    if refuses && repo_config_in_checkout(spec.repo_config, &f.cwd, f.checkout_root.as_deref()) {
+    if refuses && repo_config_present(spec.repo_config, f) {
         return Err(Refusal::UntrustedRepoConfig { any_auth });
     }
     if argv
