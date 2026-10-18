@@ -314,7 +314,12 @@ pub enum AcpError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentHandshake {
     /// `agentInfo.name`. The first third of §3.3's key: for ACP, *this* is the harness identity.
+    /// On an [`Self::anonymous`] handshake, the id of the row the agent was selected by.
     pub name: String,
+    /// The agent named no `agentInfo`, and [`Self::name`] is the id of the row that was selected
+    /// by and measured that silence ([`Binding::anonymous_as`]), not anything the agent said.
+    #[serde(default)]
+    pub anonymous: bool,
     /// `agentInfo.version`. §3.3's middle third, supplied by the agent rather than looked up.
     pub version: Option<String>,
     /// `agentCapabilities.loadSession`. ACP v1: `session/load` MUST replay history (§5.2), which
@@ -348,8 +353,18 @@ pub struct AgentHandshake {
 }
 
 impl AgentHandshake {
-    /// Parse one JSON-RPC response frame — the whole line, as the agent wrote it.
+    /// Parse one JSON-RPC response frame — the whole line, as the agent wrote it. A result naming
+    /// no agent is refused ([`AcpError::Anonymous`]); see [`Self::parse_as`] for the one exception.
     pub fn parse(frame: &str) -> Result<Self, AcpError> {
+        Self::parse_as(frame, None)
+    }
+
+    /// [`Self::parse`], except that a result naming no agent is read as `anonymous_as`, where
+    /// that is `Some`: the id of the row the agent was selected **by id**, and whose own
+    /// `initialize` names no agent ([`Binding::anonymous_as`]). The row is then the only identity
+    /// there is, and the operator chose it; a command line has no row to stand in, so an
+    /// anonymous agent behind one is still refused.
+    pub fn parse_as(frame: &str, anonymous_as: Option<&str>) -> Result<Self, AcpError> {
         let v: Value = serde_json::from_str(frame).map_err(|e| AcpError::NotJson(e.to_string()))?;
         if let Some(err) = v.get("error") {
             return Err(AcpError::Refused {
@@ -372,16 +387,19 @@ impl AgentHandshake {
         }
 
         let info = result.get("agentInfo");
-        let name = info
+        let named = info
             .and_then(|i| i.get("name"))
             .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty());
+        let name = named
+            .or(anonymous_as)
             .ok_or(AcpError::Anonymous)?
             .to_string();
 
         let agent = result.get("agentCapabilities");
         Ok(Self {
             name,
+            anonymous: named.is_none(),
             version: info
                 .and_then(|i| i.get("version"))
                 .and_then(Value::as_str)
@@ -1459,6 +1477,16 @@ impl Binding {
         self.binary().map_or(&[], |a| a.repo_config)
     }
 
+    /// The row id an `initialize` naming no agent is read as ([`AgentHandshake::parse_as`]): the
+    /// bound row's, where that row was measured answering anonymously (an empty
+    /// [`Agent::agent_info`]). `None` for a command line, even one running that row's binary — the
+    /// row was not selected, so nothing identifies the agent.
+    pub fn anonymous_as(&self) -> Option<&'static str> {
+        self.refinement
+            .filter(|a| a.agent_info.is_empty())
+            .map(|a| a.id)
+    }
+
     /// The built-in row of the binary this agent runs ([`AgentUpdates::Twin`]) — the bound row's,
     /// or the one whose program the command runs (`same_program`). `None` for an agent with no
     /// built-in twin.
@@ -1527,10 +1555,17 @@ pub enum BindError {
 /// still answers as measured has nothing to report.
 pub fn identity_note(binding: &Binding, handshake: &AgentHandshake) -> Option<String> {
     match binding.refinement() {
+        // Selected by id and silent, as the row measured it (`parse_as` reads it as no other).
+        Some(_) if handshake.anonymous => None,
         Some(row) if row.agent_info != handshake.name => Some(format!(
-            "identity drift: row `{}` was measured answering `initialize` as `{}`, and this \
-             binary answers as `{}` — the row's refinements may not apply",
-            row.id, row.agent_info, handshake.name
+            "identity drift: row `{}` was measured answering `initialize` {}, and this binary \
+             answers as `{}` — the row's refinements may not apply",
+            row.id,
+            match row.agent_info {
+                "" => "with no agent named".to_string(),
+                named => format!("as `{named}`"),
+            },
+            handshake.name
         )),
         Some(_) => None,
         None => AGENTS
@@ -2343,6 +2378,10 @@ impl HarnessAdapter for AcpAdapter {
             .as_ref()
             .and_then(Binding::refinement)
             .map_or(self.spec().boot, |agent| agent.boot)
+    }
+
+    fn anonymous_agent(&self) -> Option<&'static str> {
+        self.binding.as_ref().and_then(Binding::anonymous_as)
     }
 
     /// argv is the agent's own, verbatim as S20 launched it, and **nothing else is compiled into
@@ -4304,6 +4343,54 @@ mod tests {
             AgentHandshake::parse(r#"{"result":{"protocolVersion":1}}"#).unwrap_err(),
             AcpError::Anonymous
         );
+    }
+
+    /// **An anonymous `initialize` is accepted only as a row selected by id that was measured
+    /// anonymous.** The row's id becomes the name; an agent that does name itself keeps its own
+    /// name; and a command line — even one running that row's binary, bare or by full path — has
+    /// no row to stand in, so it is still refused.
+    #[test]
+    fn an_anonymous_initialize_is_read_as_the_row_it_was_selected_by_and_no_other() {
+        let anonymous =
+            r#"{"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#;
+        let silent = Agent {
+            agent_info: "",
+            ..KILO
+        };
+        let by_id = Binding::refined(silent);
+        assert_eq!(by_id.anonymous_as(), Some("kilo"));
+        let h = AgentHandshake::parse_as(anonymous, by_id.anonymous_as()).expect("read as the row");
+        assert_eq!(
+            (h.name.as_str(), h.anonymous, h.key()),
+            ("kilo", true, "kilo".into())
+        );
+        assert!(h.load_session, "the rest of the handshake is read as ever");
+        assert_eq!(identity_note(&by_id, &h), None, "silent, as measured");
+
+        let named = AgentHandshake::parse_as(&s33_frame("kilo", 0), Some("kilo")).unwrap();
+        assert_eq!(
+            (named.name.as_str(), named.anonymous),
+            (KILO.agent_info, false)
+        );
+        let drift = identity_note(&by_id, &named).expect("the row was measured silent");
+        assert!(drift.contains("with no agent named"), "{drift}");
+
+        for command in ["kilo acp", "/opt/bin/kilo acp"] {
+            let generic = Binding::resolve(command).unwrap();
+            assert_eq!(generic.anonymous_as(), None, "`{command}`");
+        }
+        assert_eq!(
+            AgentHandshake::parse_as(anonymous, None).unwrap_err(),
+            AcpError::Anonymous
+        );
+        for a in AGENTS.iter().filter(|a| !a.agent_info.is_empty()) {
+            assert_eq!(
+                Binding::refined(*a).anonymous_as(),
+                None,
+                "`{}` names itself",
+                a.id
+            );
+        }
     }
 
     /// The request marion sends is the request S20 measured both agents answering.

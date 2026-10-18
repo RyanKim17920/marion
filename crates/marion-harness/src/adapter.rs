@@ -409,6 +409,13 @@ pub trait HarnessAdapter {
         self.spec().boot
     }
 
+    /// The ACP adapter's: the row id an agent's `initialize` naming no agent is read as
+    /// ([`crate::acp::Binding::anonymous_as`]). `None` on every other adapter, which speaks no
+    /// handshake.
+    fn anonymous_agent(&self) -> Option<&'static str> {
+        None
+    }
+
     /// The surfaces this adapter drives (§3.4) — the row's point in the cross-product.
     fn surfaces(&self) -> ExecutionSurfaces {
         self.spec().surfaces.execution()

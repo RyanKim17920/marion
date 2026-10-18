@@ -2817,6 +2817,7 @@ pub fn run_spawn_watched(
                     req.is_read_only(),
                 ),
                 boot: adapter.boot(),
+                anonymous_as: adapter.anonymous_agent(),
             })
             .map(|r| ChildRun {
                 stdout: r.stdout,

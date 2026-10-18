@@ -160,6 +160,9 @@ pub struct AcpChildSpec<'a> {
     /// What starting the agent costs ([`marion_harness::HarnessAdapter::boot`]): the budget
     /// `initialize` is waited on for, and the least `session/new` is.
     pub boot: marion_harness::spec::Boot,
+    /// The row id an `initialize` naming no agent is read as
+    /// ([`marion_harness::HarnessAdapter::anonymous_agent`]); `None` refuses such a handshake.
+    pub anonymous_as: Option<&'static str>,
 }
 
 /// The largest file `fs/read_text_file` returns. The whole text goes back in one frame the agent
@@ -485,7 +488,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         })?;
     (spec.on_started)(agent.pid);
 
-    let handshake = handshake_with(&mut agent, deadline, spec.boot.budget())?;
+    let handshake = handshake_with(&mut agent, deadline, spec.boot.budget(), spec.anonymous_as)?;
     // The one capability the handshake gates here: a resume goes out only to an agent that says
     // it can replay a session. Checked before the frame is sent, so an agent without it never sees
     // a `session/load` it would answer with an error marion would then have to interpret.
@@ -544,6 +547,7 @@ fn handshake_with(
     agent: &mut Driver<'_>,
     deadline: Instant,
     budget: Duration,
+    anonymous_as: Option<&str>,
 ) -> Result<AgentHandshake, AcpChildError> {
     send(agent, &acp::initialize_request(INITIALIZE_ID), "initialize")?;
     let handshake = match agent.settle(INITIALIZE_ID, clip(deadline, budget)) {
@@ -556,7 +560,7 @@ fn handshake_with(
             }));
         }
     };
-    match AgentHandshake::parse(&handshake) {
+    match AgentHandshake::parse_as(&handshake, anonymous_as) {
         Ok(h) => Ok(h),
         Err(e) => {
             let _ = agent.finish(true);
@@ -1316,6 +1320,7 @@ mod tests {
             turns: None,
             policy: full_grant(&inv.cwd),
             boot: marion_harness::acp::UNMEASURED_AGENT,
+            anonymous_as: None,
         }
     }
 
@@ -1566,6 +1571,34 @@ sleep 15"#,
         );
     }
 
+    /// **An agent whose `initialize` names no agent is read as the row it was selected by, and
+    /// refused anywhere else.** The script answers anonymously and without `loadSession`, so a
+    /// resume reaching the capability check proves the handshake was accepted — under the row's id.
+    #[test]
+    fn an_anonymous_handshake_is_read_as_the_row_selected_by_id_and_refused_without_one() {
+        const ANONYMOUS: &str =
+            r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#;
+        let dir = scratch("acp-anonymous");
+        let script = format!("read init\nprintf '%s\\n' '{ANONYMOUS}'\nsleep 15");
+        let inv = agent(&dir, &script);
+        let run = |anonymous_as| {
+            run_acp_child(AcpChildSpec {
+                session_declaration: Some(load_declaration(&dir)),
+                anonymous_as,
+                ..spec(&inv, Duration::from_secs(20), &|_| {})
+            })
+            .expect_err("neither run reaches a session")
+        };
+        match run(Some("cursor")) {
+            AcpChildError::NoLoadSession { agent, .. } => assert_eq!(agent, "cursor"),
+            other => panic!("the row's id stands in for the agent: {other:?}"),
+        }
+        match run(None) {
+            AcpChildError::Handshake(acp::AcpError::Anonymous) => {}
+            other => panic!("a command line has no row to stand in: {other:?}"),
+        }
+    }
+
     /// **The wall clock, and a timeout that is not a lie.** The agent takes the prompt and never
     /// answers it. What must survive is everything it *did* say, plus its own `cancelled` — and the
     /// exit must say marion ended this, never exit 0.
@@ -1727,6 +1760,7 @@ sleep 15"#,
                 turns: None,
                 policy: full_grant(&inv.cwd),
                 boot: marion_harness::acp::UNMEASURED_AGENT,
+                anonymous_as: None,
             })
             .expect_err("refused")
         };

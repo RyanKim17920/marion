@@ -1539,11 +1539,16 @@ fn acp_handshake(
         return None;
     };
     let clean = agent.finish();
-    match AgentHandshake::parse(&frame) {
+    match AgentHandshake::parse_as(&frame, binding.and_then(acp::Binding::anonymous_as)) {
         Ok(h) => {
             notes.push(format!(
-                "initialize: {} in {} ms{}",
+                "initialize: {}{} in {} ms{}",
                 h.key(),
+                if h.anonymous {
+                    " (names no agent: read as the row it was selected by)"
+                } else {
+                    ""
+                },
                 started.elapsed().as_millis(),
                 if clean {
                     ""
@@ -1611,7 +1616,8 @@ fn acp_live_turn(
 
     // `initialize`, then `session/new`, then the prompt. Each step reports itself and stops the
     // sequence, because a step that could not run is not a step that failed a *later* one.
-    let (timed_out, failed) = match acp_turn_steps(&mut agent, &inv.cwd, &mut trailing) {
+    let steps = acp_turn_steps(&mut agent, agent_spec, &inv.cwd, &mut trailing);
+    let (timed_out, failed) = match steps {
         Ok(timed_out) => (timed_out, None),
         Err(finding) => (false, Some(finding)),
     };
@@ -1648,10 +1654,11 @@ fn acp_live_turn(
 /// is whether the prompt ran out its budget, which the shape finding needs to know.
 fn acp_turn_steps(
     agent: &mut AcpChild,
+    binding: &acp::Binding,
     cwd: &Path,
     trailing: &mut Vec<String>,
 ) -> Result<bool, (bool, String)> {
-    acp_initialize_step(agent, trailing)?;
+    acp_initialize_step(agent, binding, trailing)?;
     let sid = acp_session_step(agent, cwd, trailing)?;
     Ok(acp_prompt_step(agent, &sid, trailing))
 }
@@ -1659,12 +1666,13 @@ fn acp_turn_steps(
 /// `initialize`: the agent answers within [`HANDSHAKE_BUDGET`] with a handshake marion can read.
 fn acp_initialize_step(
     agent: &mut AcpChild,
+    binding: &acp::Binding,
     trailing: &mut Vec<String>,
 ) -> Result<(), (bool, String)> {
     agent.send(&acp::initialize_request(0));
     let handshake = agent
         .response(0, HANDSHAKE_BUDGET)
-        .map(|f| marion_harness::AgentHandshake::parse(&f));
+        .map(|f| AgentHandshake::parse_as(&f, binding.anonymous_as()));
     match &handshake {
         Some(Ok(h)) => {
             trailing.push(format!("initialize: ok — {}", h.key()));
@@ -3102,6 +3110,68 @@ mod tests {
                 && n.contains("integration is disabled; set X=1")),
             "{notes:?}"
         );
+    }
+
+    /// **A row measured answering `initialize` anonymously is probed under its own id**, by both
+    /// steps that read a handshake: the capability read and the live turn's first step. The agent
+    /// names no agent; selected as such a row it is read and marked, and bound any other way (a
+    /// row that names itself, a bare command) the same answer is refused.
+    #[test]
+    fn an_anonymous_handshake_is_probed_as_the_row_selected_by_id() {
+        let inv = Invocation {
+            sandbox: None,
+            inherit: None,
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                r#"read init; printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'; exec cat >/dev/null"#
+                    .into(),
+            ],
+            env: vec![],
+            env_remove: vec![],
+            cwd: std::env::temp_dir(),
+            model: None,
+            session_mode: None,
+        };
+        let silent = acp::Agent {
+            agent_info: "",
+            ..acp::KILO
+        };
+        for (binding, read) in [
+            (acp::Binding::refined(silent), true),
+            (acp::Binding::refined(acp::KILO), false),
+            (acp::Binding::resolve("/bin/sh").unwrap(), false),
+        ] {
+            let mut notes = Vec::new();
+            let h = acp_handshake(
+                Path::new("/bin/sh"),
+                &inv,
+                probe_tmp().unwrap(),
+                Some(&binding),
+                &mut notes,
+            );
+            assert_eq!(h.is_some(), read, "{notes:?}");
+            let marked = "(names no agent: read as the row it was selected by)";
+            assert_eq!(
+                notes
+                    .iter()
+                    .any(|n| n.starts_with("initialize: kilo ") && n.contains(marked)),
+                read,
+                "{notes:?}"
+            );
+
+            let mut child =
+                AcpChild::spawn(Path::new("/bin/sh"), &inv, probe_tmp().unwrap()).expect("sh");
+            let mut trailing = Vec::new();
+            let step = acp_initialize_step(&mut child, &binding, &mut trailing);
+            child.finish();
+            assert_eq!(step.is_ok(), read, "{step:?}");
+            if read {
+                assert_eq!(trailing, ["initialize: ok — kilo"]);
+            } else {
+                assert!(step.unwrap_err().1.contains("no `agentInfo.name`"));
+            }
+        }
     }
 
     /// **A probe runs the launch a node runs, documents included**: Hermes' borrowed-login switch

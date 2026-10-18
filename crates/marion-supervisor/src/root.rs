@@ -2749,6 +2749,7 @@ fn launch_acp(
     on_started: &dyn Fn(i32),
 ) -> Result<RootOutcome, RootError> {
     let on_line = |line: &str| tee_line(tee, line);
+    let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     let run = crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
         inv: &node.invocation,
         tmpdir,
@@ -2760,8 +2761,8 @@ fn launch_acp(
         turns: node.turns.clone(),
         policy: node.acp_client.clone(),
         boot: node.boot,
+        anonymous_as: adapter.anonymous_agent(),
     })?;
-    let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     Ok(RootOutcome {
         // **The turn's code, not the process's** (`acp_child::turn_exit`): a turn the agent
         // answered is a finished run, and its stream is what can still fail it (`failure` below);
