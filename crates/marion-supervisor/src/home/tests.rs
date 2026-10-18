@@ -922,10 +922,6 @@ fn colon_runs_any_command_on_the_selected_agent() {
     );
     assert_eq!(colon(&mut h, "doctor"), words(&["doctor"]));
     assert_eq!(
-        colon(&mut h, "cancel --force"),
-        words(&["cancel", "root", "--force"])
-    );
-    assert_eq!(
         words(&["diff", "root"]).argv(),
         Some(vec!["marion".into(), "diff".into(), "root".into()]),
         "the line it runs is marion and the words"
@@ -978,6 +974,51 @@ fn colon_runs_any_command_on_the_selected_agent() {
         words(&["ls"]),
         "with nothing selected, as typed"
     );
+}
+
+/// **A `:` line asks first where the commands table says so**, as the key for the same action
+/// does: `merge` and `cancel` wait for a `y` and show the exact line, any other key runs nothing;
+/// `diff` and `ls` run at once, and `key` asks only for `rm`.
+#[test]
+fn colon_asks_first_where_the_commands_table_says() {
+    let mut h = home();
+    let words = |w: &[&str]| Effect::Command(w.iter().map(|s| s.to_string()).collect());
+    for (text, run, shown) in [
+        ("merge", words(&["merge", "root"]), "marion merge root"),
+        (
+            "cancel --force",
+            words(&["cancel", "root", "--force"]),
+            "marion cancel root --force",
+        ),
+        (
+            "key remove openrouter:work",
+            words(&["key", "remove", "openrouter:work"]),
+            "marion key remove openrouter:work",
+        ),
+    ] {
+        for no in [Key::Char('n'), Key::Esc] {
+            assert_eq!(colon(&mut h, text), Effect::None, "{text}");
+            assert_eq!(h.mode, Mode::Confirm(run.clone()), "{text}");
+            let Footer::Confirm { question, command } = frame(&h).footer else {
+                panic!("a confirm line for {text}")
+            };
+            assert_eq!((question.as_str(), command.as_str()), ("run this?", shown));
+            assert_eq!(h.key(no), Effect::None, "{text}");
+            assert_eq!(h.mode, Mode::Normal, "{text}");
+            assert_eq!(h.notice.as_deref(), Some("not run"), "{text}");
+        }
+        colon(&mut h, text);
+        assert_eq!(h.key(Key::Char('y')), run, "{text}");
+        assert_eq!(h.mode, Mode::Normal, "{text}");
+    }
+    for (text, run) in [
+        ("diff", words(&["diff", "root"])),
+        ("ls", words(&["ls", "root"])),
+        ("key ls", words(&["key", "ls"])),
+    ] {
+        assert_eq!(colon(&mut h, text), run, "{text} runs at once");
+        assert_eq!(h.mode, Mode::Normal, "{text}");
+    }
 }
 
 /// **A line that names no command, or one the screen does not run, stays open with why**, so the
@@ -1726,7 +1767,7 @@ fn a_workflow_is_one_header_row_over_its_steps() {
 // ------------------------------------------------------------------ effects and their words
 
 #[test]
-fn every_effect_has_its_command_and_only_cancel_and_kill_ask_first() {
+fn every_effect_has_its_command_and_only_cancel_kill_and_merge_ask_first() {
     let id = AgentId("0199-abc".into());
     let all = [
         Effect::Run {
@@ -1747,12 +1788,61 @@ fn every_effect_has_its_command_and_only_cancel_and_kill_ask_first() {
         assert!(e.argv().is_some_and(|a| !a.is_empty()), "{e:?}");
         assert_eq!(
             e.destructive(),
-            matches!(e, Effect::Cancel(_) | Effect::Kill(_)),
+            matches!(e, Effect::Cancel(_) | Effect::Kill(_) | Effect::Command(_)),
             "{e:?}"
         );
     }
     assert_eq!(Effect::None.argv(), None);
     assert_eq!(Effect::Quit.argv(), None);
+}
+
+/// **One action asks one question however it is reached**: every effect a key gives asks first
+/// exactly when the same command typed on the `:` line does.
+#[test]
+fn a_keys_effect_asks_first_exactly_when_its_colon_line_does() {
+    let id = AgentId("0199-abc".into());
+    let profile = |harness: &str, name: &str| (harness.to_string(), name.to_string());
+    let (harness, name) = profile("claude", "work");
+    let all = [
+        Effect::Run {
+            agent_type: "codex".into(),
+            model: None,
+            options: vec![],
+            prompt: "p".into(),
+            pane: false,
+        },
+        Effect::Attach(id.clone()),
+        Effect::Cancel(id.clone()),
+        Effect::Kill(id.clone()),
+        Effect::Recheck,
+        Effect::Notify(true),
+        Effect::Notify(false),
+        Effect::Login("openrouter:work".into()),
+        Effect::Logout("openrouter:work".into()),
+        Effect::ProfileAdd {
+            harness: harness.clone(),
+            name: name.clone(),
+        },
+        Effect::ProfileUse {
+            harness: harness.clone(),
+            name: name.clone(),
+        },
+        Effect::ProfileRemove { harness, name },
+        Effect::RepoTrust(true),
+        Effect::RepoTrust(false),
+    ];
+    let mut asked = 0;
+    for e in &all {
+        let argv = e.argv().expect("a command");
+        assert_eq!(argv[0], "marion", "{e:?}");
+        let typed = Effect::Command(argv[1..].to_vec());
+        assert_eq!(typed.destructive(), e.destructive(), "{e:?} and {typed:?}");
+        asked += usize::from(e.destructive());
+    }
+    assert_eq!(
+        asked, 5,
+        "cancel, kill, key rm, profile rm and trust allow ask"
+    );
 }
 
 /// **A failed run's notice names the cause**: marion's own `marion <verb>: …` line, not the usage

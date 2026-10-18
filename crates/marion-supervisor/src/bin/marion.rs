@@ -3943,7 +3943,7 @@ mod tests {
     #[test]
     fn every_command_is_reachable_from_the_home_screen() {
         use marion_supervisor::home::view::KEYS;
-        use marion_supervisor::home::{Effect, Home};
+        use marion_supervisor::home::{Effect, Home, Mode};
         use marion_tui::home::keys::Key;
         const GAPS: &[(&str, &str)] =
             &[("mcp", "an MCP client's server, not something a person does")];
@@ -3951,8 +3951,13 @@ mod tests {
             let mut home = Home::new();
             home.key(Key::Char(':'));
             home.key(Key::Paste(v.name.into()));
+            let mut effect = home.key(Key::Enter);
+            // A command the table says asks first (`merge`, `cancel`) waits for its `y`.
+            if matches!(home.mode, Mode::Confirm(_)) {
+                effect = home.key(Key::Char('y'));
+            }
             let reached = matches!(
-                home.key(Key::Enter),
+                effect,
                 Effect::Command(words) if words.first().map(String::as_str) == Some(v.name)
             );
             let gap = GAPS.iter().any(|(g, _)| *g == v.name);

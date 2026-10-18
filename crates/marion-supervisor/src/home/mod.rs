@@ -157,16 +157,23 @@ impl Effect {
     }
 
     /// Whether this effect ends or discards something, or widens what loads on the operator's
-    /// login, and so waits for a `y`.
+    /// login, and so waits for a `y`. A `:` line asks when the commands table says its command
+    /// does ([`crate::verbs::Spec::asks`]).
     pub fn destructive(&self) -> bool {
-        matches!(
-            self,
-            Effect::Cancel(_)
-                | Effect::Kill(_)
-                | Effect::Logout(_)
-                | Effect::ProfileRemove { .. }
-                | Effect::RepoTrust(true)
-        )
+        match self {
+            Effect::Command(words) => words
+                .first()
+                .and_then(|name| crate::verbs::spec(name))
+                .is_some_and(|spec| spec.asks_first(words)),
+            _ => matches!(
+                self,
+                Effect::Cancel(_)
+                    | Effect::Kill(_)
+                    | Effect::Logout(_)
+                    | Effect::ProfileRemove { .. }
+                    | Effect::RepoTrust(true)
+            ),
+        }
     }
 }
 
@@ -709,6 +716,7 @@ impl Home {
             Effect::Logout(_) => self.notice = Some("key kept".into()),
             Effect::ProfileRemove { .. } => self.notice = Some("login kept".into()),
             Effect::RepoTrust(_) => self.notice = Some("not trusted".into()),
+            Effect::Command(_) => self.notice = Some("not run".into()),
             _ => self.notice = Some("not cancelled".into()),
         }
         Effect::None
@@ -921,7 +929,14 @@ impl Home {
                 Effect::None
             }
             Purpose::Command => match self.command_line(&text) {
-                Ok(words) => Effect::Command(words),
+                Ok(words) => {
+                    let effect = Effect::Command(words);
+                    if effect.destructive() {
+                        self.mode = Mode::Confirm(effect);
+                        return Effect::None;
+                    }
+                    effect
+                }
                 Err(why) => refused(self, why, purpose, text),
             },
             Purpose::New => {

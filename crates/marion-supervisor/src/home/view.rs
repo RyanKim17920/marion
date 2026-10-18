@@ -1077,6 +1077,7 @@ fn confirm(home: &Home, effect: &Effect) -> Footer {
             };
             (q, line(effect))
         }
+        Effect::Command(_) => ("run this?".to_string(), line(effect)),
         other => ("go ahead?".to_string(), line(other)),
     };
     Footer::Confirm { question, command }
