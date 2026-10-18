@@ -111,7 +111,7 @@ pub enum RecordKind {
     /// §6.1 step 7, second half. The process exists.
     Spawned(Spawned),
     /// The intent's other resolution: marion started the process and then abandoned the spawn
-    /// (§6.1 step 8's 30 s bridge cap kills it and *"journal[s] the abort against the intent
+    /// (§6.1 step 8's 30 s bridge cap kills it and *"journal\[s\] the abort against the intent
     /// record"*). Recorded so the node is never mistaken for one marion *lost* — §7.2 is emphatic
     /// that a node marion decided the fate of is never `Orphaned`.
     SpawnAborted(SpawnAborted),

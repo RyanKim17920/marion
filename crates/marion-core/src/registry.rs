@@ -985,7 +985,7 @@ impl Replay {
     /// **Write §7.2's restart verdict into a node**, answering whether the node was there.
     ///
     /// The one door through which `Orphaned` can enter a replayed tree, and it is deliberately a
-    /// *setter a policy calls* rather than an arm of [`Replay::apply`]. This module's contract is
+    /// *setter a policy calls* rather than an arm of `Replay::apply`. This module's contract is
     /// that folding records never produces `Orphaned` (see the module doc); that contract is about
     /// what the **journal** can say, and it is unchanged — no record kind reaches this. The caller
     /// is `marion_supervisor::restart`, which owns the judgement and argues it there.
@@ -1001,7 +1001,7 @@ impl Replay {
     ///   `Orphaned` at once contradicts itself.
     ///
     /// **Structural rather than remembered, at both ends.** The precondition is checked here rather
-    /// than trusted of the caller, and [`Self::apply`] retracts the verdict the moment a later
+    /// than trusted of the caller, and `Self::apply` retracts the verdict the moment a later
     /// record decides the fate. Between them, `Orphaned` stands in this tree if and only if
     /// `is_unresolved` was true when it was written and has been true ever since — which is what
     /// lets the marking be derived instead of journaled, and what makes a running tree agree with a

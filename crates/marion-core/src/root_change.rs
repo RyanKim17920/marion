@@ -49,7 +49,7 @@
 //! where an empty delta beside `Some(3)` is not.
 //!
 //! M1 has no filesystem attribution either, and there is no honest way to separate the operator's
-//! keystrokes from the agent's writes inside one directory. Hence [`RootChange::changed_paths`] is
+//! keystrokes from the agent's writes inside one directory. Hence [`RootChange::working_tree_delta`] is
 //! *everything git can see changed in that directory between launch and exit, whoever did it* — the
 //! same discipline `Completion::scope_enforced` holds to. A field named `root_writes` would claim a
 //! measurement marion did not make. See §11 item 26 for the two classes of write — outside the
@@ -152,7 +152,7 @@ pub enum RootObservation {
         /// …and at exit.
         post_tree: Oid,
         /// Paths differing between the two trees. **Not "paths the root wrote"** — see
-        /// [`RootChange::changed_paths`].
+        /// [`RootChange::working_tree_delta`].
         changed_count: usize,
         /// Paths already differing from `base_commit` when the root launched. The operator's own
         /// work in progress, counted so a reader can see it was subtracted rather than assume it.

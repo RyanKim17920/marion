@@ -754,7 +754,7 @@ const BUILTINS: &[Builtin] = &[
 
 /// A built-in by name, or the one open-ended family: any ACP agent, named by its command.
 ///
-/// The table above is closed data; [`acp_command`] is the open half, and stays code because it
+/// The table above is closed data; `acp_command` is the open half, and stays code because it
 /// parses a command line rather than looking a name up.
 pub fn builtin(name: &str) -> Option<AgentType> {
     match BUILTINS.iter().find(|b| b.matches(name)) {
