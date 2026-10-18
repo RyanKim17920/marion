@@ -2675,6 +2675,8 @@ mod tests {
             "abc.def.ghi",
             "1.2.x",
             "1.2.3-beta.1",
+            // A date-stamped nightly is not its release.
+            "0.0.0-20261016",
         ] {
             assert_eq!(version_token(none), None, "{none:?}");
         }

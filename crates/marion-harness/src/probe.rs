@@ -286,15 +286,17 @@ impl PrivateDir {
 
 /// **A version token's release, with a trailing build id dropped**: `2026.10.16-e3cb207`, the
 /// Cursor CLI's `--version`, reads as `2026.10.16`. Only a commit id — 7 to 40 lowercase hex
-/// digits — counts as a build id. Any other suffix (`-beta.1`, `-nightly`) marks a pre-release,
-/// which is not the release it precedes, so the token comes back whole and no version gate reads
-/// it as that release.
+/// digits, at least one of them a letter — counts as a build id. Any other suffix (`-beta.1`,
+/// `-nightly`, a date-stamped nightly's `-20261016`) marks a pre-release, which is not the release
+/// it precedes, so the token comes back whole and no version gate reads it as that release. The
+/// letter costs the rare all-digit commit id, which then reads unparsed: the safe direction.
 pub fn release_of(token: &str) -> &str {
     let commit = |build: &str| {
         (7..=40).contains(&build.len())
             && build
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            && build.bytes().any(|b| (b'a'..=b'f').contains(&b))
     };
     match token.split_once('-') {
         Some((release, build)) if commit(build) => release,
@@ -312,17 +314,26 @@ impl Drop for PrivateDir {
 mod tests {
     use super::*;
 
-    /// A commit id after the release is dropped; a pre-release, or anything else, is kept whole.
+    /// A commit id after the release is dropped; a pre-release, a date-stamped nightly, or
+    /// anything else, is kept whole.
     #[test]
     fn a_build_id_is_dropped_and_a_pre_release_is_kept() {
         assert_eq!(release_of("2026.10.16-e3cb207"), "2026.10.16");
         assert_eq!(release_of("1.2.3"), "1.2.3");
+        assert_eq!(
+            release_of("1.2.3-0123abc"),
+            "1.2.3",
+            "a digit-led commit id"
+        );
         for kept in [
             "1.2.3-beta.1",
             "1.2.3-nightly",
             "1.2.3-",
             "1.2.3-e3cb20",
             "1.2.3-E3CB207",
+            "0.0.0-20261016",
+            "0.0.0-202610161230",
+            "1.2.3-1234567",
             "codex-cli",
         ] {
             assert_eq!(release_of(kept), kept, "{kept}");
