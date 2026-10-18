@@ -47,8 +47,8 @@ impl Spec {
 }
 
 /// **The subcommand words a `:` line asks first for**, which the commands' own parsers match on
-/// too: each spelling is written once and read in both places, so a new one is added here and
-/// cannot run from the `:` line without its `y`.
+/// too: each spelling is written once and read in both places, so a new one is added here, so it
+/// is asked for on the `:` line too.
 pub mod sub {
     /// `marion key rm` and `marion profile rm`.
     pub const RM: &str = "rm";
