@@ -1907,11 +1907,14 @@ fn keyed_version(read: Option<&str>) -> &str {
 /// One trailing full stop is stripped from each token before its shape is judged, generically:
 /// copilot prints its version as a sentence (`GitHub Copilot CLI 1.0.83.`), and until this strip
 /// the doctor read that as `version undetermined`. A single stop, not every trailing stop, so a
-/// truncated `1.2.` still reads as the truncation it is.
+/// truncated `1.2.` still reads as the truncation it is. A trailing commit id is dropped
+/// ([`marion_harness::probe::release_of`]: Cursor's `2026.10.16-e3cb207`), and a pre-release is
+/// not read at all.
 pub fn version_token(out: &str) -> Option<String> {
     out.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',')
         .map(|t| t.trim_start_matches('v'))
         .map(|t| t.strip_suffix('.').unwrap_or(t))
+        .map(marion_harness::probe::release_of)
         .find(|t| {
             let mut parts = t.split('.');
             let ok = |maybe: Option<&str>| {
@@ -2611,9 +2614,22 @@ mod tests {
             .as_deref(),
             Some("1.0.83")
         );
+        // Cursor's CLI names its build after the release: the release is what is keyed.
+        assert_eq!(
+            version_token("2026.10.16-e3cb207\n").as_deref(),
+            Some("2026.10.16")
+        );
         // And nothing that is not one, because `advertised` compares it numerically and a token it
         // cannot parse must never reach it as though it could.
-        for none in ["", "unknown", "0.146", "1.2.3.4", "abc.def.ghi", "1.2.x"] {
+        for none in [
+            "",
+            "unknown",
+            "0.146",
+            "1.2.3.4",
+            "abc.def.ghi",
+            "1.2.x",
+            "1.2.3-beta.1",
+        ] {
             assert_eq!(version_token(none), None, "{none:?}");
         }
     }

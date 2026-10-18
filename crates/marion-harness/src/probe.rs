@@ -284,6 +284,24 @@ impl PrivateDir {
     }
 }
 
+/// **A version token's release, with a trailing build id dropped**: `2026.10.16-e3cb207`, the
+/// Cursor CLI's `--version`, reads as `2026.10.16`. Only a commit id — 7 to 40 lowercase hex
+/// digits — counts as a build id. Any other suffix (`-beta.1`, `-nightly`) marks a pre-release,
+/// which is not the release it precedes, so the token comes back whole and no version gate reads
+/// it as that release.
+pub fn release_of(token: &str) -> &str {
+    let commit = |build: &str| {
+        (7..=40).contains(&build.len())
+            && build
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    match token.split_once('-') {
+        Some((release, build)) if commit(build) => release,
+        _ => token,
+    }
+}
+
 impl Drop for PrivateDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -293,6 +311,23 @@ impl Drop for PrivateDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A commit id after the release is dropped; a pre-release, or anything else, is kept whole.
+    #[test]
+    fn a_build_id_is_dropped_and_a_pre_release_is_kept() {
+        assert_eq!(release_of("2026.10.16-e3cb207"), "2026.10.16");
+        assert_eq!(release_of("1.2.3"), "1.2.3");
+        for kept in [
+            "1.2.3-beta.1",
+            "1.2.3-nightly",
+            "1.2.3-",
+            "1.2.3-e3cb20",
+            "1.2.3-E3CB207",
+            "codex-cli",
+        ] {
+            assert_eq!(release_of(kept), kept, "{kept}");
+        }
+    }
     use crate::adapter::harness_spec;
     use marion_core::harness::Harness;
     use std::os::unix::fs::PermissionsExt;

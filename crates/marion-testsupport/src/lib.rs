@@ -340,6 +340,7 @@ fn parse_version(output: &str) -> Option<&str> {
     output
         .split_whitespace()
         .map(|tok| tok.strip_suffix('.').unwrap_or(tok))
+        .map(marion_harness::probe::release_of)
         .find(|tok| {
             tok.starts_with(|c: char| c.is_ascii_digit())
                 && !tok.ends_with('.')
@@ -1781,6 +1782,8 @@ mod tests {
                 "GitHub Copilot CLI 1.0.83.\nRun 'copilot update' to check for updates.\n",
                 "1.0.83",
             ),
+            // Cursor's CLI: the release, then its commit id.
+            ("2026.10.16-e3cb207\n", "2026.10.16"),
         ] {
             assert_eq!(
                 parse_version(raw),
@@ -1803,6 +1806,8 @@ mod tests {
             "version unknown\n",
             // A trailing dot is a truncated version, not a version.
             "1.\n",
+            // A pre-release is not the release it precedes.
+            "1.2.3-beta.1\n",
         ] {
             assert_eq!(
                 parse_version(raw),
