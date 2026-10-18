@@ -874,6 +874,22 @@ mod tests {
     use crate::invocation::Invocation;
 
     /// A node's launch in `dir`: its agent dir with a config dir, and a workspace.
+    /// Where an agent dir holds its node token, as these tests deny it — pinned to the path every
+    /// launch writes by [`the_token_path_these_tests_deny_is_the_one_every_launch_writes`].
+    const TOKEN_PATH: &str = "config/node-token";
+
+    /// **The sandbox tests deny the token's real path.** A token moved to another file would
+    /// otherwise leave every sibling-read test guarding a file nothing writes.
+    #[test]
+    fn the_token_path_these_tests_deny_is_the_one_every_launch_writes() {
+        let dir = marion_testsupport::scratch("osb-token-path");
+        let (spec, _) = node_in(&dir, Auth::Canned);
+        assert_eq!(
+            crate::adapter::token_file(&spec),
+            dir.join("agent").join(TOKEN_PATH)
+        );
+    }
+
     fn node_in(dir: &std::path::Path, auth: Auth) -> (LaunchSpec, Invocation) {
         let agent = dir.join("agent");
         std::fs::create_dir_all(agent.join("config")).unwrap();
@@ -1208,7 +1224,7 @@ mod tests {
         let sibling = dir.join("sibling");
         std::fs::create_dir_all(sibling.join("config")).unwrap();
         std::fs::create_dir_all(sibling.join("contracts")).unwrap();
-        std::fs::write(sibling.join("config/node-token"), "sibling-secret").unwrap();
+        std::fs::write(sibling.join(TOKEN_PATH), "sibling-secret").unwrap();
         std::fs::write(sibling.join("contracts/t.json"), "contract").unwrap();
         std::fs::write(sibling.join("events.jsonl"), "events").unwrap();
         std::fs::write(sibling.join("prompt.txt"), "prompt").unwrap();
@@ -1253,13 +1269,13 @@ mod tests {
             std::fs::write(d.join("worktree/f"), "SECRET-WORKTREE").unwrap();
         }
         std::fs::create_dir_all(sibling.join("config")).unwrap();
-        std::fs::write(sibling.join("config/node-token"), "SECRET-TOKEN").unwrap();
+        std::fs::write(sibling.join(TOKEN_PATH), "SECRET-TOKEN").unwrap();
         std::os::unix::fs::symlink("../../sibling/worktree/f", parent.join("worktree/link"))
             .unwrap();
         spec.extra.parent_tree = Some(parent.join("worktree"));
         let denied = [
             sibling.join("worktree/f"),
-            sibling.join("config/node-token"),
+            sibling.join(TOKEN_PATH),
             cousin.join("worktree/f"),
             parent.join("worktree/link"),
         ];
@@ -1396,7 +1412,7 @@ mod tests {
         for parent_tree in [None, Some(checkout.clone())] {
             let (mut spec, mut inv) = node_in(&agents, Auth::Canned);
             std::fs::create_dir_all(sibling.join("config")).unwrap();
-            std::fs::write(sibling.join("config/node-token"), "SECRET-TOKEN").unwrap();
+            std::fs::write(sibling.join(TOKEN_PATH), "SECRET-TOKEN").unwrap();
             spec.extra.parent_tree = parent_tree.clone();
             inv.cwd = checkout.clone();
             let s = sibling.display();
@@ -1421,7 +1437,7 @@ mod tests {
                 "{parent_tree:?}: {out:?}"
             );
             assert_eq!(
-                std::fs::read_to_string(sibling.join("config/node-token")).unwrap(),
+                std::fs::read_to_string(sibling.join(TOKEN_PATH)).unwrap(),
                 "SECRET-TOKEN",
                 "{parent_tree:?}: not written"
             );
@@ -1445,7 +1461,7 @@ mod tests {
         let parent = dir.join("parent");
         std::fs::create_dir_all(parent.join("config")).unwrap();
         std::fs::create_dir_all(parent.join("worktree/src")).unwrap();
-        std::fs::write(parent.join("config/node-token"), "parent-secret").unwrap();
+        std::fs::write(parent.join(TOKEN_PATH), "parent-secret").unwrap();
         std::fs::write(parent.join("worktree/src/f.txt"), "tree").unwrap();
         spec.extra.parent_tree = Some(parent.join("worktree"));
         let p = parent.display();
@@ -1481,7 +1497,7 @@ mod tests {
         let (spec, mut inv) = node_in(&dir, Auth::Canned);
         let sibling = dir.join("sibling");
         std::fs::create_dir_all(sibling.join("config")).unwrap();
-        std::fs::write(sibling.join("config/node-token"), "sibling-secret").unwrap();
+        std::fs::write(sibling.join(TOKEN_PATH), "sibling-secret").unwrap();
         let s = sibling.display();
         inv.args = vec![
             "-c".into(),
