@@ -22,12 +22,22 @@ pub fn log_argv(commit: &str) -> Vec<String> {
     .to_vec()
 }
 
-/// `git merge --no-ff -- <branch>`: `marion merge`'s command, `--` so a branch name cannot be read
-/// as a flag.
-pub fn merge_argv(branch: &str) -> Vec<String> {
-    ["git", "merge", "--no-ff", "--", branch]
-        .map(str::to_string)
-        .to_vec()
+/// `git merge --no-ff -m <message> -- <commit>`: `marion merge`'s command. It merges the commit
+/// [`reviewed_tip`] resolved, never the branch name, so a branch that moves after it was resolved
+/// moves nothing that lands; the message names the branch, as a merge of the name would. `--` so
+/// nothing after it is read as a flag.
+pub fn merge_argv(branch: &str, commit: &str) -> Vec<String> {
+    [
+        "git",
+        "merge",
+        "--no-ff",
+        "-m",
+        &format!("Merge branch '{branch}' at {commit}"),
+        "--",
+        commit,
+    ]
+    .map(str::to_string)
+    .to_vec()
 }
 
 /// [`log_argv`], run in `repo` with the terminal as `git_in` runs it.
@@ -93,17 +103,21 @@ pub fn reviewed_tip(repo: &Path, branch: &str, reviewed: Option<&str>) -> Result
     }
 }
 
-/// [`merge_argv`] in `repo`, hardened as `git_in` runs it. Refused, with why, where `branch` is not
-/// one marion made for a task, or where the repository's own config names a program a merge
-/// would run (`merge_refusal`). The CLI's `marion merge` and the home screen's `:merge` both run
-/// this, the screen through the CLI.
-pub fn branch_merge(repo: &Path, branch: &str) -> Result<std::process::Command, String> {
+/// [`merge_argv`] of `commit` ([`reviewed_tip`]'s) in `repo`, hardened as `git_in` runs it.
+/// Refused, with why, where `branch` is not one marion made for a task, or where the
+/// repository's own config names a program a merge would run (`merge_refusal`). The CLI's
+/// `marion merge` and the home screen's `:merge` both run this, the screen through the CLI.
+pub fn branch_merge(
+    repo: &Path,
+    branch: &str,
+    commit: &str,
+) -> Result<std::process::Command, String> {
     if let Some(why) = not_marions(branch) {
         return Err(format!("not merged: {why}"));
     }
     match merge_refusal(repo) {
         Some(why) => Err(why),
-        None => Ok(git_in(repo, &merge_argv(branch))),
+        None => Ok(git_in(repo, &merge_argv(branch, commit))),
     }
 }
 
@@ -190,11 +204,11 @@ mod tests {
         assert!(args.contains(&"--no-pager".to_string()), "{args:?}");
     }
 
-    /// **The merge that runs is the line shown**, `--` before the branch included, so a branch
-    /// named like a flag is merged as a branch.
+    /// **The merge that runs is the line shown**: the resolved commit after `--`, never the
+    /// branch name, which only the message carries.
     #[test]
     fn the_merge_runs_the_line_it_shows() {
-        let c = git_in(Path::new("/r"), &merge_argv("-x"));
+        let c = git_in(Path::new("/r"), &merge_argv("marion/t-1", "-x"));
         assert_eq!(
             args(&c),
             [
@@ -214,6 +228,8 @@ mod tests {
                 "maintenance.auto=false",
                 "merge",
                 "--no-ff",
+                "-m",
+                "Merge branch 'marion/t-1' at -x",
                 "--",
                 "-x"
             ]
@@ -250,7 +266,7 @@ mod tests {
             let repo = Path::new("/nonexistent-repo");
             for e in [
                 reviewed_tip(repo, branch, None).expect_err(branch),
-                branch_merge(repo, branch).expect_err(branch),
+                branch_merge(repo, branch, "0123").expect_err(branch),
             ] {
                 assert!(
                     e.contains("not a branch marion made for a task"),

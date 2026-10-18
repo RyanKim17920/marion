@@ -590,8 +590,9 @@ fn shell_main(argv: &[String]) -> Result<ExitCode, Exit> {
     landed_main(argv, Landed::Shell)
 }
 
-/// `diff`'s words: `parse_attach`'s, plus `--at <commit>` (shown only while the branch is still
-/// at that commit) and `--tip` (print only the commit the branch is at).
+/// `diff`'s and `merge`'s words: `parse_attach`'s, plus `--at <commit>` (the commit a diff showed,
+/// which both refuse to go past) and, on `diff`, `--tip` (print only that commit: how the home
+/// screen learns which commit its `:diff` shows, so its `:merge` can pin it).
 struct LandedArgs {
     attach: AttachArgs,
     at: Option<String>,
@@ -604,7 +605,7 @@ fn parse_landed(argv: &[String], what: &Landed) -> Result<LandedArgs, Exit> {
     while let Some(word) = words.next()? {
         match word {
             Word::Flag(f, v) if place.take(f, v, &mut words)? => {}
-            Word::Flag("--at", v) if matches!(what, Landed::Diff) => {
+            Word::Flag("--at", v) if !matches!(what, Landed::Shell) => {
                 at = Some(words.value("--at", v)?);
             }
             Word::Flag("--tip", None) if matches!(what, Landed::Diff) => tip = true,
@@ -653,13 +654,21 @@ fn landed_main(argv: &[String], what: Landed) -> Result<ExitCode, Exit> {
                     return Ok(());
                 }
                 run_status(branch_log(&repo, &commit), "git log")?;
-                err!("marion: that is {branch} at {commit}");
+                err!(
+                    "marion: that is {branch} at {commit}; to merge exactly it: \
+                     marion merge {} --at {commit}",
+                    args.agent_id
+                );
                 Ok(())
             }
+            // A bare merge lands the tip as it is now, resolved once and printed, so what lands
+            // is one commit however the branch moves; `--at` lands only the commit reviewed.
             Landed::Merge => {
                 let branch = branch()?;
-                run_status(branch_merge(&repo, &branch)?, "git merge")?;
-                out!("marion: merged {branch}");
+                let commit = reviewed_tip(&repo, &branch, at.as_deref())
+                    .map_err(|e| format!("not merged: {e}"))?;
+                run_status(branch_merge(&repo, &branch, &commit)?, "git merge")?;
+                out!("marion: merged {branch} at {commit}");
                 Ok(())
             }
             Landed::Shell => {

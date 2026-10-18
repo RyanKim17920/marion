@@ -621,8 +621,8 @@ fn diff_help() -> String {
          \n\
          Show what an agent's branch added over your HEAD, commit by commit with its patch. The\n\
          patch is shown raw: no diff driver or textconv program the branch names runs, and no\n\
-         pager; pipe it to one. It ends naming the commit shown. Only a branch marion made for a\n\
-         task is shown.\n\
+         pager; pipe it to one. It ends naming the commit shown, and `marion merge <id> --at\n\
+         <commit>` merges exactly that one. Only a branch marion made for a task is shown.\n\
          \n\
          --at <commit>   show the branch only if it is still at <commit>\n\
          --tip           print only the commit the branch is at\n\
@@ -635,12 +635,15 @@ fn diff_help() -> String {
 
 fn merge_help() -> String {
     format!(
-        "usage: marion merge <id> [--repo <path>]\n\
+        "usage: marion merge <id> [--at <commit>] [--repo <path>]\n\
          \n\
-         Merge an agent's branch into your checkout with `git merge --no-ff`. No hook, editor or\n\
-         signing program runs, and it refuses when the repository's own config names a filter or\n\
-         merge driver, a program a merge would run. Only a branch marion made for a task is\n\
-         merged.\n\
+         Merge an agent's branch into your checkout with `git merge --no-ff`: the one commit it\n\
+         is at, never whatever the name points to later. No hook, editor or signing program\n\
+         runs, and it refuses when the repository's own config names a filter or merge driver, a\n\
+         program a merge would run. Only a branch marion made for a task is merged.\n\
+         \n\
+         --at <commit>   merge only if the branch is still at <commit>, the one `marion diff`\n\
+                         showed; refused, naming both, if the agent moved it since\n\
          \n\
          {PLACE_HELP}\n\
          \n\

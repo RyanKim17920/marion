@@ -78,11 +78,12 @@ fn diff_shows_the_branch_and_merge_lands_it() {
     );
     assert!(!repo.join("b.txt").exists(), "diff changes nothing");
 
+    let tip = git(&repo, &["rev-parse", &fx.branch]).trim().to_string();
     let merge = marion(&["merge", &fx.child.0], &repo, &state);
     assert!(merge.status.success(), "{merge:?}");
     assert!(
-        String::from_utf8_lossy(&merge.stdout).contains(&format!("merged {}", fx.branch)),
-        "{merge:?}"
+        String::from_utf8_lossy(&merge.stdout).contains(&format!("merged {} at {tip}", fx.branch)),
+        "a bare merge names the commit it landed: {merge:?}"
     );
     assert!(repo.join("b.txt").exists(), "the branch is in the checkout");
     assert!(
@@ -130,12 +131,13 @@ fn merge_refuses_a_branch_the_contract_names_that_marion_did_not_make() {
     }
 }
 
-/// **A diff names the commit it showed, and `--at` shows the branch only while it is still
-/// there.** `--tip` prints only that commit; the agent then moves its branch, and `diff --at` the
-/// commit read is refused naming both, while `--at` the new tip shows it.
+/// **What is merged is the commit the diff showed.** `diff` ends naming the commit it showed and
+/// `--tip` prints only it; the agent then moves its branch, and `merge --at` that commit is
+/// refused naming both while nothing lands; `merge --at` the new tip lands exactly it. A bare
+/// `merge` lands the tip it resolves and names it.
 #[test]
-fn diff_names_the_commit_it_shows_and_refuses_a_branch_moved_since() {
-    let (_dir, repo, state, fx) = bed("landed-verbs-diff-at");
+fn merge_at_the_reviewed_commit_refuses_a_branch_moved_since_the_diff() {
+    let (_dir, repo, state, fx) = bed("landed-verbs-pinned");
     let tip = marion(&["diff", &fx.child.0, "--tip"], &repo, &state);
     assert!(tip.status.success(), "{tip:?}");
     let reviewed = String::from_utf8_lossy(&tip.stdout).trim().to_string();
@@ -143,7 +145,7 @@ fn diff_names_the_commit_it_shows_and_refuses_a_branch_moved_since() {
     let diff = marion(&["diff", &fx.child.0], &repo, &state);
     assert!(
         String::from_utf8_lossy(&diff.stderr)
-            .contains(&format!("that is {} at {reviewed}", fx.branch)),
+            .contains(&format!("marion merge {} --at {reviewed}", fx.child.0)),
         "the diff names the commit it showed: {diff:?}"
     );
 
@@ -154,21 +156,32 @@ fn diff_names_the_commit_it_shows_and_refuses_a_branch_moved_since() {
     git(&repo, &["commit", "-q", "-m", "add c"]);
     git(&repo, &["checkout", "-q", "main"]);
     let moved = git(&repo, &["rev-parse", &fx.branch]).trim().to_string();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
 
-    let out = marion(&["diff", &fx.child.0, "--at", &reviewed], &repo, &state);
-    assert!(!out.status.success(), "{out:?}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    for verb in ["diff", "merge"] {
+        let out = marion(&[verb, &fx.child.0, "--at", &reviewed], &repo, &state);
+        assert!(!out.status.success(), "{verb}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("moved since it was reviewed")
+                && stderr.contains(&reviewed)
+                && stderr.contains(&moved),
+            "{verb}: {out:?}"
+        );
+    }
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head, "nothing merged");
+    assert!(!repo.join("b.txt").exists() && !repo.join("c.txt").exists());
+
+    let merge = marion(&["merge", &fx.child.0, "--at", &moved], &repo, &state);
+    assert!(merge.status.success(), "{merge:?}");
     assert!(
-        stderr.contains("moved since it was reviewed")
-            && stderr.contains(&reviewed)
-            && stderr.contains(&moved),
-        "{out:?}"
+        String::from_utf8_lossy(&merge.stdout).contains(&format!("at {moved}")),
+        "{merge:?}"
     );
-    let shown = marion(&["diff", &fx.child.0, "--at", &moved], &repo, &state);
-    assert!(shown.status.success(), "{shown:?}");
-    assert!(
-        String::from_utf8_lossy(&shown.stdout).contains("add c"),
-        "{shown:?}"
+    assert_eq!(
+        git(&repo, &["rev-parse", "HEAD^2"]).trim(),
+        moved,
+        "the merge's second parent is the commit named, not whatever the name points to"
     );
 }
 
