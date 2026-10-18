@@ -30,7 +30,7 @@
 //!
 //! # Why this is a scan and not a parser
 //!
-//! [`Sticky::scan`] tracks a **fixed set of six** DECSET/DECRST numbers and the current size. It
+//! [`Sticky::absorb`] tracks a **fixed set of six** DECSET/DECRST numbers and the current size. It
 //! does not maintain a cursor, a grid, a charset, or an SGR stack — `marion_term::Term` does all
 //! of that, and duplicating any of it here would create a second VT whose disagreements with the
 //! first are undiagnosable. The scan answers exactly one question: *what modes would already be

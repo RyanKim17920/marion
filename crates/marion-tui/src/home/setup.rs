@@ -119,7 +119,7 @@ const VERSION_W: usize = 10;
 const NOTE_W: usize = 28;
 
 /// The name column for `lines`: wide enough for the longest harness, provider or file label and a
-/// gap, within [`NAME_W`]..=[`NAME_MAX`], so a long name is never clipped against what follows.
+/// gap, within `NAME_W`..=`NAME_MAX`, so a long name is never clipped against what follows.
 pub fn name_col(lines: &[SetupLine]) -> usize {
     lines
         .iter()

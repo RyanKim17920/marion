@@ -32,7 +32,7 @@
 //! A bracket-only trigger would never paint a stream that contains **no** brackets. That is not
 //! hypothetical for the first moments of a session — every capture has plaintext boot output
 //! before its first `?2026h` — and it is the whole story for a harness that never synchronizes.
-//! So [`Redraw::should_paint`] also fires when bytes arrived and *no* bracket is open: the frame
+//! So [`Redraw::on_idle`] also fires when bytes arrived and *no* bracket is open: the frame
 //! is over in the only sense available. When a bracket **is** open the paint is withheld, which is
 //! what makes the bracket useful at all — a half-applied frame is the thing synchronized output
 //! exists to hide.
