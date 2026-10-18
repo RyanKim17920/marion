@@ -77,7 +77,7 @@ pub fn wire_name(wire: Wire) -> &'static str {
 ///
 /// **The `messages` collision is real and is resolved on measured shape, not on the path.** Both
 /// Anthropic Messages and OpenAI Chat Completions carry a top-level `messages` array, so the key
-/// alone is not a discriminator; see [`messages_wire`] for which shapes inside it are.
+/// alone is not a discriminator; see `messages_wire` for which shapes inside it are.
 pub fn classify_wire(path: &str, body: &Value) -> Option<Wire> {
     if body.get("contents").and_then(Value::as_array).is_some() {
         return Some(Wire::Gemini {
