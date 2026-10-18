@@ -4491,15 +4491,16 @@ mod tests {
     /// **A row with no switch that keeps its repository config out refuses an untrusted
     /// repository holding it**: copilot and agy on a live launch only (an overlay relocates the
     /// homes their config would be trusted in), goose and cline on every auth (their workspace
-    /// hooks run whatever home marion relocates). The config counts from the cwd up to the
+    /// hooks run whatever home marion relocates), and Hermes, whose project plugins load on the
+    /// operator's `HERMES_ENABLE_PROJECT_PLUGINS` (read from source). The config counts from the cwd up to the
     /// checkout's root, since copilot and agy walk up to it; a trusted repository, or a tree
     /// without it, launches.
     #[test]
     fn rows_without_a_switch_refuse_an_untrusted_repositorys_own_config() {
         // The last column: whether a canned launch in the untrusted repository is refused too,
-        // `None` for agy, which has no canned route at all.
+        // `None` for agy and Hermes, which have no canned route at all.
         type Case = (Harness, fn() -> LaunchSpec, &'static str, Option<bool>);
-        let cases: [Case; 4] = [
+        let cases: [Case; 5] = [
             (
                 Harness::Copilot,
                 copilot_spec,
@@ -4518,6 +4519,12 @@ mod tests {
                 cline_spec,
                 ".cline/hooks/PreToolUse",
                 Some(true),
+            ),
+            (
+                Harness::Hermes,
+                hermes_spec,
+                ".hermes/plugins/p/plugin.yaml",
+                None,
             ),
         ];
         for (h, spec_of, planted, any_auth) in cases {
