@@ -5,7 +5,8 @@
 //! limits writes alone. A sibling that reads one is, to the token check alone, the node it stole
 //! from. So a node's `session/hello` must also come from a process that **descends from that
 //! node's root** — the process marion spawned and still holds unreaped, so its pid cannot be
-//! recycled while the node is live. A sibling cannot make its own process a descendant of
+//! recycled while the node is live. A root is matched on its start as well as its pid ([`Root`]),
+//! so the moment between its reap and its node being marked finished grants nothing. A sibling cannot make its own process a descendant of
 //! another tree: Linux and macOS reparent an orphan to init or a subreaper, never into a tree of
 //! the orphan's choosing.
 //!
@@ -31,8 +32,31 @@
 //!
 //! [`first_root`]: crate::peer_tree::first_root
 //! [`AcceptedPeer`]: crate::peer_tree::AcceptedPeer
+//! [`Root`]: crate::peer_tree::Root
 
 use crate::procid::Hop;
+
+/// **A node's root as recorded when its process was spawned**: the pid, and the start it had then.
+/// A walk takes a pid for that root only while it still wears that start, so a pid the kernel gave
+/// to another process after the root was reaped — while its node is still listed as running — is
+/// not the root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Root {
+    pub(crate) pid: i32,
+    /// [`Hop::start`] at recording.
+    pub(crate) start: u64,
+}
+
+impl Root {
+    /// `pid` as a root, read now; `None` where its start cannot be read, which lists no root and
+    /// so lets nothing in through it.
+    pub(crate) fn of(pid: i32) -> Option<Root> {
+        crate::procid::hop(pid).map(|h| Root {
+            pid,
+            start: h.start,
+        })
+    }
+}
 
 /// How many parents a walk reads before it gives up. A node's bridge sits two or three below its
 /// root; a deeper chain is not a bridge.
@@ -85,7 +109,7 @@ impl AcceptedPeer {
     /// there is none. `supervisor` is this process's pid.
     pub(crate) fn root_of<K: Clone>(
         &self,
-        roots: &[(i32, K)],
+        roots: &[(Root, K)],
         supervisor: i32,
     ) -> Result<K, String> {
         let found = first_root(
@@ -123,7 +147,7 @@ impl AcceptedPeer {
 pub(crate) fn first_root<K: Clone>(
     peer: i32,
     accepted: Option<u64>,
-    roots: &[(i32, K)],
+    roots: &[(Root, K)],
     supervisor: i32,
     read: impl Fn(i32) -> Option<Hop>,
 ) -> Result<K, String> {
@@ -144,7 +168,10 @@ pub(crate) fn first_root<K: Clone>(
         ));
     }
     for _ in 0..MAX_HOPS {
-        if let Some((_, key)) = roots.iter().find(|(pid, _)| *pid == child) {
+        if let Some((_, key)) = roots
+            .iter()
+            .find(|(root, _)| root.pid == child && root.start == seen.start)
+        {
             return Ok(key.clone());
         }
         if child == supervisor {
@@ -263,12 +290,32 @@ mod tests {
         ])
     }
 
-    fn roots() -> Vec<(i32, &'static str)> {
-        vec![(20, "A"), (30, "B")]
+    fn roots() -> Vec<(Root, &'static str)> {
+        vec![
+            (Root { pid: 20, start: 10 }, "A"),
+            (Root { pid: 30, start: 20 }, "B"),
+        ]
     }
 
     fn walk(t: &HashMap<i32, Hop>, peer: i32) -> Result<&'static str, String> {
         first_root(peer, Some(1_000), &roots(), SUP, |p| t.get(&p).copied())
+    }
+
+    /// **A listed root's pid that now wears another start is not that root**: A's root was reaped
+    /// and 20 handed to a newer process while A is still listed, so 21 below it is in no tree.
+    ///
+    /// Mutation: match a root on its pid alone and 21 is taken as A's.
+    #[test]
+    fn a_listed_roots_pid_wearing_another_start_is_not_that_root() {
+        let t = fleet();
+        let stale = [(Root { pid: 20, start: 9 }, "A"), roots()[1]];
+        let refused = first_root(21, Some(1_000), &stale, SUP, |p| t.get(&p).copied());
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(
+            walk(&t, 21),
+            Ok("A"),
+            "the same pid at its recorded start is A"
+        );
     }
 
     #[test]
@@ -310,8 +357,8 @@ mod tests {
             (10, 1, 5),
             (20, 10, 10),
             (21, 20, 11),
-            (30, 21, 12),
-            (31, 30, 13),
+            (30, 21, 20),
+            (31, 30, 21),
         ]);
         assert_eq!(walk(&t, 31), Ok("B"));
         assert_ne!(walk(&t, 31), Ok("A"));
@@ -373,8 +420,13 @@ mod tests {
         let me = std::process::id() as i32;
         let parent = crate::procid::hop(me).expect("this process reads").ppid;
         let peer = AcceptedPeer::for_test(me, crate::procid::start_clock_now());
-        assert_eq!(peer.root_of(&[(parent, "parent")], -1), Ok("parent"));
-        assert!(peer.root_of(&[(i32::MAX, "nobody")], -1).is_err());
+        let root = Root::of(parent).expect("the parent reads");
+        assert_eq!(peer.root_of(&[(root, "parent")], -1), Ok("parent"));
+        let nobody = Root {
+            pid: i32::MAX,
+            start: 0,
+        };
+        assert!(peer.root_of(&[(nobody, "nobody")], -1).is_err());
     }
 
     /// Linux: a pidfd names its process while it lives, and stops once it has exited.

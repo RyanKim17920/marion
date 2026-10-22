@@ -216,7 +216,9 @@ pub struct NodeHandle {
     /// **The process this node's tree hangs from**: what its bridge's `session/hello` must descend
     /// from (§5.4, [`crate::peer_tree`]). [`Self::pid`] for a managed node; a native root's pane
     /// process, which `pid` leaves unset for the kill and quit paths.
-    tree_root: Option<i32>,
+    /// Recorded with its start ([`crate::peer_tree::Root`]); `None` until the process exists, or
+    /// where its start could not be read.
+    tree_root: Option<crate::peer_tree::Root>,
     /// The node's own process group, read with `getpgid(2)` rather than assumed equal to the pid.
     /// `socket.rs` already records why assuming it is wrong: a reader that *computes* `getpgid(pid)`
     /// and then treats it as `pid` has checked nothing. `None` where the call failed.

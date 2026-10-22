@@ -228,9 +228,11 @@ impl RegistryHandle {
         // SAFETY: reads the process group of a pid this process just created; cannot fail other
         // than by returning -1, which is recorded as "not known" rather than as a group id.
         let pgid = unsafe { getpgid(pid) };
+        // Read while this process holds the child unreaped, so the start is the root's own.
+        let root = crate::peer_tree::Root::of(pid);
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.pid = Some(pid);
-            node.tree_root = Some(pid);
+            node.tree_root = root;
             node.pgid = (pgid > 0).then_some(pgid);
             node.started_at = Some(std::time::SystemTime::now());
         }
@@ -241,8 +243,9 @@ impl RegistryHandle {
     /// A native root's process exists: the root its bridge's `session/hello` must descend from
     /// (§5.4). Only that — its `pid` stays unset, as the kill and quit paths have always read it.
     pub(crate) fn record_native_root(&self, agent_id: &AgentId, pid: i32) {
+        let root = crate::peer_tree::Root::of(pid);
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
-            node.tree_root = Some(pid);
+            node.tree_root = root;
         }
         self.rooted.notify_all();
     }

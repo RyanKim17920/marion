@@ -123,10 +123,10 @@ impl RegistryHandle {
             None => "the kernel did not name the connecting process".to_string(),
             Some(peer) => {
                 self.await_root_pid(me);
-                let roots: Vec<(i32, AgentId)> = lock(&self.nodes)
+                let roots: Vec<(crate::peer_tree::Root, AgentId)> = lock(&self.nodes)
                     .iter()
                     .filter(|(_, n)| n.running())
-                    .filter_map(|(id, n)| n.tree_root.map(|pid| (pid, id.clone())))
+                    .filter_map(|(id, n)| n.tree_root.map(|root| (root, id.clone())))
                     .collect();
                 let supervisor = std::process::id() as i32;
                 match peer.root_of(&roots, supervisor) {
