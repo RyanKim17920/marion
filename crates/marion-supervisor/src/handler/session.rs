@@ -116,7 +116,8 @@ impl RegistryHandle {
 
     /// **A node's token is good only from inside that node's process tree** ([`crate::peer_tree`]):
     /// the first live node root above the connecting process must be `me`'s. A miss is journaled
-    /// ([`marion_core::journal::RecordKind::ForeignPeer`]) and said on the supervisor's log, and
+    /// ([`marion_core::journal::RecordKind::ForeignPeer`]) once per peer, said on the supervisor's
+    /// log every time, and
     /// refused while [`super::PEER_BINDING_ENFORCED`] is on.
     fn bind_to_tree(&self, me: &AgentId, out: &crate::serve::Outbound) -> Result<(), RpcError> {
         let why = match out.accepted() {
@@ -142,25 +143,20 @@ impl RegistryHandle {
             }
         };
         let refused = self.peer_binding_enforced.load(Ordering::SeqCst);
+        let journal = self.first_foreign(me, (out.peer_pid(), refused));
         eprintln!(
             "marion-supervisor: node `{}`'s token was presented from outside its process tree \
-             ({why}){}",
+             ({why}){}{}",
             me.0,
             if refused {
                 "; refused"
             } else {
                 "; let through while the check only records"
-            }
+            },
+            if journal { "" } else { "; not journaled again" }
         );
-        let record =
-            marion_core::journal::RecordKind::ForeignPeer(marion_core::journal::ForeignPeer {
-                agent_id: me.clone(),
-                peer_pid: out.peer_pid(),
-                why: why.clone(),
-                refused,
-            });
-        if let Err(e) = self.journal_now(record) {
-            eprintln!("marion-supervisor: could not journal that foreign peer: {e}");
+        if journal {
+            self.journal_foreign(me, out.peer_pid(), &why, refused);
         }
         if !refused {
             return Ok(());
@@ -175,6 +171,30 @@ impl RegistryHandle {
             ),
             "§5.4",
         ))
+    }
+
+    /// Whether `peer` is the first of its kind for `me`, and within [`super::MAX_FOREIGN_PEERS`]:
+    /// only then is it journaled ([`RegistryHandle::foreign_seen`]).
+    fn first_foreign(&self, me: &AgentId, peer: super::ForeignKey) -> bool {
+        let mut seen = lock(&self.foreign_seen);
+        let mine = seen.entry(me.clone()).or_default();
+        if mine.contains(&peer) || mine.len() >= super::MAX_FOREIGN_PEERS {
+            return false;
+        }
+        mine.insert(peer)
+    }
+
+    fn journal_foreign(&self, me: &AgentId, peer_pid: Option<u32>, why: &str, refused: bool) {
+        let record =
+            marion_core::journal::RecordKind::ForeignPeer(marion_core::journal::ForeignPeer {
+                agent_id: me.clone(),
+                peer_pid,
+                why: why.to_string(),
+                refused,
+            });
+        if let Err(e) = self.journal_now(record) {
+            eprintln!("marion-supervisor: could not journal that foreign peer: {e}");
+        }
     }
 
     /// The window between a node's process existing and its pid being recorded is one journal

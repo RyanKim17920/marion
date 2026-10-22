@@ -388,6 +388,12 @@ mod workflow;
 /// bridge that runs outside its node's tree stops working (tasks/todo.md records the flip).
 pub(crate) const PEER_BINDING_ENFORCED: bool = false;
 
+/// How many distinct foreign peers are journaled per node ([`RegistryHandle::foreign_seen`]).
+const MAX_FOREIGN_PEERS: usize = 8;
+
+/// What tells one foreign peer's record from another's: `(peer pid, refused)`.
+type ForeignKey = (Option<u32>, bool);
+
 pub struct RegistryHandle {
     /// This handle, as its own nodes' threads hold it. A node's thread outlives the `Handle::call`
     /// that started it, so it cannot borrow; `Weak` rather than `Arc` because the alternative is a
@@ -466,6 +472,10 @@ pub struct RegistryHandle {
     /// let through ([`session`]'s peer-binding check). One internal switch, starting at
     /// [`PEER_BINDING_ENFORCED`]; tests flip it.
     peer_binding_enforced: AtomicBool,
+    /// **The foreign peers already journaled, per node whose token they presented**: `(peer pid,
+    /// refused)`, at most [`MAX_FOREIGN_PEERS`] per node. A sibling holding a stolen token could
+    /// otherwise grow the journal at will by reconnecting; past the first, it is said on the log.
+    foreign_seen: Mutex<HashMap<AgentId, HashSet<ForeignKey>>>,
     /// **The races this supervisor is driving**; empty, and silent, with none open.
     races: crate::race::Races,
     /// Every workflow run this supervisor is stepping ([`crate::workflow`]).
@@ -651,6 +661,7 @@ impl RegistryHandle {
                 spawn_decision: Mutex::new(()),
                 operator_key,
                 peer_binding_enforced: AtomicBool::new(PEER_BINDING_ENFORCED),
+                foreign_seen: Mutex::new(HashMap::new()),
                 races: crate::race::Races::default(),
                 workflows: crate::workflow::Workflows::default(),
                 sent: Mutex::new(HashMap::new()),

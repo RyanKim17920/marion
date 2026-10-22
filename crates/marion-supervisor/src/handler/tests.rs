@@ -8102,6 +8102,39 @@ mod owns_nodes {
         assert!(foreign_peers(&fx).is_empty());
     }
 
+    /// **A foreign peer is journaled once, and a node's journal holds a bounded number of them**:
+    /// the same process reconnecting is not a new record, and past `MAX_FOREIGN_PEERS` distinct
+    /// processes the log alone says it — a stolen token cannot grow the journal at will.
+    ///
+    /// Mutation: journal on every hello and the reconnect writes a second record.
+    #[test]
+    fn a_foreign_peer_is_journaled_once_and_a_node_holds_a_bounded_number() {
+        let fx = owning("peer-dedupe", vec![intent("root", None, "claude", 0)]);
+        let token = fx.handle.claim(&id("root"), None, fx.repo.clone());
+        fx.handle
+            .record_native_root(&id("root"), std::process::id() as i32);
+        // Pids no process wears: each is outside every tree, and each is a distinct peer.
+        let peer = |i: u32| 3_000_000 + i;
+        for conn in [96, 97] {
+            assert!(hello_from(&fx, ConnId(conn), "root", &token, Some(peer(0))).is_ok());
+        }
+        assert_eq!(
+            foreign_peers(&fx).len(),
+            1,
+            "a reconnect is not a new record"
+        );
+        for i in 1..20 {
+            let _ = hello_from(
+                &fx,
+                ConnId(200 + u64::from(i)),
+                "root",
+                &token,
+                Some(peer(i)),
+            );
+        }
+        assert_eq!(foreign_peers(&fx).len(), super::super::MAX_FOREIGN_PEERS);
+    }
+
     /// **A connection the kernel named no process for is outside every tree**: journaled while
     /// observing, refused while enforcing — never taken as the node's.
     #[test]
