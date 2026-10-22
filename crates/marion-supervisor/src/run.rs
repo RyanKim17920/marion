@@ -3706,6 +3706,7 @@ pub(crate) fn app_server_spec<'a>(
         on_line: Some(on_line),
         turns,
         stop_on: Some(stop_on),
+        abort: adapter.spec().abort.headless,
     })
 }
 

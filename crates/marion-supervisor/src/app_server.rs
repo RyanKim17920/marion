@@ -16,10 +16,10 @@
 //!    a turn runs is **folded** into it as a steer (P6), and one that arrives at a boundary is the
 //!    next turn; a steer that loses the race with the turn's end becomes the next turn instead;
 //! 6. server requests answered with the row's answers — approvals declined, never cancelled (P5);
-//! 7. on the wall clock's expiry, an **interrupt** of the running turn, repeated without awaiting
-//!    its answer (P7: a second interrupt of an interrupted turn is never answered), then marion
-//!    kills the turn's processes itself (P7: app-server leaves a running command running), and the
-//!    group.
+//! 7. on the wall clock's expiry, or the node's cancel where the row's verb is the channel's, an
+//!    **interrupt** of the running turn, repeated without awaiting its answer (P7: a second
+//!    interrupt of an interrupted turn is never answered), then marion kills the turn's processes
+//!    itself (P7: app-server leaves a running command running), and the group.
 //!
 //! The transcript is the server's stdout and nothing else, as on ACP: every frame it wrote, in
 //! order, which the row's stream grammar reads — an item that completes after its turn included.
@@ -83,6 +83,9 @@ pub struct AppServerSpec<'a> {
     /// **A frame that ends the session now**, with why — the row's refused-credential reading
     /// (`HarnessAdapter::auth_refusal`), which no retry heals, as on the duplex path.
     pub stop_on: Option<crate::duplex::StopOn<'a>>,
+    /// The row's headless [`marion_harness::spec::AbortVerb`]: whether a cancelled turn is
+    /// interrupted, and how long the interrupts are given.
+    pub abort: marion_harness::spec::AbortVerb,
 }
 
 /// Why marion has no transcript: each names what marion asked for and did not get, in the server's
@@ -262,6 +265,7 @@ pub fn run_app_server(spec: AppServerSpec<'_>) -> Result<RpcRun, AppServerError>
         next_id: FIRST_TURN_ID,
         deadline,
         turns: spec.turns.as_ref(),
+        abort: spec.abort,
     };
     let end = session.run(&mut node, spec.prompt)?;
     let stopped = node.peer.stopped.take();
@@ -352,6 +356,7 @@ struct Session<'s> {
     next_id: u64,
     deadline: Instant,
     turns: Option<&'s TurnFeed>,
+    abort: marion_harness::spec::AbortVerb,
 }
 
 /// How a session's turn loop ended.
@@ -361,6 +366,9 @@ enum End {
     Finished,
     /// marion's wall clock expired: the running turn was interrupted and its processes killed.
     TimedOut,
+    /// The node was cancelled: the running turn was interrupted by the row's verb and its
+    /// processes killed — an end marion was asked for, not a clock that ran out.
+    Cancelled,
     /// A frame said the session cannot succeed (a refused credential): what the turn started is
     /// killed, and the server is shut down.
     Stopped,
@@ -383,18 +391,16 @@ impl Session<'_> {
     /// Every turn from the prompt to the inbox's seal, or to the wall clock, or to a frame that ends
     /// the session.
     fn run(&mut self, node: &mut Driver<'_>, prompt: &str) -> Result<End, AppServerError> {
+        // Attached before the first turn goes out, so a cancel as it starts reaches this driver.
+        if let Some(feed) = self.turns {
+            feed.source.attach_port(node.wake_port(self.abort));
+        }
         let first = self.id();
         send(
             node,
             &self.c.turn_request(first, &self.thread, prompt),
             self.c.turns.start,
         )?;
-        if let Some(feed) = self.turns {
-            feed.source
-                .attach_port(node.wake_port(marion_harness::spec::AbortVerb::None {
-                    note: "the thread server's interrupt is sent at the wall clock only",
-                }));
-        }
         let folds = self.turns.is_some_and(TurnFeed::folds);
         // Messages whose steer lost the race with the turn's end: each is the next turn.
         let mut carried: VecDeque<Message> = VecDeque::new();
@@ -474,7 +480,12 @@ impl Session<'_> {
                 if exited(node) {
                     return Ok(End::Finished);
                 }
-                self.interrupt(node, current.as_deref());
+                if node.aborted() {
+                    let grace = crate::rpc::channel_grace(self.abort).unwrap_or_default();
+                    self.interrupt(node, current.as_deref(), grace / INTERRUPTS as u32);
+                    return Ok(End::Cancelled);
+                }
+                self.interrupt(node, current.as_deref(), INTERRUPT_WAIT);
                 return Ok(End::TimedOut);
             }
             if node.peer.stopped.is_some() {
@@ -501,7 +512,9 @@ impl Session<'_> {
                             .settle_until(self.deadline, |d| d.take_wake().then_some(()))
                             .is_none()
                         {
-                            return Ok(if exited(node) {
+                            // Cancelled between turns: there is no turn to interrupt, and the
+                            // shutdown ends the session.
+                            return Ok(if exited(node) || node.aborted() {
                                 End::Finished
                             } else {
                                 End::TimedOut
@@ -534,9 +547,10 @@ impl Session<'_> {
         }
     }
 
-    /// The wall clock expired mid-turn: interrupt it — again, unanswered, if it does not close —
-    /// then kill what it started. `turn` is `None` when the server never named one.
-    fn interrupt(&mut self, node: &mut Driver<'_>, turn: Option<&str>) {
+    /// The wall clock expired or the node was cancelled mid-turn: interrupt it — again,
+    /// unanswered, `wait` later if it does not close — then kill what it started. `turn` is `None`
+    /// when the server never named one.
+    fn interrupt(&mut self, node: &mut Driver<'_>, turn: Option<&str>, wait: Duration) {
         // Enumerated **before** the interrupt: ending the turn ends a command's host, and a command
         // that `setsid`s (codex's `exec_command`) then belongs to pid 1, in a group no walk from the
         // server reaches any more.
@@ -550,7 +564,7 @@ impl Session<'_> {
                 {
                     break;
                 }
-                let closed = node.settle_until(Instant::now() + INTERRUPT_WAIT, |d| {
+                let closed = node.settle_until(Instant::now() + wait, |d| {
                     d.peer.closed.iter().any(|t| t == turn).then_some(())
                 });
                 if closed.is_some() {
@@ -720,6 +734,7 @@ for line in sys.stdin:
                 on_line: None,
                 turns,
                 stop_on: None,
+                abort: marion_harness::codex::SPEC.abort.headless,
             }
         }
 
@@ -1067,6 +1082,53 @@ for line in sys.stdin:
         );
         assert!(!run.exit.timed_out, "{run:?}");
         assert_eq!(run.stopped.as_deref(), Some("401"));
+    }
+
+    /// **A cancelled node's running turn is interrupted at once** (P7's `turn/interrupt`), its
+    /// command killed after it, and the session ends as one marion was asked to end — inside the
+    /// row's grace, nowhere near the wall clock.
+    #[test]
+    fn a_cancel_interrupts_the_running_turn_and_kills_its_command() {
+        let bed = Bed::new("as-cancel", "sleep");
+        let fx = fed(MidTurn::Fold);
+        let started = Instant::now();
+        let (run, took) = std::thread::scope(|s| {
+            let canceller = s.spawn(|| {
+                bed.wait_read("turn/start");
+                // The turn has started its command, and the answer naming the turn — written before
+                // it — has had a moment to cross the pipe: the interrupt has a turn to name.
+                assert!(marion_testsupport::until(|| bed
+                    .log()
+                    .iter()
+                    .any(|e| e["k"] == "pid")));
+                std::thread::sleep(Duration::from_millis(300));
+                fx.inboxes.cancel(&fx.agent);
+                fx.inboxes.abort(&fx.agent)
+            });
+            let run = run_app_server(bed.spec(Duration::from_secs(30), Some(fx.feed.clone())))
+                .expect("a session");
+            (run, canceller.join().unwrap())
+        });
+        assert!(took, "the app-server lane takes the row's channel verb");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            !run.exit.timed_out,
+            "a cancel is not the wall clock: {run:?}"
+        );
+        assert_eq!(
+            bed.count("turn/interrupt"),
+            1,
+            "answered at once, sent once"
+        );
+        assert!(
+            marion_testsupport::until(|| dead(bed.pid())),
+            "the cancelled turn's command survived: {:?}",
+            marion_testsupport::liveness(bed.pid())
+        );
     }
 
     /// **An interrupt nobody answers is repeated, never awaited**, and the command is killed all

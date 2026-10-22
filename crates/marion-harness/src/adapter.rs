@@ -10326,10 +10326,14 @@ mod tests {
     #[test]
     fn a_channel_rows_launch_only_fallback_has_no_channel_abort() {
         use crate::spec::AbortVerb;
-        assert!(matches!(
-            crate::pi::LAUNCH_ONLY.abort.headless,
-            AbortVerb::None { .. }
-        ));
+        for (channel, launch_only) in [
+            (&crate::pi::SPEC, &crate::pi::LAUNCH_ONLY),
+            (&crate::codex::SPEC, &crate::codex::EXEC),
+        ] {
+            assert!(matches!(channel.abort.headless, AbortVerb::Channel { .. }));
+            assert!(matches!(launch_only.abort.headless, AbortVerb::None { .. }));
+            assert_eq!(channel.abort.interactive, launch_only.abort.interactive);
+        }
     }
 
     /// **A JSONL command channel is selected only with its vocabulary.** `TypedKind::JsonlRpc` is

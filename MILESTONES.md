@@ -456,8 +456,12 @@ where the row's headless verb is `Channel`, every settle stops on it, and `promp
 every abort and an ACP node was killed at once under a journal line claiming a 5 s grace had run
 out). A lane that takes no verb is killed at once and its `KillConfirmed` says the lane took
 none. Witnesses: `acp_child::tests::a_cancel_mid_turn_sends_session_cancel_*`,
-`handler::cancel::tests::a_verb_the_lane_does_not_send_*`. Not yet: the app-server driver's
-abort, the TUI and MCP surfaces, and the per-row cancel matrix.
+`handler::cancel::tests::a_verb_the_lane_does_not_send_*`. **codex's app-server takes its abort
+too**: its row is `Channel{6000}` (S36 P7: `turn/interrupt` answers at once; the grace holds the
+three unawaited interrupts a lost re-interrupt calls for), the driver interrupts the cancelled
+turn and kills its commands, and `codex exec` stays `None`. Witness:
+`app_server::tests::a_cancel_interrupts_the_running_turn_and_kills_its_command`. Not yet: the TUI
+and MCP surfaces, and the per-row cancel matrix.
 
 **Every child may delegate, bounded by the depth gate (2026-09-27).** A child's marion verbs on the
 permission axis are one rule, `agent_type::child_verbs`: `report`, plus `spawn`/`status`/`wait`/

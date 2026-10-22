@@ -2824,6 +2824,7 @@ fn launch_app_server(
         on_line: Some(&on_line),
         turns: node.turns.clone(),
         stop_on: Some(&stop_on),
+        abort: adapter.spec().abort.headless,
     })?;
     let exit = crate::rpc::turn_exit(run.exit);
     Ok(RootOutcome {

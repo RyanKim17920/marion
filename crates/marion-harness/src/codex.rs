@@ -276,9 +276,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ),
     },
     abort: Aborts {
-        headless: AbortVerb::None {
-            note: "`codex exec` is launch-only: no channel is open after launch to carry an \
-                   interrupt, and SIGINT mid-turn is unmeasured",
+        headless: AbortVerb::Channel {
+            grace_ms: 6_000,
+            note: "S36 P7 app-server (0.155.1, tests/fixtures/app-server-0.155.1/p7-interrupt.jsonl): \
+                   `turn/interrupt` answers at once and `turn/completed` follows `interrupted`; the \
+                   turn's commands keep running, so marion kills them after it. The grace holds \
+                   the three unawaited interrupts P7's lost re-interrupt calls for",
         },
         interactive: AbortVerb::None {
             note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
@@ -458,6 +461,14 @@ pub const EXEC: HarnessSpec = HarnessSpec {
                    once before the first request, never mid-run",
         },
         ..SPEC.delivery
+    },
+    // Not the channel's interrupt: `codex exec` has no channel open after launch.
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "`codex exec` is launch-only: no channel is open after launch to carry an \
+                   interrupt, and SIGINT mid-turn is unmeasured",
+        },
+        ..SPEC.abort
     },
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6), the headless row before S36",
     ..SPEC

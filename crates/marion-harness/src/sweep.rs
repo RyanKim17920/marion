@@ -384,6 +384,7 @@ fn abort_faults(row: &HarnessSpec, shape: NodeShape, fault: &mut impl FnMut(&'st
                 && matches!(
                     row.surfaces,
                     Surfaces::JsonlRpc(_)
+                        | Surfaces::AppServer(_)
                         | Surfaces::Headless(TypedKind::Acp | TypedKind::AppServer)
                 )
         }
