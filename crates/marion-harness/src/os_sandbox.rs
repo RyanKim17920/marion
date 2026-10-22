@@ -946,6 +946,37 @@ mod tests {
         assert!(!covers(unsupported, Auth::Canned, false));
     }
 
+    /// **No row's rule sandboxes the operator's own login**, writing or read-only, so a live node
+    /// never runs under a profile that would hide its harness home from it. Every row that does
+    /// state a strategy still covers a canned node, so the sweep is not vacuous.
+    #[test]
+    fn no_rows_rule_covers_an_inherited_login() {
+        let dir = marion_testsupport::scratch("osb-inherited");
+        let (live, _) = node_in(&dir, Auth::Inherited);
+        let mut measured = 0;
+        for row in &crate::adapter::ROWS {
+            let (h, rule) = (row.spec.harness, row.spec.os_sandbox);
+            for read_only in [false, true] {
+                assert!(
+                    !covers(rule, Auth::Inherited, read_only),
+                    "{h:?} (read_only {read_only}) sandboxes an inherited login"
+                );
+                let spec = LaunchSpec {
+                    extra: Extras {
+                        read_only,
+                        ..live.extra.clone()
+                    },
+                    ..live.clone()
+                };
+                assert!(!applies(rule, &spec), "{h:?} applies to a live node");
+            }
+            if covers(rule, Auth::Canned, false) {
+                measured += 1;
+            }
+        }
+        assert!(measured >= 2, "only {measured} rows state a strategy");
+    }
+
     /// **The profile names no path**: every writable directory is a parameter, so nothing a path
     /// contains can change what the profile says.
     #[test]
