@@ -1184,6 +1184,65 @@ mod tests {
         );
     }
 
+    /// **Whether this run must find Landlock**: on Linux, on a GitHub Actions runner
+    /// (`GITHUB_ACTIONS` exactly `true`, which GitHub sets on every one), or wherever other CI opts
+    /// in with `MARION_CI_REQUIRE_LANDLOCK` set to anything but empty. The variable only adds the
+    /// requirement: no value of it switches off what `GITHUB_ACTIONS` asks for.
+    fn landlock_required(
+        os: &str,
+        github_actions: Option<&std::ffi::OsStr>,
+        require: Option<&std::ffi::OsStr>,
+    ) -> bool {
+        os == "linux"
+            && (github_actions.is_some_and(|v| v == "true")
+                || require.is_some_and(|v| !v.is_empty()))
+    }
+
+    /// **The requirement's truth table**: GitHub's runner or the opt-in, on Linux only, and neither
+    /// `false` nor an empty value counts.
+    #[test]
+    fn landlock_is_required_on_a_linux_github_runner_or_by_opt_in() {
+        let v = |s: &'static str| Some(std::ffi::OsStr::new(s));
+        assert!(landlock_required("linux", v("true"), None));
+        assert!(landlock_required("linux", v("true"), v("")));
+        assert!(landlock_required("linux", None, v("1")));
+        assert!(landlock_required("linux", v("false"), v("1")));
+        assert!(!landlock_required("linux", None, None));
+        assert!(!landlock_required("linux", v("false"), None));
+        assert!(!landlock_required("linux", v(""), v("")));
+        assert!(
+            !landlock_required("linux", v("TRUE"), None),
+            "exactly `true`"
+        );
+        assert!(
+            !landlock_required("macos", v("true"), v("1")),
+            "never off Linux"
+        );
+    }
+
+    /// **Where a runner requires Landlock, it is there.** Every Linux process test here skips
+    /// when [`support`] finds none, which is right on a host without it and silent on a CI kernel
+    /// that lost it; where [`landlock_required`] says so, that skip is this failure instead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_is_available_where_the_runner_requires_it() {
+        const REQUIRE: &str = "MARION_CI_REQUIRE_LANDLOCK";
+        let github = std::env::var_os("GITHUB_ACTIONS");
+        let require = std::env::var_os(REQUIRE);
+        if !landlock_required(std::env::consts::OS, github.as_deref(), require.as_deref()) {
+            eprintln!("skipped: neither GITHUB_ACTIONS=true nor {REQUIRE} is set");
+            return;
+        }
+        assert!(
+            matches!(support(), Support::Landlock { abi } if *abi >= 2),
+            "this run requires Landlock ABI 2+ (GITHUB_ACTIONS={github:?}, {REQUIRE}={require:?}) \
+             and marion's sandbox here is {}. A GitHub Actions job in a container or on a \
+             self-hosted runner without Landlock fails here; run it on a kernel with Landlock \
+             enabled, since every Linux sandbox test would otherwise skip unseen.",
+            support().describe()
+        );
+    }
+
     /// **Landlock adds no rule through a link**: a grant's components past its resolved base are
     /// opened `O_NOFOLLOW`, so one swapped for a link fails the open, and so the spawn.
     #[cfg(target_os = "linux")]
