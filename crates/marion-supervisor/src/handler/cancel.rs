@@ -468,7 +468,7 @@ mod tests {
     use marion_core::encoding::SystemTime;
     use marion_core::harness::Harness;
     use marion_core::journal::{
-        JournalRecord, SpawnIntent, Spawned, StateChanged, WriterId, decode, encode,
+        Exited, JournalRecord, SpawnIntent, Spawned, StateChanged, WriterId, decode, encode,
     };
     use marion_core::node::NodeState;
     use marion_core::proto::{Call, FailureKind, MethodResult, SpawnCaller};
@@ -1326,6 +1326,62 @@ mod tests {
         assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
         assert_eq!(node.exit.unwrap().signal, Some(9));
         assert_eq!(node.cancel.map(|c| c.by), Some(CancelBy::Operator));
+    }
+
+    /// **A cancel left without a confirmation on a node that had already exited is inert.** A
+    /// resume of an exited node claimed for a cancel that then never relaunches journals the
+    /// cancel's intent and no confirmation (the node is already ended). Replay keeps the earlier
+    /// end, no cancel is pending in memory or after a restart, the node can be resumed again, and
+    /// its next life carries no cancel from the last one.
+    #[test]
+    fn a_dangling_cancel_on_an_exited_node_is_inert_on_replay_and_resume() {
+        let fx = Fx::new("cancel-dangling");
+        fx.running("root", None, Harness::Pi, 101, false);
+        fx.write(RecordKind::Exited(Exited {
+            agent_id: id("root"),
+            status: ExitStatus::Failed,
+            exit: ProcessExit {
+                code: Some(1),
+                signal: None,
+                description: "failed".into(),
+            },
+        }));
+        let fx = fx.reboot();
+        let claim = fx.handle.claim_relaunch(&id("root"), "/repo".into());
+        let r = cancel_during(&fx, || drop(claim)).expect("the cancel is answered");
+        assert_eq!(ended(&r), [("root".to_string(), false)]);
+        assert_eq!(
+            fx.trail(),
+            [
+                ("Exited", "root".to_string()),
+                ("CancelRequested", "root".to_string())
+            ],
+            "the intent, and no confirmation"
+        );
+        assert!(!fx.handle.cancelling(&id("root")));
+
+        let fx = fx.reboot();
+        let node = fx.node("root");
+        assert_eq!(
+            node.state,
+            NodeState::Exited(ExitStatus::Failed),
+            "its own end kept"
+        );
+        assert_eq!(node.cancel, None, "no cancel attributed to an ended node");
+        assert!(
+            !fx.handle.cancelling(&id("root")),
+            "nothing pending after a restart"
+        );
+        let e = fx.cancel("root", None).expect_err("an ended node");
+        assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+        let claim = fx.handle.claim_relaunch(&id("root"), "/repo".into());
+        assert!(claim.is_some(), "it can be resumed again");
+        let _token = fx.handle.claim(&id("root"), None, "/repo".into());
+        fx.relaunched("root", 202);
+        let node = fx.node("root");
+        assert_eq!(node.spawn_generation, 2);
+        assert_eq!(node.cancel, None, "the new life carries no cancel");
+        assert!(!node.state.is_exited());
     }
 
     /// **A relaunch that fails while a cancel waits ends the node all the same**: the launch claimed
