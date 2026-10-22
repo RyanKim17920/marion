@@ -234,6 +234,7 @@ impl RegistryHandle {
             node.pgid = (pgid > 0).then_some(pgid);
             node.started_at = Some(std::time::SystemTime::now());
         }
+        self.rooted.notify_all();
         self.register_budget(agent_id);
     }
 
@@ -243,6 +244,7 @@ impl RegistryHandle {
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.tree_root = Some(pid);
         }
+        self.rooted.notify_all();
     }
 
     /// `run_spawn` returned. **The entry is kept, not removed**: it is what tells a later caller

@@ -179,19 +179,16 @@ impl RegistryHandle {
 
     /// The window between a node's process existing and its pid being recorded is one journal
     /// write wide ([`RegistryHandle::mark_started`]); a bridge fast enough to say hello inside it
-    /// waits, bounded, rather than being refused for marion's own lag.
+    /// waits on [`RegistryHandle::rooted`], bounded, rather than being refused for marion's own lag.
     fn await_root_pid(&self, me: &AgentId) {
         const BOUND: std::time::Duration = std::time::Duration::from_secs(2);
-        let deadline = std::time::Instant::now() + BOUND;
-        let mut pause = std::time::Duration::from_millis(1);
-        while lock(&self.nodes)
-            .get(me)
-            .is_some_and(|n| n.running() && n.tree_root.is_none())
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(pause);
-            pause = (pause * 2).min(std::time::Duration::from_millis(50));
-        }
+        let nodes = lock(&self.nodes);
+        let waited = self.rooted.wait_timeout_while(nodes, BOUND, |nodes| {
+            nodes
+                .get(me)
+                .is_some_and(|n| n.running() && n.tree_root.is_none())
+        });
+        drop(waited.unwrap_or_else(|e| e.into_inner()));
     }
 
     fn prove_operator(&self, key: &Secret) -> Result<SessionPrincipal, RpcError> {

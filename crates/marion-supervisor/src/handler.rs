@@ -408,6 +408,9 @@ pub struct RegistryHandle {
     /// Notified whenever a node's process ends or its thread finishes — what a cancel waits on
     /// between levels, beside [`Self::nodes`] whose lock it is used with.
     ended: std::sync::Condvar,
+    /// Notified whenever a node's [`NodeHandle::tree_root`] is recorded — what a bridge's hello
+    /// that beat it waits on ([`session`]), beside [`Self::nodes`] whose lock it is used with.
+    rooted: std::sync::Condvar,
     /// **Turn delivery's queue, one inbox per node this supervisor owns** — beside [`Self::nodes`]
     /// and with the same lifetime: opened at [`Self::claim`], closed at [`Self::mark_finished`].
     /// `node/steer` enqueues here (`handler/steer.rs`); no delivery port is attached yet, so a
@@ -634,6 +637,7 @@ impl RegistryHandle {
                 runtime,
                 nodes: Mutex::new(HashMap::new()),
                 ended: std::sync::Condvar::new(),
+                rooted: std::sync::Condvar::new(),
                 spawn_env,
                 panes: Mutex::new(Panes::default()),
                 pane_clock: Mutex::new(Arc::new(std::time::Instant::now)),

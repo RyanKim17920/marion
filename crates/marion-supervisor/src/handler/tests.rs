@@ -8066,6 +8066,42 @@ mod owns_nodes {
         );
     }
 
+    /// **A hello that beats its node's recorded root waits for it** rather than being refused for
+    /// marion's own lag, and is let in as soon as the root lands, well inside the bound.
+    ///
+    /// Mutation: drop the `rooted` notify from `record_native_root` and the hello waits out the
+    /// whole bound before it is let in.
+    #[test]
+    fn a_hello_before_its_nodes_root_is_recorded_waits_for_it() {
+        let fx = owning("peer-await-root", vec![intent("root", None, "claude", 0)]);
+        let token = fx.handle.claim(&id("root"), None, fx.repo.clone());
+        fx.handle
+            .peer_binding_enforced
+            .store(true, Ordering::SeqCst);
+        let mut peer = sleeper();
+        let started = std::time::Instant::now();
+        let said = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                fx.handle
+                    .record_native_root(&id("root"), std::process::id() as i32);
+            });
+            hello_from(&fx, ConnId(95), "root", &token, Some(peer.id()))
+        });
+        let waited = started.elapsed();
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(
+            matches!(said, Ok(MethodResult::SessionHello(_))),
+            "{said:?}"
+        );
+        assert!(
+            waited < std::time::Duration::from_millis(1500),
+            "let in when the root landed, not at the bound: {waited:?}"
+        );
+        assert!(foreign_peers(&fx).is_empty());
+    }
+
     /// **A connection the kernel named no process for is outside every tree**: journaled while
     /// observing, refused while enforcing — never taken as the node's.
     #[test]
