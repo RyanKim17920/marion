@@ -1090,4 +1090,57 @@ mod tests {
             "the claim was not taken"
         );
     }
+
+    /// **A cancel that loses the race to the node's own exit takes nothing**: the node's thread saw
+    /// its process end first, so the cancel claims no end, journals and signals nothing, and the
+    /// thread's own record is the one exit the node gets.
+    #[test]
+    fn a_cancel_racing_the_nodes_own_exit_leaves_the_exit_to_its_thread() {
+        let fx = Fx::new("cancel-lost-race");
+        fx.running("root", None, Harness::Pi, 101, true);
+        fx.honours("root", Duration::from_millis(50));
+        assert!(
+            !fx.handle.process_ended(&id("root")),
+            "no one claimed the end, so the thread records it"
+        );
+
+        let e = fx
+            .cancel("root", None)
+            .expect_err("its process already ended");
+        assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e}");
+        assert!(fx.trail().is_empty(), "the cancel journaled nothing");
+        assert!(lock(&fx.runtime.killed).is_empty(), "nothing was signalled");
+        assert!(lock(&fx.aborted).is_empty(), "no abort was sent");
+        assert_eq!(fx.handle.ended_by(&id("root")), None);
+    }
+
+    /// **A cancel whose intent fails to journal hands the node's end back**: nothing is signalled,
+    /// and when the process ends its thread records its own exit, instead of leaving it to a
+    /// cancel that will never confirm it.
+    #[test]
+    fn a_cancel_whose_intent_fails_to_journal_gives_the_end_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fx::new("cancel-journal-fails");
+        fx.running("root", None, Harness::Pi, 101, true);
+        fx.honours("root", Duration::from_millis(50));
+        let writable = |mode| {
+            std::fs::set_permissions(&fx.path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        writable(0o444);
+
+        let e = fx.cancel("root", None);
+        writable(0o644);
+        let e = e.expect_err("the intent could not be journaled");
+        assert!(fx.trail().is_empty(), "nothing reached the journal");
+        assert!(lock(&fx.runtime.killed).is_empty(), "nothing was signalled");
+        assert!(lock(&fx.aborted).is_empty(), "no abort was sent: {e}");
+        assert!(
+            !fx.handle.cancelling(&id("root")),
+            "the claim was handed back"
+        );
+        assert!(
+            !fx.handle.process_ended(&id("root")),
+            "the thread records its own exit"
+        );
+    }
 }
