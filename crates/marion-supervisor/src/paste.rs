@@ -110,6 +110,7 @@
 //! [`BootSignal::WindowTitle`]: marion_harness::spec::BootSignal::WindowTitle
 //! [`BootSignal::operator_can_switch_off`]: marion_harness::spec::BootSignal::operator_can_switch_off
 //! [`Gate::Graced`]: crate::paste::Gate::Graced
+//! [`AbortVerb::Keys`]: marion_harness::spec::AbortVerb::Keys
 
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, Weak};
