@@ -82,6 +82,54 @@ impl RegistryHandle {
         }
     }
 
+    /// **A resume's hold on its node**, taken before the kill of the recorded process and held
+    /// until the relaunch's own claim replaces it: the node's entry, as a launch that has not
+    /// started looks. A second resume finds it and is refused, so the global spawn lock is never
+    /// held across the kill, the version probe or the start. `None` for a node this supervisor
+    /// already runs — another resume is relaunching it.
+    pub(super) fn claim_relaunch(
+        &self,
+        agent_id: &AgentId,
+        repo: std::path::PathBuf,
+    ) -> Option<RelaunchClaim<'_>> {
+        if lock(&self.nodes)
+            .get(agent_id)
+            .is_some_and(NodeHandle::running)
+        {
+            return None;
+        }
+        let token = self.claim(agent_id, None, repo);
+        Some(RelaunchClaim {
+            handle: self,
+            agent_id: agent_id.clone(),
+            token,
+        })
+    }
+
+    /// **Wait until a claimed node's launch has a process, or has ended without one**, or
+    /// `deadline` — on [`Self::ended`], which [`Self::mark_started`], [`Self::mark_finished`] and
+    /// a released [`RelaunchClaim`] all notify. `true` once a process exists.
+    pub(super) fn await_launched(&self, agent_id: &AgentId, deadline: std::time::Instant) -> bool {
+        let mut nodes = lock(&self.nodes);
+        loop {
+            match nodes.get(agent_id) {
+                Some(n) if n.pid.is_some() => return true,
+                Some(n) if n.running() => {}
+                // A launch that failed before its process, or a resume that never relaunched.
+                _ => return false,
+            }
+            let wait = deadline.saturating_duration_since(std::time::Instant::now());
+            if wait.is_zero() {
+                return false;
+            }
+            nodes = self
+                .ended
+                .wait_timeout(nodes, wait)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
     /// The node's thread has seen its process end.
     pub(super) fn process_gone(&self, agent_id: &AgentId) -> bool {
         lock(&self.nodes)
@@ -237,6 +285,8 @@ impl RegistryHandle {
             node.started_at = Some(std::time::SystemTime::now());
         }
         self.rooted.notify_all();
+        // A cancel that claimed the node before its process existed waits for this.
+        self.ended.notify_all();
         self.register_budget(agent_id);
     }
 
@@ -969,5 +1019,37 @@ impl KillBy {
                 "a race retired an already ReapedIdle seat; no process existed to signal"
             }
         }
+    }
+}
+
+/// [`RegistryHandle::claim_relaunch`]'s hold. Dropped once the resume returns: a relaunch that
+/// claimed the node has replaced the entry, and the drop leaves it; one that never got that far
+/// removes it — the supervisor owns no process for the node — and wakes whoever waits on the
+/// node's end ([`RegistryHandle::await_launched`]).
+pub(super) struct RelaunchClaim<'a> {
+    handle: &'a RegistryHandle,
+    agent_id: AgentId,
+    token: marion_core::secret::Secret,
+}
+
+impl Drop for RelaunchClaim<'_> {
+    fn drop(&mut self) {
+        let h = self.handle;
+        {
+            let mut nodes = lock(&h.nodes);
+            if !nodes
+                .get(&self.agent_id)
+                .is_some_and(|n| n.token == self.token)
+            {
+                return;
+            }
+            nodes.remove(&self.agent_id);
+        }
+        h.inboxes.close(
+            &self.agent_id,
+            "the node's resume ended before it relaunched",
+        );
+        h.ended.notify_all();
+        h.live.changes().notify();
     }
 }

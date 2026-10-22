@@ -215,6 +215,11 @@ impl RegistryHandle {
     /// from it — see [`NodeHandle::repo`]. It is the caller's `repo`, inherited rather than
     /// re-derived, because "which tree" is a fact about the subtree and not about the spawn.
     ///
+    /// **A cancel asked for before the process exists is kept.** A resume holds its node from
+    /// before the relaunch ([`RegistryHandle::claim_relaunch`]); a cancel that claimed that hold
+    /// is carried onto this entry, and the inbox opened here stays cancelled, so the process the
+    /// launch is about to start is the cancel's to end.
+    ///
     /// `pub(crate)` rather than private because it is also the whole of what a test needs to put a
     /// node in this table — and a test that reached in through a back door would be asserting
     /// against a binding production does not make.
@@ -225,7 +230,14 @@ impl RegistryHandle {
         repo: PathBuf,
     ) -> Secret {
         let token = mint_token();
-        lock(&self.nodes).insert(
+        let mut nodes = lock(&self.nodes);
+        let ending = nodes
+            .get(agent_id)
+            .filter(|n| n.running() && n.pid.is_none())
+            .map(|n| n.ending.clone())
+            .unwrap_or_default();
+        let cancelled = matches!(ending, Ending::CancelRequested(_));
+        nodes.insert(
             agent_id.clone(),
             NodeHandle {
                 task_id,
@@ -239,12 +251,16 @@ impl RegistryHandle {
                 started_at: None,
                 join: None,
                 outcome: None,
-                ending: Ending::Running,
+                ending,
                 process_gone: false,
                 escalated: false,
             },
         );
+        drop(nodes);
         self.inboxes.open(agent_id);
+        if cancelled {
+            self.inboxes.cancel(agent_id);
+        }
         token
     }
 

@@ -471,13 +471,15 @@ each `Cancelled` with its partial work in `changed_paths` and nothing left runni
 three-level ACP tree cancelled at its root, bottom-up and unsignalled;
 `handler::cancel::tests::every_rows_abort_verb_is_pinned_and_sent_by_its_lane` pins each row's
 verbs and that its lane sends them. **A cancel during a resume ends the relaunch**: `node/resume`
-takes `spawn_decision` before it kills the orphan's process and reads the node again under it
-(a second resume is refused), a child's launch drops it once claimed and a root's once its pid
-exists, and the freeze refuses an owned node whose process has not started and signals an owned
-node by its live pid, never the journal's stale one. Witnesses:
-`cancel_matrix::a_cancel_during_a_resume_ends_the_relaunched_process`,
+claims the node for its relaunch before it kills the orphan's process (a second resume is
+refused), and holds no global lock across the kill, the version probe or the start. A cancel
+claims a node still launching, waits for its process, and kills it by its live pid, never the
+journal's stale one; a resume that ends without launching leaves the cancel to confirm the end.
+Witnesses: `cancel_matrix::a_cancel_during_a_resume_ends_the_relaunched_process`,
 `cancel_matrix::two_resumes_of_one_orphan_relaunch_it_once`,
-`handler::cancel::tests::a_relaunch_not_yet_started_*`. Not yet: the TUI and MCP surfaces.
+`cancel_matrix::a_resume_in_its_version_probe_blocks_no_spawn_or_cancel_of_another_node`,
+`handler::cancel::tests::a_cancel_during_a_relaunch_*`, `a_cancel_of_a_resume_that_never_*`,
+`a_relaunch_that_fails_under_a_pending_cancel_*`. Not yet: the TUI and MCP surfaces.
 
 **Every child may delegate, bounded by the depth gate (2026-09-27).** A child's marion verbs on the
 permission axis are one rule, `agent_type::child_verbs`: `report`, plus `spawn`/`status`/`wait`/

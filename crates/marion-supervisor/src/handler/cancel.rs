@@ -24,6 +24,15 @@
 //! A `node/kill` of a node being cancelled is the cancel's escalation: it kills what is left now
 //! rather than after the grace, and the cancel keeps its attribution.
 //!
+//! **A node still launching is cancelled, not refused.** An owned node claimed before its process
+//! exists — a fresh spawn, or a resume's relaunch, which is claimed before the orphan's process is
+//! killed while the journal still names that process — is claimed by the freeze like any other,
+//! and its level waits on [`RegistryHandle::ended`] until the launch has a process (then killed
+//! by the normal tree kill) or ends without one (then confirmed with no signal). Its
+//! `CancelRequested` is journaled once that is known, so it lands after the life's own `Spawned`.
+//! The launch's own claim keeps the cancel ([`RegistryHandle::claim`]), and a resume that sees it
+//! before launching does not launch.
+//!
 //! # Where a cancel is a kill
 //!
 //! A lane takes the abort only once its driver's port is attached, which is just before the first
@@ -53,6 +62,7 @@ use marion_core::proto::params::NodeCancelParams;
 use marion_core::proto::result::{CancelledNode, NodeCancelResult};
 use marion_harness::spec::{AbortVerb, NodeShape, abort_for};
 
+use super::launch::LAUNCH_BOUND;
 use super::{
     RegistryHandle, journal_failure_after_signal_in, journal_failure_before_signal_in, lock,
     root_spawn_authorized,
@@ -82,6 +92,11 @@ struct Member {
     owned: bool,
     verb: AbortVerb,
     by: CancelBy,
+    /// The `CancelRequested` of an owned node claimed before its process existed — a launch, or a
+    /// resume's relaunch, still coming up — journaled once its launch has a process (or has ended
+    /// without one), so it lands after that life's `Spawned` and replay keeps it on the life it
+    /// ends.
+    deferred: Option<CancelRequested>,
 }
 
 impl RegistryHandle {
@@ -156,7 +171,11 @@ impl RegistryHandle {
                 "§2, §6.7",
             )
         })?;
-        if node.state.is_exited() || node.reap_state != ReapState::Live {
+        // A node a resume is relaunching still reads as lost on the journal until its new process
+        // exists; the claim is what says it is coming back, and the cancel ends that.
+        let relaunching =
+            self.owned_running(target) == Some(true) && self.owned_pid(target).is_none();
+        if (node.state.is_exited() || node.reap_state != ReapState::Live) && !relaunching {
             return Err(RpcError::refused(
                 "agent_id",
                 format!(
@@ -177,13 +196,14 @@ impl RegistryHandle {
         let mut all = vec![node];
         all.extend(below);
         all.sort_by_key(|n| n.depth().unwrap_or(0));
-        // An owned node's pid is its live process's, from its thread: a resumed node is claimed
-        // before its relaunch starts, while the journal still names the process it replaced.
-        if let Some(n) = all.iter().find(|n| {
-            n.pid.is_none()
-                || (self.owned_running(&n.agent_id) == Some(true)
-                    && self.owned_pid(&n.agent_id).is_none())
-        }) {
+        // An owned node's pid is its live process's, from its thread, read when it is signalled: a
+        // node still launching — a resume's relaunch among them, claimed while the journal still
+        // names the process it replaced — is waited for. A node this supervisor does not own is
+        // signalled by its journaled pid, so it must have one.
+        if let Some(n) = all
+            .iter()
+            .find(|n| n.pid.is_none() && self.owned_running(&n.agent_id) != Some(true))
+        {
             return Err(RpcError::conflict(
                 &n.agent_id.0,
                 "a node in the subtree has no recorded PID yet, so marion cannot prove a cancel \
@@ -239,14 +259,19 @@ impl RegistryHandle {
                     note: "a node this supervisor does not drive has no abort it can send",
                 },
             };
-            let intent = self.journal_append(RecordKind::CancelRequested(CancelRequested {
+            let intent = CancelRequested {
                 agent_id: id.clone(),
                 was: n.state,
                 by: node_by.clone(),
                 verb: verb.kind().to_string(),
                 grace: Millis(Duration::from_millis(u64::from(verb.grace_ms()))),
-            }));
-            if let Err(e) = intent {
+            };
+            let deferred = (owned && self.owned_pid(&id).is_none()).then(|| intent.clone());
+            let journaled = match deferred {
+                Some(_) => Ok(()),
+                None => self.journal_append(RecordKind::CancelRequested(intent)),
+            };
+            if let Err(e) = journaled {
                 if owned {
                     self.unclaim_cancel(&id);
                 }
@@ -254,12 +279,13 @@ impl RegistryHandle {
             }
             self.inboxes.cancel(&id);
             members.push(Member {
-                pid: if owned { self.owned_pid(&id) } else { n.pid },
+                pid: if owned { None } else { n.pid },
                 agent_id: id,
                 depth: n.depth().unwrap_or(0),
                 owned,
                 verb,
                 by: node_by,
+                deferred,
             });
         }
         Ok((members, Ok(())))
@@ -275,9 +301,13 @@ impl RegistryHandle {
         let mut ended = Vec::with_capacity(members.len());
         for depth in depths {
             let level: Vec<&Member> = members.iter().filter(|m| m.depth == depth).collect();
+            let unlaunched = self.await_launches(&level)?;
             let mut grace = 0u32;
             let mut aborted = Vec::new();
             for m in &level {
+                if unlaunched.contains(&m.agent_id) {
+                    continue;
+                }
                 if m.owned && self.inboxes.abort(&m.agent_id) {
                     grace = grace.max(m.verb.grace_ms());
                     aborted.push(m.agent_id.clone());
@@ -286,10 +316,11 @@ impl RegistryHandle {
             let deadline = Instant::now() + Duration::from_millis(u64::from(grace));
             let left = self.wait_processes_gone(&aborted, deadline, &watch);
             for m in &level {
+                let launched = !unlaunched.contains(&m.agent_id);
                 let sent = aborted.contains(&m.agent_id);
-                let straggler = !sent || left.contains(&m.agent_id);
+                let straggler = launched && (!sent || left.contains(&m.agent_id));
                 let forced = straggler && self.kill_straggler(m)?;
-                self.confirm(m, sent, forced)?;
+                self.confirm(m, launched, sent, forced)?;
                 ended.push(CancelledNode {
                     agent_id: m.agent_id.clone(),
                     forced,
@@ -301,13 +332,48 @@ impl RegistryHandle {
         Ok(ended)
     }
 
+    /// **The level's nodes claimed before their process existed**, waited for until each launch has
+    /// a process or has ended without one, and only then given their `CancelRequested`. Answers
+    /// the ones that never started a process: there is nothing of theirs to abort or kill. Bounded
+    /// by the launch's own bound; a launch still coming up past it is reported, not guessed at.
+    fn await_launches(&self, level: &[&Member]) -> Result<Vec<AgentId>, RpcError> {
+        let mut unlaunched = Vec::new();
+        for m in level {
+            let Some(intent) = &m.deferred else {
+                continue;
+            };
+            let launched = self.await_launched(&m.agent_id, Instant::now() + LAUNCH_BOUND);
+            if !launched && self.owned_running(&m.agent_id) == Some(true) {
+                return Err(RpcError::internal(format!(
+                    "marion claimed the cancel of `{}` while its launch was coming up, and the \
+                     launch neither started a process nor ended within its own bound; the cancel \
+                     is still claimed, and nothing was journaled or signalled for it (§6.7)",
+                    m.agent_id.0
+                )));
+            }
+            if let Err(e) = self.journal_append(RecordKind::CancelRequested(intent.clone())) {
+                self.unclaim_cancel(&m.agent_id);
+                return Err(journal_failure_before_signal_in(VERB, e));
+            }
+            if !launched {
+                unlaunched.push(m.agent_id.clone());
+            }
+        }
+        Ok(unlaunched)
+    }
+
     /// Kill a node still running at the end of its level's grace. `false` — nothing signalled —
     /// for an owned node whose process ended at the last moment: its pid may already be reaped.
     fn kill_straggler(&self, m: &Member) -> Result<bool, RpcError> {
         if m.owned && self.process_gone(&m.agent_id) {
             return Ok(false);
         }
-        let pid = m.pid.expect("the freeze refused a member with no pid");
+        let pid = if m.owned {
+            self.owned_pid(&m.agent_id)
+        } else {
+            m.pid
+        }
+        .expect("the freeze refused an unowned member with no pid, and waited for an owned one's");
         if !self.runtime.kill_process_tree_and_wait(pid) {
             return Err(RpcError::internal(format!(
                 "marion journaled the cancel of `{}` and signalled its per-node process tree when \
@@ -324,7 +390,13 @@ impl RegistryHandle {
     /// that ended on its own has whatever remains in its group swept. `sent` is whether the node's
     /// lane took its abort ([`crate::inbox::Inboxes::abort`]): a row's verb its lane did not send
     /// gave the node no grace, and the description says so rather than claim one ran out.
-    fn confirm(&self, m: &Member, sent: bool, forced: bool) -> Result<(), RpcError> {
+    fn confirm(
+        &self,
+        m: &Member,
+        launched: bool,
+        sent: bool,
+        forced: bool,
+    ) -> Result<(), RpcError> {
         if !forced && let Some(pgid) = self.owned_pgid(&m.agent_id) {
             self.runtime.sweep_group(pgid);
         }
@@ -339,6 +411,10 @@ impl RegistryHandle {
         }
         let who = m.by.describe();
         let description = match (forced, sent, m.verb) {
+            _ if !launched => format!(
+                "marion's cancel (by {who}) reached the node while its launch was coming up, and \
+                 the launch ended without starting a process"
+            ),
             (false, true, v) => format!(
                 "the node ended on marion's cancel (by {who}) within its {} ms {} grace",
                 v.grace_ms(),
@@ -490,6 +566,46 @@ mod tests {
                 seq: std::sync::atomic::AtomicU64::new(0),
                 aborted: Arc::default(),
             }
+        }
+
+        /// A new supervisor over the same journal, as after a restart: every node the journal
+        /// left live is an orphan.
+        fn reboot(self) -> Self {
+            let live = Arc::new(LiveRegistry::follow(
+                Registry::boot_path(&self.path).unwrap(),
+            ));
+            let runtime = Arc::new(Runtime::default());
+            let handle = RegistryHandle::with_runtime(live, runtime.clone());
+            *lock(&runtime.handle) = Arc::downgrade(&handle);
+            Fx {
+                _dir: self._dir,
+                path: self.path,
+                handle,
+                runtime,
+                seq: std::sync::atomic::AtomicU64::new(
+                    self.seq.load(std::sync::atomic::Ordering::Relaxed),
+                ),
+                aborted: Arc::default(),
+            }
+        }
+
+        /// The relaunch's process exists: its `Spawned`, as the launch journals it at
+        /// `command.spawn()`, then the pid on its entry.
+        fn relaunched(&self, agent: &str, pid: i32) {
+            self.write(RecordKind::Spawned(Spawned {
+                repo_config_held: Default::default(),
+                agent_id: id(agent),
+                harness_version: "test".into(),
+                model: None,
+                pid: Some(pid),
+                start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
+            }));
+            self.handle.live.refresh();
+            lock(&self.runtime.by_pid).insert(pid, id(agent));
+            self.handle.mark_started(&id(agent), pid);
         }
 
         fn write(&self, kind: RecordKind) {
@@ -1033,37 +1149,135 @@ mod tests {
         );
     }
 
-    /// **A node claimed for a relaunch whose process has not started is refused, never signalled
-    /// by its old pid**: a resumed node is claimed before its new process exists, while the journal
-    /// still names the one the resume replaced — dead, or by now another program's.
-    #[test]
-    fn a_relaunch_not_yet_started_is_refused_and_its_old_pid_untouched() {
-        let fx = Fx::new("cancel-relaunching");
+    /// An orphan, as a restarted supervisor sees it: journaled running under pid 101, its
+    /// process the lost supervisor's.
+    fn orphan(tag: &str) -> Fx {
+        let fx = Fx::new(tag);
         fx.running("root", None, Harness::Pi, 101, false);
-        let _token = fx.handle.claim(&id("root"), None, "/repo".into());
+        fx.reboot()
+    }
 
-        let e = fx
-            .cancel("root", None)
-            .expect_err("no process of this life yet");
-        assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e}");
-        assert!(fx.trail().is_empty(), "nothing journaled");
+    /// Cancel `root` while `during` runs: the cancel has claimed the node and is waiting for its
+    /// launch, having signalled nothing, when `during` is called.
+    fn cancel_during(fx: &Fx, during: impl FnOnce()) -> Result<NodeCancelResult, RpcError> {
+        std::thread::scope(|s| {
+            let canceller = s.spawn(|| fx.cancel("root", None));
+            assert!(marion_testsupport::until(|| fx
+                .handle
+                .cancelling(&id("root"))));
+            assert!(lock(&fx.runtime.killed).is_empty(), "nothing signalled yet");
+            during();
+            canceller.join().unwrap()
+        })
+    }
+
+    /// **A cancel that lands while a resume relaunches the node waits for the relaunch's process
+    /// and ends it**: the cancel is not refused for the journal still naming the orphan, nor
+    /// signals the orphan's pid; once the launch publishes its process the cancel kills it by the
+    /// normal tree kill, and the node's one life ends `Cancelled`, by the operator, with its intent
+    /// journaled after the relaunch's `Spawned`. A second resume meanwhile is refused.
+    #[test]
+    fn a_cancel_during_a_relaunch_waits_for_its_process_and_ends_it() {
+        let fx = orphan("cancel-relaunching");
+        let claim = fx.handle.claim_relaunch(&id("root"), "/repo".into());
+        assert!(claim.is_some(), "an orphan is claimed for its relaunch");
         assert!(
-            lock(&fx.runtime.killed).is_empty(),
-            "the old pid was not signalled"
+            fx.handle
+                .claim_relaunch(&id("root"), "/repo".into())
+                .is_none(),
+            "a second resume finds the claim"
         );
-
-        // The relaunch's process starts; the old pid now names nobody the fixture knows.
-        fx.handle.mark_started(&id("root"), 202);
-        lock(&fx.runtime.by_pid).remove(&101);
-        lock(&fx.runtime.by_pid).insert(202, id("root"));
-        let r = fx
-            .cancel("root", None)
-            .expect("the relaunch's own process is cancelled");
+        let started = Instant::now();
+        let r = cancel_during(&fx, || {
+            // The launch claims the node for itself, then its process starts.
+            let _token = fx.handle.claim(&id("root"), None, "/repo".into());
+            fx.relaunched("root", 202);
+        })
+        .expect("the cancel ends the relaunch");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "woken, not timed out"
+        );
+        drop(claim);
         assert_eq!(ended(&r), [("root".to_string(), true)]);
         assert_eq!(
             *lock(&fx.runtime.killed),
             [id("root")],
-            "killed by the relaunch's pid, not the journal's"
+            "killed by the relaunch's pid"
+        );
+        assert_eq!(
+            fx.handle.ended_by(&id("root")),
+            Some(CancelBy::Operator),
+            "the launch's own claim kept the cancel, so its thread records no exit"
+        );
+        assert_eq!(
+            fx.trail(),
+            [
+                ("CancelRequested", "root".to_string()),
+                ("KillConfirmed", "root".to_string())
+            ]
+        );
+        let node = fx.node("root");
+        assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert_eq!(node.spawn_generation, 2);
+        assert_eq!(node.cancel.map(|c| c.by), Some(CancelBy::Operator));
+    }
+
+    /// **A cancel of a node whose resume never relaunches it ends it with no signal**: the resume
+    /// gives its claim up (it saw the cancel, or failed before launching), and the cancel confirms
+    /// the node's end — `Cancelled`, nothing killed, no process started.
+    #[test]
+    fn a_cancel_of_a_resume_that_never_relaunches_ends_it_without_a_signal() {
+        let fx = orphan("cancel-resume-gives-up");
+        let claim = fx.handle.claim_relaunch(&id("root"), "/repo".into());
+        let r = cancel_during(&fx, || drop(claim)).expect("the cancel confirms the end");
+        assert_eq!(ended(&r), [("root".to_string(), false)]);
+        assert!(lock(&fx.runtime.killed).is_empty(), "nothing was signalled");
+        assert_eq!(
+            fx.handle.owned_running(&id("root")),
+            None,
+            "the claim is gone"
+        );
+        assert_eq!(
+            fx.trail(),
+            [
+                ("CancelRequested", "root".to_string()),
+                ("KillConfirmed", "root".to_string())
+            ]
+        );
+        let node = fx.node("root");
+        assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert_eq!(node.spawn_generation, 1, "no second life");
+        assert!(
+            node.exit
+                .unwrap()
+                .description
+                .contains("without starting a process"),
+            "says no process was started"
+        );
+    }
+
+    /// **A relaunch that fails while a cancel waits ends the node all the same**: the launch claimed
+    /// the node and ended before its process, and the cancel confirms its end with no signal.
+    #[test]
+    fn a_relaunch_that_fails_under_a_pending_cancel_still_ends_cancelled() {
+        let fx = orphan("cancel-relaunch-fails");
+        let claim = fx.handle.claim_relaunch(&id("root"), "/repo".into());
+        let r = cancel_during(&fx, || {
+            let _token = fx.handle.claim(&id("root"), None, "/repo".into());
+            fx.handle.mark_finished(
+                &id("root"),
+                NodeOutcome::Root(Err("the version probe failed".into())),
+            );
+        })
+        .expect("the cancel confirms the end");
+        drop(claim);
+        assert_eq!(ended(&r), [("root".to_string(), false)]);
+        assert!(lock(&fx.runtime.killed).is_empty(), "nothing was signalled");
+        assert_eq!(fx.handle.owned_running(&id("root")), Some(false));
+        assert_eq!(
+            fx.node("root").state,
+            NodeState::Exited(ExitStatus::Cancelled)
         );
     }
 

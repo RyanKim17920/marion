@@ -179,7 +179,7 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
 ///
 /// **Expiry is never a verdict on the node.** The thread keeps running, the table keeps the entry,
 /// and the refusal says which node marion has stopped waiting for — see [`launch_bound_expired`].
-const LAUNCH_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+pub(super) const LAUNCH_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// **32 bytes from `/dev/urandom`, as hex** — §5.4's per-node capability.
 ///
@@ -2401,32 +2401,43 @@ impl RegistryHandle {
                 found.id
             }
         };
-        // **Held from the kill of the recorded process until the relaunch is claimed**, the lock a
-        // cancel's freeze takes: between them the node's journaled pid is one this resume is
-        // ending or has ended, and a cancel that read it would signal a dead — or reused — pid and
-        // confirm it, while the relaunch started a process nobody cancelled. Once the relaunch is
-        // claimed the freeze refuses it until its own process has started (`freeze`'s pid check),
-        // so a child's launch drops it there, as `agent/spawn`'s does; a root's launch takes no
-        // gate, and holds it to the pid. Read again under it: a second resume may have relaunched
+        // **Claimed for this resume before the kill of the recorded process**, and the claim is
+        // per node: between the kill and the relaunch the node's journaled pid is one this resume
+        // is ending or has ended, so the node is held here as a launch that has not started: a
+        // cancel claims it and waits for the relaunch's own process (or for this resume to end
+        // without one), and a second resume is refused. Taken under `spawn_decision`, which orders
+        // it against a freeze, and released at once: the kill, the version probe and the start all
+        // run with no global lock held. Read again under it: a second resume may have relaunched
         // the node since the look above.
-        let decision = lock(&self.spawn_decision);
-        self.live.refresh();
-        let still = self.live.read(|r| {
-            r.tree().get(&p.agent_id).is_some_and(|n| {
-                (matches!(n.reap_state, ReapState::Orphaned | ReapState::ReapedIdle)
-                    || n.state.is_exited())
-                    && n.spawn_generation == node.spawn_generation
-            })
-        });
-        if !still {
-            return Err(RpcError::conflict(
-                &p.agent_id.0,
-                "the node's fate changed while this resume was being prepared — another resume \
-                 relaunched it, or it is running again — so nothing was signalled or launched. \
-                 Read its state and resume it again if it is still lost.",
-                "§8, §7.2",
-            ));
-        }
+        // **The tree this node's own children branch from**, and it is the same value at every
+        // depth: `marion run` gives the root the project's working tree, and every `agent/spawn`
+        // hands a child its caller's, so one tree runs the whole fleet. A resumed node at any depth
+        // therefore hands its own children what it would have handed them in its first life.
+        let repo = resumable_root_cwd(&env.project_root);
+        let _claim = {
+            let _decision = lock(&self.spawn_decision);
+            self.live.refresh();
+            let still = self.live.read(|r| {
+                r.tree().get(&p.agent_id).is_some_and(|n| {
+                    (matches!(n.reap_state, ReapState::Orphaned | ReapState::ReapedIdle)
+                        || n.state.is_exited())
+                        && n.spawn_generation == node.spawn_generation
+                })
+            });
+            still
+                .then(|| self.claim_relaunch(&p.agent_id, repo.clone()))
+                .flatten()
+                .ok_or_else(|| {
+                    RpcError::conflict(
+                        &p.agent_id.0,
+                        "the node's fate changed while this resume was being prepared — another \
+                         resume is relaunching it or relaunched it, or it is running again — so \
+                         nothing was signalled or launched. Read its state and resume it again if \
+                         it is still lost.",
+                        "§8, §7.2",
+                    )
+                })?
+        };
         // **The recorded process must be provably not still running before a second one is started
         // against the same single-writer transcript** (principle 8). A node with no recorded pid
         // never reached `command.spawn()` under the lost supervisor, so there is nothing to signal.
@@ -2472,18 +2483,22 @@ impl RegistryHandle {
                 crate::procid::Resolution::Gone => {}
             }
         }
-        // **The tree this node's own children branch from**, and it is the same value at every
-        // depth: `marion run` gives the root the project's working tree, and every `agent/spawn`
-        // hands a child its caller's, so one tree runs the whole fleet. A resumed node at any depth
-        // therefore hands its own children what it would have handed them in its first life.
-        let repo = resumable_root_cwd(&env.project_root);
+        // **A cancel claimed the node during this resume**: it is not relaunched. Releasing the
+        // claim on the way out is what the waiting cancel confirms the node's end on. One claimed
+        // after this check reaches the relaunch instead, which the cancel ends once its process
+        // exists.
+        if self.cancelling(&p.agent_id) {
+            return Err(RpcError::conflict(
+                &p.agent_id.0,
+                "the node was cancelled while this resume was preparing its relaunch, so nothing \
+                 was launched; the cancel records its end.",
+                "§6.7, §8",
+            ));
+        }
         let (agent_id, state) = if depth == 0 {
-            let launched = self.relaunch_root(me, &node, &env, &p.prompt, repo, session)?;
-            // The relaunch's process exists and its pid is recorded: a cancel now reaches it.
-            drop(decision);
-            launched
+            self.relaunch_root(me, &node, &env, &p.prompt, repo, session)?
         } else {
-            self.relaunch_child(me, &node, &env, &p.prompt, repo, session, decision)?
+            self.relaunch_child(me, &node, &env, &p.prompt, repo, session)?
         };
         Ok(marion_core::proto::result::NodeResumeResult {
             agent_id,
@@ -2694,10 +2709,6 @@ impl RegistryHandle {
         Ok(parent)
     }
 
-    /// `decision` is [`Self::spawn_decision`], held by [`Self::node_resume`] from before the kill
-    /// of the recorded process: it covers this launch's gate and intent, as a fresh child's, and
-    /// [`Self::launch_child`] drops it once the relaunch is claimed.
-    #[allow(clippy::too_many_arguments)]
     fn relaunch_child(
         &self,
         me: Arc<RegistryHandle>,
@@ -2706,7 +2717,6 @@ impl RegistryHandle {
         prompt: &str,
         repo: PathBuf,
         session: String,
-        decision: std::sync::MutexGuard<'_, ()>,
     ) -> Result<(AgentId, NodeState), RpcError> {
         // **§7.5's immutable parent link, read back.** The intent is the only record that names it:
         // a node's child names its caller, and a contracted node the operator asked for directly
@@ -2798,10 +2808,10 @@ impl RegistryHandle {
                     "§9",
                 )
             })?;
-        // Held over the window `agent/spawn` holds it, and longer (`decision`): §6.1 step 2's gate
-        // evaluation and the intent derived from it are one decision, and this launch is gated
-        // exactly as a fresh child's is (`run_spawn_watched` calls `check_spawn_gates` with this
-        // caller).
+        // Held for the same window `agent/spawn` holds it: §6.1 step 2's gate evaluation and the
+        // intent derived from it are one decision, and this launch is gated exactly as a fresh
+        // child's is (`run_spawn_watched` calls `check_spawn_gates` with this caller).
+        let decision = lock(&self.spawn_decision);
         let requester = match (parent_id, parent, parent_type) {
             (Some(parent_id), Some(parent), Some(parent_type)) => {
                 crate::run::Requester::from(crate::run::Caller {

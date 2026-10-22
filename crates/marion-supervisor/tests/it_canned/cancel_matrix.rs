@@ -164,7 +164,7 @@ fn shims(dir: &Path, bin: &Path, gate: &Path, pids: &Path, decl: &Path) {
     common::app_server::fake_codex(
         bin,
         &format!(
-            "case \"$1\" in --version) [ -e {slow} ] && sleep 2; echo \"codex-cli 0.146.0-marion-shim\"; exit 0 ;; esac\n\
+            "case \"$1\" in --version) [ -e {slow} ] && sleep \"$(cat {slow})\"; echo \"codex-cli 0.146.0-marion-shim\"; exit 0 ;; esac\n\
              exec /bin/sh {block_q} \"$*\" \"$PPID\"\n"
         ),
     );
@@ -191,8 +191,8 @@ struct Bed {
     gate: PathBuf,
     pids: PathBuf,
     decl: PathBuf,
-    /// While it exists, the `codex` shim's `--version` probe takes two seconds: a launch held
-    /// between its decision and its process.
+    /// While it exists, the `codex` shim's `--version` probe sleeps the seconds it holds: a launch
+    /// held between its decision and its process.
     slow: PathBuf,
     needle: String,
     key: PathBuf,
@@ -667,8 +667,8 @@ fn an_acp_tree_cancelled_at_its_root_ends_bottom_up_without_a_signal() {
 /// the orphan's surviving process and starts a new one; a cancel asked for between the two waits
 /// for the new process rather than reading the node in between — where it is already dead, and
 /// its journaled pid the one the resume just ended — and ends the process the resume started. The
-/// relaunch is held between its decision and its process (a slow `--version`), so the cancel
-/// arrives exactly in that window. Exactly one process is journaled dead by each: the orphan's by
+/// relaunch is held between its claim and its process (a slow `--version`), so the cancel
+/// arrives exactly in that window, and waits for the process rather than being refused. Exactly one process is journaled dead by each: the orphan's by
 /// the resume, the relaunch's by the cancel, after its `Spawned`.
 #[test]
 fn a_cancel_during_a_resume_ends_the_relaunched_process() {
@@ -688,7 +688,7 @@ fn a_cancel_during_a_resume_ends_the_relaunched_process() {
         "an orphan, still running"
     );
 
-    std::fs::write(&bed.slow, b"").unwrap();
+    std::fs::write(&bed.slow, b"2").unwrap();
     let journal = bed.project.journal();
     let (resumed, cancelled) = std::thread::scope(|s| {
         let resume = s.spawn(|| bed.resume(&root, "CM-RESUMED-4b1d: carry on"));
@@ -774,10 +774,9 @@ fn a_cancel_during_a_resume_ends_the_relaunched_process() {
     );
 }
 
-/// **Two resumes of one orphan relaunch it once.** The second waits behind the first's decision
-/// and, reading the node again under it, finds it running: refused, with nothing signalled — not a
-/// kill of the first's relaunch by the orphan's stale record, and not a second process against
-/// one transcript.
+/// **Two resumes of one orphan relaunch it once.** The second finds the node claimed by the
+/// first's relaunch, or running again: refused, with nothing signalled — not a kill of the first's
+/// relaunch by the orphan's stale record, and not a second process against one transcript.
 #[test]
 fn two_resumes_of_one_orphan_relaunch_it_once() {
     let mut bed = Bed::new("cancel-matrix-double-resume");
@@ -790,7 +789,7 @@ fn two_resumes_of_one_orphan_relaunch_it_once() {
             .then_some(())
     });
     bed.restart_supervisor();
-    std::fs::write(&bed.slow, b"").unwrap();
+    std::fs::write(&bed.slow, b"2").unwrap();
 
     let results = std::thread::scope(|s| {
         let a = s.spawn(|| bed.resume(&root, "CM-TWICE-A-4b1d: carry on"));
@@ -809,4 +808,50 @@ fn two_resumes_of_one_orphan_relaunch_it_once() {
         .filter(|k| matches!(k, RecordKind::KillConfirmed(c) if c.agent_id == root))
         .count();
     assert_eq!(kills, 1, "only the orphan's process was killed");
+}
+
+/// **A resume held in its version probe holds nobody else up.** The claim that guards the
+/// relaunch is the node's own: while the resumed root's probe sleeps, a root of another harness
+/// is spawned and cancelled, and both answer before the probe has woken — no lock the whole
+/// supervisor shares is held across a subprocess.
+#[test]
+fn a_resume_in_its_version_probe_blocks_no_spawn_or_cancel_of_another_node() {
+    // Longer than the spawn and the cancel take, by far; whether marion's own bound on the probe
+    // cuts it short changes nothing here.
+    const PROBE_SECS: u64 = 8;
+    let mut bed = Bed::new("cancel-matrix-resume-unblocked");
+    let root = bed.root("codex", "CM-HELD-4b1d");
+    bed.pids_of("CM-HELD-4b1d");
+    wait_until("the root's session to be journaled", || {
+        common::journal::records(&bed.project.journal())
+            .into_iter()
+            .any(|k| matches!(k, RecordKind::SessionObserved(s) if s.agent_id == root))
+            .then_some(())
+    });
+    bed.restart_supervisor();
+    std::fs::write(&bed.slow, PROBE_SECS.to_string()).unwrap();
+
+    let journal = bed.project.journal();
+    let resumed = std::thread::scope(|s| {
+        let started = Instant::now();
+        let resume = s.spawn(|| bed.resume(&root, "CM-HELD-AGAIN-4b1d: carry on"));
+        // The resume has ended the orphan's process and is in its relaunch's probe.
+        wait_until("the resume to kill the orphan's process", || {
+            common::journal::records(&journal)
+                .into_iter()
+                .any(|k| matches!(k, RecordKind::KillConfirmed(c) if c.agent_id == root))
+                .then_some(())
+        });
+        let other = bed.root("opencode", "CM-OTHER-4b1d");
+        bed.pids_of("CM-OTHER-4b1d");
+        let cancelled = bed.cancel(&other);
+        assert_eq!(cancelled.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert!(
+            !resume.is_finished(),
+            "the spawn and the cancel waited on the resume: {:?}",
+            started.elapsed()
+        );
+        resume.join().unwrap()
+    });
+    assert_eq!(resumed.expect("the orphan relaunches").spawn_generation, 2);
 }
