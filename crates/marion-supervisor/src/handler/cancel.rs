@@ -24,6 +24,17 @@
 //! A `node/kill` of a node being cancelled is the cancel's escalation: it kills what is left now
 //! rather than after the grace, and the cancel keeps its attribution.
 //!
+//! # Where a cancel is a kill
+//!
+//! A lane takes the abort only once its driver's port is attached, which is just before the first
+//! turn goes out (ACP's `session/prompt`, app-server's `turn/start`). A cancel that lands earlier,
+//! while a launch or a relaunch is still in its handshake, finds no port, and the canceller kills
+//! the node at once. That is deliberate rather than a gap closed later: before the first turn
+//! there is no turn to end and no work to commit, so the kill loses nothing a grace would keep.
+//! Attaching the port before the handshake would make every handshake wait read a cancel as a
+//! failed handshake. A cancel after the turn has gone out but before the server has named it waits
+//! for the name (`app_server`'s `started_turn`) and interrupts the turn.
+//!
 //! # Who may cancel whom (§5.4)
 //!
 //! Exactly as `node/steer`: `caller: None` is the operator ([`super::root_spawn_authorized`]),
