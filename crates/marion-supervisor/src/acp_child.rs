@@ -888,11 +888,16 @@ fn excerpt(s: &str) -> String {
 
 /// marion's ACP client: the [`Peer`] that answers what an agent asks mid-turn, under the node's
 /// [`ClientPolicy`], and the tool calls the agent has announced and not yet finished — one of the
-/// two things that make a permission request attributable.
+/// two things that make a permission request attributable — at most [`ANNOUNCED_CAP`] of them.
 struct AcpPeer {
     policy: ClientPolicy,
-    announced: std::collections::HashSet<String>,
+    announced: std::collections::VecDeque<String>,
 }
+
+/// The most unfinished tool calls marion remembers for one agent, oldest dropped first: a call an
+/// agent announces and never ends would otherwise grow a long-lived node's memory without bound.
+/// Far above the calls one turn holds in flight.
+const ANNOUNCED_CAP: usize = 256;
 
 /// ACP's `ToolKind` values: a permission request whose `toolCall` names one describes a tool call.
 const TOOL_KINDS: [&str; 10] = [
@@ -934,7 +939,7 @@ impl AcpPeer {
         let announced = call
             .get("toolCallId")
             .and_then(Value::as_str)
-            .is_some_and(|id| self.announced.contains(id));
+            .is_some_and(|id| self.announced.iter().any(|a| a == id));
         let substance = call
             .get("kind")
             .and_then(Value::as_str)
@@ -952,7 +957,7 @@ type Driver<'a> = crate::rpc::Driver<'a, AcpPeer>;
 impl Peer for AcpPeer {
     /// Record each tool call the agent announces, so a later permission request about it is
     /// attributable, and forget it once it ends (`completed` or `failed`), so a long-lived node
-    /// holds only the calls in flight.
+    /// holds only the calls in flight, and never more than [`ANNOUNCED_CAP`].
     fn notified(&mut self, frame: &Value) {
         let Some(update) = frame.pointer("/params/update") else {
             return;
@@ -968,10 +973,14 @@ impl Peer for AcpPeer {
         };
         match update.get("status").and_then(Value::as_str) {
             Some("completed" | "failed") => {
-                self.announced.remove(id);
+                self.announced.retain(|a| a != id);
             }
+            _ if self.announced.iter().any(|a| a == id) => {}
             _ => {
-                self.announced.insert(id.to_string());
+                if self.announced.len() == ANNOUNCED_CAP {
+                    self.announced.pop_front();
+                }
+                self.announced.push_back(id.to_string());
             }
         }
     }
@@ -1431,9 +1440,9 @@ mod tests {
     /// assumption (u). That ask is declined with the reject option (session-disable), never an
     /// always-*, even on a node granted everything; one offering no reject is cancelled; and a
     /// request naming no call, a kind ACP does not define, or a call that already ended is declined
-    /// the same way. A Gemini-shaped ask, unannounced but carrying the call's kind, content and
-    /// locations, follows the grant, as does an announced one. Mutation: drop the attribution
-    /// check, drop either of its two tests, or keep a finished call.
+    /// the same way. A qwen- or Gemini-shaped ask, made before its call is announced but carrying
+    /// the call's kind, content and locations, follows the grant, as does an announced one.
+    /// Mutation: drop the attribution check, drop either of its two tests, or keep a finished call.
     #[test]
     fn a_permission_request_that_is_no_tool_call_is_never_granted() {
         let dir = scratch("acp-unattributed");
@@ -1469,8 +1478,8 @@ mod tests {
         let r = ask(&mut peer, "session/request_permission", unknown_kind);
         assert_eq!(r["result"]["outcome"]["optionId"], "session-disable", "{r}");
 
-        // Gemini-lineage agents ask before announcing the call: its substance makes it one.
-        let gemini = json!({
+        // qwen and Gemini CLI ask before announcing the call: its substance makes it one.
+        let qwen = json!({
             "sessionId": "s",
             "toolCall": {"toolCallId": "write_file-1", "status": "pending", "title": "Write a.txt",
                 "kind": "edit", "content": [], "locations": [{"path": dir.join("a.txt")}]},
@@ -1480,7 +1489,8 @@ mod tests {
                 {"optionId": "cancel", "kind": "reject_once"},
             ],
         });
-        let r = ask(&mut peer, "session/request_permission", gemini);
+        assert!(peer.announced.is_empty());
+        let r = ask(&mut peer, "session/request_permission", qwen);
         assert_eq!(r["result"]["outcome"]["optionId"], "proceed_once", "{r}");
         for (field, value) in [
             ("kind", json!("execute")),
@@ -1517,6 +1527,41 @@ mod tests {
                 "{status}: {r}"
             );
         }
+    }
+
+    /// **marion remembers at most [`ANNOUNCED_CAP`] unfinished calls, oldest dropped first**: an
+    /// agent that announces calls and never ends them does not grow a long-lived node's memory, a
+    /// call announced twice is held once, and the newest calls stay attributable. Mutation: drop
+    /// the cap, or evict the newest.
+    #[test]
+    fn the_announced_calls_are_bounded_oldest_first() {
+        let dir = scratch("acp-announced-cap");
+        let mut peer = AcpPeer::new(full_grant(&dir));
+        let asks = |id: &str| {
+            json!({"sessionId": "s", "toolCall": {"toolCallId": id, "title": id}, "options": [
+                {"optionId": "yes", "kind": "allow_once"}, {"optionId": "no", "kind": "reject_once"}]})
+        };
+        for i in 0..ANNOUNCED_CAP + 10 {
+            announce(&mut peer, &format!("c{i}"));
+            announce(&mut peer, &format!("c{i}"));
+        }
+        assert_eq!(peer.announced.len(), ANNOUNCED_CAP);
+        let r = ask(&mut peer, "session/request_permission", asks("c9"));
+        assert_eq!(
+            r["result"]["outcome"]["optionId"], "no",
+            "the oldest is gone: {r}"
+        );
+        let newest = format!("c{}", ANNOUNCED_CAP + 9);
+        let r = ask(&mut peer, "session/request_permission", asks(&newest));
+        assert_eq!(
+            r["result"]["outcome"]["optionId"], "yes",
+            "the newest stays: {r}"
+        );
+        let r = ask(&mut peer, "session/request_permission", asks("c10"));
+        assert_eq!(
+            r["result"]["outcome"]["optionId"], "yes",
+            "the oldest kept: {r}"
+        );
     }
 
     /// **Every measured permission ask is still granted** under the attribution rule: each ACP
