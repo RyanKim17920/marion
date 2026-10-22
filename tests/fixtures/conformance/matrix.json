@@ -568,11 +568,11 @@
       "version": "unknown"
     },
     "claude-code": {
-      "fixtures": "claude-code-2.1.302",
+      "fixtures": "claude-code-2.1.306",
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (session id, activity, and usage equal to every request's counters the provider sent, added; only the tool-offering ones where the row says it leaves the rest out)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session ff597035-0373-46ff-91c8-158828979a0c ; activity mcp__marion__report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session c115df4f-2b55-481b-a89e-87d8e49a4aed ; activity mcp__marion__report",
           "status": "PASS"
         },
         "P-approval": {
@@ -582,7 +582,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: still running after 45.4 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 45.4 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 45.6 s, 7 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
+          "observed": "401: still running after 48.7 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 46.1 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 45.6 s, 8 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -607,12 +607,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 282dc4d3-e47a-4324-a707-50e926e27937 -> 282dc4d3-e47a-4324-a707-50e926e27937; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session ed6fae02-da18-4816-a54f-f05d1d02c61a -> ed6fae02-da18-4816-a54f-f05d1d02c61a; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.9 s after the spawn and listed marion's tools",
+          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.5 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -620,13 +620,18 @@
           "observed": "DECSET 2004 at boot: true; first screen [\" project, or work from your team). If not, take a moment to review what's in this folder first.\", \" Claude Code'll be able to read, edit, and execute files here.\", \" Security guide\", \" ❯ No, exit\", \"   Yes, I trust this folder\", \" Enter to confirm · Esc to cancel\"]; boot dialog \"❯ No, exit Yes, I trust this folder\" (answered with \"\\u{1b}[B\\r\") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
           "status": "PASS"
         },
+        "P-untrusted-mcp": {
+          "expected": "on a live launch in an untrusted repository, a `.mcp.json` server the operator's settings approve by name (`enabledMcpjsonServers`) does not start, headless or in the pane, also with the project setting source on (the overlay alone); the same server starts on the live launch of a trusted repository whose settings approve it; and a trusted repository's unapproved server neither stalls a pane nor starts in it",
+          "observed": "headless: untrusted: server started false (turn true); untrusted with `--setting-sources user,project` (the overlay alone): server started false (turn true); trusted, approved (control): server started true (turn true); trusted, unapproved (recorded): server started true (turn true); untrusted less `--settings` (recorded, not judged): server started false (turn true) | pane: untrusted: server started false (turn true); untrusted with `--setting-sources user,project` (the overlay alone): server started false (turn true); trusted, approved (control): server started true (turn true); trusted, unapproved (judged): server started false (turn true); untrusted less `--settings` (recorded, not judged): server started false (turn true)",
+          "status": "PASS"
+        },
         "P-version": {
           "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
-          "observed": "2.1.302 (not listed in the row's verified releases); no-self-update env DISABLE_AUTOUPDATER=1 carried",
+          "observed": "2.1.306 (not listed in the row's verified releases); no-self-update env DISABLE_AUTOUPDATER=1 carried",
           "status": "PASS"
         }
       },
-      "version": "2.1.302"
+      "version": "2.1.306"
     },
     "cline": {
       "fixtures": "cline-3.0.66",
@@ -1082,6 +1087,7 @@
     "P-resume",
     "P-lifecycle",
     "P-errors",
-    "P-tui"
+    "P-tui",
+    "P-untrusted-mcp"
   ]
 }

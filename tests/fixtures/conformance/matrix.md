@@ -2,24 +2,24 @@
 
 Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh`). Every run is $0: marion's canned provider on loopback, scratch homes, no login. `n/a` is UNSUPPORTED, with the reason (from the row) below. Per-probe transcripts are in each harness's directory.
 
-| harness | version | P-version | P-launch | P-tools | P-activity | P-approval | P-midturn | P-interrupt | P-resume | P-lifecycle | P-errors | P-tui |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| acp:claude-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:cline | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:codex-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:copilot | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:goose | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:opencode | OpenCode 1.19.3 | PASS | PASS | PASS | **FAIL** | n/a | PASS | PASS | PASS | PASS | PASS | n/a |
-| acp:qwen | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| claude-code | 2.1.302 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| cline | 3.0.66 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | n/a | **FAIL** | **FAIL** | n/a |
-| codex | 0.163.0 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| copilot | 1.0.89 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a |
-| goose | 1.55.0 | PASS | PASS | PASS | PASS | n/a | n/a | PASS | n/a | PASS | PASS | n/a |
-| opencode | 1.19.3 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | n/a |
-| pi | 0.99.1 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS | n/a |
-| qwen | 0.24.7 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
+| harness | version | P-version | P-launch | P-tools | P-activity | P-approval | P-midturn | P-interrupt | P-resume | P-lifecycle | P-errors | P-tui | P-untrusted-mcp |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| acp:claude-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | - |
+| acp:cline | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | - |
+| acp:codex-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | - |
+| acp:copilot | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | - |
+| acp:goose | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | - |
+| acp:opencode | OpenCode 1.19.3 | PASS | PASS | PASS | **FAIL** | n/a | PASS | PASS | PASS | PASS | PASS | n/a | - |
+| acp:qwen | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | - |
+| agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | - |
+| claude-code | 2.1.306 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| cline | 3.0.66 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | n/a | **FAIL** | **FAIL** | n/a | - |
+| codex | 0.163.0 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | - |
+| copilot | 1.0.89 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a | - |
+| goose | 1.55.0 | PASS | PASS | PASS | PASS | n/a | n/a | PASS | n/a | PASS | PASS | n/a | - |
+| opencode | 1.19.3 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | n/a | - |
+| pi | 0.99.1 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS | n/a | - |
+| qwen | 0.24.7 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a | - |
 
 ## Findings per cell
 
@@ -135,19 +135,20 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** UNSUPPORTED: marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### claude-code 2.1.302
+### claude-code 2.1.306
 
-- **P-version** PASS: 2.1.302 (not listed in the row's verified releases); no-self-update env DISABLE_AUTOUPDATER=1 carried
+- **P-version** PASS: 2.1.306 (not listed in the row's verified releases); no-self-update env DISABLE_AUTOUPDATER=1 carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"anthropic"}; still running; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.9 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session ff597035-0373-46ff-91c8-158828979a0c ; activity mcp__marion__report
+- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.5 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session c115df4f-2b55-481b-a89e-87d8e49a4aed ; activity mcp__marion__report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("marion denies `mcp__marion__report`: no operator answers a child's ask")), 1 permission ask(s) reached marion
 - **P-midturn** PASS: folded into the running turn (1 turn end; requests [4])
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session 282dc4d3-e47a-4324-a707-50e926e27937 -> 282dc4d3-e47a-4324-a707-50e926e27937; resume refusal: none
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ed6fae02-da18-4816-a54f-f05d1d02c61a -> ed6fae02-da18-4816-a54f-f05d1d02c61a; resume refusal: none
 - **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 143, left [] (each after marion's end of the node)
-- **P-errors** PASS: 401: still running after 45.4 s, 7 request(s), still running; cause Auth { line: "HTTP 401 authentication_failed" }; stream failure None; refused credential read off a frame: "HTTP 401 authentication_failed" | 429: still running after 45.4 s, 7 request(s), still running; cause RateLimit { line: "HTTP 429 rate_limit" }; stream failure None | 500: still running after 45.6 s, 7 request(s), still running; cause Outage { line: "HTTP 500 server_error" }; stream failure None
+- **P-errors** PASS: 401: still running after 48.7 s, 7 request(s), still running; cause Auth { line: "HTTP 401 authentication_failed" }; stream failure None; refused credential read off a frame: "HTTP 401 authentication_failed" | 429: still running after 46.1 s, 7 request(s), still running; cause RateLimit { line: "HTTP 429 rate_limit" }; stream failure None | 500: still running after 45.6 s, 8 request(s), still running; cause Outage { line: "HTTP 500 server_error" }; stream failure None
 - **P-tui** PASS: DECSET 2004 at boot: true; first screen [" project, or work from your team). If not, take a moment to review what's in this folder first.", " Claude Code'll be able to read, edit, and execute files here.", " Security guide", " ❯ No, exit", "   Yes, I trust this folder", " Enter to confirm · Esc to cancel"]; boot dialog "❯ No, exit Yes, I trust this folder" (answered with "\u{1b}[B\r") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true
+- **P-untrusted-mcp** PASS: headless: untrusted: server started false (turn true); untrusted with `--setting-sources user,project` (the overlay alone): server started false (turn true); trusted, approved (control): server started true (turn true); trusted, unapproved (recorded): server started true (turn true); untrusted less `--settings` (recorded, not judged): server started false (turn true) | pane: untrusted: server started false (turn true); untrusted with `--setting-sources user,project` (the overlay alone): server started false (turn true); trusted, approved (control): server started true (turn true); trusted, unapproved (judged): server started false (turn true); untrusted less `--settings` (recorded, not judged): server started false (turn true)
 
 ### cline 3.0.66
 

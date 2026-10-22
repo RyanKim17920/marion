@@ -154,6 +154,12 @@ conformance provider was fixed to report one usage per stream (the 200/40/20 aga
 held to the provider's counters: P-activity reads 522/41/25, the two tool-offering requests
 exactly. `scripts/fixture-privacy.py` was clean; read by the author.
 
+**2026-10-22, claude 2.1.306 conformance.** The native installer moved 2.1.302 to 2.1.306; the
+battery was rerun canned for `claude-code` on 4cab4ca8 and admitted 2.1.306 on its record. Every
+cell 2.1.302 recorded still passes, and every transcript keeps the same frame keys. P-untrusted-mcp
+passes too. 2.1.302 has no cell for it, because the probe (27e645aa) came after that recording.
+`scripts/fixture-privacy.py` was clean; read by the author.
+
 **2026-10-17, claude 2.1.302 conformance.** The native installer moved 2.1.301 to 2.1.302; the
 battery was rerun canned for `claude-code` on b4ee2144 and admitted 2.1.302 on its record. P-tui
 went from FAIL to PASS: 2.1.301's recording opened on the theme picker, and 2.1.302's opens on the
