@@ -460,8 +460,12 @@ none. Witnesses: `acp_child::tests::a_cancel_mid_turn_sends_session_cancel_*`,
 too**: its row is `Channel{6000}` (S36 P7: `turn/interrupt` answers at once; the grace holds the
 three unawaited interrupts a lost re-interrupt calls for), the driver interrupts the cancelled
 turn and kills its commands, and `codex exec` stays `None`. Witness:
-`app_server::tests::a_cancel_interrupts_the_running_turn_and_kills_its_command`. Not yet: the TUI
-and MCP surfaces, and the per-row cancel matrix.
+`app_server::tests::a_cancel_interrupts_the_running_turn_and_kills_its_command`. **A pane
+takes `Keys`**: `PasteInjector::abort` types the row's interactive keys, `gap_ms` apart, past the
+operator-quiet gate, and drops what it held. Only codex's pane has keys (Esc, which its footer
+names as the interrupt, `tests/fixtures/s2/`); every other TUI stays `None` until probe
+P-cancel-2 measures it. Witness: `paste::tests::a_cancel_types_the_rows_abort_keys_*`. Not yet:
+the TUI and MCP surfaces, and the per-row cancel matrix.
 
 **Every child may delegate, bounded by the depth gate (2026-09-27).** A child's marion verbs on the
 permission axis are one rule, `agent_type::child_verbs`: `report`, plus `spawn`/`status`/`wait`/

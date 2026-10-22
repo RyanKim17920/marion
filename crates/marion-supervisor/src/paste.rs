@@ -80,6 +80,14 @@
 //! journaled delivered with a note saying so. A preference never costs a message; a dialog still
 //! holds it.
 //!
+//! # A cancel
+//!
+//! A node being cancelled whose row's interactive verb is [`AbortVerb::Keys`] has those keys typed
+//! into its terminal, `gap_ms` apart, **past every hold above**: a cancel is the operator's own
+//! request to end the turn, so a key they are typing or a dialog on the screen does not stand in
+//! its way. The message held for a paste is dropped as cancelled, and the injector types nothing
+//! more. A row whose verb is anything else gets `false` from the port, and the canceller kills.
+//!
 //! # What is journaled
 //!
 //! `MessageDelivered { via: "pty:paste" }` once the paste and its submit reached the master, or
@@ -109,7 +117,8 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_harness::spec::{
-    BootDialog, BootSignal, DialogAnswer, HarnessSpec, IdleSignal, NodeShape, TurnDelivery,
+    AbortVerb, BootDialog, BootSignal, DialogAnswer, HarnessSpec, IdleSignal, NodeShape,
+    TurnDelivery,
 };
 
 use crate::inbox::{DeliveryPort, Inboxes, Message, render};
@@ -148,6 +157,29 @@ pub struct PasteParams {
     /// The asks it can raise mid-session ([`marion_harness::spec::BootDialogs::asks`]): no paste
     /// is ever typed into one.
     pub asks: &'static [marion_harness::spec::Ask],
+    /// The keys that end the running turn when the node is cancelled, and the gap between them —
+    /// the row's interactive [`AbortVerb::Keys`], or `None` for a row with no such verb.
+    pub abort: Option<AbortKeys>,
+}
+
+/// A row's [`AbortVerb::Keys`], as this driver types it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbortKeys {
+    pub keys: &'static [&'static [u8]],
+    pub gap: Duration,
+}
+
+impl AbortKeys {
+    /// The keys a verb types, or `None` for a verb that is not keys.
+    pub fn of(verb: AbortVerb) -> Option<AbortKeys> {
+        match verb {
+            AbortVerb::Keys { keys, gap_ms, .. } => Some(AbortKeys {
+                keys,
+                gap: Duration::from_millis(u64::from(gap_ms)),
+            }),
+            AbortVerb::Channel { .. } | AbortVerb::None { .. } => None,
+        }
+    }
 }
 
 impl PasteParams {
@@ -177,6 +209,7 @@ impl PasteParams {
             boot_mark: boot,
             dialogs: &[],
             asks: &[],
+            abort: None,
         })
     }
 
@@ -189,7 +222,7 @@ impl PasteParams {
     }
 
     /// **A row's paste, whole**: its interactive delivery, if that is a paste, with the dialogs
-    /// its TUI shows at boot.
+    /// its TUI shows at boot and the keys its cancel types.
     pub fn for_row(row: &HarnessSpec) -> Option<PasteParams> {
         let params = PasteParams::of(marion_harness::spec::delivery_for(
             row,
@@ -198,6 +231,7 @@ impl PasteParams {
         Some(PasteParams {
             dialogs: row.boot_dialogs.dialogs,
             asks: row.boot_dialogs.asks,
+            abort: AbortKeys::of(marion_harness::spec::abort_for(row, NodeShape::Interactive)),
             ..params
         })
     }
@@ -445,6 +479,8 @@ pub fn gate(
 struct Signal {
     woken: bool,
     closed: bool,
+    /// The node is being cancelled: type the row's abort keys, then nothing more.
+    aborting: bool,
 }
 
 /// **A `TerminalPaste` node's delivery port**: a thread that takes the node's queued messages one
@@ -454,6 +490,9 @@ pub struct PasteInjector {
     signal: Mutex<Signal>,
     wake: Condvar,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The row states abort keys ([`PasteParams::abort`]); without them a cancel is the
+    /// canceller's kill, and the port says so.
+    aborts: bool,
 }
 
 /// The host's `dialogs_changed` wakes the driver as a queued message does: a held message looks
@@ -473,6 +512,15 @@ impl DeliveryPort for PasteInjector {
     fn closed(&self) {
         self.lock().closed = true;
         self.wake.notify_all();
+    }
+
+    fn abort(&self) -> bool {
+        if !self.aborts {
+            return false;
+        }
+        self.lock().aborting = true;
+        self.wake.notify_all();
+        true
     }
 }
 
@@ -523,6 +571,7 @@ impl PasteInjector {
             signal: Mutex::new(Signal::default()),
             wake: Condvar::new(),
             thread: Mutex::new(None),
+            aborts: params.abort.is_some(),
         });
         let worker = Worker {
             agent: agent.clone(),
@@ -594,6 +643,13 @@ impl Worker {
             let (Some(host), Some(inboxes)) = (self.host.upgrade(), self.inboxes.upgrade()) else {
                 break;
             };
+            if std::mem::take(&mut self.port.lock().aborting) {
+                self.type_abort(&host);
+                if let Some(m) = held.take() {
+                    inboxes.dropped(&self.agent, &m.id, crate::inbox::CANCELLED_BEFORE_DELIVERY);
+                }
+                break;
+            }
             if held.is_none() && inboxes.queued(&self.agent) == 0 {
                 continue;
             }
@@ -723,6 +779,29 @@ impl Worker {
         }
     }
 
+    /// **Type the row's abort keys**, `gap` apart, past every hold ([`gate`] is not asked): the
+    /// cancel is the operator's own request. Best-effort — a terminal that cannot be written is one
+    /// the canceller's kill ends.
+    fn type_abort(&self, host: &PtyHost) {
+        let Some(abort) = self.params.abort else {
+            return;
+        };
+        for (i, key) in abort.keys.iter().enumerate() {
+            if i > 0 {
+                std::thread::sleep(abort.gap);
+            }
+            let injection = Injection {
+                label: "marion: cancel",
+                body: key,
+                submit: b"",
+                submit_delay: Duration::ZERO,
+            };
+            if host.inject(&injection, &|_| true).is_err() {
+                return;
+            }
+        }
+    }
+
     /// A grace clock that has run out as of `now`.
     fn graced_at(&self, now: Instant) -> Instant {
         now.checked_sub(self.policy.paste_mode_grace).unwrap_or(now)
@@ -791,6 +870,10 @@ impl Worker {
         loop {
             if signal.closed {
                 return false;
+            }
+            // Left set: the loop takes it.
+            if signal.aborting {
+                return true;
             }
             if signal.woken {
                 signal.woken = false;

@@ -283,9 +283,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    turn's commands keep running, so marion kills them after it. The grace holds \
                    the three unawaited interrupts P7's lost re-interrupt calls for",
         },
-        interactive: AbortVerb::None {
-            note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
-                   cancel kills the pane",
+        // Esc alone: the TUI names it as the interrupt; Ctrl-C's effect mid-turn is not on record.
+        interactive: AbortVerb::Keys {
+            keys: &[b"\x1b"],
+            gap_ms: 0,
+            grace_ms: 3_000,
+            note: "codex's TUI footer reads `esc to interrupt` while a turn runs (0.146.0, \
+                   tests/fixtures/s2/codex-cli-0.146.0-boot-status-help-resize.cast), and \
+                   it_live/pane_attach.rs keys turn-done on that text leaving the screen. The \
+                   process stays up after the interrupt, so the kill at the grace's end still \
+                   ends the pane; the Esc lets the turn close first",
         },
     },
     // S37 first screens (0.155.1, `tests/fixtures/s37-boot-dialogs/codex-0.155.1.raw`): a fresh

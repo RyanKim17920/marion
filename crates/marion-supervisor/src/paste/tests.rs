@@ -467,21 +467,28 @@ fn only_a_terminal_paste_row_gets_an_injector() {
         ),
         "the row's idle signal is the boot settle"
     );
-    // A row's own injector carries the dialogs its TUI shows at boot, and only a paste row has one.
+    // A row's own injector carries the dialogs its TUI shows at boot and the keys its cancel
+    // types, and only a paste row has one — so a row whose pane aborts by keys must paste: no
+    // other lane types them.
     for h in marion_core::harness::Harness::ALL {
         let row = marion_harness::adapter::harness_spec(h);
-        let interactive =
-            marion_harness::spec::delivery_for(row, marion_harness::spec::NodeShape::Interactive);
+        let shape = marion_harness::spec::NodeShape::Interactive;
+        let interactive = marion_harness::spec::delivery_for(row, shape);
+        let keys = AbortKeys::of(marion_harness::spec::abort_for(row, shape));
         match PasteParams::for_row(row) {
             Some(p) => assert_eq!(
-                (Some(p.submit), p.dialogs),
+                (Some(p.submit), p.dialogs, p.abort),
                 (
                     PasteParams::of(interactive).map(|q| q.submit),
-                    row.boot_dialogs.dialogs
+                    row.boot_dialogs.dialogs,
+                    keys
                 ),
                 "{h}"
             ),
-            None => assert!(PasteParams::of(interactive).is_none(), "{h}"),
+            None => {
+                assert!(PasteParams::of(interactive).is_none(), "{h}");
+                assert_eq!(keys, None, "{h}: a keys verb with no lane that types it");
+            }
         }
     }
 }
@@ -783,6 +790,58 @@ fn the_operators_half_typed_line_holds_the_paste() {
         bed.resolution(&id),
         RecordKind::MessageDelivered(_)
     ));
+}
+
+/// **A cancel types the row's abort keys at once, `gap` apart, past the operator's quiet** — a
+/// key they typed a moment ago holds a paste, never a cancel — and the message held for a paste
+/// is dropped as cancelled, never typed after the keys.
+#[test]
+fn a_cancel_types_the_rows_abort_keys_past_the_operators_quiet() {
+    let quiet = PastePolicy {
+        operator_quiet: Duration::from_secs(600),
+        ..fast()
+    };
+    let params = PasteParams {
+        settle: BED_SETTLE,
+        abort: Some(AbortKeys {
+            keys: &[b"\x1b", b"\x03"],
+            gap: Duration::from_millis(100),
+        }),
+        ..PasteParams::of(PASTE).expect("a paste row")
+    };
+    let mut bed = Bed::with_params("paste-abort", quiet, params, false);
+    bed.node_writes(BOOTED);
+    let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+    bed.host.write_opaque_input(&lease, b"\r").unwrap();
+    bed.read_slave(1);
+    let id = bed.steer("never typed");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::OperatorTyping, _)));
+
+    let started = Instant::now();
+    bed.inboxes.cancel(&agent());
+    assert!(DeliveryPort::abort(&*bed.injector), "the row states keys");
+    assert_eq!(bed.read_slave(2), b"\x1b\x03");
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(100) && took < Duration::from_secs(5),
+        "the keys came {took:?} after the cancel: gap apart, not after the operator's quiet"
+    );
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDropped(MessageDropped { reason, .. })
+            if reason == crate::inbox::CANCELLED_BEFORE_DELIVERY
+    ));
+    assert!(
+        bed.injector.join_for_test(Duration::from_secs(5)),
+        "it types nothing more"
+    );
+}
+
+/// **A row with no abort keys tells its canceller so**: the port refuses, and nothing is typed.
+#[test]
+fn a_row_without_abort_keys_takes_no_abort() {
+    let bed = Bed::new("paste-no-abort", fast());
+    assert!(!DeliveryPort::abort(&*bed.injector));
 }
 
 /// **The operator's last key starts the quiet period**: the paste is written no sooner than
