@@ -98,15 +98,6 @@ pub const VIA_NEXT_TURN: &str = "acp:next-turn";
 /// with the agent's stderr attached, never as "the agent is broken".
 const SESSION_BUDGET: Duration = Duration::from_secs(60);
 
-/// How long the cancelled turn is given to answer after `session/cancel`.
-///
-/// `session/cancel` is a notification: the pending `session/prompt` answers it with
-/// `stopReason: "cancelled"` (§5.2). That answer is worth waiting a few seconds for — it is the
-/// agent's own statement that it stopped, and it lands in the transcript where a reader can see it
-/// — but it is not worth waiting for indefinitely, because an agent that ignores the cancel is
-/// exactly the agent the kill below exists for.
-const CANCEL_GRACE: Duration = Duration::from_secs(5);
-
 /// How much of the agent's stderr a refusal carries. Enough to hold a stack trace's last words;
 /// bounded because an error message is read by a person and an agent that fails at startup can
 /// write megabytes.
@@ -163,8 +154,14 @@ pub struct AcpChildSpec<'a> {
     /// The row id an `initialize` naming no agent is read as
     /// ([`marion_harness::HarnessAdapter::anonymous_agent`]); `None` refuses such a handshake.
     pub anonymous_as: Option<&'static str>,
-    /// The row's headless [`marion_harness::spec::AbortVerb`]: whether a cancelled turn is sent
-    /// `session/cancel`, and how long it is given to answer it.
+    /// The row's headless [`marion_harness::spec::AbortVerb`]: whether a turn ended early — by a
+    /// cancel or the wall clock — is sent `session/cancel`, and how long it is given to answer it.
+    ///
+    /// `session/cancel` is a notification: the pending `session/prompt` answers it with
+    /// `stopReason: "cancelled"` (§5.2). That answer is worth waiting the row's grace for — it is
+    /// the agent's own statement that it stopped, and it lands in the transcript where a reader can
+    /// see it — but no longer, because an agent that ignores the cancel is exactly the agent the
+    /// kill exists for.
     pub abort: marion_harness::spec::AbortVerb,
 }
 
@@ -751,16 +748,13 @@ fn prompt_session(
             });
             pending.remove(0);
             pending.extend(sent);
-            if answered.is_none() && agent.aborted() {
-                let grace = crate::rpc::channel_grace(abort).unwrap_or_default();
-                let _ = agent.write(&acp::cancel_notification(session));
-                agent.settle(last_id, Instant::now() + grace);
-                return Ok(true);
-            }
             if answered.is_none() {
-                let _ = agent.write(&acp::cancel_notification(session));
-                agent.settle(last_id, Instant::now() + CANCEL_GRACE);
-                return Ok(false);
+                if let Some(grace) = crate::rpc::channel_grace(abort) {
+                    let _ = agent.write(&acp::cancel_notification(session));
+                    agent.settle(last_id, Instant::now() + grace);
+                }
+                // A cancel is an end marion was asked for; only the clock cut the session short.
+                return Ok(agent.aborted());
             }
         }
         let Some(feed) = turns else {
@@ -2551,6 +2545,44 @@ while read -r _; do :; done"#,
             run.stdout
         );
         assert!(!run.exit.timed_out, "a cancel is not the wall clock");
+    }
+
+    /// **The wall clock's `session/cancel` waits the row's grace, not a constant of the driver's**:
+    /// an agent that ignores it is shut down one short grace past its bound.
+    #[test]
+    fn the_wall_clocks_cancel_waits_the_rows_grace() {
+        let dir = scratch("acp-clock-grace");
+        let cancel = dir.join("cancel");
+        let fx = fed(MidTurn::Queue);
+        let script = format!(
+            r#"read -r prompt
+read -r line
+printf '%s\n' "$line" > '{cancel}'
+while read -r _; do :; done"#,
+            cancel = cancel.display(),
+        );
+        let inv = fed_agent(&dir, &script);
+        let started = Instant::now();
+        let run = run_acp_child(AcpChildSpec {
+            bound: Duration::from_secs(1),
+            abort: marion_harness::spec::AbortVerb::Channel {
+                grace_ms: 300,
+                note: "test",
+            },
+            ..fx.spec(&inv)
+        })
+        .expect("a timed-out session");
+        assert!(run.exit.timed_out, "the clock cut it short");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the row's 300 ms grace, not 5 s: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            std::fs::read_to_string(&cancel)
+                .unwrap()
+                .contains("session/cancel")
+        );
     }
 
     /// **A row whose headless verb is not the channel's is never sent `session/cancel`**: the port

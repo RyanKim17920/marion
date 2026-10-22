@@ -49,10 +49,9 @@ const FIRST_TURN_ID: u64 = 2;
 const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
 /// `thread/start` answered in ~20 ms (P3); `thread/resume` reads a rollout from disk.
 const THREAD_BUDGET: Duration = Duration::from_secs(60);
-/// How long an interrupted turn is given to say so before the next interrupt, and how many are
-/// sent. P7 measured `turn/completed` `interrupted` at once; the repeat is for a server that missed
-/// one, and none of them is awaited.
-const INTERRUPT_WAIT: Duration = Duration::from_secs(2);
+/// How many interrupts an ending turn is sent, an equal share of the row's grace apart. P7 measured
+/// `turn/completed` `interrupted` at once; the repeat is for a server that missed one, and none of
+/// them is awaited.
 const INTERRUPTS: usize = 3;
 /// How much of the server's stderr a refusal carries.
 const STDERR_EXCERPT: usize = 2000;
@@ -480,13 +479,12 @@ impl Session<'_> {
                 if exited(node) {
                     return Ok(End::Finished);
                 }
-                if node.aborted() {
-                    let grace = crate::rpc::channel_grace(self.abort).unwrap_or_default();
-                    self.interrupt(node, current.as_deref(), grace / INTERRUPTS as u32);
-                    return Ok(End::Cancelled);
-                }
-                self.interrupt(node, current.as_deref(), INTERRUPT_WAIT);
-                return Ok(End::TimedOut);
+                self.interrupt(node, current.as_deref());
+                return Ok(if node.aborted() {
+                    End::Cancelled
+                } else {
+                    End::TimedOut
+                });
             }
             if node.peer.stopped.is_some() {
                 // The turn is still retrying what cannot succeed: end what it started, then let the
@@ -547,15 +545,18 @@ impl Session<'_> {
         }
     }
 
-    /// The wall clock expired or the node was cancelled mid-turn: interrupt it — again,
-    /// unanswered, `wait` later if it does not close — then kill what it started. `turn` is `None`
-    /// when the server never named one.
-    fn interrupt(&mut self, node: &mut Driver<'_>, turn: Option<&str>, wait: Duration) {
+    /// The wall clock expired or the node was cancelled mid-turn: interrupt it by the row's verb —
+    /// again, unanswered, a share of its grace later if it does not close — then kill what it
+    /// started. `turn` is `None` when the server never named one; a row with no channel verb is
+    /// sent nothing and killed.
+    fn interrupt(&mut self, node: &mut Driver<'_>, turn: Option<&str>) {
         // Enumerated **before** the interrupt: ending the turn ends a command's host, and a command
         // that `setsid`s (codex's `exec_command`) then belongs to pid 1, in a group no walk from the
         // server reaches any more.
         let below = crate::kill::groups_below(node.pid);
-        if let Some(turn) = turn {
+        let grace = crate::rpc::channel_grace(self.abort);
+        if let (Some(turn), Some(grace)) = (turn, grace) {
+            let wait = grace / INTERRUPTS as u32;
             for _ in 0..INTERRUPTS {
                 let id = self.id();
                 if node
@@ -1127,6 +1128,31 @@ for line in sys.stdin:
         assert!(
             marion_testsupport::until(|| dead(bed.pid())),
             "the cancelled turn's command survived: {:?}",
+            marion_testsupport::liveness(bed.pid())
+        );
+    }
+
+    /// **A row with no channel verb is sent no interrupt at its wall clock**: its turn's command is
+    /// killed at once, as `None` says.
+    #[test]
+    fn a_row_without_a_channel_verb_is_killed_without_an_interrupt() {
+        let bed = Bed::new("as-no-verb", "deaf");
+        let started = Instant::now();
+        let run = run_app_server(AppServerSpec {
+            abort: marion_harness::spec::AbortVerb::None { note: "test" },
+            ..bed.spec(Duration::from_secs(2), None)
+        })
+        .expect("a session");
+        assert!(run.exit.timed_out);
+        assert_eq!(bed.count("turn/interrupt"), 0, "nothing to send");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no grace waited: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            marion_testsupport::until(|| dead(bed.pid())),
+            "the command survived: {:?}",
             marion_testsupport::liveness(bed.pid())
         );
     }
