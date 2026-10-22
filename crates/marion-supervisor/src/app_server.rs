@@ -479,6 +479,9 @@ impl Session<'_> {
                 if exited(node) {
                     return Ok(End::Finished);
                 }
+                if current.is_none() {
+                    current = self.started_turn(node, &pending);
+                }
                 self.interrupt(node, current.as_deref());
                 return Ok(if node.aborted() {
                     End::Cancelled
@@ -543,6 +546,24 @@ impl Session<'_> {
                 }
             }
         }
+    }
+
+    /// **The turn a start still unanswered is about to name**, waited for a share of the row's
+    /// grace. A cancel can land between the `turn/start` going out and its answer being read; the
+    /// answer is then a frame away, and without it the interrupt has no turn to name and the turn
+    /// is killed where it could have been ended. `None` for a row with no channel verb, a start
+    /// already answered, and one the server does not answer in time.
+    fn started_turn(&self, node: &mut Driver<'_>, pending: &[Pending]) -> Option<String> {
+        let grace = crate::rpc::channel_grace(self.abort)?;
+        let start = pending.iter().find(|p| !p.steer)?.id;
+        node.settle_until(Instant::now() + grace / INTERRUPTS as u32, |d| {
+            let line = answer_to(d, start)?;
+            Some(
+                self.c
+                    .answered_turn(&serde_json::from_str(&line).unwrap_or(Value::Null)),
+            )
+        })
+        .flatten()
     }
 
     /// The wall clock expired or the node was cancelled mid-turn: interrupt it by the row's verb —
@@ -617,6 +638,8 @@ mod tests {
     /// - `sleep`: the turn starts a `sleep 60` it reports as a command and never completes; an
     ///   interrupt is answered once and closes the turn, **leaving the sleep running** (P7);
     /// - `deaf`: as `sleep`, and an interrupt is never answered;
+    /// - `slow`: as `sleep`, but the command starts, and is logged, before the turn's answer is
+    ///   written, a moment later: a cancel can land before marion knows the turn's id;
     /// - `orphan`: the turn's command host starts a `sleep 60` in a session of its own, as codex's
     ///   `exec_command` does; the interrupt ends the host before it is answered, so the sleep's
     ///   parent is pid 1 by the time marion kills (the leak `timeout_kill` found);
@@ -657,6 +680,8 @@ for line in sys.stdin:
         out({"method": "mcpServer/startupStatus/updated", "params": {"threadId": tid, "name": "marion", "status": st, "error": "boom" if st == "failed" else None}})
     elif meth == "turn/start":
         turn += 1; u = "u-%d" % turn
+        if mode == "slow":
+            child = subprocess.Popen(["sleep", "60"]); note("pid", pid=child.pid); time.sleep(0.8)
         out({"id": i, "result": {"turn": {"id": u, "status": "inProgress"}}})
         out({"method": "turn/started", "params": {"turn": {"id": u}}})
         if mode == "simple" or (mode in ("hold", "late") and turn > 1):
@@ -1125,6 +1150,41 @@ for line in sys.stdin:
             1,
             "answered at once, sent once"
         );
+        assert!(
+            marion_testsupport::until(|| dead(bed.pid())),
+            "the cancelled turn's command survived: {:?}",
+            marion_testsupport::liveness(bed.pid())
+        );
+    }
+
+    /// **A cancel that lands before the turn's id is known still interrupts that turn**: the start's
+    /// answer is a frame away, so marion waits for it, inside the row's grace, rather than kill a
+    /// turn it could have ended.
+    #[test]
+    fn a_cancel_before_the_turn_is_named_waits_for_its_name_and_interrupts_it() {
+        let bed = Bed::new("as-cancel-unnamed", "slow");
+        let fx = fed(MidTurn::Fold);
+        let run = std::thread::scope(|s| {
+            s.spawn(|| {
+                // The command has started; the answer naming its turn has not been written.
+                assert!(marion_testsupport::until(|| bed
+                    .log()
+                    .iter()
+                    .any(|e| e["k"] == "pid")));
+                fx.inboxes.cancel(&fx.agent);
+                assert!(fx.inboxes.abort(&fx.agent), "the lane takes the abort");
+            });
+            run_app_server(bed.spec(Duration::from_secs(30), Some(fx.feed.clone())))
+                .expect("a session")
+        });
+        assert!(!run.exit.timed_out, "{run:?}");
+        let named: Vec<Value> = bed
+            .log()
+            .iter()
+            .filter(|e| e["k"] == "in" && e["msg"]["method"] == "turn/interrupt")
+            .map(|e| e["msg"]["params"]["turnId"].clone())
+            .collect();
+        assert_eq!(named, ["u-1"], "one interrupt, naming the turn");
         assert!(
             marion_testsupport::until(|| dead(bed.pid())),
             "the cancelled turn's command survived: {:?}",
