@@ -63,6 +63,7 @@ use marion_core::proto::result::{CancelledNode, NodeCancelResult};
 use marion_harness::spec::{AbortVerb, NodeShape, abort_for};
 
 use super::launch::LAUNCH_BOUND;
+use super::lifecycle::Launch;
 use super::{
     RegistryHandle, journal_failure_after_signal_in, journal_failure_before_signal_in, lock,
     root_spawn_authorized,
@@ -301,7 +302,7 @@ impl RegistryHandle {
         let mut ended = Vec::with_capacity(members.len());
         for depth in depths {
             let level: Vec<&Member> = members.iter().filter(|m| m.depth == depth).collect();
-            let unlaunched = self.await_launches(&level)?;
+            let unlaunched = self.await_launches(&level, LAUNCH_BOUND)?;
             let mut grace = 0u32;
             let mut aborted = Vec::new();
             for m in &level {
@@ -335,22 +336,28 @@ impl RegistryHandle {
     /// **The level's nodes claimed before their process existed**, waited for until each launch has
     /// a process or has ended without one, and only then given their `CancelRequested`. Answers
     /// the ones that never started a process: there is nothing of theirs to abort or kill. Bounded
-    /// by the launch's own bound; a launch still coming up past it is reported, not guessed at.
-    fn await_launches(&self, level: &[&Member]) -> Result<Vec<AgentId>, RpcError> {
+    /// by `bound`, the launch's own; a launch still coming up past it is handed to its own start,
+    /// which kills the process as it appears ([`RegistryHandle::abandon_launch`]), and reported.
+    fn await_launches(&self, level: &[&Member], bound: Duration) -> Result<Vec<AgentId>, RpcError> {
         let mut unlaunched = Vec::new();
         for m in level {
             let Some(intent) = &m.deferred else {
                 continue;
             };
-            let launched = self.await_launched(&m.agent_id, Instant::now() + LAUNCH_BOUND);
-            if !launched && self.owned_running(&m.agent_id) == Some(true) {
-                return Err(RpcError::internal(format!(
-                    "marion claimed the cancel of `{}` while its launch was coming up, and the \
-                     launch neither started a process nor ended within its own bound; the cancel \
-                     is still claimed, and nothing was journaled or signalled for it (§6.7)",
-                    m.agent_id.0
-                )));
-            }
+            let launched = self.await_launched(&m.agent_id, Instant::now() + bound)
+                || match self.abandon_launch(&m.agent_id, intent) {
+                    Launch::Started => true,
+                    Launch::Ended => false,
+                    Launch::Abandoned => {
+                        return Err(RpcError::internal(format!(
+                            "marion claimed the cancel of `{}` while its launch was coming up, and \
+                             the launch neither started a process nor ended within its own bound; \
+                             its process is killed, and the cancel journaled, the moment it starts \
+                             (§6.7)",
+                            m.agent_id.0
+                        )));
+                    }
+                };
             if let Err(e) = self.journal_append(RecordKind::CancelRequested(intent.clone())) {
                 self.unclaim_cancel(&m.agent_id);
                 return Err(journal_failure_before_signal_in(VERB, e));
@@ -1255,6 +1262,70 @@ mod tests {
                 .contains("without starting a process"),
             "says no process was started"
         );
+    }
+
+    /// **A launch the cancel stopped waiting for is killed the moment its process starts.** Past
+    /// the launch's own bound the cancel gives up and reports it, but the node stays claimed for
+    /// the cancel: when the process appears, its start kills it by the normal tree kill and
+    /// journals the cancel's intent and confirmation, so the node's thread writes no exit of its
+    /// own and nothing is left running unaccounted.
+    #[test]
+    fn a_launch_past_the_cancels_wait_is_killed_as_its_process_starts() {
+        let fx = orphan("cancel-late-launch");
+        let claim = fx.handle.claim_relaunch(&id("root"), "/repo".into());
+        let by = CancelBy::Operator;
+        assert!(fx.handle.claim_cancel(&id("root"), &by));
+        let member = Member {
+            agent_id: id("root"),
+            depth: 0,
+            pid: None,
+            owned: true,
+            verb: AbortVerb::None { note: "test" },
+            by: by.clone(),
+            deferred: Some(CancelRequested {
+                agent_id: id("root"),
+                was: NodeState::Running,
+                by,
+                verb: "none".into(),
+                grace: Millis(Duration::ZERO),
+            }),
+        };
+        let e = fx
+            .handle
+            .await_launches(&[&member], Duration::from_millis(50))
+            .expect_err("the launch is still coming up");
+        assert!(e.to_string().contains("the moment it starts"), "{e}");
+        assert!(
+            fx.trail().is_empty(),
+            "nothing journaled while it has no process"
+        );
+        assert!(lock(&fx.runtime.killed).is_empty());
+
+        // Late: the launch claims the node for itself, then its process starts.
+        let _token = fx.handle.claim(&id("root"), None, "/repo".into());
+        fx.relaunched("root", 202);
+        drop(claim);
+        assert_eq!(
+            *lock(&fx.runtime.killed),
+            [id("root")],
+            "killed as it started"
+        );
+        assert_eq!(
+            fx.trail(),
+            [
+                ("CancelRequested", "root".to_string()),
+                ("KillConfirmed", "root".to_string())
+            ]
+        );
+        assert_eq!(
+            fx.handle.ended_by(&id("root")),
+            Some(CancelBy::Operator),
+            "its thread records no exit of its own"
+        );
+        let node = fx.node("root");
+        assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert_eq!(node.exit.unwrap().signal, Some(9));
+        assert_eq!(node.cancel.map(|c| c.by), Some(CancelBy::Operator));
     }
 
     /// **A relaunch that fails while a cancel waits ends the node all the same**: the launch claimed

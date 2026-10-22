@@ -231,10 +231,10 @@ impl RegistryHandle {
     ) -> Secret {
         let token = mint_token();
         let mut nodes = lock(&self.nodes);
-        let ending = nodes
+        let (ending, abandoned) = nodes
             .get(agent_id)
             .filter(|n| n.running() && n.pid.is_none())
-            .map(|n| n.ending.clone())
+            .map(|n| (n.ending.clone(), n.abandoned.clone()))
             .unwrap_or_default();
         let cancelled = matches!(ending, Ending::CancelRequested(_));
         nodes.insert(
@@ -254,6 +254,7 @@ impl RegistryHandle {
                 ending,
                 process_gone: false,
                 escalated: false,
+                abandoned,
             },
         );
         drop(nodes);

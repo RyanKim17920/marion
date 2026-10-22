@@ -130,6 +130,64 @@ impl RegistryHandle {
         }
     }
 
+    /// **A cancel stops waiting for a node's launch**, at the launch's own bound. `Abandoned` leaves
+    /// `intent` on the node, under the same lock [`Self::mark_started`] publishes the pid under, so
+    /// a process that starts later is killed at once; `Started` and `Ended` say the launch resolved
+    /// at the last moment, and the cancel goes on as for any launch that did.
+    pub(super) fn abandon_launch(
+        &self,
+        agent_id: &AgentId,
+        intent: &marion_core::journal::CancelRequested,
+    ) -> Launch {
+        match lock(&self.nodes).get_mut(agent_id) {
+            Some(n) if n.pid.is_some() => Launch::Started,
+            Some(n) if n.running() => {
+                n.abandoned = Some(intent.clone());
+                Launch::Abandoned
+            }
+            _ => Launch::Ended,
+        }
+    }
+
+    /// [`Self::mark_started`]'s kill of a process whose cancel stopped waiting for it. Off every
+    /// lock, and best effort on the journal: the launch thread has no caller to hand a failure to,
+    /// so it is reported on the supervisor's log, and the kill happens regardless.
+    fn kill_abandoned(&self, intent: marion_core::journal::CancelRequested, pid: i32) {
+        let agent_id = intent.agent_id.clone();
+        let who = intent.by.describe();
+        let report = |what: &str, e: crate::journal::JournalError| {
+            eprintln!(
+                "marion-supervisor: could not journal the {what} of `{}`'s late process: {e}",
+                agent_id.0
+            )
+        };
+        if let Err(e) = self.journal_append(RecordKind::CancelRequested(intent)) {
+            report("cancel", e);
+        }
+        if !self.runtime.kill_process_tree_and_wait(pid) {
+            eprintln!(
+                "marion-supervisor: `{}`'s late process could not be observed dead after its kill; \
+                 its cancel stays unconfirmed",
+                agent_id.0
+            );
+            return;
+        }
+        let description = format!(
+            "marion sent SIGKILL for a cancel by {who}: the cancel had stopped waiting for the \
+             node's launch, and its process was killed the moment it started"
+        );
+        if let Err(e) = self.journal_append(RecordKind::KillConfirmed(KillConfirmed {
+            agent_id: agent_id.clone(),
+            exit: ProcessExit {
+                code: None,
+                signal: Some(9),
+                description,
+            },
+        })) {
+            report("kill", e);
+        }
+    }
+
     /// The node's thread has seen its process end.
     pub(super) fn process_gone(&self, agent_id: &AgentId) -> bool {
         lock(&self.nodes)
@@ -272,22 +330,30 @@ impl RegistryHandle {
     /// A process exists for a node this supervisor owns. Called from
     /// [`crate::run::SpawnObserver::started`], immediately after `Spawned { pid: Some(_) }` is
     /// journaled.
+    ///
+    /// **A process a cancel gave up waiting for is killed as it starts** ([`Self::abandon_launch`]):
+    /// the cancel's intent and its confirmation are journaled here, around the normal tree kill,
+    /// so the process is never left running unaccounted.
     pub(super) fn mark_started(&self, agent_id: &AgentId, pid: i32) {
         // SAFETY: reads the process group of a pid this process just created; cannot fail other
         // than by returning -1, which is recorded as "not known" rather than as a group id.
         let pgid = unsafe { getpgid(pid) };
         // Read while this process holds the child unreaped, so the start is the root's own.
         let root = crate::peer_tree::Root::of(pid);
-        if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
+        let abandoned = lock(&self.nodes).get_mut(agent_id).and_then(|node| {
             node.pid = Some(pid);
             node.tree_root = root;
             node.pgid = (pgid > 0).then_some(pgid);
             node.started_at = Some(std::time::SystemTime::now());
-        }
+            node.abandoned.take()
+        });
         self.rooted.notify_all();
         // A cancel that claimed the node before its process existed waits for this.
         self.ended.notify_all();
         self.register_budget(agent_id);
+        if let Some(intent) = abandoned {
+            self.kill_abandoned(intent, pid);
+        }
     }
 
     /// A native root's process exists: the root its bridge's `session/hello` must descend from
@@ -1052,4 +1118,15 @@ impl Drop for RelaunchClaim<'_> {
         h.ended.notify_all();
         h.live.changes().notify();
     }
+}
+
+/// How a launch a cancel waited for stood when the wait ended ([`RegistryHandle::abandon_launch`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Launch {
+    /// Its process exists.
+    Started,
+    /// It ended without one, or its claim is gone.
+    Ended,
+    /// Still coming up: its process is killed when it starts.
+    Abandoned,
 }

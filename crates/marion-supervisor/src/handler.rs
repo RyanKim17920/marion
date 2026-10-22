@@ -241,6 +241,10 @@ pub struct NodeHandle {
     /// A `node/kill` asked for this node while it was being cancelled: the cancel stops waiting
     /// out its grace and kills what is left.
     escalated: bool,
+    /// A cancel claimed this node while its launch was coming up and gave up waiting for its
+    /// process ([`RegistryHandle::abandon_launch`]): the intent it could not journal, which
+    /// [`RegistryHandle::mark_started`] journals as it kills the process the moment it exists.
+    abandoned: Option<marion_core::journal::CancelRequested>,
 }
 
 /// **Who writes a node's terminal record**, decided once, under [`RegistryHandle::nodes`]'s lock.
