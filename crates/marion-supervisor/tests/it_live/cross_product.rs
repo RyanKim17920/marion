@@ -19,15 +19,16 @@
 //!
 //! # What runs by default, and the full square
 //!
-//! Every cell runs two real harnesses, and the square grew to 63 cells over nine harnesses — the
-//! heaviest suite in the workspace. By default the file runs the cells that between them cover
-//! every harness **as a root** and every harness **as a child**, and one pair per **wire class**
-//! (the same-wire cells below, and a ring over the OpenAI-chat harnesses), plus three pairs that
-//! cross wires: claude→claude, claude→codex, claude→opencode (the verifying cell), codex→codex,
-//! opencode→copilot, copilot→goose, goose→cline, cline→opencode, pi→pi and
-//! qwen→claude. Each runs a harness about as often as a stub on the other side would. The rest of
-//! the square is [`full_matrix_cell`]: skipped by name unless `MARION_FULL_MATRIX=1`, which the
-//! nightly canary sets, so every pair still runs every night.
+//! Every cell runs two real harnesses, and the square grew to 63 cells over nine harnesses, then
+//! took in the ACP opencode node — the heaviest suite in the workspace. By default the file runs
+//! the cells that between them cover every harness **as a root** and every harness **as a child**,
+//! and one pair per **wire class** (the same-wire cells below, and a ring over the OpenAI-chat
+//! harnesses), plus pairs that cross wires: claude→claude, claude→codex, claude→opencode (the
+//! verifying cell), codex→codex, opencode→copilot, copilot→goose, goose→cline, cline→opencode,
+//! pi→pi, qwen→claude, codex→acp-opencode and acp-opencode→codex. Each runs a harness about as
+//! often as a stub on the other side would. The rest of the square is [`full_matrix_cell`]:
+//! skipped by name unless `MARION_FULL_MATRIX=1`, which the nightly canary sets, so every pair
+//! still runs every night.
 //!
 //! # One `#[test]` per cell, and never a loop
 //!
@@ -139,7 +140,6 @@ use marion_core::harness::Harness;
 use marion_core::node::NodeState;
 use marion_core::paths::ProjectDir;
 use marion_core::registry::Replay;
-use marion_harness::adapter_for;
 use marion_provider::script::{ROOT_CALL_ID, ROOT_TOOL_USE_ID};
 use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
@@ -360,6 +360,49 @@ const PI: Node = Node {
     program: "pi",
 };
 
+/// `opencode acp` under marion's ACP client: the one ACP row with a canned recipe, so the one an ACP
+/// node of this matrix can be. Its wire, its built-ins and its spelling of marion's verbs are the
+/// opencode binary's ([`tool_shape`]); what differs is everything between marion and the binary.
+const ACP_OPENCODE: Node = Node {
+    agent_type: "acp-opencode",
+    child_agent_type: "acp-opencode",
+    harness: Harness::Acp,
+    model: "marion/canned-1",
+    child_model: Some("marion/canned-1"),
+    wire: "openai",
+    program: "opencode",
+};
+
+/// The adapter this node's agent type launches through: its harness's, bound to the ACP row the
+/// type names where it names one, so `acp-opencode` spells marion's verbs as opencode does.
+fn node_adapter(node: &Node, agent_type: &str) -> marion_harness::adapter::BoxedAdapter {
+    let t = marion_core::agent_type::builtin(agent_type)
+        .unwrap_or_else(|| panic!("`{agent_type}` is a built-in type"));
+    assert_eq!(t.harness, node.harness, "`{agent_type}`");
+    marion_harness::adapter::adapter_for_type(t.harness, t.acp_agent.as_deref())
+        .expect("every harness in this matrix has an adapter")
+}
+
+/// The harness whose built-in tools a child's script calls: its own, or for an ACP node the
+/// built-in harness whose binary its row runs ([`marion_harness::acp::AgentUpdates::Twin`]).
+fn tool_shape(node: &Node) -> Harness {
+    if node.harness != Harness::Acp {
+        return node.harness;
+    }
+    let t = marion_core::agent_type::builtin(node.child_agent_type).expect("a built-in type");
+    let row = t
+        .acp_agent
+        .as_deref()
+        .and_then(marion_harness::acp::agent)
+        .expect("an ACP node of this matrix names a row");
+    match row.updates {
+        marion_harness::acp::AgentUpdates::Twin(h) => h,
+        marion_harness::acp::AgentUpdates::Own(_) => {
+            panic!("`{}` runs no built-in harness's binary", row.id)
+        }
+    }
+}
+
 /// marion's `spawn`, in the spelling **this harness's wire** dispatches on.
 ///
 /// Three of the four are the adapter's own `marion_tool_name`, which is the whole point of §3.1
@@ -372,7 +415,7 @@ const PI: Node = Node {
 /// rejected by 0.146.0 as `unsupported call` (§11 item 12), and the wire dispatch form is the bare
 /// verb beside `namespace: "mcp__marion"`, which `marion_provider::responses::mcp_call` supplies.
 fn spawn_tool(node: &Node) -> String {
-    let adapter = adapter_for(node.harness).expect("every harness in this matrix has an adapter");
+    let adapter = node_adapter(node, node.agent_type);
     match node.harness {
         Harness::Codex => "spawn".to_string(),
         _ => adapter.marion_tool_name("spawn"),
@@ -381,7 +424,7 @@ fn spawn_tool(node: &Node) -> String {
 
 /// marion's `report`, in the same per-harness spelling, for the **child**'s script.
 fn report_tool(node: &Node) -> String {
-    let adapter = adapter_for(node.harness).expect("every harness in this matrix has an adapter");
+    let adapter = node_adapter(node, node.child_agent_type);
     match node.harness {
         Harness::Codex => "report".to_string(),
         _ => adapter.marion_tool_name("report"),
@@ -424,7 +467,7 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
         ..Script::default()
     };
     let report = report_tool(child);
-    match child.harness {
+    match tool_shape(child) {
         marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         // The Anthropic wire's two-step script *is* a child script once its tool is re-aimed:
         // `classify_root` finishes the run as soon as the transcript carries that call's result.
@@ -465,11 +508,9 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
                 args: json!({ "filePath": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
             });
         }
-        // **Not a cell of this matrix, and that is a refusal rather than an omission.** Every cell
-        // here drives a node through marion's *canned* provider, and an ACP node has no canned
-        // mode at all: `AcpAdapter::compile` refuses `Auth::Canned` by name, because ACP has no
-        // protocol-level way to point an agent at an endpoint. There is nothing to script, so this
-        // says so rather than scripting something that would not be an ACP run.
+        // An ACP child takes the arm of the harness whose binary it runs ([`tool_shape`]): an
+        // `acp-opencode` child writes through opencode's own `write` and reports in opencode's
+        // spelling, which [`report_tool`] read off the bound adapter.
         // The copilot child writes before it reports, through the `create` that `copilot-impl`'s
         // `tools: [read, write]` makes the adapter put in `--available-tools` and grant through
         // `--allow-tool=write` — withheld and denied respectively without the grant (s24). Same
@@ -515,7 +556,9 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
         // **Not a child of this matrix, and that is a measured refusal.** qwen 0.23.0's
         // `write_file` refuses a relative `file_path` (`File path must be absolute`, s25 item 17),
         // and the worktree's absolute path does not exist until `spawn` creates it, so no canned
-        // script can name it. qwen is driven as a **root** here and as a child in `harness_matrix`.
+        // script can name it. Re-measured on 2026-10-22 with a goose root over a qwen child: the
+        // tool result was that same refusal and `changed_paths` was empty. qwen is driven as a
+        // **root** here and as a child in `harness_matrix`.
         Harness::Qwen => unreachable!(
             "no cell names a qwen child: its write_file refuses the relative path every child \
              cell writes (s25 item 17)"
@@ -722,7 +765,7 @@ fn marion_argv(
 /// file used to assert, with every cell still green.
 #[test]
 fn argv_that_names_a_loopback_endpoint_always_says_canned() {
-    for node in [&CLAUDE, &CODEX, &OPENCODE] {
+    for node in [&CLAUDE, &CODEX, &OPENCODE, &ACP_OPENCODE] {
         for base_url in ["http://127.0.0.1:8080/v1", "http://localhost:1/v1"] {
             let args = marion_argv(
                 node,
@@ -1772,4 +1815,36 @@ fn zzr_pi_root_spawns_an_opencode_child_and_receives_its_contract() {
 #[test]
 fn zzs_pi_root_spawns_a_pi_child_and_receives_its_contract() {
     cell(&PI, &PI);
+}
+
+// A pi pairing each way with a harness pi had no cell with: pi as the root of a copilot child, and
+// a goose root over a pi child.
+
+#[test]
+fn zzu_pi_root_spawns_a_copilot_child_and_receives_its_contract() {
+    full_matrix_cell(&PI, &COPILOT);
+}
+
+#[test]
+fn zzv_goose_root_spawns_a_pi_child_and_receives_its_contract() {
+    full_matrix_cell(&GOOSE, &PI);
+}
+
+// The ACP **row and column**: `opencode acp` under marion's own ACP client, as the child of a
+// built-in root and as the root over a built-in child. Each crosses a wire: codex speaks Responses
+// and the ACP opencode node Chat Completions, so every request's role is read off one wire each.
+
+#[test]
+fn zzx_codex_root_spawns_an_acp_opencode_child_and_receives_its_contract() {
+    cell(&CODEX, &ACP_OPENCODE);
+}
+
+#[test]
+fn zzy_acp_opencode_root_spawns_a_codex_child_and_receives_its_contract() {
+    cell(&ACP_OPENCODE, &CODEX);
+}
+
+#[test]
+fn zzz_acp_opencode_root_spawns_an_acp_opencode_child_and_receives_its_contract() {
+    full_matrix_cell(&ACP_OPENCODE, &ACP_OPENCODE);
 }
