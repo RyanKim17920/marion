@@ -1362,32 +1362,8 @@ pub struct PersistedContract {
 /// a `filter_map` that silently dropped an unparsable file made one good contract beside one
 /// corrupt one count as one, and pass.
 pub fn persisted_contracts(state: &Path) -> std::io::Result<Vec<PersistedContract>> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-        // **The failing directory is named in the error, not just the root the walk started from.**
-        // `io::Error` from `read_dir` carries the errno and no path, so a caller that reports only
-        // its own `state` argument says "somewhere under here" about a tree that may be several
-        // levels deep — which is what `worktree_reap.rs`'s own copy avoided by panicking with `dir`
-        // in hand. Rebuilding it here keeps that, for every caller rather than one.
-        let entries = std::fs::read_dir(dir).map_err(|e| {
-            std::io::Error::new(
-                e.kind(),
-                format!("{} does not enumerate: {e}", dir.display()),
-            )
-        })?;
-        for entry in entries {
-            let p = entry?.path();
-            if p.is_dir() {
-                walk(&p, out)?;
-            } else if p.extension().is_some_and(|x| x == "json")
-                && p.parent().is_some_and(|d| d.ends_with("contracts"))
-            {
-                out.push(p);
-            }
-        }
-        Ok(())
-    }
     let mut paths = Vec::new();
-    walk(state, &mut paths)?;
+    walk_contracts(state, state, &mut paths)?;
     // Stable across runs and machines: `read_dir` order is not, and a caller indexing `[0]` after
     // asserting a count of one should get the same file every time it fails.
     paths.sort();
@@ -1416,6 +1392,42 @@ pub fn persisted_contracts(state: &Path) -> std::io::Result<Vec<PersistedContrac
             PersistedContract { path, parsed }
         })
         .collect())
+}
+
+/// Every `contracts/*.json` under `dir`, a directory inside `root`.
+///
+/// **A directory below `root` that is gone by the time the walk reaches it is skipped**, not an
+/// error: a node's `tmp/` is removed when the node ends, so a walk racing that cleanup found the
+/// entry in its parent and then `NotFound` on its own `read_dir`. A directory that no longer exists
+/// holds no contract to hide, so the count stays honest; every other failure, and a `root` that is
+/// itself missing, still fails the walk.
+fn walk_contracts(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    // **The failing directory is named in the error, not just the root the walk started from.**
+    // `io::Error` from `read_dir` carries the errno and no path, so a caller that reports only
+    // its own `state` argument says "somewhere under here" about a tree that may be several
+    // levels deep — which is what `worktree_reap.rs`'s own copy avoided by panicking with `dir`
+    // in hand. Rebuilding it here keeps that, for every caller rather than one.
+    let entries = match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir != root => return Ok(()),
+        Err(e) => {
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!("{} does not enumerate: {e}", dir.display()),
+            ));
+        }
+        Ok(entries) => entries,
+    };
+    for entry in entries {
+        let p = entry?.path();
+        if p.is_dir() {
+            walk_contracts(root, &p, out)?;
+        } else if p.extension().is_some_and(|x| x == "json")
+            && p.parent().is_some_and(|d| d.ends_with("contracts"))
+        {
+            out.push(p);
+        }
+    }
+    Ok(())
 }
 
 /// The judgement [`persisted_contracts`] deliberately withholds: a contract marion wrote and cannot
@@ -2267,6 +2279,28 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].0, contracts.join("t1.json"));
         assert_eq!(found[0].1["task_id"], "t1");
+    }
+
+    /// **A directory removed between its listing and its walk is skipped, the root is not**: a
+    /// node's `tmp/` going away mid-walk is the descendant_gate flake, and it hides no contract.
+    #[test]
+    fn a_directory_gone_mid_walk_is_skipped_but_a_missing_root_fails() {
+        let dir = scratch("contracts-vanished");
+        let contracts = dir.join("proj/agents/a1/contracts");
+        std::fs::create_dir_all(&contracts).unwrap();
+        std::fs::write(contracts.join("t1.json"), br#"{"task_id":"t1"}"#).unwrap();
+        let gone = dir.join("proj/agents/a1/tmp/opencode");
+
+        let mut out = Vec::new();
+        walk_contracts(&dir, &gone, &mut out).expect("a vanished subdirectory is skipped");
+        assert!(out.is_empty());
+        walk_contracts(&dir, &dir, &mut out).expect("the walk succeeds");
+        assert_eq!(out, [contracts.join("t1.json")]);
+
+        let err = walk_contracts(&gone, &gone, &mut Vec::new()).expect_err("a missing root fails");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("does not enumerate"), "{err}");
+        assert!(persisted_contracts(&gone).is_err());
     }
 
     /// The half that must NOT panic where it is read. A corrupt contract is carried out as data, so
