@@ -185,15 +185,16 @@ impl Bed {
     /// whatever the hosting root's own environment carries.
     fn run_bridge_in(&self, marker: &str, as_node: &AgentId) {
         let mut declared: BTreeMap<String, String> = common::declaration_of(&self.state, as_node);
-        // The token itself, not the file it rides in: what a sibling that read the file holds.
-        declared.remove(marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV);
+        // A copy of the token in a file of the host's own: what a sibling that read the node's
+        // token file holds, so the binding follows the process, not where the file sits.
+        let copy = self.scripts.join(format!("{marker}.token"));
+        std::fs::write(&copy, common::node_token_of(&declared)).unwrap();
+        declared.insert(
+            marion_harness::mcp_bridge::NODE_TOKEN_FILE_ENV.into(),
+            copy.to_string_lossy().into_owned(),
+        );
         // The readiness marker belongs to the node's own bridge; this one must not touch it.
         declared.remove(marion_harness::mcp_bridge::READY_FILE_ENV);
-        assert!(
-            declared.contains_key(marion_harness::mcp_bridge::NODE_TOKEN_ENV),
-            "the declaration carries {}'s token: {declared:?}",
-            as_node.0
-        );
         let requests = self.scripts.join(format!("{marker}.jsonl"));
         let frames = [
             json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
