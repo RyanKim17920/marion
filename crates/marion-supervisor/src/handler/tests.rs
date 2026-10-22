@@ -3686,6 +3686,56 @@ fn pane_ticks_scan_once_at_the_cached_completion_expiry() {
     assert_eq!(w.fx.handle.completed_usage_for_test(), (0, 0));
 }
 
+/// **Each completed pane expires on its own clock**: at the older one's deadline only it goes, the
+/// younger stays replayable, and the cached deadline moves to the younger one's, so the ticks
+/// between scan nothing.
+#[test]
+fn completed_ttl_evicts_only_the_expired_pane_and_rearms_on_the_next() {
+    let mut w = Wired::new("handler-pane-ttl-partial");
+    w.server.take().expect("test server").stop();
+    let now = Arc::new(Mutex::new(std::time::Instant::now()));
+    let clock_now = Arc::clone(&now);
+    w.fx.handle
+        .set_pane_clock_for_test(Arc::new(move || *lock(&clock_now)));
+    let t0 = *lock(&now);
+    let old = drained_zero_output_pane(&w, "old");
+    w.fx.handle.completed_pane(&id("old"), &old, 1_024);
+    *lock(&now) = t0 + std::time::Duration::from_secs(100);
+    let young = drained_zero_output_pane(&w, "young");
+    w.fx.handle.completed_pane(&id("young"), &young, 2_048);
+    assert_eq!(w.fx.handle.completed_usage_for_test(), (2, 3_072));
+
+    *lock(&now) = t0 + std::time::Duration::from_secs(300);
+    crate::serve::Handle::tick(w.fx.handle.as_ref());
+    assert_eq!(
+        w.fx.handle.completed_usage_for_test(),
+        (1, 2_048),
+        "only the pane past its own TTL is evicted"
+    );
+    let (out, _rx) = crate::serve::capture(ConnId(1_126));
+    assert!(old.begin_pane_replay(ConnId(1_126), out).is_none());
+    let (out, _rx) = crate::serve::capture(ConnId(1_127));
+    assert!(
+        young.begin_pane_replay(ConnId(1_127), out).is_some(),
+        "the younger pane is still replayable"
+    );
+
+    w.fx.handle.reset_completed_scan_count_for_test();
+    *lock(&now) = t0 + std::time::Duration::from_secs(399);
+    for _ in 0..32 {
+        crate::serve::Handle::tick(w.fx.handle.as_ref());
+    }
+    assert_eq!(
+        w.fx.handle.completed_scan_count_for_test(),
+        0,
+        "the deadline was not moved to the surviving pane's"
+    );
+    *lock(&now) = t0 + std::time::Duration::from_secs(400);
+    crate::serve::Handle::tick(w.fx.handle.as_ref());
+    assert_eq!(w.fx.handle.completed_scan_count_for_test(), 1);
+    assert_eq!(w.fx.handle.completed_usage_for_test(), (0, 0));
+}
+
 #[test]
 fn completed_pane_count_cap_evicts_the_oldest_zero_output_entry() {
     let w = Wired::new("handler-pane-completed-count-cap");
