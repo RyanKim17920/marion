@@ -2766,6 +2766,7 @@ fn launch_acp(
         policy: node.acp_client.clone(),
         boot: node.boot,
         anonymous_as: adapter.anonymous_agent(),
+        abort: adapter.spec().abort.headless,
     })?;
     Ok(RootOutcome {
         // **The turn's code, not the process's** (`acp_child::turn_exit`): a turn the agent

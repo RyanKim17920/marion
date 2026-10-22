@@ -269,9 +269,10 @@ impl RegistryHandle {
             let deadline = Instant::now() + Duration::from_millis(u64::from(grace));
             let left = self.wait_processes_gone(&aborted, deadline, &watch);
             for m in &level {
-                let straggler = !aborted.contains(&m.agent_id) || left.contains(&m.agent_id);
+                let sent = aborted.contains(&m.agent_id);
+                let straggler = !sent || left.contains(&m.agent_id);
                 let forced = straggler && self.kill_straggler(m)?;
-                self.confirm(m, forced)?;
+                self.confirm(m, sent, forced)?;
                 ended.push(CancelledNode {
                     agent_id: m.agent_id.clone(),
                     forced,
@@ -303,8 +304,10 @@ impl RegistryHandle {
 
     /// The cancel's confirmation: `KillConfirmed`, with a signal only where marion sent one. A node
     /// something else already ended (a KillTree racing the cancel) is left to that record; a node
-    /// that ended on its own has whatever remains in its group swept.
-    fn confirm(&self, m: &Member, forced: bool) -> Result<(), RpcError> {
+    /// that ended on its own has whatever remains in its group swept. `sent` is whether the node's
+    /// lane took its abort ([`crate::inbox::Inboxes::abort`]): a row's verb its lane did not send
+    /// gave the node no grace, and the description says so rather than claim one ran out.
+    fn confirm(&self, m: &Member, sent: bool, forced: bool) -> Result<(), RpcError> {
         if !forced && let Some(pgid) = self.owned_pgid(&m.agent_id) {
             self.runtime.sweep_group(pgid);
         }
@@ -318,17 +321,26 @@ impl RegistryHandle {
             return Ok(());
         }
         let who = m.by.describe();
-        let description = match (forced, m.verb) {
-            (false, _) => format!(
+        let description = match (forced, sent, m.verb) {
+            (false, true, v) => format!(
                 "the node ended on marion's cancel (by {who}) within its {} ms {} grace",
-                m.verb.grace_ms(),
-                m.verb.kind()
+                v.grace_ms(),
+                v.kind()
             ),
-            (true, AbortVerb::None { .. }) => format!(
+            (false, false, _) => format!(
+                "the node's process ended on its own as marion's cancel (by {who}) reached it, \
+                 before any abort or signal"
+            ),
+            (true, _, AbortVerb::None { .. }) => format!(
                 "marion sent SIGKILL for a cancel by {who}: the node's row has no abort verb on \
                  this shape"
             ),
-            (true, v) => format!(
+            (true, false, v) => format!(
+                "marion sent SIGKILL for a cancel by {who}: the node's row has a {} verb on this \
+                 shape but its lane took none, so no grace was given",
+                v.kind()
+            ),
+            (true, true, v) => format!(
                 "marion sent SIGKILL for a cancel by {who}: the node was still running when its \
                  {} ms {} grace ended",
                 v.grace_ms(),
@@ -704,6 +716,43 @@ mod tests {
                 _ => None,
             });
         assert_eq!(verb.as_deref(), Some("none"));
+    }
+
+    /// A driver whose lane has no abort to send: the port's default.
+    struct NoVerb;
+
+    impl DeliveryPort for NoVerb {
+        fn wake(&self) {}
+    }
+
+    /// **A row whose verb its lane does not send is killed at once, and said so**: the journal does
+    /// not claim a grace ran out that never ran — the row's `channel` verb is named, and that the
+    /// lane took none.
+    #[test]
+    fn a_verb_the_lane_does_not_send_is_killed_at_once_and_says_so() {
+        let fx = Fx::new("cancel-no-lane");
+        fx.running("root", None, Harness::Pi, 101, true);
+        assert!(fx.handle.inboxes.attach_port(&id("root"), Arc::new(NoVerb)));
+
+        let started = Instant::now();
+        let r = fx.cancel("root", None).expect("cancelled");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the row's 5 s grace was not waited: nothing was sent to close in it"
+        );
+        assert_eq!(ended(&r), [("root".to_string(), true)]);
+        let exit = fx.node("root").exit.unwrap();
+        assert_eq!(exit.signal, Some(9));
+        assert!(
+            exit.description.contains("channel verb") && exit.description.contains("took none"),
+            "{}",
+            exit.description
+        );
+        assert!(
+            !exit.description.contains("grace ended"),
+            "no grace ran: {}",
+            exit.description
+        );
     }
 
     /// **Freeze top-down, abort bottom-up**: every intent is written before any confirmation, the

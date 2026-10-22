@@ -450,8 +450,14 @@ the handler's `ended` condvar up to its longest grace, stragglers are killed, an
 `node/cancel`; `--force` is the old `node/kill`. Witnesses: `handler::cancel::tests` (graceful,
 no-verb kill, cascade order, escalation, steer dropped, §5.4 principal, refusals first),
 `inbox::tests` and `duplex::tests` (a cancel beats a queued steer; a JSONL node is aborted, not
-killed). Not yet: the ACP and app-server drivers' abort (they land with the shared JSON-RPC
-driver), the TUI and MCP surfaces, and the per-row cancel matrix.
+killed). **The ACP driver takes its abort (2026-10-22)**: `rpc::Driver`'s port takes a cancel
+where the row's headless verb is `Channel`, every settle stops on it, and `prompt_session` sends
+`session/cancel` and waits the row's grace for the `cancelled` answer (before, the port refused
+every abort and an ACP node was killed at once under a journal line claiming a 5 s grace had run
+out). A lane that takes no verb is killed at once and its `KillConfirmed` says the lane took
+none. Witnesses: `acp_child::tests::a_cancel_mid_turn_sends_session_cancel_*`,
+`handler::cancel::tests::a_verb_the_lane_does_not_send_*`. Not yet: the app-server driver's
+abort, the TUI and MCP surfaces, and the per-row cancel matrix.
 
 **Every child may delegate, bounded by the depth gate (2026-09-27).** A child's marion verbs on the
 permission axis are one rule, `agent_type::child_verbs`: `report`, plus `spawn`/`status`/`wait`/

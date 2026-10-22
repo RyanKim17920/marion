@@ -2830,6 +2830,7 @@ pub fn run_spawn_watched(
                 ),
                 boot: adapter.boot(),
                 anonymous_as: adapter.anonymous_agent(),
+                abort: adapter.spec().abort.headless,
             })
             .map(|r| ChildRun {
                 stdout: r.stdout,

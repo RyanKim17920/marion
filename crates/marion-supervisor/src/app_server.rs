@@ -390,7 +390,10 @@ impl Session<'_> {
             self.c.turns.start,
         )?;
         if let Some(feed) = self.turns {
-            feed.source.attach_port(node.wake_port());
+            feed.source
+                .attach_port(node.wake_port(marion_harness::spec::AbortVerb::None {
+                    note: "the thread server's interrupt is sent at the wall clock only",
+                }));
         }
         let folds = self.turns.is_some_and(TurnFeed::folds);
         // Messages whose steer lost the race with the turn's end: each is the next turn.

@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use marion_harness::spec::AbortVerb;
 use marion_harness::{ChildExit, Invocation};
 
 use crate::kill::{DRAIN_GRACE, kill_process_tree};
@@ -109,13 +110,15 @@ pub(crate) trait Peer {
     fn notified(&mut self, _frame: &Value) {}
 }
 
-/// The reader's side: every line so far, whether stdout has ended, and whether the inbox woke the
-/// driver since it last looked.
+/// The reader's side: every line so far, whether stdout has ended, whether the inbox woke the
+/// driver since it last looked, and whether the node's cancel reached it.
 #[derive(Default)]
 struct Feed {
     lines: Vec<String>,
     eof: bool,
     woken: bool,
+    /// Sticky: the driver notices it once ([`Driver::aborted`]), and a wait never wakes on it again.
+    aborted: bool,
 }
 
 #[derive(Default)]
@@ -130,14 +133,37 @@ impl Shared {
     }
 }
 
-/// The node's inbox's [`crate::inbox::DeliveryPort`] on a driver: a wake is one more event on the
-/// condvar every wait blocks on.
-struct Wake(Arc<Shared>);
+/// The node's inbox's [`crate::inbox::DeliveryPort`] on a driver: a wake, and a cancel, are one
+/// more event on the condvar every wait blocks on.
+struct Wake {
+    shared: Arc<Shared>,
+    /// The row's headless verb is [`AbortVerb::Channel`], which this lane sends; without it a
+    /// cancel is the canceller's kill, and the port says so.
+    aborts: bool,
+}
 
 impl crate::inbox::DeliveryPort for Wake {
     fn wake(&self) {
-        self.0.lock().woken = true;
-        self.0.cv.notify_all();
+        self.shared.lock().woken = true;
+        self.shared.cv.notify_all();
+    }
+
+    fn abort(&self) -> bool {
+        if !self.aborts {
+            return false;
+        }
+        self.shared.lock().aborted = true;
+        self.shared.cv.notify_all();
+        true
+    }
+}
+
+/// How long a turn ended early is given to close, where the row's headless verb is the typed
+/// channel's own interrupt — the lane's to send — and `None` for a row that has none.
+pub(crate) fn channel_grace(verb: AbortVerb) -> Option<Duration> {
+    match verb {
+        AbortVerb::Channel { grace_ms, .. } => Some(Duration::from_millis(u64::from(grace_ms))),
+        AbortVerb::Keys { .. } | AbortVerb::None { .. } => None,
     }
 }
 
@@ -189,6 +215,8 @@ pub(crate) struct Driver<'a, P> {
     pub responses: Vec<(u64, String)>,
     /// Called with every line, verbatim, in arrival order, exactly once.
     on_line: Option<&'a dyn Fn(&str)>,
+    /// The node's cancel reached this driver ([`Self::aborted`]).
+    aborted: bool,
     pub peer: P,
 }
 
@@ -239,13 +267,35 @@ impl<'a, P: Peer> Driver<'a, P> {
             last_turn_line: 0,
             responses: Vec::new(),
             on_line,
+            aborted: false,
             peer,
         })
     }
 
-    /// The port a node's inbox wakes this driver through.
-    pub fn wake_port(&self) -> Arc<dyn crate::inbox::DeliveryPort> {
-        Arc::new(Wake(Arc::clone(&self.shared)))
+    /// The port a node's inbox wakes this driver through. `abort` is the row's headless verb: the
+    /// port takes a cancel only where the lane can send it ([`channel_grace`]).
+    pub fn wake_port(&self, abort: AbortVerb) -> Arc<dyn crate::inbox::DeliveryPort> {
+        Arc::new(Wake {
+            shared: Arc::clone(&self.shared),
+            aborts: channel_grace(abort).is_some(),
+        })
+    }
+
+    /// **Whether the node is being cancelled**: its inbox's [`crate::inbox::DeliveryPort::abort`]
+    /// reached this driver. Every [`Self::settle_until`] stops on it — answering `None`, as at a
+    /// deadline — once; a caller tells the two apart here and ends the turn by the row's verb.
+    pub fn aborted(&self) -> bool {
+        self.aborted
+    }
+
+    /// `true` the first time the cancel is seen; from then on [`Self::aborted`] says so. For a wait
+    /// that is not a [`Self::settle_until`].
+    pub fn take_abort(&mut self) -> bool {
+        if self.aborted || !self.shared.lock().aborted {
+            return false;
+        }
+        self.aborted = true;
+        true
     }
 
     /// Whether the inbox woke the driver since the last take, clearing it.
@@ -276,8 +326,10 @@ impl<'a, P: Peer> Driver<'a, P> {
             crate::wake::wait_exit(&self.child, until.saturating_duration_since(Instant::now()));
             return;
         }
+        let seen = self.aborted;
         let mut feed = self.shared.lock();
-        while feed.lines.len() <= self.cursor && !feed.woken && !feed.eof {
+        while feed.lines.len() <= self.cursor && !feed.woken && !feed.eof && (seen || !feed.aborted)
+        {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return;
@@ -314,9 +366,9 @@ impl<'a, P: Peer> Driver<'a, P> {
         })
     }
 
-    /// Classify, then ask `done`, on every wake until it answers `Some`, the deadline passes, or the
-    /// server has been dead for [`DEATH_GRACE`] — telling "it crashed" from "it hung", which §8
-    /// insists are two findings.
+    /// Classify, then ask `done`, on every wake until it answers `Some`, the deadline passes, the
+    /// node's cancel arrives ([`Self::aborted`]), or the server has been dead for [`DEATH_GRACE`] —
+    /// telling "it crashed" from "it hung", which §8 insists are two findings.
     pub fn settle_until<T>(
         &mut self,
         deadline: Instant,
@@ -329,6 +381,9 @@ impl<'a, P: Peer> Driver<'a, P> {
             self.classify();
             if let Some(v) = done(self) {
                 return Some(v);
+            }
+            if self.take_abort() {
+                return None;
             }
             if ended {
                 // No answer can arrive. Wait for the process itself, so a caller that reads its

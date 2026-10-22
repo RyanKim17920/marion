@@ -163,6 +163,9 @@ pub struct AcpChildSpec<'a> {
     /// The row id an `initialize` naming no agent is read as
     /// ([`marion_harness::HarnessAdapter::anonymous_agent`]); `None` refuses such a handshake.
     pub anonymous_as: Option<&'static str>,
+    /// The row's headless [`marion_harness::spec::AbortVerb`]: whether a cancelled turn is sent
+    /// `session/cancel`, and how long it is given to answer it.
+    pub abort: marion_harness::spec::AbortVerb,
 }
 
 /// The largest file `fs/read_text_file` returns. The whole text goes back in one frame the agent
@@ -538,6 +541,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         spec.prompt,
         deadline,
         spec.turns.as_ref(),
+        spec.abort,
     )?;
 
     Ok(agent.finish(!answered).0)
@@ -707,22 +711,28 @@ fn select_in_session(
 /// because it is the cleaner one: the pending prompt answers a cancel with
 /// `stopReason: "cancelled"`, which is a frame in the transcript, where a SIGKILL is a hole in it.
 /// Written best-effort — an agent whose stdin has already closed is one the caller's kill handles.
+/// It goes out at the wall clock's expiry, and on the node's own cancel (`node/cancel`), where the
+/// row's verb is the channel's: that session then ends as one marion asked to end, not one whose
+/// clock ran out, and the canceller's level wait sees the agent go.
 fn prompt_session(
     agent: &mut Driver<'_>,
     session: &str,
     prompt: &str,
     deadline: Instant,
     turns: Option<&crate::inbox::TurnFeed>,
+    abort: marion_harness::spec::AbortVerb,
 ) -> Result<bool, AcpChildError> {
+    // Attached before the prompt goes out: a cancel that lands as the turn starts reaches this
+    // driver rather than a node with no port, which the canceller could only kill.
+    if let Some(feed) = turns {
+        feed.source.attach_port(agent.wake_port(abort));
+    }
     let mut last_id = FIRST_PROMPT_ID;
     send(
         agent,
         &acp::prompt_request(last_id, session, prompt),
         "session/prompt",
     )?;
-    if let Some(feed) = turns {
-        feed.source.attach_port(agent.wake_port());
-    }
     let folding = turns.filter(|f| f.folds());
     let mut pending = vec![last_id];
     loop {
@@ -741,6 +751,12 @@ fn prompt_session(
             });
             pending.remove(0);
             pending.extend(sent);
+            if answered.is_none() && agent.aborted() {
+                let grace = crate::rpc::channel_grace(abort).unwrap_or_default();
+                let _ = agent.write(&acp::cancel_notification(session));
+                agent.settle(last_id, Instant::now() + grace);
+                return Ok(true);
+            }
             if answered.is_none() {
                 let _ = agent.write(&acp::cancel_notification(session));
                 agent.settle(last_id, Instant::now() + CANCEL_GRACE);
@@ -766,6 +782,11 @@ fn prompt_session(
             None if feed.source.held() && !feed.reported(&agent.frames_since(0)) => loop {
                 if agent.take_wake() {
                     break;
+                }
+                // Cancelled between turns: there is no turn to end, and the shutdown ends the
+                // session.
+                if agent.take_abort() {
+                    return Ok(true);
                 }
                 if Instant::now() >= deadline {
                     return Ok(false);
@@ -1431,6 +1452,7 @@ mod tests {
             policy: full_grant(&inv.cwd),
             boot: marion_harness::acp::UNMEASURED_AGENT,
             anonymous_as: None,
+            abort: marion_harness::acp::SPEC.abort.headless,
         }
     }
 
@@ -2104,6 +2126,7 @@ sleep 15"#,
                 policy: full_grant(&inv.cwd),
                 boot: marion_harness::acp::UNMEASURED_AGENT,
                 anonymous_as: None,
+                abort: marion_harness::acp::SPEC.abort.headless,
             })
             .expect_err("refused")
         };
@@ -2481,6 +2504,90 @@ sleep 15"#,
             dir,
             &format!("HELLO='{HELLO}'\nOPENED='{OPENED}'\n{HANDSHAKE}{body}"),
         )
+    }
+
+    /// **A cancelled node is sent `session/cancel` mid-turn**, and the session ends on the agent's
+    /// own `cancelled` answer, well inside the row's grace and nowhere near the wall clock — an
+    /// end marion asked for, not a clock that ran out.
+    #[test]
+    fn a_cancel_mid_turn_sends_session_cancel_and_ends_on_the_agents_answer() {
+        let dir = scratch("acp-abort");
+        let (held, cancel) = (dir.join("held"), dir.join("cancel"));
+        let fx = fed(MidTurn::Queue);
+        let script = format!(
+            r#"read -r prompt
+: > '{held}'
+read -r -t 15 line
+printf '%s\n' "$line" > '{cancel}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"cancelled"}}}}'
+while read -r _; do :; done"#,
+            held = held.display(),
+            cancel = cancel.display(),
+        );
+        let inv = fed_agent(&dir, &script);
+        let started = Instant::now();
+        let (run, took) = std::thread::scope(|s| {
+            let canceller = s.spawn(|| {
+                wait_for_file(&held);
+                fx.inboxes.cancel(&fx.agent);
+                fx.inboxes.abort(&fx.agent)
+            });
+            let run = run_acp_child(fx.spec(&inv)).expect("the session ends");
+            (run, canceller.join().unwrap())
+        });
+        assert!(took, "the ACP lane takes the row's channel verb");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the session ended on the agent's answer: {:?}",
+            started.elapsed()
+        );
+        let frame: Value =
+            serde_json::from_str(std::fs::read_to_string(&cancel).unwrap().trim()).unwrap();
+        assert_eq!(frame["method"], "session/cancel", "{frame}");
+        assert_eq!(frame["params"]["sessionId"], "ses_fake");
+        assert!(
+            run.stdout.contains(r#""stopReason":"cancelled""#),
+            "{}",
+            run.stdout
+        );
+        assert!(!run.exit.timed_out, "a cancel is not the wall clock");
+    }
+
+    /// **A row whose headless verb is not the channel's is never sent `session/cancel`**: the port
+    /// refuses the abort, so the canceller kills, and the turn runs on until then.
+    #[test]
+    fn a_row_without_a_channel_verb_takes_no_abort() {
+        let dir = scratch("acp-no-abort");
+        let held = dir.join("held");
+        let fx = fed(MidTurn::Queue);
+        let script = format!(
+            r#"read -r prompt
+: > '{held}'
+if read -r -t 2 line; then exit 3; fi
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+while read -r _; do :; done"#,
+            held = held.display(),
+        );
+        let inv = fed_agent(&dir, &script);
+        let (run, took) = std::thread::scope(|s| {
+            let canceller = s.spawn(|| {
+                wait_for_file(&held);
+                fx.inboxes.cancel(&fx.agent);
+                fx.inboxes.abort(&fx.agent)
+            });
+            let run = run_acp_child(AcpChildSpec {
+                abort: marion_harness::spec::AbortVerb::None { note: "test" },
+                ..fx.spec(&inv)
+            })
+            .expect("the session ends");
+            (run, canceller.join().unwrap())
+        });
+        assert!(!took, "no verb, no abort: the canceller kills");
+        assert!(
+            run.stdout.contains(r#""stopReason":"end_turn""#),
+            "{}",
+            run.stdout
+        );
     }
 
     /// **On a queueing agent a message waits for the running prompt to settle**, then goes out as
