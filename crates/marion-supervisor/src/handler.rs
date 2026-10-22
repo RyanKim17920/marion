@@ -473,8 +473,9 @@ pub struct RegistryHandle {
     /// [`PEER_BINDING_ENFORCED`]; tests flip it.
     peer_binding_enforced: AtomicBool,
     /// **The foreign peers already journaled, per node whose token they presented**: `(peer pid,
-    /// refused)`, at most [`MAX_FOREIGN_PEERS`] per node. A sibling holding a stolen token could
-    /// otherwise grow the journal at will by reconnecting; past the first, it is said on the log.
+    /// refused)`, at most [`MAX_FOREIGN_PEERS`] per node and one more whose record says the cap is
+    /// met. A sibling holding a stolen token could otherwise grow the journal at will by
+    /// reconnecting; past those, it is said on the log alone.
     foreign_seen: Mutex<HashMap<AgentId, HashSet<ForeignKey>>>,
     /// **The races this supervisor is driving**; empty, and silent, with none open.
     races: crate::race::Races,

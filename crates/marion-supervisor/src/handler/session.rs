@@ -26,6 +26,16 @@ use super::steer::is_strict_ancestor;
 use super::{RegistryHandle, lock, unminted_token};
 use crate::serve::ConnId;
 
+/// What one foreign peer's hello journals ([`RegistryHandle::foreign_record`]).
+enum ForeignRecord {
+    /// Its own record.
+    Journal,
+    /// Its own record, saying the node's cap is met and nothing further will be journaled.
+    Cap,
+    /// Nothing: already journaled, or past the cap.
+    Nothing,
+}
+
 impl RegistryHandle {
     /// `session/hello`: bind `conn` to the principal it proves, once.
     pub(super) fn session_hello(
@@ -143,7 +153,7 @@ impl RegistryHandle {
             }
         };
         let refused = self.peer_binding_enforced.load(Ordering::SeqCst);
-        let journal = self.first_foreign(me, (out.peer_pid(), refused));
+        let journal = self.foreign_record(me, (out.peer_pid(), refused));
         eprintln!(
             "marion-supervisor: node `{}`'s token was presented from outside its process tree \
              ({why}){}{}",
@@ -153,10 +163,25 @@ impl RegistryHandle {
             } else {
                 "; let through while the check only records"
             },
-            if journal { "" } else { "; not journaled again" }
+            match journal {
+                ForeignRecord::Journal | ForeignRecord::Cap => "",
+                ForeignRecord::Nothing => "; not journaled again",
+            }
         );
-        if journal {
-            self.journal_foreign(me, out.peer_pid(), &why, refused);
+        match journal {
+            ForeignRecord::Journal => self.journal_foreign(me, out.peer_pid(), &why, refused),
+            ForeignRecord::Cap => self.journal_foreign(
+                me,
+                out.peer_pid(),
+                &format!(
+                    "{why}; this is the last foreign peer journaled for this node, whose journal \
+                     already holds {} — further foreign attempts are said on the supervisor's log \
+                     only",
+                    super::MAX_FOREIGN_PEERS
+                ),
+                refused,
+            ),
+            ForeignRecord::Nothing => {}
         }
         if !refused {
             return Ok(());
@@ -173,15 +198,24 @@ impl RegistryHandle {
         ))
     }
 
-    /// Whether `peer` is the first of its kind for `me`, and within [`super::MAX_FOREIGN_PEERS`]:
-    /// only then is it journaled ([`RegistryHandle::foreign_seen`]).
-    fn first_foreign(&self, me: &AgentId, peer: super::ForeignKey) -> bool {
+    /// What `peer`'s hello writes to the journal for `me` ([`RegistryHandle::foreign_seen`]): a
+    /// record the first time it is seen, within [`super::MAX_FOREIGN_PEERS`] of them; once the cap
+    /// is met, one more record saying so; then nothing.
+    fn foreign_record(&self, me: &AgentId, peer: super::ForeignKey) -> ForeignRecord {
         let mut seen = lock(&self.foreign_seen);
         let mine = seen.entry(me.clone()).or_default();
-        if mine.contains(&peer) || mine.len() >= super::MAX_FOREIGN_PEERS {
-            return false;
+        if mine.contains(&peer) || mine.len() > super::MAX_FOREIGN_PEERS {
+            return ForeignRecord::Nothing;
         }
-        mine.insert(peer)
+        // The peer that meets the cap is kept too, so the set's one entry past the cap is what
+        // says "the cap was journaled" and the next new peer writes nothing.
+        let at_cap = mine.len() == super::MAX_FOREIGN_PEERS;
+        mine.insert(peer);
+        if at_cap {
+            ForeignRecord::Cap
+        } else {
+            ForeignRecord::Journal
+        }
     }
 
     fn journal_foreign(&self, me: &AgentId, peer_pid: Option<u32>, why: &str, refused: bool) {

@@ -8103,10 +8103,12 @@ mod owns_nodes {
     }
 
     /// **A foreign peer is journaled once, and a node's journal holds a bounded number of them**:
-    /// the same process reconnecting is not a new record, and past `MAX_FOREIGN_PEERS` distinct
-    /// processes the log alone says it — a stolen token cannot grow the journal at will.
+    /// the same process reconnecting is not a new record; the peer that meets `MAX_FOREIGN_PEERS`
+    /// is journaled saying so, once; and past it the log alone speaks — a stolen token cannot grow
+    /// the journal at will, nor quietly fill it.
     ///
-    /// Mutation: journal on every hello and the reconnect writes a second record.
+    /// Mutations: journal on every hello and the reconnect writes a second record; drop the cap's
+    /// own record and the journal never says further attempts went unrecorded.
     #[test]
     fn a_foreign_peer_is_journaled_once_and_a_node_holds_a_bounded_number() {
         let fx = owning("peer-dedupe", vec![intent("root", None, "claude", 0)]);
@@ -8132,7 +8134,22 @@ mod owns_nodes {
                 Some(peer(i)),
             );
         }
-        assert_eq!(foreign_peers(&fx).len(), super::super::MAX_FOREIGN_PEERS);
+        let records = foreign_peers(&fx);
+        assert_eq!(
+            records.len(),
+            super::super::MAX_FOREIGN_PEERS + 1,
+            "{records:?}"
+        );
+        let capped: Vec<_> = records
+            .iter()
+            .filter(|r| r.why.contains("further foreign attempts"))
+            .collect();
+        assert_eq!(capped.len(), 1, "the cap is journaled once: {records:?}");
+        assert_eq!(
+            capped[0].peer_pid,
+            Some(peer(super::super::MAX_FOREIGN_PEERS as u32)),
+            "by the peer that met it"
+        );
     }
 
     /// **A connection the kernel named no process for is outside every tree**: journaled while

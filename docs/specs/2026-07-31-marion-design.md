@@ -1645,8 +1645,9 @@ and codex `setsid`s its tools. The first live node root met
 decides, so a node's own children are their own trees. The supervisor's own pid refuses. The peer is
 pinned at accept (`SO_PEERPIDFD`, else `pidfd_open`), and its start time must be no later than the
 accept. A miss, or a peer the kernel did not name, is journaled as `ForeignPeer` with the pid and
-the reason, once per peer and for at most eight peers per node; the supervisor's log names every
-attempt, so a stolen token cannot grow the journal by reconnecting. It ships recording only (`PEER_BINDING_ENFORCED`);
+the reason, once per peer and for at most eight peers per node, plus one record saying the cap is
+met; the supervisor's log names every attempt, so a stolen token cannot grow the journal by
+reconnecting, nor fill it without the journal saying so. It ships recording only (`PEER_BINDING_ENFORCED`);
 `crates/marion-supervisor/tests/it_live/cross_product.rs` holds every harness as a root to no
 `ForeignPeer`, and the switch turns to refusing after one canary cycle with every installed harness
 passing.
