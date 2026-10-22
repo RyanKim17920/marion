@@ -464,8 +464,13 @@ turn and kills its commands, and `codex exec` stays `None`. Witness:
 takes `Keys`**: `PasteInjector::abort` types the row's interactive keys, `gap_ms` apart, past the
 operator-quiet gate, and drops what it held. Only codex's pane has keys (Esc, which its footer
 names as the interrupt, `tests/fixtures/s2/`); every other TUI stays `None` until probe
-P-cancel-2 measures it. Witness: `paste::tests::a_cancel_types_the_rows_abort_keys_*`. Not yet:
-the TUI and MCP surfaces, and the per-row cancel matrix.
+P-cancel-2 measures it. Witness: `paste::tests::a_cancel_types_the_rows_abort_keys_*`. **The
+cancel matrix**: `it_canned::cancel_matrix` cancels a real node per lane through the real
+supervisor (codex app-server and ACP graceful with no signal, launch-only opencode `SIGKILL`ed),
+each `Cancelled` with its partial work in `changed_paths` and nothing left running, plus a
+three-level ACP tree cancelled at its root, bottom-up and unsignalled;
+`handler::cancel::tests::every_rows_abort_verb_is_pinned_and_sent_by_its_lane` pins each row's
+verbs and that its lane sends them. Not yet: the TUI and MCP surfaces.
 
 **Every child may delegate, bounded by the depth gate (2026-09-27).** A child's marion verbs on the
 permission axis are one rule, `agent_type::child_verbs`: `report`, plus `spawn`/`status`/`wait`/

@@ -7,8 +7,10 @@
 //! the one resumed), reports marion's MCP server ready, and runs each turn by handing the turn's
 //! text to the test's own shell hook as `$1`. Every line the hook prints is forwarded as a frame
 //! (app-server notifications, which the test writes in S36's shapes), and the turn completes when
-//! the hook exits — `failed` if it exits non-zero; in a turn the hook sees `MARION_SHIM_TURN=1` and the server's own argv (marion's
-//! `-c` pairs) as `MARION_SHIM_ARGV`. Any invocation that is not `app-server` — `--version`, `login
+//! the hook exits — `failed` if it exits non-zero — or at once on `turn/interrupt`,
+//! `interrupted`, with the hook left running as P7 measured the real server leave a command. In a
+//! turn the hook sees `MARION_SHIM_TURN=1` and the server's own argv (marion's `-c` pairs) as
+//! `MARION_SHIM_ARGV`. Any invocation that is not `app-server` — `--version`, `login
 //! status` — is the hook's outright, with its argv, so a bed can make the probe hang or answer a
 //! status probe. stdin EOF ends the server, as P9 measured the real one does.
 
@@ -37,6 +39,8 @@ turn = 0
 # previous turn, and stdin EOF lets the running one finish before exit. A daemon thread, so a signal
 # that ends the reader (SIGINT's KeyboardInterrupt) ends the server as it did when the turn ran here.
 running = None
+current = None
+interrupted = set()
 def run_turn(u, text):
     p = subprocess.Popen(["/bin/sh", hook, text], stdout=subprocess.PIPE, text=True,
                          env=dict(os.environ, MARION_SHIM_TURN="1"))
@@ -45,6 +49,8 @@ def run_turn(u, text):
         if frame:
             write(frame)
     failed = p.wait() != 0
+    if u in interrupted:
+        return
     out({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": u, "status": "failed" if failed else "completed", "items": [], "error": {"message": "the shim's hook exited non-zero"} if failed else None}}})
 for line in sys.stdin:
     try:
@@ -61,7 +67,7 @@ for line in sys.stdin:
     elif meth == "turn/start":
         if running is not None:
             running.join()
-        turn += 1; u = "shim-turn-%d" % turn
+        turn += 1; u = "shim-turn-%d" % turn; current = u
         text = "".join(p.get("text", "") for p in m.get("params", {}).get("input", []))
         out({"id": i, "result": {"turn": {"id": u, "status": "inProgress"}}})
         out({"method": "turn/started", "params": {"threadId": thread, "turn": {"id": u}}})
@@ -71,6 +77,10 @@ for line in sys.stdin:
         out({"id": i, "result": {"turnId": m["params"].get("expectedTurnId")}})
     elif meth == "turn/interrupt":
         out({"id": i, "result": {}})
+        u = m.get("params", {}).get("turnId")
+        if u == current and u not in interrupted:
+            interrupted.add(u)
+            out({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": u, "status": "interrupted", "items": [], "error": None}}})
     elif i is not None and meth is not None:
         out({"id": i, "error": {"code": -32601, "message": "the shim does not serve " + meth}})
 if running is not None:

@@ -755,6 +755,57 @@ mod tests {
         );
     }
 
+    /// **Every row's abort verbs, pinned, and every verb one its lane sends.** A headless
+    /// `Channel` verb needs a driver whose port takes the cancel — ACP, app-server, or the duplex
+    /// loop on a dialect with an abort frame — and an interactive `Keys` verb needs the paste
+    /// injector, which only a `TerminalPaste` row has. A row whose verb its lane cannot send would
+    /// journal a grace that never ran; a change to a row's verb changes this table, beside the
+    /// measurement that justifies it.
+    #[test]
+    fn every_rows_abort_verb_is_pinned_and_sent_by_its_lane() {
+        use crate::duplex::{Dialect, LaunchPath, launch_path};
+        let table = [
+            // stream-json's `interrupt` awaits probe P-cancel-1.
+            (Harness::ClaudeCode, "none", "none"),
+            // S36 P7's `turn/interrupt`; the TUI footer's `esc to interrupt`.
+            (Harness::Codex, "channel", "keys"),
+            (Harness::OpenCode, "none", "none"),
+            (Harness::Copilot, "none", "none"),
+            (Harness::Goose, "none", "none"),
+            (Harness::Cline, "none", "none"),
+            (Harness::Qwen, "none", "none"),
+            (Harness::Antigravity, "none", "none"),
+            // S34's JSONL `abort`.
+            (Harness::Pi, "channel", "none"),
+            (Harness::Hermes, "none", "none"),
+            // `session/cancel`, the protocol's own.
+            (Harness::Acp, "channel", "none"),
+        ];
+        assert_eq!(table.len(), Harness::ALL.len(), "every row is pinned");
+        for (h, headless, interactive) in table {
+            let row = marion_harness::adapter::harness_spec(h);
+            assert_eq!(
+                (row.abort.headless.kind(), row.abort.interactive.kind()),
+                (headless, interactive),
+                "{h}"
+            );
+            if let AbortVerb::Channel { .. } = row.abort.headless {
+                let sends = match launch_path(&row.surfaces.execution()) {
+                    Some(LaunchPath::Acp | LaunchPath::AppServer) => true,
+                    Some(LaunchPath::Duplex) => Dialect::of(row).abort().is_some(),
+                    _ => false,
+                };
+                assert!(sends, "{h}: a channel verb no lane of this row sends");
+            }
+            if let AbortVerb::Keys { .. } = row.abort.interactive {
+                assert!(
+                    crate::paste::PasteParams::for_row(row).is_some_and(|p| p.abort.is_some()),
+                    "{h}: keys no paste injector types"
+                );
+            }
+        }
+    }
+
     /// **Freeze top-down, abort bottom-up**: every intent is written before any confirmation, the
     /// intents in tree order and the confirmations deepest first, each descendant attributed to
     /// the cascade of the named node's cancel. A node this supervisor does not own is killed at

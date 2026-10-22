@@ -278,6 +278,17 @@ pub fn node_token_of(declaration: &BTreeMap<String, String>) -> String {
     token.trim().to_string()
 }
 
+/// Whether some file under `dir` whose path names `id` holds `needle` — what
+/// [`declaration_of`] needs before it can read a declaration back.
+pub fn walk_finds(dir: &Path, id: &str, needle: &str) -> bool {
+    let mut found = false;
+    walk(dir, &mut |p| {
+        found |= p.to_string_lossy().contains(id)
+            && std::fs::read_to_string(p).is_ok_and(|t| t.contains(needle));
+    });
+    found
+}
+
 /// Every file under `dir`, depth first. A walk rather than a computed path: the project hash that
 /// names the directory is derived inside marion, and a test that recomputed it would be asserting
 /// against its own copy of the derivation.

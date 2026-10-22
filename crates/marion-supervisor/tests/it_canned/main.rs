@@ -17,6 +17,7 @@ mod common;
 mod attach_verb;
 mod auth_mode;
 mod background_spawn;
+mod cancel_matrix;
 mod cli_surface;
 mod concurrent_projects;
 mod containment;
