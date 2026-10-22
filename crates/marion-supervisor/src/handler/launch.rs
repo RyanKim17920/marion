@@ -2401,6 +2401,32 @@ impl RegistryHandle {
                 found.id
             }
         };
+        // **Held from the kill of the recorded process until the relaunch is claimed**, the lock a
+        // cancel's freeze takes: between them the node's journaled pid is one this resume is
+        // ending or has ended, and a cancel that read it would signal a dead — or reused — pid and
+        // confirm it, while the relaunch started a process nobody cancelled. Once the relaunch is
+        // claimed the freeze refuses it until its own process has started (`freeze`'s pid check),
+        // so a child's launch drops it there, as `agent/spawn`'s does; a root's launch takes no
+        // gate, and holds it to the pid. Read again under it: a second resume may have relaunched
+        // the node since the look above.
+        let decision = lock(&self.spawn_decision);
+        self.live.refresh();
+        let still = self.live.read(|r| {
+            r.tree().get(&p.agent_id).is_some_and(|n| {
+                (matches!(n.reap_state, ReapState::Orphaned | ReapState::ReapedIdle)
+                    || n.state.is_exited())
+                    && n.spawn_generation == node.spawn_generation
+            })
+        });
+        if !still {
+            return Err(RpcError::conflict(
+                &p.agent_id.0,
+                "the node's fate changed while this resume was being prepared — another resume \
+                 relaunched it, or it is running again — so nothing was signalled or launched. \
+                 Read its state and resume it again if it is still lost.",
+                "§8, §7.2",
+            ));
+        }
         // **The recorded process must be provably not still running before a second one is started
         // against the same single-writer transcript** (principle 8). A node with no recorded pid
         // never reached `command.spawn()` under the lost supervisor, so there is nothing to signal.
@@ -2452,9 +2478,12 @@ impl RegistryHandle {
         // therefore hands its own children what it would have handed them in its first life.
         let repo = resumable_root_cwd(&env.project_root);
         let (agent_id, state) = if depth == 0 {
-            self.relaunch_root(me, &node, &env, &p.prompt, repo, session)?
+            let launched = self.relaunch_root(me, &node, &env, &p.prompt, repo, session)?;
+            // The relaunch's process exists and its pid is recorded: a cancel now reaches it.
+            drop(decision);
+            launched
         } else {
-            self.relaunch_child(me, &node, &env, &p.prompt, repo, session)?
+            self.relaunch_child(me, &node, &env, &p.prompt, repo, session, decision)?
         };
         Ok(marion_core::proto::result::NodeResumeResult {
             agent_id,
@@ -2665,6 +2694,10 @@ impl RegistryHandle {
         Ok(parent)
     }
 
+    /// `decision` is [`Self::spawn_decision`], held by [`Self::node_resume`] from before the kill
+    /// of the recorded process: it covers this launch's gate and intent, as a fresh child's, and
+    /// [`Self::launch_child`] drops it once the relaunch is claimed.
+    #[allow(clippy::too_many_arguments)]
     fn relaunch_child(
         &self,
         me: Arc<RegistryHandle>,
@@ -2673,6 +2706,7 @@ impl RegistryHandle {
         prompt: &str,
         repo: PathBuf,
         session: String,
+        decision: std::sync::MutexGuard<'_, ()>,
     ) -> Result<(AgentId, NodeState), RpcError> {
         // **§7.5's immutable parent link, read back.** The intent is the only record that names it:
         // a node's child names its caller, and a contracted node the operator asked for directly
@@ -2764,10 +2798,10 @@ impl RegistryHandle {
                     "§9",
                 )
             })?;
-        // Held for the same window `agent/spawn` holds it: §6.1 step 2's gate evaluation and the
-        // intent derived from it are one decision, and this launch is gated exactly as a fresh
-        // child's is (`run_spawn_watched` calls `check_spawn_gates` with this caller).
-        let decision = lock(&self.spawn_decision);
+        // Held over the window `agent/spawn` holds it, and longer (`decision`): §6.1 step 2's gate
+        // evaluation and the intent derived from it are one decision, and this launch is gated
+        // exactly as a fresh child's is (`run_spawn_watched` calls `check_spawn_gates` with this
+        // caller).
         let requester = match (parent_id, parent, parent_type) {
             (Some(parent_id), Some(parent), Some(parent_type)) => {
                 crate::run::Requester::from(crate::run::Caller {

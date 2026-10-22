@@ -166,7 +166,13 @@ impl RegistryHandle {
         let mut all = vec![node];
         all.extend(below);
         all.sort_by_key(|n| n.depth().unwrap_or(0));
-        if let Some(n) = all.iter().find(|n| n.pid.is_none()) {
+        // An owned node's pid is its live process's, from its thread: a resumed node is claimed
+        // before its relaunch starts, while the journal still names the process it replaced.
+        if let Some(n) = all.iter().find(|n| {
+            n.pid.is_none()
+                || (self.owned_running(&n.agent_id) == Some(true)
+                    && self.owned_pid(&n.agent_id).is_none())
+        }) {
             return Err(RpcError::conflict(
                 &n.agent_id.0,
                 "a node in the subtree has no recorded PID yet, so marion cannot prove a cancel \
@@ -237,9 +243,9 @@ impl RegistryHandle {
             }
             self.inboxes.cancel(&id);
             members.push(Member {
+                pid: if owned { self.owned_pid(&id) } else { n.pid },
                 agent_id: id,
                 depth: n.depth().unwrap_or(0),
-                pid: n.pid,
                 owned,
                 verb,
                 by: node_by,
@@ -1013,6 +1019,40 @@ mod tests {
             fx.node("root").state,
             NodeState::Running,
             "the caller runs on"
+        );
+    }
+
+    /// **A node claimed for a relaunch whose process has not started is refused, never signalled
+    /// by its old pid**: a resumed node is claimed before its new process exists, while the journal
+    /// still names the one the resume replaced — dead, or by now another program's.
+    #[test]
+    fn a_relaunch_not_yet_started_is_refused_and_its_old_pid_untouched() {
+        let fx = Fx::new("cancel-relaunching");
+        fx.running("root", None, Harness::Pi, 101, false);
+        let _token = fx.handle.claim(&id("root"), None, "/repo".into());
+
+        let e = fx
+            .cancel("root", None)
+            .expect_err("no process of this life yet");
+        assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e}");
+        assert!(fx.trail().is_empty(), "nothing journaled");
+        assert!(
+            lock(&fx.runtime.killed).is_empty(),
+            "the old pid was not signalled"
+        );
+
+        // The relaunch's process starts; the old pid now names nobody the fixture knows.
+        fx.handle.mark_started(&id("root"), 202);
+        lock(&fx.runtime.by_pid).remove(&101);
+        lock(&fx.runtime.by_pid).insert(202, id("root"));
+        let r = fx
+            .cancel("root", None)
+            .expect("the relaunch's own process is cancelled");
+        assert_eq!(ended(&r), [("root".to_string(), true)]);
+        assert_eq!(
+            *lock(&fx.runtime.killed),
+            [id("root")],
+            "killed by the relaunch's pid, not the journal's"
         );
     }
 

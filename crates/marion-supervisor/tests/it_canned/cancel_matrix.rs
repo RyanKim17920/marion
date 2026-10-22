@@ -46,8 +46,8 @@ use marion_core::contract::{AgentId, ExitStatus, TaskContract};
 use marion_core::journal::RecordKind;
 use marion_core::node::NodeState;
 use marion_core::paths::ProjectDir;
-use marion_core::proto::params::{AgentSpawnParams, NodeCancelParams};
-use marion_core::proto::result::NodeCancelResult;
+use marion_core::proto::params::{AgentSpawnParams, NodeCancelParams, NodeResumeParams};
+use marion_core::proto::result::{NodeCancelResult, NodeResumeResult};
 use marion_core::proto::{Call, Method, MethodResult, SpawnCaller};
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
@@ -155,6 +155,7 @@ fn write_executable(path: &Path, text: &str) {
 
 /// The shims, in `bin`: `codex` (app-server) and `opencode` (launch-only, and `acp`).
 fn shims(dir: &Path, bin: &Path, gate: &Path, pids: &Path, decl: &Path) {
+    let slow = common::shell_quote(&dir.join("slow"));
     let block = dir.join("block.sh");
     write_executable(&block, &block_script(gate, pids));
     let acp = dir.join("acp-agent.py");
@@ -163,7 +164,7 @@ fn shims(dir: &Path, bin: &Path, gate: &Path, pids: &Path, decl: &Path) {
     common::app_server::fake_codex(
         bin,
         &format!(
-            "case \"$1\" in --version) echo \"codex-cli 0.146.0-marion-shim\"; exit 0 ;; esac\n\
+            "case \"$1\" in --version) [ -e {slow} ] && sleep 2; echo \"codex-cli 0.146.0-marion-shim\"; exit 0 ;; esac\n\
              exec /bin/sh {block_q} \"$*\" \"$PPID\"\n"
         ),
     );
@@ -190,7 +191,12 @@ struct Bed {
     gate: PathBuf,
     pids: PathBuf,
     decl: PathBuf,
+    /// While it exists, the `codex` shim's `--version` probe takes two seconds: a launch held
+    /// between its decision and its process.
+    slow: PathBuf,
     needle: String,
+    key: PathBuf,
+    path_env: String,
     supervisor: Supervisor,
 }
 
@@ -219,14 +225,8 @@ impl Bed {
         let key = project_root(&repo);
         // `python3` for the shims, from wherever this machine keeps it.
         let python = which("python3");
-        let supervisor = Supervisor::start_unsandboxed(
-            &state,
-            &key,
-            &format!("{}:{python}:/usr/bin:/bin", bin.to_string_lossy()),
-            // Nothing reaches it: every harness invocation is a shim.
-            "http://127.0.0.1:8099/v1",
-            Duration::from_secs(600),
-        );
+        let path_env = format!("{}:{python}:/usr/bin:/bin", bin.to_string_lossy());
+        let supervisor = start_supervisor(&state, &key, &path_env);
         Self {
             needle: dir.to_string_lossy().to_string(),
             project: ProjectDir::new(&state, &key),
@@ -236,8 +236,42 @@ impl Bed {
             gate,
             pids,
             decl,
+            slow: dir.join("slow"),
+            key,
+            path_env,
             supervisor,
         }
+    }
+
+    /// SIGKILL the supervisor and start another over the same journal: every node it held is an
+    /// orphan, its process still running.
+    fn restart_supervisor(&mut self) {
+        self.supervisor.stop();
+        self.supervisor = start_supervisor(&self.state, &self.key, &self.path_env);
+    }
+
+    fn resume(&self, id: &AgentId, prompt: &str) -> Result<NodeResumeResult, String> {
+        let answered = self.supervisor.call(Call::NodeResume(NodeResumeParams {
+            agent_id: id.clone(),
+            prompt: prompt.into(),
+        }))?;
+        let MethodResult::NodeResume(r) = Method::NodeResume.decode_result(&answered).unwrap()
+        else {
+            panic!("node/resume answers with a node/resume result");
+        };
+        Ok(r)
+    }
+
+    fn try_cancel(&self, id: &AgentId) -> Result<NodeCancelResult, String> {
+        let answered = self.supervisor.call(Call::NodeCancel(NodeCancelParams {
+            agent_id: id.clone(),
+            caller: None,
+        }))?;
+        let MethodResult::NodeCancel(r) = Method::NodeCancel.decode_result(&answered).unwrap()
+        else {
+            panic!("node/cancel answers with a node/cancel result");
+        };
+        Ok(r)
     }
 
     fn spawn(&self, agent_type: &str, marker: &str, caller: Option<SpawnCaller>) -> AgentId {
@@ -317,18 +351,8 @@ impl Bed {
     }
 
     fn cancel(&self, id: &AgentId) -> NodeCancelResult {
-        let answered = self
-            .supervisor
-            .call(Call::NodeCancel(NodeCancelParams {
-                agent_id: id.clone(),
-                caller: None,
-            }))
-            .unwrap_or_else(|e| panic!("node/cancel must be served: {e}"));
-        let MethodResult::NodeCancel(r) = Method::NodeCancel.decode_result(&answered).unwrap()
-        else {
-            panic!("node/cancel answers with a node/cancel result");
-        };
-        r
+        self.try_cancel(id)
+            .unwrap_or_else(|e| panic!("node/cancel must be served: {e}"))
     }
 
     /// `(leader, descendant)` for the node whose prompt carried `marker`, once its turn wrote them.
@@ -486,6 +510,17 @@ struct Graceful {
     closed: &'static str,
 }
 
+fn start_supervisor(state: &Path, key: &Path, path_env: &str) -> Supervisor {
+    Supervisor::start_unsandboxed(
+        state,
+        key,
+        path_env,
+        // Nothing reaches it: every harness invocation is a shim.
+        "http://127.0.0.1:8099/v1",
+        Duration::from_secs(600),
+    )
+}
+
 /// The value of `name` in a declaration's environment, as ACP writes it (`{name, value}` pairs)
 /// or as a map.
 fn env_value(v: &Value, name: &str) -> Option<String> {
@@ -626,4 +661,152 @@ fn an_acp_tree_cancelled_at_its_root_ends_bottom_up_without_a_signal() {
             id.0
         );
     }
+}
+
+/// **A cancel that lands while a resume relaunches the node ends the relaunch.** The resume kills
+/// the orphan's surviving process and starts a new one; a cancel asked for between the two waits
+/// for the new process rather than reading the node in between — where it is already dead, and
+/// its journaled pid the one the resume just ended — and ends the process the resume started. The
+/// relaunch is held between its decision and its process (a slow `--version`), so the cancel
+/// arrives exactly in that window. Exactly one process is journaled dead by each: the orphan's by
+/// the resume, the relaunch's by the cancel, after its `Spawned`.
+#[test]
+fn a_cancel_during_a_resume_ends_the_relaunched_process() {
+    let mut bed = Bed::new("cancel-matrix-resume");
+    let root = bed.root("codex", "CM-ORPHAN-4b1d");
+    let (old_leader, old_descendant) = bed.pids_of("CM-ORPHAN-4b1d");
+    wait_until("the root's session to be journaled", || {
+        common::journal::records(&bed.project.journal())
+            .into_iter()
+            .any(|k| matches!(k, RecordKind::SessionObserved(s) if s.agent_id == root))
+            .then_some(())
+    });
+    bed.restart_supervisor();
+    assert_eq!(
+        liveness(old_leader),
+        Liveness::Alive,
+        "an orphan, still running"
+    );
+
+    std::fs::write(&bed.slow, b"").unwrap();
+    let journal = bed.project.journal();
+    let (resumed, cancelled) = std::thread::scope(|s| {
+        let resume = s.spawn(|| bed.resume(&root, "CM-RESUMED-4b1d: carry on"));
+        // The resume has ended the orphan's process and is starting its own.
+        wait_until("the resume to kill the orphan's process", || {
+            common::journal::records(&journal)
+                .into_iter()
+                .any(|k| matches!(k, RecordKind::KillConfirmed(c) if c.agent_id == root))
+                .then_some(())
+        });
+        let cancelled = bed.try_cancel(&root);
+        (resume.join().unwrap(), cancelled)
+    });
+    let resumed = resumed.expect("the orphan relaunches");
+    assert_eq!(resumed.spawn_generation, 2);
+    let cancelled = cancelled.expect("the cancel reaches the relaunched node");
+    assert_eq!(cancelled.state, NodeState::Exited(ExitStatus::Cancelled));
+    // Whether the relaunch was still coming up — its port not yet attached, so killed at once — or
+    // already in its turn and interrupted is the scheduler's; that the cancel ended it is not.
+    assert_eq!(
+        cancelled
+            .nodes
+            .iter()
+            .map(|n| &n.agent_id)
+            .collect::<Vec<_>>(),
+        [&root]
+    );
+
+    // The relaunch's leader, off its own `Spawned`: a relaunch cancelled while it was still coming
+    // up never reached the turn that would have recorded it, nor started a descendant.
+    let spawned: Vec<i32> = common::journal::records(&journal)
+        .into_iter()
+        .filter_map(|k| match k {
+            RecordKind::Spawned(sp) if sp.agent_id == root => sp.pid,
+            _ => None,
+        })
+        .collect();
+    let new_leader = *spawned.last().unwrap();
+    assert_ne!(new_leader, old_leader, "a second process");
+    let new_descendant = std::fs::read_to_string(bed.pids.join("CM-RESUMED-4b1d"))
+        .ok()
+        .and_then(|t| t.split_whitespace().nth(1)?.parse::<i32>().ok());
+    assert!(
+        marion_testsupport::until(|| [old_leader, old_descendant, new_leader]
+            .into_iter()
+            .chain(new_descendant)
+            .all(dead)),
+        "a process of either life survived"
+    );
+    // The orphan's death is the resume's, and the relaunch's is the cancel's, after its `Spawned`.
+    let about: Vec<RecordKind> = common::journal::records(&journal)
+        .into_iter()
+        .filter(|k| match k {
+            RecordKind::KillConfirmed(c) => c.agent_id == root,
+            RecordKind::Spawned(sp) => sp.agent_id == root,
+            _ => false,
+        })
+        .collect();
+    let shape: Vec<(&str, Option<i32>)> = about
+        .iter()
+        .map(|k| match k {
+            RecordKind::Spawned(sp) => ("Spawned", sp.pid),
+            RecordKind::KillConfirmed(c) => ("KillConfirmed", c.exit.signal.filter(|_| false)),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("Spawned", Some(old_leader)),
+            ("KillConfirmed", None),
+            ("Spawned", Some(new_leader)),
+            ("KillConfirmed", None),
+        ],
+        "one death per life, the relaunch's after its own `Spawned`: {about:?}"
+    );
+    let RecordKind::KillConfirmed(by_resume) = &about[1] else {
+        unreachable!()
+    };
+    assert!(
+        by_resume.exit.description.contains("before resuming"),
+        "{by_resume:?}"
+    );
+}
+
+/// **Two resumes of one orphan relaunch it once.** The second waits behind the first's decision
+/// and, reading the node again under it, finds it running: refused, with nothing signalled — not a
+/// kill of the first's relaunch by the orphan's stale record, and not a second process against
+/// one transcript.
+#[test]
+fn two_resumes_of_one_orphan_relaunch_it_once() {
+    let mut bed = Bed::new("cancel-matrix-double-resume");
+    let root = bed.root("codex", "CM-TWICE-4b1d");
+    bed.pids_of("CM-TWICE-4b1d");
+    wait_until("the root's session to be journaled", || {
+        common::journal::records(&bed.project.journal())
+            .into_iter()
+            .any(|k| matches!(k, RecordKind::SessionObserved(s) if s.agent_id == root))
+            .then_some(())
+    });
+    bed.restart_supervisor();
+    std::fs::write(&bed.slow, b"").unwrap();
+
+    let results = std::thread::scope(|s| {
+        let a = s.spawn(|| bed.resume(&root, "CM-TWICE-A-4b1d: carry on"));
+        let b = s.spawn(|| bed.resume(&root, "CM-TWICE-B-4b1d: carry on"));
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    let won: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+    assert_eq!(won.len(), 1, "exactly one relaunch: {results:?}");
+    let spawns = common::journal::records(&bed.project.journal())
+        .into_iter()
+        .filter(|k| matches!(k, RecordKind::Spawned(sp) if sp.agent_id == root))
+        .count();
+    assert_eq!(spawns, 2, "the first life and one relaunch");
+    let kills = common::journal::records(&bed.project.journal())
+        .into_iter()
+        .filter(|k| matches!(k, RecordKind::KillConfirmed(c) if c.agent_id == root))
+        .count();
+    assert_eq!(kills, 1, "only the orphan's process was killed");
 }
