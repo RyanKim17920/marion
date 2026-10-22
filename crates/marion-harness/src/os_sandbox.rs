@@ -1621,6 +1621,118 @@ mod tests {
         );
     }
 
+    /// **Linux: a node writes nothing marion shows of another node.** Landlock restricts writes
+    /// only and grants whole directories, so a node's own `contracts/` and `events.jsonl` stay its
+    /// to write there (docs/os-sandbox.md); a sibling's, and its token, sit outside every grant and
+    /// are refused — creating, appending, replacing and removing alike — while the node's own agent
+    /// dir stays writable.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_under_its_plan_cannot_write_a_siblings_contracts_events_or_token() {
+        if !support().available() {
+            eprintln!("skipped: {}", support().describe());
+            return;
+        }
+        let dir = marion_testsupport::scratch("osb-held-linux");
+        let (spec, mut inv) = node_in(&dir, Auth::Canned);
+        let sibling = dir.join("sibling");
+        std::fs::create_dir_all(sibling.join("config")).unwrap();
+        std::fs::create_dir_all(sibling.join("contracts")).unwrap();
+        std::fs::write(sibling.join("contracts/t.json"), "by marion").unwrap();
+        std::fs::write(sibling.join("events.jsonl"), "by marion").unwrap();
+        std::fs::write(sibling.join(TOKEN_PATH), "sibling-secret").unwrap();
+        let s = sibling.display();
+        inv.args = vec![
+            "-c".into(),
+            format!(
+                "echo forged > '{s}/contracts/t.json'; echo forged > '{s}/contracts/new.json'; \
+                 echo forged >> '{s}/events.jsonl'; echo forged > '{s}/events.jsonl.1'; \
+                 echo forged > '{s}/{TOKEN_PATH}'; rm -f '{s}/contracts/t.json'; \
+                 mv '{s}/contracts' '{s}/moved'; echo own > ../agent/scratch.txt; true"
+            ),
+        ];
+        inv.sandbox = Some(
+            SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+        );
+        let tmp = dir.join("agent/tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = inv.command(&tmp).output().expect("the process runs");
+        let read = |p: &str| std::fs::read_to_string(sibling.join(p)).ok();
+        assert_eq!(
+            read("contracts/t.json").as_deref(),
+            Some("by marion"),
+            "{out:?}"
+        );
+        assert_eq!(read("contracts/new.json"), None, "{out:?}");
+        assert_eq!(read("events.jsonl").as_deref(), Some("by marion"));
+        assert_eq!(read("events.jsonl.1"), None);
+        assert_eq!(read(TOKEN_PATH).as_deref(), Some("sibling-secret"));
+        assert!(!sibling.join("moved").exists(), "{out:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("agent/scratch.txt"))
+                .ok()
+                .as_deref(),
+            Some("own\n"),
+            "its own agent dir is its own: {out:?}"
+        );
+    }
+
+    /// **Linux: a hard link into its own dirs writes no other node's token.** A link the node
+    /// made in its writable agent dir or workspace to a sibling's `config/node-token` would be a
+    /// second name for that file under a granted path, and a write through it would rewrite the
+    /// token. Landlock refuses the link itself (it would give the file a write right it has not
+    /// got where it is), so the token is never rewritten.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_hard_link_into_its_own_dirs_writes_no_other_nodes_token() {
+        if !support().available() {
+            eprintln!("skipped: {}", support().describe());
+            return;
+        }
+        let dir = marion_testsupport::scratch("osb-hardlink-linux");
+        let (spec, mut inv) = node_in(&dir, Auth::Canned);
+        let sibling = dir.join("sibling");
+        std::fs::create_dir_all(sibling.join("config")).unwrap();
+        std::fs::write(sibling.join(TOKEN_PATH), "sibling-secret").unwrap();
+        let s = sibling.display();
+        inv.args = vec![
+            "-c".into(),
+            format!(
+                "ln '{s}/{TOKEN_PATH}' ../agent/linked; echo forged >> ../agent/linked; \
+                 ln '{s}/{TOKEN_PATH}' linked; echo forged >> linked; true"
+            ),
+        ];
+        inv.sandbox = Some(
+            SandboxPlan::for_launch(OsSandboxRule::Wrap { writes: &[] }, &spec, &inv).unwrap(),
+        );
+        let tmp = dir.join("agent/tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = inv.command(&tmp).output().expect("the process runs");
+        assert_eq!(
+            std::fs::read_to_string(sibling.join(TOKEN_PATH)).unwrap(),
+            "sibling-secret",
+            "a hard link rewrote the sibling's token: {out:?}"
+        );
+        // The `>>` after a refused `ln` makes a file of the node's own there: one name, no secret.
+        for linked in [dir.join("agent/linked"), dir.join("wt/linked")] {
+            let Ok(meta) = std::fs::symlink_metadata(&linked) else {
+                continue;
+            };
+            assert_eq!(
+                std::os::unix::fs::MetadataExt::nlink(&meta),
+                1,
+                "{} is a second name for the token: {out:?}",
+                linked.display()
+            );
+            assert!(
+                !std::fs::read_to_string(&linked)
+                    .unwrap_or_default()
+                    .contains("sibling-secret"),
+                "{out:?}"
+            );
+        }
+    }
+
     /// **Under its plan a process writes its workspace and nothing else**: the write outside is
     /// refused by the kernel and the file never appears.
     #[test]
