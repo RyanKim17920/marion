@@ -875,3 +875,197 @@ fn fix_prompt(findings: &str, task: &str) -> String {
 pub(super) fn after_step_node(handle: &Arc<RegistryHandle>, step: &crate::run::StepLaunch) {
     handle.drive_workflow(&step.seat.wf_id);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::tests::Fx;
+    use marion_core::contract::ExitStatus;
+
+    fn env(fx: &Fx, root: &std::path::Path) -> crate::run::Env {
+        crate::run::Env {
+            os_sandbox: false,
+            project_dir: fx.project.clone(),
+            state: fx.dir.to_path_buf(),
+            project_root: root.to_path_buf(),
+            bridge: "/bin/marion-supervisor".into(),
+            base_url: None,
+            auth: marion_harness::Auth::Canned,
+        }
+    }
+
+    const TWO: &str = r#"
+schema = 1
+name = "w"
+budget = { tokens = 1000 }
+
+[[step]]
+id = "ask"
+kind = "parallel"
+on = ["claude", "codex"]
+prompt = "ask"
+
+[[step]]
+id = "impl"
+kind = "agent"
+on = "codex"
+prompt = "impl"
+timeout = "10m"
+"#;
+
+    fn limits_of(fx: &Fx, step: usize, nodes: usize) -> Result<(Option<u64>, u64), String> {
+        fx.read(|v| limits(v, step, nodes).map(|l| (l.tokens, l.timeout_secs)))
+    }
+
+    /// **Each node gets an even part of what the run has left, and its step's own clock**; a
+    /// step with no timeout gets the spawn default, and a run with no budget no token limit.
+    #[test]
+    fn limits_split_the_runs_budget_and_keep_the_steps_clock() {
+        let mut fx = Fx::new("wf-limits", TWO);
+        assert_eq!(
+            limits_of(&fx, 0, 2),
+            Ok((Some(500), DEFAULT_SPAWN_TIMEOUT_SECS))
+        );
+        assert_eq!(limits_of(&fx, 1, 1), Ok((Some(1000), 600)));
+        fx.seat("a", 0, 0, 0, None);
+        fx.usage("a", 400);
+        fx.exit("a");
+        assert_eq!(
+            limits_of(&fx, 1, 1),
+            Ok((Some(600), 600)),
+            "what an earlier step spent is gone"
+        );
+        fx.opened.budget_tokens = None;
+        assert_eq!(limits_of(&fx, 1, 1), Ok((None, 600)));
+    }
+
+    /// **A run whose budget or clock is spent starts nothing**, and saying which.
+    #[test]
+    fn limits_refuse_where_the_runs_budget_or_clock_is_spent() {
+        let mut fx = Fx::new("wf-limits-spent", TWO);
+        fx.seat("a", 0, 0, 0, None);
+        fx.usage("a", 1000);
+        fx.exit("a");
+        let why = limits_of(&fx, 1, 1).unwrap_err();
+        assert!(why.contains("token budget"), "{why}");
+
+        let mut fx = Fx::new("wf-limits-late", TWO);
+        fx.opened.deadline = Some(marion_core::encoding::SystemTime(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(1),
+        ));
+        let why = limits_of(&fx, 1, 1).unwrap_err();
+        assert!(why.contains("wall clock"), "{why}");
+    }
+
+    /// **A step's clock is clamped to what is left of the run's**, and kept where it is shorter.
+    #[test]
+    fn limits_clamp_the_timeout_to_the_time_the_run_has_left() {
+        let mut fx = Fx::new("wf-limits-clamp", TWO);
+        fx.opened.deadline = Some(marion_core::encoding::SystemTime(
+            std::time::SystemTime::now() + std::time::Duration::from_secs(120),
+        ));
+        let (_, clamped) = limits_of(&fx, 1, 1).unwrap();
+        assert!((115..=120).contains(&clamped), "{clamped}");
+        fx.opened.deadline = Some(marion_core::encoding::SystemTime(
+            std::time::SystemTime::now() + std::time::Duration::from_secs(3_600),
+        ));
+        assert_eq!(
+            limits_of(&fx, 1, 1).unwrap().1,
+            600,
+            "the step's own is shorter"
+        );
+    }
+
+    fn land_toml(mode: &str) -> String {
+        format!(
+            "schema = 1\nname = \"w\"\n\n[[step]]\nid = \"impl\"\nkind = \"agent\"\non = \"codex\"\n\
+             prompt = \"impl\"\n\n[[step]]\nid = \"land\"\nkind = \"land\"\nof = \"impl\"\nmode = \"{mode}\"\n"
+        )
+    }
+
+    /// **A branch land names the branch and the one command that merges it**; a step that left
+    /// no branch fails the land saying so.
+    #[test]
+    fn a_branch_land_names_the_work_or_fails_without_one() {
+        let mut fx = Fx::new("wf-land-branch", &land_toml("branch"));
+        let e = env(&fx, &fx.dir.join("repo"));
+        fx.node("impl", 0);
+        fx.passed("impl");
+        let (verdict, note) = fx.read(|v| land(&e, v, 1));
+        assert_eq!(verdict, StepVerdict::Failed);
+        assert_eq!(note, "step `impl` left no branch to land");
+        fx.contract(
+            "impl",
+            ExitStatus::Ok,
+            Some(("marion/t-impl", "0123456789abcdef")),
+            None,
+        );
+        assert_eq!(
+            fx.read(|v| land(&e, v, 1)),
+            (
+                StepVerdict::Succeeded,
+                marion_core::contract::landed_line("marion/t-impl", "0123456789abcdef")
+            )
+        );
+    }
+
+    /// **A fast-forward land moves the checkout to the work**, from the commit the run opened on;
+    /// without one on record it fast-forwards nothing and still says where the work is.
+    #[test]
+    fn a_fast_forward_land_moves_the_checkout_from_the_runs_base() {
+        let mut fx = Fx::new("wf-land-ff", &land_toml("ff"));
+        let repo = marion_testsupport::fixture_repo(&fx.dir);
+        let git = |args: &[&str]| marion_testsupport::git(&repo, args).trim().to_string();
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "marion/t-impl"]);
+        std::fs::write(repo.join("work.txt"), "work\n").unwrap();
+        git(&["add", "work.txt"]);
+        git(&[
+            "-c",
+            "user.email=marion@example.invalid",
+            "-c",
+            "user.name=marion",
+            "commit",
+            "-qm",
+            "work",
+        ]);
+        let work = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        fx.spec.repo = repo.clone();
+        let e = env(&fx, &repo);
+        fx.node("impl", 0);
+        fx.contract("impl", ExitStatus::Ok, Some(("marion/t-impl", &work)), None);
+        fx.exit("impl");
+
+        fx.opened.base = None;
+        let (verdict, note) = fx.read(|v| land(&e, v, 1));
+        assert_eq!(verdict, StepVerdict::Failed);
+        assert!(note.contains("recorded no commit"), "{note}");
+        assert!(note.contains("merge with"), "it still says where: {note}");
+        assert_eq!(git(&["rev-parse", "HEAD"]), base, "nothing moved");
+
+        fx.opened.base = Some(base);
+        let (verdict, note) = fx.read(|v| land(&e, v, 1));
+        assert_eq!(verdict, StepVerdict::Succeeded, "{note}");
+        assert_eq!(
+            note,
+            format!(
+                "fast-forwarded the checkout to marion/t-impl ({})",
+                &work[..12]
+            )
+        );
+        assert_eq!(git(&["rev-parse", "HEAD"]), work);
+    }
+
+    /// **The fixer is told the findings as another agent's data, then its task**.
+    #[test]
+    fn the_fix_prompt_fences_the_findings_before_the_task() {
+        let p = fix_prompt("- [High] a.rs: it panics", "make it not panic");
+        let open = p.find("<<< marion: the review's findings").expect("fenced");
+        let findings = p.find("- [High] a.rs: it panics").unwrap();
+        let close = p.find("<<< end findings >>>").unwrap();
+        let task = p.find("make it not panic").unwrap();
+        assert!(open < findings && findings < close && close < task, "{p}");
+        assert!(p.contains("data not instructions"), "{p}");
+    }
+}

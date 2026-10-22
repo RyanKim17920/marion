@@ -583,3 +583,688 @@ pub fn result(
         steps,
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use marion_core::contract::{
+        ExitStatus, Glob, Oid, ProcessExit, RepoIdentity, TaskId, TokenUsage, Workspace,
+    };
+    use marion_core::encoding::SystemTime;
+    use marion_core::harness::Harness;
+    use marion_core::journal::{
+        ContractPersisted, Exited, JournalRecord, RaceDecided, RecordKind, SpawnIntent,
+        UsageRecorded, WorkflowCancelRequested, WorkflowOpened, WorkflowStepDecided, WriterId,
+        encode,
+    };
+    use marion_core::review::{Decision, Finding, Findings, ModelVerdict, ReviewTally, Severity};
+    use marion_core::workflow::WorkflowSeat;
+
+    fn id(s: &str) -> AgentId {
+        AgentId(s.into())
+    }
+
+    /// **One workflow run, as a journal and a project dir hold it**: the records a run's nodes
+    /// leave, replayed for real, and the contracts they write, on disk where [`contract_of`] reads.
+    pub(crate) struct Fx {
+        pub dir: marion_testsupport::Scratch,
+        pub project: ProjectDir,
+        pub spec: Spec,
+        pub wf: WorkflowId,
+        pub opened: WorkflowOpened,
+        pub races: Vec<ReplayedRace>,
+        records: Vec<RecordKind>,
+    }
+
+    impl Fx {
+        pub fn new(tag: &str, toml: &str) -> Fx {
+            let dir = marion_testsupport::scratch(tag);
+            let project = ProjectDir::from_hash(&dir, "proj");
+            let workflow = marion_core::workflow::parse(toml).expect("the fixture parses");
+            let wf = WorkflowId("wf-1".into());
+            let opened = WorkflowOpened {
+                wf_id: wf.clone(),
+                name: workflow.name.clone(),
+                digest: "ab".into(),
+                requester: id(marion_core::workflow::OPERATOR),
+                base: Some("base0".into()),
+                deadline: None,
+                budget_tokens: workflow.budget.tokens,
+                step_ids: workflow.steps.iter().map(|s| s.id.clone()).collect(),
+            };
+            let spec = Spec {
+                workflow,
+                inputs: BTreeMap::new(),
+                repo: dir.join("repo"),
+                path: dir.join("w.toml"),
+                digest: "ab".into(),
+            };
+            Fx {
+                dir,
+                project,
+                spec,
+                wf,
+                opened,
+                races: Vec::new(),
+                records: Vec::new(),
+            }
+        }
+
+        /// A node in `step`'s seat `(round, part)`, its task `t-<agent>`, holding `tree_tokens`.
+        pub fn seat(
+            &mut self,
+            agent: &str,
+            step: u8,
+            round: u8,
+            part: u8,
+            tree_tokens: Option<u64>,
+        ) {
+            self.records.push(RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: id(agent),
+                parent_id: None,
+                agent_type: "codex".into(),
+                harness: Harness::Codex,
+                depth: 1,
+                task_id: Some(TaskId(format!("t-{agent}"))),
+                timeout_secs: None,
+                verification: vec![],
+                review_of: None,
+                race: None,
+                budget: tree_tokens.map(|t| marion_core::budget::Budget {
+                    tree_tokens: Some(t),
+                    ..Default::default()
+                }),
+                workflow: Some(WorkflowSeat {
+                    wf_id: self.wf.clone(),
+                    step,
+                    round,
+                    part,
+                }),
+                trust: Default::default(),
+            }));
+        }
+
+        pub fn node(&mut self, agent: &str, step: u8) {
+            self.seat(agent, step, 0, 0, None);
+        }
+
+        pub fn exit(&mut self, agent: &str) {
+            self.records.push(RecordKind::Exited(Exited {
+                agent_id: id(agent),
+                status: ExitStatus::Ok,
+                exit: ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: String::new(),
+                },
+            }));
+        }
+
+        pub fn usage(&mut self, agent: &str, output: u64) {
+            self.records.push(RecordKind::UsageRecorded(UsageRecorded {
+                agent_id: id(agent),
+                usage: TokenUsage {
+                    input: 0,
+                    output,
+                    cache_read: 0,
+                    cache_write: 0,
+                    reasoning: None,
+                },
+                turns: vec![],
+            }));
+        }
+
+        /// A reviewer's contract on record with `decision` as its tally.
+        pub fn review(&mut self, agent: &str, decision: Decision) {
+            self.records
+                .push(RecordKind::ContractPersisted(ContractPersisted {
+                    agent_id: id(agent),
+                    task_id: TaskId(format!("t-{agent}")),
+                    requester: id(marion_core::workflow::OPERATOR),
+                    status: Some(ExitStatus::Ok),
+                    review: Some(ReviewTally {
+                        findings: 1,
+                        blocking: usize::from(decision == Decision::Block),
+                        decision,
+                    }),
+                    changed: None,
+                }));
+        }
+
+        pub fn decide(&mut self, step: u8, verdict: StepVerdict) {
+            self.records
+                .push(RecordKind::WorkflowStepDecided(WorkflowStepDecided {
+                    wf_id: self.wf.clone(),
+                    step,
+                    round: 0,
+                    verdict,
+                    nodes: vec![],
+                    note: None,
+                }));
+        }
+
+        pub fn cancel(&mut self) {
+            self.records.push(RecordKind::WorkflowCancelRequested(
+                WorkflowCancelRequested {
+                    wf_id: self.wf.clone(),
+                },
+            ));
+        }
+
+        /// The node's contract file, ended `status`, its work on `branch` at `commit`.
+        pub fn contract(
+            &self,
+            agent: &str,
+            status: ExitStatus,
+            landed: Option<(&str, &str)>,
+            findings: Option<Findings>,
+        ) {
+            let task = TaskId(format!("t-{agent}"));
+            let mut c = crate::spawn::build_contract(
+                task.clone(),
+                id(marion_core::workflow::OPERATOR),
+                Harness::Codex,
+                RepoIdentity {
+                    git_common_dir: None,
+                    head_branch: None,
+                },
+                None::<Oid>,
+                Workspace::Worktree {
+                    path: self.dir.join("wt"),
+                    branch: format!("marion/t-{agent}"),
+                },
+                &format!("the task {agent} was given"),
+                &[],
+                &[Glob("**".into())],
+                &[Glob("**".into())],
+                marion_core::encoding::Duration(std::time::Duration::from_secs(60)),
+                SystemTime::from_unix_millis(1_000),
+                &crate::spawn::ChildOutcome {
+                    exit_code: Some(0),
+                    ..crate::spawn::ChildOutcome::default()
+                },
+                None,
+                None,
+                vec![],
+                vec![],
+            );
+            let done = c.completion.as_mut().expect("an ended contract");
+            done.status = status;
+            done.branch = landed.map(|(b, _)| b.into());
+            done.commit = landed.map(|(_, o)| Oid(o.into()));
+            done.findings = findings;
+            let path = self.project.agent(&id(agent)).contract(&task);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, serde_json::to_vec(&c).unwrap()).unwrap();
+        }
+
+        /// `agent`'s contract ended `Ok` with nothing landed, and the node ended.
+        pub fn passed(&mut self, agent: &str) {
+            self.contract(agent, ExitStatus::Ok, None, None);
+            self.exit(agent);
+        }
+
+        /// The journal as written, replayed the way the supervisor's fold reads it.
+        pub fn replay(&self) -> marion_core::registry::Replay {
+            let kinds = std::iter::once(RecordKind::WorkflowOpened(self.opened.clone()))
+                .chain(self.records.iter().cloned());
+            let bytes: Vec<u8> = kinds
+                .enumerate()
+                .flat_map(|(seq, kind)| {
+                    encode(&JournalRecord {
+                        writer: WriterId("w".into()),
+                        seq: seq as u64,
+                        ts: SystemTime::from_unix_millis(1_000 + seq as u64),
+                        mono_ns: seq as u64,
+                        provenance: marion_core::ir::Provenance::marion(),
+                        src_seq: None,
+                        kind,
+                    })
+                    .unwrap()
+                })
+                .collect();
+            marion_core::registry::replay(&bytes)
+        }
+
+        /// `f` over the run as it stands.
+        pub fn read<R>(&self, f: impl FnOnce(&RunValues<'_>) -> R) -> R {
+            let r = self.replay();
+            let run = r.workflow(&self.wf).expect("the run is on record").clone();
+            f(&RunValues {
+                spec: &self.spec,
+                project: &self.project,
+                run: &run,
+                nodes: r.nodes(),
+                races: &self.races,
+            })
+        }
+
+        fn observed(&self, step: usize) -> String {
+            self.read(|v| describe(v.observe(step)))
+        }
+    }
+
+    fn describe(o: Observed) -> String {
+        match o {
+            Observed::State(s) => format!("{s:?}"),
+            Observed::Earned(v) => format!("earned {v:?}"),
+            Observed::Act(a) => format!("{a:?}"),
+        }
+    }
+
+    const PLAN_IMPL: &str = r#"
+schema = 1
+name = "w"
+
+[[step]]
+id = "plan"
+kind = "agent"
+on = "claude"
+read_only = true
+prompt = "plan"
+
+[[step]]
+id = "impl"
+kind = "agent"
+on = "codex"
+prompt = "impl"
+"#;
+
+    fn with_review(rounds: u8) -> String {
+        format!(
+            "{PLAN_IMPL}\n[[step]]\nid = \"gate\"\nkind = \"review\"\nof = \"impl\"\nmax_rounds = {rounds}\n"
+        )
+    }
+
+    /// **A drive asked for while one runs is never lost**: the second asker is turned away, the
+    /// running drive is told to step again once, and a closed run is no one's to drive.
+    #[test]
+    fn a_drive_asked_for_meanwhile_steps_again_once() {
+        let w = Workflows::default();
+        let wf = WorkflowId("wf-1".into());
+        assert!(w.begin_drive(&wf).is_none(), "a run not open here");
+        assert!(!w.end_drive(&wf));
+        let fx = Fx::new("wf-drive", PLAN_IMPL);
+        w.open(&wf, fx.spec.clone());
+        assert!(w.is_open(&wf));
+        let spec = w.begin_drive(&wf).expect("the first drive claims it");
+        assert_eq!(spec.workflow.name, "w");
+        assert!(w.begin_drive(&wf).is_none(), "one drive at a time");
+        assert!(w.begin_drive(&wf).is_none());
+        assert!(w.end_drive(&wf), "asked for meanwhile: step again");
+        assert!(w.begin_drive(&wf).is_some(), "released, it claims again");
+        assert!(!w.end_drive(&wf), "nothing asked for this time");
+        w.close(&wf);
+        assert!(!w.is_open(&wf));
+        assert!(w.begin_drive(&wf).is_none());
+    }
+
+    /// **An agent step is pending, running, then earns its contract's verdict**: no node is
+    /// pending, a node still running is running, and an ended node's `Ok` contract passes it
+    /// while a failed or missing contract fails it. A recorded decision is what it says.
+    #[test]
+    fn an_agent_step_earns_what_its_node_left() {
+        let mut fx = Fx::new("wf-agent", PLAN_IMPL);
+        assert_eq!(fx.observed(0), "Pending");
+        fx.node("p", 0);
+        assert_eq!(fx.observed(0), "Running { round: 0 }");
+        fx.exit("p");
+        assert_eq!(fx.observed(0), "earned Failed", "ended without a contract");
+        fx.contract("p", ExitStatus::Failed, None, None);
+        assert_eq!(fx.observed(0), "earned Failed");
+        fx.contract("p", ExitStatus::Ok, None, None);
+        assert_eq!(fx.observed(0), "earned Succeeded");
+        fx.decide(0, StepVerdict::Skipped);
+        assert_eq!(
+            fx.observed(0),
+            "Decided(Skipped)",
+            "the journal's decision wins"
+        );
+    }
+
+    /// **A parallel step waits for every node it starts**, and passes only if each passed.
+    #[test]
+    fn a_parallel_step_waits_for_all_its_nodes_and_needs_each_to_pass() {
+        let toml = r#"
+schema = 1
+name = "w"
+
+[[step]]
+id = "ask"
+kind = "parallel"
+on = ["claude", "codex"]
+prompt = "ask"
+"#;
+        let mut fx = Fx::new("wf-parallel", toml);
+        fx.seat("a", 0, 0, 0, None);
+        fx.passed("a");
+        assert_eq!(
+            fx.observed(0),
+            "Running { round: 0 }",
+            "one of two launched"
+        );
+        fx.seat("b", 0, 0, 1, None);
+        assert_eq!(fx.observed(0), "Running { round: 0 }", "one still running");
+        fx.contract("b", ExitStatus::Failed, None, None);
+        fx.exit("b");
+        assert_eq!(fx.observed(0), "earned Failed");
+        fx.contract("b", ExitStatus::Ok, None, None);
+        assert_eq!(fx.observed(0), "earned Succeeded");
+        assert!(
+            fx.read(|v| v.work_node(0).is_none()),
+            "a parallel step stands for no one node's work"
+        );
+    }
+
+    /// **A race step is its race's decision**: open is running, a winner passes it and is its
+    /// work, and a race nobody won fails it.
+    #[test]
+    fn a_race_step_is_decided_by_its_race() {
+        let toml = r#"
+schema = 1
+name = "w"
+
+[[step]]
+id = "impl"
+kind = "race"
+on = ["claude", "codex"]
+prompt = "impl"
+verify = ["true"]
+"#;
+        let mut fx = Fx::new("wf-race", toml);
+        let race = marion_core::race::RaceId("r-1".into());
+        for (part, agent) in ["s1", "s2"].into_iter().enumerate() {
+            fx.seat(agent, 0, 0, u8::try_from(part).unwrap(), None);
+            let marion_core::journal::RecordKind::SpawnIntent(i) = fx.records.last_mut().unwrap()
+            else {
+                unreachable!()
+            };
+            i.race = Some(marion_core::race::RaceSeat {
+                race_id: race.clone(),
+                role: marion_core::race::RaceRole::Candidate(u8::try_from(part + 1).unwrap()),
+            });
+        }
+        fx.races = vec![ReplayedRace {
+            race_id: race.clone(),
+            opened: None,
+            seats: vec![(1, id("s1")), (2, id("s2"))],
+            decided: None,
+        }];
+        assert_eq!(fx.observed(0), "Running { round: 0 }");
+        let decided = |winner: Option<&str>| RaceDecided {
+            race_id: race.clone(),
+            winner: winner.map(id),
+            decided_by: marion_core::race::DecidedBy::Verification,
+            verdicts: vec![],
+        };
+        fx.races[0].decided = Some(decided(Some("s2")));
+        assert_eq!(fx.observed(0), "earned Succeeded");
+        assert_eq!(
+            fx.read(|v| v.work_node(0).map(|n| n.agent_id.0.clone())),
+            Some("s2".into()),
+            "the winner's work is the step's"
+        );
+        fx.races[0].decided = Some(decided(None));
+        assert_eq!(fx.observed(0), "earned Failed");
+        assert!(fx.read(|v| v.work_node(0).is_none()));
+    }
+
+    /// **A review, round by round**: the reviewer running is running; a block asks for the fix of
+    /// the work it reviewed; a passing fix asks for the next round's review of the fix; a block on
+    /// the last round is blocked. The step's work is the latest fix that passed.
+    #[test]
+    fn a_review_rounds_through_fix_and_re_review_until_its_last_round() {
+        let mut fx = Fx::new("wf-review", &with_review(2));
+        fx.node("impl", 1);
+        fx.passed("impl");
+        assert_eq!(fx.observed(2), "Pending", "nothing of the review launched");
+        fx.seat("rev0", 2, 0, REVIEWER, None);
+        assert_eq!(fx.observed(2), "Running { round: 0 }");
+        fx.review("rev0", Decision::Block);
+        fx.exit("rev0");
+        assert_eq!(
+            fx.observed(2),
+            "Fix { round: 0, target: AgentId(\"impl\"), reviewer: AgentId(\"rev0\") }"
+        );
+        fx.seat("fix0", 2, 0, FIXER, None);
+        assert_eq!(fx.observed(2), "Running { round: 0 }", "the fix is running");
+        fx.contract("fix0", ExitStatus::Ok, Some(("marion/t-fix0", "f1x")), None);
+        fx.exit("fix0");
+        assert_eq!(
+            fx.observed(2),
+            "Review { round: 1, target: AgentId(\"fix0\") }",
+            "the next round reviews the fix, not the work"
+        );
+        assert_eq!(
+            fx.read(|v| v.work_node(2).map(|n| n.agent_id.0.clone())),
+            Some("fix0".into())
+        );
+        fx.seat("rev1", 2, 1, REVIEWER, None);
+        fx.review("rev1", Decision::Block);
+        fx.exit("rev1");
+        assert_eq!(
+            fx.observed(2),
+            "earned Blocked",
+            "the last round still blocks"
+        );
+    }
+
+    /// **A clean review ends it, a failed fix fails it, and a report marion cannot read decides
+    /// nothing in the step's favour.** A review whose work left no node fails before it starts.
+    #[test]
+    fn a_review_is_clean_or_failed_by_what_its_round_left() {
+        let mut fx = Fx::new("wf-review-clean", &with_review(3));
+        fx.node("impl", 1);
+        fx.passed("impl");
+        fx.seat("rev0", 2, 0, REVIEWER, None);
+        fx.review("rev0", Decision::Allow);
+        fx.exit("rev0");
+        assert_eq!(fx.observed(2), "earned Clean");
+
+        let mut fx = Fx::new("wf-review-fixfail", &with_review(3));
+        fx.node("impl", 1);
+        fx.passed("impl");
+        fx.seat("rev0", 2, 0, REVIEWER, None);
+        fx.review("rev0", Decision::Block);
+        fx.exit("rev0");
+        fx.seat("fix0", 2, 0, FIXER, None);
+        fx.contract("fix0", ExitStatus::Failed, None, None);
+        fx.exit("fix0");
+        assert_eq!(fx.observed(2), "earned Failed", "a failed fix");
+        assert_eq!(
+            fx.read(|v| v.work_node(2).map(|n| n.agent_id.0.clone())),
+            Some("impl".into()),
+            "a failed fix is not the step's work"
+        );
+
+        let mut fx = Fx::new("wf-review-unread", &with_review(3));
+        fx.node("impl", 1);
+        fx.passed("impl");
+        fx.seat("rev0", 2, 0, REVIEWER, None);
+        fx.exit("rev0");
+        assert_eq!(fx.observed(2), "earned Failed", "no tally on record");
+
+        let mut fx = Fx::new("wf-review-nowork", &with_review(3));
+        fx.seat("rev0", 2, 0, REVIEWER, None);
+        assert_eq!(fx.observed(2), "earned Failed", "nothing to review");
+    }
+
+    /// **A cancelled run cancels what did not pass, and starts no further round**: a step that
+    /// failed is cancelled, one that passed keeps its verdict, and a review's next node is not
+    /// asked for but the step decided cancelled.
+    #[test]
+    fn a_cancelled_run_cancels_what_did_not_pass_and_asks_for_no_round() {
+        let mut fx = Fx::new("wf-cancel", &with_review(2));
+        fx.node("p", 0);
+        fx.passed("p");
+        fx.node("impl", 1);
+        fx.contract("impl", ExitStatus::Failed, None, None);
+        fx.exit("impl");
+        fx.cancel();
+        let (state, earned, acts) = fx.read(|v| v.state());
+        assert!(state.cancelled);
+        assert_eq!(
+            earned,
+            vec![(0, StepVerdict::Succeeded), (1, StepVerdict::Cancelled)]
+        );
+        assert!(acts.is_empty());
+
+        let mut fx = Fx::new("wf-cancel-review", &with_review(2));
+        fx.node("impl", 1);
+        fx.passed("impl");
+        fx.decide(1, StepVerdict::Succeeded);
+        fx.seat("rev0", 2, 0, REVIEWER, None);
+        fx.review("rev0", Decision::Block);
+        fx.exit("rev0");
+        let (_, earned, acts) = fx.read(|v| v.state());
+        assert_eq!(acts.len(), 1, "uncancelled, the fix is asked for: {acts:?}");
+        assert!(earned.is_empty());
+        fx.cancel();
+        let (state, earned, acts) = fx.read(|v| v.state());
+        assert!(acts.is_empty(), "{acts:?}");
+        assert_eq!(earned, vec![(2, StepVerdict::Cancelled)]);
+        assert_eq!(state.steps[2], StepState::Decided(StepVerdict::Cancelled));
+    }
+
+    /// **A land step lands its work's branch and commit**, and nothing where it left none.
+    #[test]
+    fn landing_reads_the_works_branch_and_commit() {
+        let mut fx = Fx::new("wf-landing", PLAN_IMPL);
+        fx.node("impl", 1);
+        fx.passed("impl");
+        assert_eq!(fx.read(|v| v.landing(1)), None, "nothing landed");
+        fx.contract(
+            "impl",
+            ExitStatus::Ok,
+            Some(("marion/t-impl", "c0mm1t")),
+            None,
+        );
+        assert_eq!(
+            fx.read(|v| v.landing(1)),
+            Some(("marion/t-impl".to_string(), Oid("c0mm1t".into())))
+        );
+        assert_eq!(fx.read(|v| v.landing(0)), None, "a step that never ran");
+    }
+
+    /// **What the run has committed of its budget**: an ended node what it spent, a running node
+    /// the whole allowance it holds (or its spend, where more), and a step's part only its own.
+    #[test]
+    fn committed_holds_a_running_nodes_whole_allowance() {
+        let mut fx = Fx::new("wf-committed", PLAN_IMPL);
+        fx.seat("p", 0, 0, 0, Some(1_000));
+        fx.usage("p", 300);
+        fx.exit("p");
+        fx.seat("i", 1, 0, 0, Some(5_000));
+        fx.usage("i", 200);
+        fx.seat("free", 1, 0, 1, None);
+        fx.usage("free", 7);
+        assert_eq!(fx.read(|v| v.committed(Some(0))), 300, "ended: its spend");
+        assert_eq!(
+            fx.read(|v| v.committed(Some(1))),
+            5_007,
+            "running: its allowance; no allowance: its spend"
+        );
+        assert_eq!(fx.read(|v| v.committed(None)), 5_307);
+        fx.usage("i", 6_000);
+        assert_eq!(
+            fx.read(|v| v.committed(Some(1))),
+            6_207,
+            "a spend past the allowance counts whole"
+        );
+    }
+
+    /// **A step builds on the latest earlier step that passed and left a commit**: not a failed
+    /// one, not a read-only one, and the repository's `HEAD` where there is none.
+    #[test]
+    fn base_for_is_the_latest_passing_branch_steps_commit() {
+        let toml = format!(
+            "{PLAN_IMPL}\n[[step]]\nid = \"redo\"\nkind = \"agent\"\non = \"codex\"\nprompt = \"r\"\n\n[[step]]\nid = \"last\"\nkind = \"agent\"\non = \"codex\"\nprompt = \"l\"\n"
+        );
+        let mut fx = Fx::new("wf-base", &toml);
+        fx.node("p", 0);
+        fx.contract("p", ExitStatus::Ok, Some(("marion/t-p", "p0")), None);
+        fx.exit("p");
+        fx.decide(0, StepVerdict::Succeeded);
+        assert_eq!(
+            fx.read(|v| v.base_for(1)),
+            None,
+            "a read-only step is no base"
+        );
+        fx.node("impl", 1);
+        fx.contract("impl", ExitStatus::Ok, Some(("marion/t-impl", "i1")), None);
+        fx.exit("impl");
+        assert_eq!(fx.read(|v| v.base_for(2)), None, "not decided yet");
+        fx.decide(1, StepVerdict::Succeeded);
+        assert_eq!(fx.read(|v| v.base_for(2)), Some(Oid("i1".into())));
+        fx.node("redo", 2);
+        fx.contract(
+            "redo",
+            ExitStatus::Failed,
+            Some(("marion/t-redo", "r2")),
+            None,
+        );
+        fx.exit("redo");
+        fx.decide(2, StepVerdict::Failed);
+        assert_eq!(
+            fx.read(|v| v.base_for(3)),
+            Some(Oid("i1".into())),
+            "a failed step is skipped over"
+        );
+    }
+
+    /// **A reviewer's findings read as a list**: the summary first, each finding with its
+    /// severity, where it is, and what to do, and one marion could not place in the change says
+    /// so. A review with no findings has no text.
+    #[test]
+    fn findings_text_lists_the_summary_then_each_finding() {
+        let fx = Fx::new("wf-findings", PLAN_IMPL);
+        let finding = |grounded: bool, line: Option<u32>, rec: &str| Finding {
+            severity: Severity::High,
+            file: "src/a.rs".into(),
+            line,
+            claim: "it panics".into(),
+            evidence: String::new(),
+            recommendation: rec.into(),
+            grounded,
+        };
+        fx.contract(
+            "rev",
+            ExitStatus::Ok,
+            None,
+            Some(Findings {
+                verdict: ModelVerdict::Block,
+                summary: "two problems".into(),
+                findings: vec![finding(true, Some(7), "check it"), finding(false, None, "")],
+                findings_omitted: 0,
+            }),
+        );
+        let task = TaskId("t-rev".into());
+        let c: TaskContract = serde_json::from_slice(
+            &std::fs::read(fx.project.agent(&id("rev")).contract(&task)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            findings_text(&c).as_deref(),
+            Some(
+                "two problems\n- [High] src/a.rs:7: it panics — check it\n\
+                 - [High, not in the change] src/a.rs: it panics"
+            )
+        );
+        fx.contract(
+            "rev",
+            ExitStatus::Ok,
+            None,
+            Some(Findings {
+                verdict: ModelVerdict::Allow,
+                summary: String::new(),
+                findings: vec![],
+                findings_omitted: 0,
+            }),
+        );
+        let c: TaskContract = serde_json::from_slice(
+            &std::fs::read(fx.project.agent(&id("rev")).contract(&task)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(findings_text(&c), None);
+    }
+}
