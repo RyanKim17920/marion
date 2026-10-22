@@ -800,6 +800,15 @@ pub(crate) fn hop(_pid: i32) -> Option<Hop> {
     None
 }
 
+/// **How far a process's start may sit past [`start_clock_now`]** and still count as begun before
+/// it. Linux reads both from the boot clock, so none. macOS reads `p_starttime` and the time of day,
+/// which a clock step can set back: a second, so a step cannot make a real bridge look younger
+/// than its own connection.
+#[cfg(target_os = "macos")]
+pub(crate) const START_CLOCK_SLACK: u64 = 1_000_000;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const START_CLOCK_SLACK: u64 = 0;
+
 /// **Now, in [`Hop::start`]'s units**: a process whose start is later than this began after it.
 #[cfg(target_os = "linux")]
 pub(crate) fn start_clock_now() -> Option<u64> {

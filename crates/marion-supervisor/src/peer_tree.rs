@@ -26,7 +26,8 @@
 //!
 //! **The peer itself** is pinned at accept ([`AcceptedPeer`]): `SO_PEERPIDFD` where the kernel has
 //! it (Linux 6.5), `pidfd_open` at accept otherwise, and on every platform a peer that started
-//! after the connection was accepted is refused — a pid recycled after its connector left is
+//! after the connection was accepted (past macOS's clock slack, `procid::START_CLOCK_SLACK`) is
+//! refused — a pid recycled after its connector left is
 //! younger than the accept. What remains is a recycle inside the connect-to-accept backlog, where
 //! the attacker cannot pick who receives the pid.
 //!
@@ -161,7 +162,7 @@ pub(crate) fn first_root<K: Clone>(
     let Some(accepted) = accepted else {
         return Err("the connection's accept time could not be read".into());
     };
-    if seen.start > accepted {
+    if seen.start > accepted.saturating_add(crate::procid::START_CLOCK_SLACK) {
         return Err(format!(
             "process {peer} started after the connection was accepted, so it is not the process \
              that connected"
@@ -384,11 +385,27 @@ mod tests {
         assert!(walk(&t, 22).unwrap_err().contains("recycled"));
     }
 
+    /// **A peer that started after the accept is not the connector**, past the clock's slack (a
+    /// second on macOS, whose clock a step can set back; none on Linux), and an unread accept time
+    /// refuses.
+    ///
+    /// Mutation: drop the slack and, on macOS, the bridge within it is refused.
     #[test]
     fn a_peer_that_started_after_the_accept_is_not_the_connector() {
-        let t = fleet();
-        let refused = first_root(21, Some(10), &roots(), SUP, |p| t.get(&p).copied()).unwrap_err();
+        // 21 started at `late`; a connection accepted the slack before that is its own, and one
+        // accepted a tick earlier still is not.
+        let late = 5_000_000;
+        let mut t = fleet();
+        t.get_mut(&21).unwrap().start = late;
+        let at = |accepted| first_root(21, Some(accepted), &roots(), SUP, |p| t.get(&p).copied());
+        let slack = crate::procid::START_CLOCK_SLACK;
+        assert_eq!(at(late - slack), Ok("A"), "within the clock's slack");
+        // The slack's size, not just its use: on macOS a one-second step back is absorbed.
+        #[cfg(target_os = "macos")]
+        assert_eq!(at(late - 1_000_000), Ok("A"), "a one-second clock step");
+        let refused = at(late - slack - 1).unwrap_err();
         assert!(refused.contains("after the connection"), "{refused}");
+        let t = fleet();
         let unread = first_root(21, None, &roots(), SUP, |p| t.get(&p).copied()).unwrap_err();
         assert!(unread.contains("accept time"), "{unread}");
     }
