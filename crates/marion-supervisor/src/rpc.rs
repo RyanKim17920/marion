@@ -116,7 +116,13 @@ pub(crate) trait Peer {
 struct Feed {
     lines: Vec<String>,
     eof: bool,
+    /// Raised by every wake until [`Driver::take_wake`] clears it: whether the inbox has something
+    /// a caller may want to act on.
     woken: bool,
+    /// Raised by every wake until a wait returns on it: a wake ends **one** wait, so a caller that
+    /// leaves [`Self::woken`] up (a non-folding agent's turn ignores a mid-turn steer) still blocks
+    /// on its next wait instead of returning at once until the turn settles.
+    unseen: bool,
     /// Sticky: the driver notices it once ([`Driver::aborted`]), and a wait never wakes on it again.
     aborted: bool,
 }
@@ -144,7 +150,10 @@ struct Wake {
 
 impl crate::inbox::DeliveryPort for Wake {
     fn wake(&self) {
-        self.shared.lock().woken = true;
+        let mut feed = self.shared.lock();
+        feed.woken = true;
+        feed.unseen = true;
+        drop(feed);
         self.shared.cv.notify_all();
     }
 
@@ -315,10 +324,10 @@ impl<'a, P: Peer> Driver<'a, P> {
         w.flush()
     }
 
-    /// Block until there is an unread line, an inbox wake, EOF, or `until` — whichever is first —
-    /// capped at [`LIVENESS_TICK`]. Once stdout has ended nothing more can be read, so the wait is on
-    /// the server's exit instead ([`crate::wake::wait_exit`]), never a return at once that would
-    /// make its caller's loop spin.
+    /// Block until there is an unread line, an inbox wake no wait has returned on, EOF, or `until`
+    /// — whichever is first — capped at [`LIVENESS_TICK`]. Once stdout has ended nothing more can
+    /// be read, so the wait is on the server's exit instead ([`crate::wake::wait_exit`]), never a
+    /// return at once that would make its caller's loop spin.
     pub fn wait_event(&mut self, until: Instant) {
         let until = until.min(Instant::now() + LIVENESS_TICK);
         if self.stdout_ended() {
@@ -328,7 +337,10 @@ impl<'a, P: Peer> Driver<'a, P> {
         }
         let seen = self.aborted;
         let mut feed = self.shared.lock();
-        while feed.lines.len() <= self.cursor && !feed.woken && !feed.eof && (seen || !feed.aborted)
+        while feed.lines.len() <= self.cursor
+            && !feed.unseen
+            && !feed.eof
+            && (seen || !feed.aborted)
         {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -341,6 +353,7 @@ impl<'a, P: Peer> Driver<'a, P> {
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
+        feed.unseen = false;
     }
 
     /// Wait for the response carrying `id`, **answering every server request that arrives in the
@@ -769,6 +782,58 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **A wake no caller takes ends one wait, not every one after it.** A non-folding agent's turn
+    /// leaves a mid-turn steer in the inbox for the next turn, and so never takes its wake; the
+    /// turn's wait must still block until the server answers, rather than spin until it does.
+    #[test]
+    fn a_wake_left_untaken_ends_one_wait_and_the_next_blocks() {
+        let dir = marion_testsupport::scratch("rpc-untaken-wake");
+        let mut d = Driver::spawn(&sh("sleep 3", &dir), &dir, None, Mute).expect("sh");
+        d.wake_port(AbortVerb::None { note: "test" }).wake();
+        let (cpu, mut passes) = (thread_cpu(), 0);
+        let settled = d.settle_until(Instant::now() + Duration::from_millis(1200), |_| {
+            passes += 1;
+            None::<()>
+        });
+        let spent = thread_cpu() - cpu;
+        assert_eq!(settled, None);
+        assert_eq!(
+            passes, 3,
+            "the first pass, the one the wake ended, the one at the deadline"
+        );
+        assert!(
+            spent < Duration::from_millis(150),
+            "spun for {spent:?} of CPU"
+        );
+        assert!(
+            d.take_wake(),
+            "the wake is still there for a caller to take"
+        );
+        let _ = d.finish(false);
+    }
+
+    /// **A wake still ends a wait that is blocked**, so the one-wait rule never costs a caller the
+    /// wake it is waiting for.
+    #[test]
+    fn a_wake_ends_a_blocked_wait() {
+        let dir = marion_testsupport::scratch("rpc-wake-blocked");
+        let mut d = Driver::spawn(&sh("sleep 3", &dir), &dir, None, Mute).expect("sh");
+        let port = d.wake_port(AbortVerb::None { note: "test" });
+        let raise = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            port.wake();
+        });
+        let started = Instant::now();
+        let settled = d.settle_until(Instant::now() + Duration::from_millis(1800), |d| {
+            d.take_wake().then_some(())
+        });
+        let took = started.elapsed();
+        raise.join().unwrap();
+        assert_eq!(settled, Some(()));
+        assert!(took < Duration::from_millis(1000), "woken after {took:?}");
+        let _ = d.finish(false);
     }
 
     /// **A server's line is bounded**: one past `max` is dropped whole, however it arrives in
